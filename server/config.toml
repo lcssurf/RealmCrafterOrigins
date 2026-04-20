@@ -1,0 +1,18 @@
+[server]
+listen_addr = "0.0.0.0:7777"
+cert_file   = ""   # vazio = TLS self-signed gerado automaticamente
+key_file    = ""
+
+[database]
+# driver = "sqlite"   → zero instalação, arquivo local (padrão dev)
+# driver = "postgres" → PostgreSQL para produção
+driver = "sqlite"
+dsn    = "./rco.db"
+
+# Para usar PostgreSQL, troque para:
+# driver = "postgres"
+# dsn    = "postgres://rco:rco@localhost:5432/rco?sslmode=disable"
+
+[game]
+login_message = "Welcome to RealmCrafter: Origins"
+max_players   = 500

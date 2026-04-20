@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"D:/Github/RealmCrafterOrigins/server/cmd/server\")",
+      "Bash(mkdir -p \"D:/Github/RealmCrafterOrigins/server/internal/protocol\")",
+      "Bash(mkdir -p \"D:/Github/RealmCrafterOrigins/server/internal/net\")",
+      "Bash(mkdir -p \"D:/Github/RealmCrafterOrigins/server/internal/db\")",
+      "Bash(mkdir -p \"D:/Github/RealmCrafterOrigins/server/internal/accounts\")",
+      "Bash(go mod *)",
+      "Bash(powershell.exe *)",
+      "Read(//c/Users/lucas/go/**)",
+      "Read(//c/Users/lucas/**)",
+      "Read(//c/Users/lucas/AppData/Local/**)",
+      "Bash(grep -E \"Server\\\\.bb|^[^/]*\\\\.bb$\")",
+      "Bash(go build *)",
+      "Bash(xargs grep *)",
+      "Bash(xargs ls *)",
+      "Bash(cp \"D:/Github/RealmCrafter-Standard-1.26/\\(Build\\) Game files/Data/Textures/GUI/\"* \"D:/Github/RealmCrafterOrigins/client/assets/ui/gui/\")",
+      "Bash(cp \"D:/Github/RealmCrafter-Standard-1.26/\\(Build\\) Game files/Data/Textures/Menu/\"* \"D:/Github/RealmCrafterOrigins/client/assets/ui/menu/\")",
+      "Bash(cp \"D:/Github/RealmCrafter-Standard-1.26/\\(Build\\) Game files/Data/Textures/chat.bmp\" \"D:/Github/RealmCrafterOrigins/client/assets/ui/\")",
+      "Bash(cp \"D:/Github/RealmCrafter-Standard-1.26/\\(Build\\) Game files/Data/Textures/Compass Overlay.PNG\" \"D:/Github/RealmCrafterOrigins/client/assets/ui/\")",
+      "Bash(cp \"D:/Github/RealmCrafter-Standard-1.26/\\(Build\\) Game files/Data/Textures/Compass.PNG\" \"D:/Github/RealmCrafterOrigins/client/assets/ui/\")",
+      "Bash(cp \"D:/Github/RealmCrafter-Standard-1.26/\\(Build\\) Game files/Data/Textures/Radar_Border.png\" \"D:/Github/RealmCrafterOrigins/client/assets/ui/\")",
+      "Bash(cp \"D:/Github/RealmCrafter-Standard-1.26/\\(Build\\) Game files/Data/Textures/Radar_Player.png\" \"D:/Github/RealmCrafterOrigins/client/assets/ui/\")",
+      "Read(//c/vcpkg/installed/x64-windows/include/**)",
+      "Read(//c/vcpkg/installed/x64-windows/include//**)"
+    ]
+  }
+}
