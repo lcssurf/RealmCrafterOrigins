@@ -28,26 +28,34 @@ import (
 type SpellDef struct {
 	ID         uint16
 	Name       string
-	SpellType  string // "damage" | "heal" | "buff"
+	SpellType  string // "damage" | "heal" | "buff" | "debuff"
 	EPCost     int32
 	CooldownMs int64
 	Range      float32
 	Icon       uint8
+	AoEType    uint8   // 0=single 1=around_target 2=ground_target
+	AoERadius  float32 // world units; 0 = not AoE
 	onCast     *lua.LFunction // Lua function(caster_id, target_id)
 }
 
 // DialogPending holds a dialog the Lua script wants to send to the player.
 type DialogPending struct {
-	Text    string
-	Options []string
+	Text     string
+	Options  []string
+	OpenShop bool // if true, server should open the NPC's shop instead of a dialog
 }
 
 // callCtx is populated for the duration of a single Lua call.
 type callCtx struct {
 	area          *world.Area
 	caster        *world.Actor
-	killedRID     uint32        // set by deal_damage if target dies
+	killedRID     uint32         // set by deal_damage if target dies
 	pendingDialog *DialogPending // set by Dialog.send
+	// AoE context — set by Cast before calling Lua
+	aoeType   uint8
+	aoeRadius float32
+	groundX   float32 // valid when aoeType == 2
+	groundZ   float32
 }
 
 // Registry owns the Lua state and all script-registered data.
@@ -135,8 +143,9 @@ func (r *Registry) AllSpells() []*SpellDef {
 
 // Cast executes the on_cast Lua handler for the given spell.
 // EP deduction and cooldown bookkeeping must be done by the caller before Cast.
+// groundX/Z are used when def.AoEType == 2 (ground-targeted AoE); ignored otherwise.
 // Returns the runtime ID of any actor killed by this cast (0 = none).
-func (r *Registry) Cast(def *SpellDef, caster *world.Actor, target *world.Actor, area *world.Area) uint32 {
+func (r *Registry) Cast(def *SpellDef, caster *world.Actor, target *world.Actor, area *world.Area, groundX, groundZ float32) uint32 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -144,7 +153,14 @@ func (r *Registry) Cast(def *SpellDef, caster *world.Actor, target *world.Actor,
 		return 0
 	}
 
-	r.ctx = callCtx{area: area, caster: caster}
+	r.ctx = callCtx{
+		area:      area,
+		caster:    caster,
+		aoeType:   def.AoEType,
+		aoeRadius: def.AoERadius,
+		groundX:   groundX,
+		groundZ:   groundZ,
+	}
 
 	targetArg := lua.LNumber(0)
 	if target != nil {
@@ -200,6 +216,8 @@ func SpellTypeIndex(t string) uint8 {
 		return 1
 	case "buff":
 		return 2
+	case "debuff":
+		return 3
 	default:
 		return 0
 	}
@@ -233,6 +251,25 @@ func (r *Registry) HandleChoice(player, npc *world.Actor, area *world.Area, choi
 	pending := r.ctx.pendingDialog
 	r.ctx = callCtx{}
 	return pending
+}
+
+// PatchAoEFromDB overlays aoe_type and aoe_radius from DB rows onto in-memory SpellDefs.
+// Call this after LoadDir so GUE edits take effect without changing Lua scripts.
+type SpellAoERow struct {
+	ID        uint16
+	AoEType   uint8
+	AoERadius float32
+}
+
+func (r *Registry) PatchAoEFromDB(rows []SpellAoERow) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, row := range rows {
+		if def, ok := r.spells[row.ID]; ok {
+			def.AoEType = row.AoEType
+			def.AoERadius = row.AoERadius
+		}
+	}
 }
 
 // registerSpell is called from the Lua API to register a new SpellDef.

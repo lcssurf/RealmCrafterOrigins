@@ -150,6 +150,10 @@ func (c *ClientConn) dispatch(ctx context.Context, pktType uint16, payload []byt
 			return c.handleRightClick(ctx, payload)
 		case protocol.PDialogChoice:
 			return c.handleDialogChoice(ctx, payload)
+		case protocol.PPickupItem:
+			return c.handlePickupItem(ctx, payload)
+		case protocol.PShopAction:
+			return c.handleShopAction(ctx, payload)
 		case protocol.PPing:
 			return c.sendPong()
 		default:
@@ -338,6 +342,7 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	actor.Energy    = char.Energy
 	actor.EnergyMax = char.EnergyMax
 	actor.XP        = char.XP
+	actor.Gold      = char.Gold
 	actor.Strength  = int32(char.Level) * 3
 	actor.Radius    = 0.4
 	if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, char.ID); err == nil {
@@ -392,21 +397,30 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 
 	// Inform the entering player about everyone already in the zone.
 	for _, other := range existing {
-		pkt := buildNewActorPacket(other)
+		pkt := world.NewActorPayload(other)
 		if err := c.sendPacket(protocol.PNewActor, pkt); err != nil {
 			return err
 		}
 	}
 
 	// Inform everyone already in the zone about the new player.
-	newActorPkt := buildNewActorPacket(actor)
+	newActorPkt := world.NewActorPayload(actor)
 	area.Broadcast(buildFramedPacket(protocol.PNewActor, newActorPkt), actor.RuntimeID)
 
 	// Send portal positions so the client can render markers.
 	c.sendPortals(area)
 
+	// Send any dropped items already in the area.
+	c.sendWorldItems(area)
+
+	// Send gold balance.
+	c.sendGoldUpdate()
+
 	// Send known spells.
 	c.sendKnownSpells()
+
+	// Start area music.
+	c.sendMusic(musicForArea(actor.AreaName), 128)
 
 	return nil
 }
@@ -519,14 +533,20 @@ func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) er
 
 	// Send all existing actors in the new area to the client.
 	for _, other := range existing {
-		c.actor.Send(buildFramedPacket(protocol.PNewActor, buildNewActorPacket(other)))
+		c.actor.Send(buildFramedPacket(protocol.PNewActor, world.NewActorPayload(other)))
 	}
 
 	// Tell everyone in the new area about the arriving player.
-	newArea.Broadcast(buildFramedPacket(protocol.PNewActor, buildNewActorPacket(c.actor)), c.actor.RuntimeID)
+	newArea.Broadcast(buildFramedPacket(protocol.PNewActor, world.NewActorPayload(c.actor)), c.actor.RuntimeID)
 
-	// Send portal positions in the new area.
+	// Send portal positions and dropped items in the new area.
 	c.sendPortals(newArea)
+	c.sendWorldItems(newArea)
+
+	// Portal FX and area music for the arriving player.
+	c.sendSound(protocol.SoundPortal, 220)
+	c.broadcastEmitter(newArea, protocol.EmitterPortal, portal.DestX, portal.DestY, portal.DestZ, 2000)
+	c.sendMusic(musicForArea(portal.TargetArea), 128)
 
 	log.Printf("client: %s portal → %s (%.0f,%.0f,%.0f)",
 		c.actor.Name, portal.TargetArea, portal.DestX, portal.DestY, portal.DestZ)
@@ -612,7 +632,11 @@ func (c *ClientConn) handleAttackActor(ctx context.Context, payload []byte) erro
 
 	died := world.BroadcastAttack(area, c.actor, target, dmg, isCrit)
 	if died && target.IsNPC {
+		x, y, z := target.X, target.Y, target.Z
 		area.KillNPC(target)
+		area.SpawnDropsForNPC(target)
+		c.broadcastEmitter(area, protocol.EmitterExplosion, x, y, z, 0)
+		c.broadcastSound(area, protocol.SoundNPCDeath, 200)
 		return c.awardXP(ctx, int(target.Level))
 	}
 	return nil
@@ -841,7 +865,10 @@ func (c *ClientConn) sendKnownSpells() {
 		w.WriteUint8(scripting.SpellTypeIndex(def.SpellType))
 		w.WriteUint16(uint16(def.EPCost))
 		w.WriteUint32(uint32(def.CooldownMs))
+		w.WriteFloat32(def.Range)
 		w.WriteUint8(def.Icon)
+		w.WriteUint8(def.AoEType)
+		w.WriteFloat32(def.AoERadius)
 	}
 	c.actor.Send(buildFramedPacket(protocol.PKnownSpells, w.Bytes()))
 }
@@ -856,6 +883,9 @@ func (c *ClientConn) handleCastSpell(ctx context.Context, payload []byte) error 
 	if err != nil {
 		return err
 	}
+	// ground_x/z: valid for aoe_type == 2; always sent by client (0 otherwise).
+	groundX, _ := r.ReadFloat32()
+	groundZ, _ := r.ReadFloat32()
 
 	if c.actor.IsDead() {
 		return nil
@@ -900,7 +930,10 @@ func (c *ClientConn) handleCastSpell(ctx context.Context, payload []byte) error 
 	}
 
 	var target *world.Actor
-	if def.SpellType == "damage" {
+	needsTarget := def.SpellType == "damage" || def.SpellType == "debuff"
+	isGroundAoE := def.AoEType == 2
+
+	if needsTarget && !isGroundAoE {
 		target, _ = area.GetActor(targetRID)
 		if target == nil || target.IsDead() {
 			return nil
@@ -920,13 +953,25 @@ func (c *ClientConn) handleCastSpell(ctx context.Context, payload []byte) error 
 			}
 			target.Mu.Unlock()
 		}
+	} else if isGroundAoE {
+		// Validate ground position is within range.
+		dx := c.actor.X - groundX
+		dz := c.actor.Z - groundZ
+		if dx*dx+dz*dz > def.Range*def.Range {
+			return nil
+		}
 	}
 
-	log.Printf("client: %s casting %q (id=%d) → target=%d", c.actor.Name, def.Name, def.ID, targetRID)
-	killedRID := c.server.scripting.Cast(def, c.actor, target, area)
+	log.Printf("client: %s casting %q (id=%d) target=%d ground=(%.1f,%.1f)",
+		c.actor.Name, def.Name, def.ID, targetRID, groundX, groundZ)
+	killedRID := c.server.scripting.Cast(def, c.actor, target, area, groundX, groundZ)
 	if killedRID != 0 {
 		if killed, _ := area.GetActor(killedRID); killed != nil && killed.IsNPC {
+			x, y, z := killed.X, killed.Y, killed.Z
 			area.KillNPC(killed)
+			area.SpawnDropsForNPC(killed)
+			c.broadcastEmitter(area, protocol.EmitterExplosion, x, y, z, 0)
+			c.broadcastSound(area, protocol.SoundNPCDeath, 200)
 			return c.awardXP(ctx, int(killed.Level))
 		}
 	}
@@ -1026,23 +1071,10 @@ func buildFramedPacket(pktType uint16, payload []byte) []byte {
 	return out
 }
 
-// buildNewActorPacket builds the PNewActor payload for the given actor.
-func buildNewActorPacket(a *world.Actor) []byte {
-	var w Writer
-	w.WriteUint32(a.RuntimeID)
-	w.WriteString(a.Name)
-	w.WriteString(a.Race)
-	w.WriteString(a.Class)
-	w.WriteUint16(a.Level)
-	w.WriteFloat32(a.X)
-	w.WriteFloat32(a.Y)
-	w.WriteFloat32(a.Z)
-	w.WriteFloat32(a.Yaw)
-	w.WriteInt32(a.Health)
-	w.WriteInt32(a.HealthMax)
-	w.WriteUint8(a.ActorType())
-	return w.Bytes()
-}
+// Note: buildNewActorPacket was removed. The single source of truth for the
+// PNewActor payload is world.NewActorPayload (world/frame.go) which also
+// serializes the actor's Appearance. Keeping a duplicate here caused the
+// payload to drift and broke client rendering whenever fields were added.
 
 // resultMessage returns a human-readable string for a protocol result code.
 func resultMessage(result uint8) string {
@@ -1131,6 +1163,10 @@ func (c *ClientConn) handleDialogChoice(_ context.Context, payload []byte) error
 
 	pending := c.server.scripting.HandleChoice(c.actor, npc, area, choice)
 	if pending != nil {
+		if pending.OpenShop {
+			c.activeDialogNPC = 0
+			return c.sendShop(npc.Name)
+		}
 		return c.sendDialog(npc.Name, pending.Text, pending.Options)
 	}
 	c.activeDialogNPC = 0
@@ -1147,6 +1183,239 @@ func (c *ClientConn) sendDialog(npcName, text string, options []string) error {
 		w.WriteString(opt)
 	}
 	return c.sendPacket(protocol.PDialog, w.Bytes())
+}
+
+// sendGoldUpdate sends the player's current gold balance.
+func (c *ClientConn) sendGoldUpdate() {
+	c.actor.Mu.Lock()
+	gold := c.actor.Gold
+	c.actor.Mu.Unlock()
+	var w Writer
+	w.WriteUint32(uint32(gold))
+	c.actor.Send(buildFramedPacket(protocol.PGoldChange, w.Bytes()))
+}
+
+// sendWorldItems sends all dropped items currently in the area to this client.
+func (c *ClientConn) sendWorldItems(area *world.Area) {
+	for _, item := range area.SnapshotDroppedItems() {
+		var w Writer
+		w.WriteUint32(item.RuntimeID)
+		w.WriteFloat32(item.X)
+		w.WriteFloat32(item.Y)
+		w.WriteFloat32(item.Z)
+		w.WriteUint16(item.ItemID)
+		w.WriteUint8(item.Quantity)
+		w.WriteString(item.Name)
+		w.WriteUint8(item.ItemType)
+		c.actor.Send(buildFramedPacket(protocol.PWorldItem, w.Bytes()))
+	}
+}
+
+// sendShop sends the shop inventory of an NPC to this client.
+func (c *ClientConn) sendShop(npcName string) error {
+	items := world.GetShop(npcName)
+	if items == nil {
+		return nil
+	}
+	var w Writer
+	w.WriteUint8(uint8(len(items)))
+	for _, it := range items {
+		w.WriteUint16(it.ItemID)
+		w.WriteString(it.Name)
+		w.WriteUint8(it.ItemType)
+		w.WriteUint8(it.SlotType)
+		w.WriteUint16(uint16(it.WeaponDamage))
+		w.WriteUint16(uint16(it.ArmorLevel))
+		w.WriteUint32(uint32(it.BuyPrice))
+		w.WriteUint32(uint32(it.SellPrice))
+	}
+	return c.sendPacket(protocol.POpenShop, w.Bytes())
+}
+
+// handlePickupItem handles PPickupItem — player picks up a world item.
+func (c *ClientConn) handlePickupItem(ctx context.Context, payload []byte) error {
+	r := NewReader(payload)
+	rid, err := r.ReadUint32()
+	if err != nil {
+		return err
+	}
+
+	area, ok := c.server.world.GetArea(c.actor.AreaName)
+	if !ok {
+		return nil
+	}
+
+	item, ok := area.GetDroppedItem(rid)
+	if !ok {
+		return nil
+	}
+
+	const pickupRange = float32(5.0)
+	dx := c.actor.X - item.X
+	dz := c.actor.Z - item.Z
+	if dx*dx+dz*dz > pickupRange*pickupRange {
+		return nil
+	}
+
+	if _, err := c.server.db.AddStackableItem(ctx, c.actor.CharacterID, item.ItemID, item.Quantity, 0, 100); err != nil {
+		log.Printf("client: pickup AddStackableItem: %v", err)
+		return nil
+	}
+
+	area.RemoveDroppedItem(rid)
+	return c.sendInventory(ctx, c.actor.CharacterID)
+}
+
+// handleShopAction handles PShopAction — player buys (action=0) or sells (action=1).
+func (c *ClientConn) handleShopAction(ctx context.Context, payload []byte) error {
+	r := NewReader(payload)
+	action, err := r.ReadUint8()
+	if err != nil {
+		return err
+	}
+	itemIDOrSlot, err := r.ReadUint16()
+	if err != nil {
+		return err
+	}
+	qty, err := r.ReadUint8()
+	if err != nil {
+		return err
+	}
+	if qty == 0 {
+		qty = 1
+	}
+
+	switch action {
+	case 0: // buy
+		return c.handleShopBuy(ctx, itemIDOrSlot, qty)
+	case 1: // sell
+		return c.handleShopSell(ctx, uint8(itemIDOrSlot))
+	}
+	return nil
+}
+
+func (c *ClientConn) handleShopBuy(ctx context.Context, itemID uint16, qty uint8) error {
+	shopItem := world.FindShopItem(itemID)
+	if shopItem == nil {
+		return nil
+	}
+
+	totalCost := int64(shopItem.BuyPrice) * int64(qty)
+
+	c.actor.Mu.Lock()
+	gold := c.actor.Gold
+	c.actor.Mu.Unlock()
+
+	if gold < totalCost {
+		return nil // not enough gold
+	}
+
+	if _, err := c.server.db.AddStackableItem(ctx, c.actor.CharacterID, shopItem.ItemID, qty, 0, 100); err != nil {
+		log.Printf("client: shop buy AddStackableItem: %v", err)
+		return nil
+	}
+
+	newGold, err := c.server.db.UpdateGold(ctx, c.actor.CharacterID, -totalCost)
+	if err != nil {
+		log.Printf("client: shop buy UpdateGold: %v", err)
+	}
+	c.actor.Mu.Lock()
+	c.actor.Gold = newGold
+	c.actor.Mu.Unlock()
+
+	c.sendGoldUpdate()
+	return c.sendInventory(ctx, c.actor.CharacterID)
+}
+
+func (c *ClientConn) handleShopSell(ctx context.Context, slot uint8) error {
+	item, err := c.server.db.GetItemAtSlot(ctx, c.actor.CharacterID, slot)
+	if err != nil {
+		return nil
+	}
+
+	sellPrice := int64(item.ItemValue) / 2
+	if sellPrice < 1 {
+		sellPrice = 1
+	}
+
+	if err := c.server.db.RemoveItemAtSlot(ctx, c.actor.CharacterID, slot); err != nil {
+		log.Printf("client: shop sell RemoveItemAtSlot: %v", err)
+		return nil
+	}
+
+	newGold, err := c.server.db.UpdateGold(ctx, c.actor.CharacterID, sellPrice)
+	if err != nil {
+		log.Printf("client: shop sell UpdateGold: %v", err)
+	}
+	c.actor.Mu.Lock()
+	c.actor.Gold = newGold
+	c.actor.Mu.Unlock()
+
+	c.sendGoldUpdate()
+	return c.sendInventory(ctx, c.actor.CharacterID)
+}
+
+// ---------------------------------------------------------------------------
+// Particles / Sound / Music helpers
+// ---------------------------------------------------------------------------
+
+// broadcastEmitter sends PCreateEmitter to all players in the area.
+// emitterType: protocol.EmitterXxx constant.
+// durationMs: 0 = one-shot burst.
+func (c *ClientConn) broadcastEmitter(area *world.Area, emitterType uint8, x, y, z float32, durationMs uint16) {
+	var w Writer
+	w.WriteUint8(emitterType)
+	w.WriteFloat32(x)
+	w.WriteFloat32(y)
+	w.WriteFloat32(z)
+	w.WriteUint16(durationMs)
+	area.BroadcastAll(buildFramedPacket(protocol.PCreateEmitter, w.Bytes()))
+}
+
+// broadcastSound sends PSound to all players in the area.
+func (c *ClientConn) broadcastSound(area *world.Area, soundID, volume uint8) {
+	var w Writer
+	w.WriteUint8(soundID)
+	w.WriteUint8(volume)
+	area.BroadcastAll(buildFramedPacket(protocol.PSound, w.Bytes()))
+}
+
+// sendSound sends PSound only to this client.
+func (c *ClientConn) sendSound(soundID, volume uint8) {
+	var w Writer
+	w.WriteUint8(soundID)
+	w.WriteUint8(volume)
+	_ = c.sendPacket(protocol.PSound, w.Bytes())
+}
+
+// sendMusic sends PMusic only to this client.
+func (c *ClientConn) sendMusic(trackID, volume uint8) {
+	var w Writer
+	w.WriteUint8(trackID)
+	w.WriteUint8(volume)
+	_ = c.sendPacket(protocol.PMusic, w.Bytes())
+}
+
+// areaMusicMap is populated at startup from the area_config DB table.
+var areaMusicMap map[string]uint8
+
+// SetAreaMusicMap replaces the runtime music lookup table (called once from main).
+func SetAreaMusicMap(m map[string]uint8) { areaMusicMap = m }
+
+// musicForArea returns the PMusic track ID for a given area name.
+// Prefers the DB-driven map; falls back to built-in defaults.
+func musicForArea(areaName string) uint8 {
+	if areaMusicMap != nil {
+		if track, ok := areaMusicMap[areaName]; ok {
+			return track
+		}
+	}
+	switch areaName {
+	case "Forest":
+		return protocol.MusicForest
+	default:
+		return protocol.MusicStarterZone
+	}
 }
 
 // isClosedErr returns true for errors that represent a normally closed connection.

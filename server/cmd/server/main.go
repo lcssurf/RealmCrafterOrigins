@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"realm-crafter/server/internal/accounts"
@@ -15,6 +16,17 @@ import (
 
 	"github.com/BurntSushi/toml"
 )
+
+// anchorCwdToExeDir changes the process working directory to the directory
+// holding server.exe. All relative paths (config.toml, rco.db, scripts/) then
+// resolve from dist/server/ regardless of how the server was launched.
+func anchorCwdToExeDir() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	_ = os.Chdir(filepath.Dir(exe))
+}
 
 // ---------------------------------------------------------------------------
 // Config structs
@@ -66,6 +78,9 @@ func defaultConfig() config {
 // ---------------------------------------------------------------------------
 
 func main() {
+	// Anchor all relative file lookups to the exe's install dir.
+	anchorCwdToExeDir()
+
 	// Determine config file path.
 	cfgPath := "config.toml"
 	if len(os.Args) > 1 {
@@ -101,73 +116,96 @@ func main() {
 	}
 
 	// Create Lua scripting registry and load scripts.
-	// Try several paths in order so it works regardless of working directory.
+	// Canonical path: dist/server/scripts/ (relative to exe, after anchor).
 	scriptReg := scripting.New(gameWorld)
-	scriptPaths := []string{
-		"../scripts/server",   // running from server/ (normal)
-		"scripts/server",      // running from repo root
-		"../../scripts/server", // running from server/cmd/server/
+	const scriptsDir = "scripts"
+	if _, err := os.Stat(scriptsDir); err != nil {
+		log.Printf("main: WARNING — scripts directory %q not found, scripting disabled", scriptsDir)
+	} else if err := scriptReg.LoadDir(scriptsDir); err != nil {
+		log.Printf("main: load scripts from %q: %v", scriptsDir, err)
 	}
-	var loadedFrom string
-	for _, p := range scriptPaths {
-		if _, err := os.Stat(p); err == nil {
-			loadedFrom = p
-			break
+	log.Printf("main: scripting ready — %d spells registered (from %q)", len(scriptReg.AllSpells()), scriptsDir)
+
+	// Overlay AoE config from DB onto in-memory SpellDefs so GUE edits take effect.
+	if spellRows, err := database.LoadSpells(ctx); err == nil {
+		var aoeRows []scripting.SpellAoERow
+		for _, r := range spellRows {
+			aoeRows = append(aoeRows, scripting.SpellAoERow{
+				ID:        r.ID,
+				AoEType:   r.AoEType,
+				AoERadius: r.AoERadius,
+			})
+		}
+		scriptReg.PatchAoEFromDB(aoeRows)
+		log.Printf("main: AoE config patched for %d spells from DB", len(aoeRows))
+	}
+
+	// Load item templates and register drop tables + shops.
+	if err := setupDropsAndShops(ctx, database); err != nil {
+		log.Printf("main: drops/shops: %v", err)
+	}
+
+	// Spawn NPCs from the database.
+	npcSpawns, err := database.LoadNPCSpawns(ctx)
+	if err != nil {
+		log.Printf("main: load npc_spawns: %v — no NPCs will be spawned", err)
+	}
+	for _, s := range npcSpawns {
+		area := gameWorld.GetOrCreateArea(s.AreaName)
+		npc := gameWorld.SpawnNPC(area, s.Name, s.Race, s.Class, s.Level,
+			s.X, s.Y, s.Z, s.Yaw)
+		npc.Aggressiveness  = s.Aggressiveness
+		npc.AggressiveRange = s.AggressiveRange
+		npc.AttackRange     = s.AttackRange
+		npc.RespawnDelay    = s.RespawnDelayMs
+
+		// Resolve actor_def_id → full Appearance (meshes + anim bindings).
+		if s.ActorDefID > 0 {
+			if app := buildAppearance(ctx, database, s.ActorDefID); app != nil {
+				npc.Appearance = app
+			}
 		}
 	}
-	if loadedFrom == "" {
-		log.Printf("main: WARNING — scripts directory not found (tried %v), scripting disabled", scriptPaths)
+	log.Printf("main: spawned %d NPCs from database", len(npcSpawns))
+
+	// Load area configs (music tracks) from DB.
+	areaCfgs, err := database.LoadAreaConfigs(ctx)
+	if err != nil {
+		log.Printf("main: load area_config: %v", err)
+	}
+	areaMusicMap := make(map[string]uint8)
+	for _, c := range areaCfgs {
+		areaMusicMap[c.Name] = c.MusicTrack
+	}
+	rconet.SetAreaMusicMap(areaMusicMap)
+	log.Printf("main: loaded %d area configs", len(areaCfgs))
+
+	// Load portals from DB; fall back to hardcoded defaults if table is empty.
+	areaPortals, err := database.LoadAreaPortals(ctx)
+	if err != nil {
+		log.Printf("main: load area_portals: %v", err)
+	}
+	if len(areaPortals) == 0 {
+		log.Printf("main: no portals in DB — using built-in defaults")
+		gameWorld.AddPortal("Starter Zone", world.Portal{
+			X: 25, Z: 25, Radius: 3,
+			TargetArea: "Forest",
+			DestX: 0, DestY: 0, DestZ: 5, DestYaw: 180,
+		})
+		gameWorld.AddPortal("Forest", world.Portal{
+			X: 0, Z: 0, Radius: 3,
+			TargetArea: "Starter Zone",
+			DestX: 22, DestY: 0, DestZ: 22, DestYaw: 0,
+		})
 	} else {
-		if err := scriptReg.LoadDir(loadedFrom); err != nil {
-			log.Printf("main: load scripts from %q: %v", loadedFrom, err)
+		for _, p := range areaPortals {
+			gameWorld.AddPortal(p.AreaName, world.Portal{
+				X: p.X, Z: p.Z, Radius: p.Radius,
+				TargetArea:            p.TargetArea,
+				DestX: p.DestX, DestY: p.DestY, DestZ: p.DestZ, DestYaw: p.DestYaw,
+			})
 		}
-	}
-	log.Printf("main: scripting ready — %d spells registered (from %q)", len(scriptReg.AllSpells()), loadedFrom)
-
-	// Spawn static NPCs in the default Starter Zone.
-	starterZone := gameWorld.GetOrCreateArea("Starter Zone")
-	for _, npc := range []*world.Actor{
-		gameWorld.SpawnNPC(starterZone, "Guard",     "Human", "Warrior", 5,   5.0,  0.0,  0.0,  0.0),
-		gameWorld.SpawnNPC(starterZone, "Merchant",  "Elf",   "Mage",    3,  -8.0,  0.0,  3.0, 180.0),
-		gameWorld.SpawnNPC(starterZone, "Innkeeper", "Dwarf", "Warrior", 10, 12.0,  0.0, -5.0, 270.0),
-	} {
-		npc.Aggressiveness = 3 // dialog-only, cannot be attacked
-	}
-
-	// Combat mobs in Starter Zone (Aggressiveness=2: aggressive).
-	for _, mob := range []*world.Actor{
-		gameWorld.SpawnNPC(starterZone, "Goblin",       "Beast", "Warrior", 2,  15.0, 0.0,  8.0,   0.0),
-		gameWorld.SpawnNPC(starterZone, "Goblin",       "Beast", "Warrior", 2,  20.0, 0.0, -6.0,  90.0),
-		gameWorld.SpawnNPC(starterZone, "Goblin Scout", "Beast", "Rogue",   3,  10.0, 0.0, 18.0, 180.0),
-		gameWorld.SpawnNPC(starterZone, "Slime",        "Beast", "Beast",   1, -15.0, 0.0, 10.0,   0.0),
-		gameWorld.SpawnNPC(starterZone, "Slime",        "Beast", "Beast",   1, -18.0, 0.0, -4.0,   0.0),
-	} {
-		mob.Aggressiveness  = 2
-		mob.AggressiveRange = 8.0
-	}
-
-	// Portals — Starter Zone ↔ Forest.
-	gameWorld.AddPortal("Starter Zone", world.Portal{
-		X: 25, Z: 25, Radius: 3,
-		TargetArea: "Forest",
-		DestX: 0, DestY: 0, DestZ: 5, DestYaw: 180,
-	})
-	gameWorld.AddPortal("Forest", world.Portal{
-		X: 0, Z: 0, Radius: 3,
-		TargetArea: "Starter Zone",
-		DestX: 22, DestY: 0, DestZ: 22, DestYaw: 0,
-	})
-
-	// Forest mobs (tougher).
-	forest := gameWorld.GetOrCreateArea("Forest")
-	for _, mob := range []*world.Actor{
-		gameWorld.SpawnNPC(forest, "Wolf",         "Beast", "Beast",   4,   8.0, 0.0, 12.0,   0.0),
-		gameWorld.SpawnNPC(forest, "Wolf",         "Beast", "Beast",   4,  14.0, 0.0,  6.0,  90.0),
-		gameWorld.SpawnNPC(forest, "Forest Troll", "Beast", "Beast",   8,  -5.0, 0.0,  8.0,  90.0),
-		gameWorld.SpawnNPC(forest, "Forest Troll", "Beast", "Beast",   8, -10.0, 0.0, 16.0, 270.0),
-	} {
-		mob.Aggressiveness  = 2
-		mob.AggressiveRange = 10.0
+		log.Printf("main: loaded %d portals from database", len(areaPortals))
 	}
 
 	// Start NPC AI and regen goroutines.
@@ -209,4 +247,150 @@ func main() {
 	}
 
 	log.Println("main: shutdown complete")
+}
+
+// setupDropsAndShops loads all item templates from the DB and registers
+// NPC drop tables and shop inventories.
+func setupDropsAndShops(ctx context.Context, database *db.DB) error {
+	templates, err := database.LoadAllItemTemplates(ctx)
+	if err != nil {
+		return err
+	}
+
+	entry := func(name string, chance float32, minQ, maxQ uint8) world.DropEntry {
+		t := templates[name]
+		if t == nil {
+			log.Printf("main: drop entry %q not found in item_templates", name)
+			return world.DropEntry{}
+		}
+		return world.DropEntry{
+			ItemID:       uint16(t.ID),
+			Name:         t.Name,
+			ItemType:     t.ItemType,
+			SlotType:     t.SlotType,
+			WeaponDamage: t.WeaponDamage,
+			ArmorLevel:   t.ArmorLevel,
+			ItemValue:    t.ItemValue,
+			Chance:       chance,
+			MinQty:       minQ,
+			MaxQty:       maxQ,
+		}
+	}
+
+	shopItem := func(name string, buyPrice int32) world.ShopItem {
+		t := templates[name]
+		if t == nil {
+			log.Printf("main: shop item %q not found in item_templates", name)
+			return world.ShopItem{}
+		}
+		return world.ShopItem{
+			ItemID:       uint16(t.ID),
+			Name:         t.Name,
+			ItemType:     t.ItemType,
+			SlotType:     t.SlotType,
+			WeaponDamage: t.WeaponDamage,
+			ArmorLevel:   t.ArmorLevel,
+			BuyPrice:     buyPrice,
+			SellPrice:    buyPrice / 2,
+		}
+	}
+
+	// Drop tables
+	world.RegisterDropTable("Goblin", []world.DropEntry{
+		entry("Health Potion", 0.65, 1, 2),
+		entry("Rusty Sword", 0.12, 1, 1),
+		entry("Iron Ring", 0.05, 1, 1),
+	})
+	world.RegisterDropTable("Goblin Scout", []world.DropEntry{
+		entry("Health Potion", 0.55, 1, 1),
+		entry("Leather Hat", 0.10, 1, 1),
+	})
+	world.RegisterDropTable("Slime", []world.DropEntry{
+		entry("Health Potion", 0.40, 1, 1),
+	})
+	world.RegisterDropTable("Wolf", []world.DropEntry{
+		entry("Health Potion", 0.50, 1, 2),
+		entry("Leather Gloves", 0.10, 1, 1),
+	})
+	world.RegisterDropTable("Forest Troll", []world.DropEntry{
+		entry("Health Potion", 0.80, 1, 3),
+		entry("Leather Tunic", 0.15, 1, 1),
+		entry("Old Shield", 0.10, 1, 1),
+		entry("Iron Ring", 0.08, 1, 1),
+	})
+
+	// Shops
+	world.RegisterShop("Merchant", []world.ShopItem{
+		shopItem("Rusty Sword", 25),
+		shopItem("Old Shield", 20),
+		shopItem("Leather Hat", 12),
+		shopItem("Leather Tunic", 30),
+		shopItem("Leather Gloves", 10),
+		shopItem("Leather Belt", 8),
+		shopItem("Leather Leggings", 22),
+		shopItem("Traveller's Boots", 14),
+		shopItem("Health Potion", 15),
+		shopItem("Iron Ring", 40),
+	})
+	world.RegisterShop("Innkeeper", []world.ShopItem{
+		shopItem("Health Potion", 12),
+	})
+
+	log.Printf("main: drop tables and shops registered")
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Media resolution
+// ---------------------------------------------------------------------------
+
+// buildAppearance resolves an actor def id (from npc_spawns.actor_def_id) into
+// a fully concrete world.Appearance by looking up each mesh slot's model +
+// material and each anim mapping's clip. Returns nil if the def has no meshes.
+func buildAppearance(ctx context.Context, database *db.DB, defID int) *world.Appearance {
+	def, err := database.LoadActorDef(ctx, defID)
+	if err != nil || def == nil {
+		return nil
+	}
+
+	out := &world.Appearance{}
+
+	for _, m := range def.Meshes {
+		model, _ := database.GetMediaModel(ctx, m.ModelID)
+		if model == nil || model.FilePath == "" {
+			continue // skip unresolvable slots
+		}
+		slot := world.MeshSlot{
+			Slot:      uint8(m.Slot),
+			ModelPath: model.FilePath,
+			Scale:     model.Scale,
+		}
+		if mat, _ := database.GetMediaMaterial(ctx, m.MaterialID); mat != nil {
+			slot.AlbedoPath = mat.AlbedoPath
+			slot.NormalPath = mat.NormalPath
+			slot.ORMPath    = mat.ORMPath
+			slot.AlbedoR    = mat.AlbedoR
+			slot.AlbedoG    = mat.AlbedoG
+			slot.AlbedoB    = mat.AlbedoB
+			slot.Roughness  = mat.Roughness
+			slot.Metallic   = mat.Metallic
+		}
+		out.Meshes = append(out.Meshes, slot)
+	}
+	if len(out.Meshes) == 0 {
+		return nil
+	}
+
+	for _, a := range def.Anims {
+		clip, _ := database.GetMediaAnimClip(ctx, a.ClipID)
+		if clip == nil {
+			continue
+		}
+		out.Anims = append(out.Anims, world.AnimBinding{
+			Action:       a.Action,
+			SourcePath:   clip.SourcePath,
+			ClipOverride: clip.ClipOverride,
+		})
+	}
+	return out
 }

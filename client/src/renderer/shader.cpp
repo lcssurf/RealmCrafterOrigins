@@ -69,6 +69,7 @@ GLuint Shader::CompileStage(GLenum type, const char* src) {
 void Shader::Use() const { glUseProgram(id_); }
 
 void Shader::SetInt  (const char* n, int v)              const { glUniform1i (glGetUniformLocation(id_, n), v); }
+void Shader::SetBool (const char* n, bool v)             const { glUniform1i (glGetUniformLocation(id_, n), (int)v); }
 void Shader::SetFloat(const char* n, float v)            const { glUniform1f (glGetUniformLocation(id_, n), v); }
 void Shader::SetVec3 (const char* n, const glm::vec3& v) const { glUniform3fv(glGetUniformLocation(id_, n), 1, glm::value_ptr(v)); }
 void Shader::SetVec4 (const char* n, const glm::vec4& v) const { glUniform4fv(glGetUniformLocation(id_, n), 1, glm::value_ptr(v)); }

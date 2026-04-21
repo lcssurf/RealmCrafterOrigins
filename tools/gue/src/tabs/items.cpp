@@ -1,0 +1,262 @@
+#include "items.h"
+#include <imgui.h>
+#include <cstring>
+#include <cstdio>
+
+namespace gue {
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+static const char* kItemTypes[]   = { "Weapon", "Armor", "Consumable", "Misc" };
+static const char* kSlotTypes[]   = {
+    "Weapon (0)", "Shield (1)", "Hat (2)", "Chest (3)", "Hands (4)",
+    "Belt (5)",   "Legs (6)",   "Feet (7)", "Ring (8)", "Amulet (9)",
+};
+static const char* kWeaponTypes[] = { "None", "One-Hand", "Two-Hand", "Ranged" };
+
+// ---------------------------------------------------------------------------
+// DB helpers
+// ---------------------------------------------------------------------------
+
+void ItemsTab::Fetch(sqlite3* db) {
+    items_.clear();
+    selected_ = -1;
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT id, name, item_type, slot_type, weapon_damage, armor_level, "
+        "       weapon_type, max_stack, item_value, stackable "
+        "FROM item_templates ORDER BY id";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Fetch error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        ItemTemplate t;
+        t.id            = sqlite3_column_int(stmt, 0);
+        t.name          = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        t.item_type     = sqlite3_column_int(stmt, 2);
+        t.slot_type     = sqlite3_column_int(stmt, 3);
+        t.weapon_damage = sqlite3_column_int(stmt, 4);
+        t.armor_level   = sqlite3_column_int(stmt, 5);
+        t.weapon_type   = sqlite3_column_int(stmt, 6);
+        t.max_stack     = sqlite3_column_int(stmt, 7);
+        t.item_value    = sqlite3_column_int(stmt, 8);
+        t.stackable     = sqlite3_column_int(stmt, 9) != 0;
+        items_.push_back(t);
+    }
+    sqlite3_finalize(stmt);
+    std::snprintf(statusMsg_, sizeof(statusMsg_),
+                  "Loaded %d items.", (int)items_.size());
+}
+
+bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
+    sqlite3_stmt* stmt = nullptr;
+    int rc;
+
+    if (t.id == 0) {
+        // INSERT
+        const char* sql =
+            "INSERT INTO item_templates "
+            "(name, item_type, slot_type, weapon_damage, armor_level, "
+            " weapon_type, max_stack, item_value, stackable) "
+            "VALUES (?,?,?,?,?,?,?,?,?)";
+        rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
+        if (rc != SQLITE_OK) goto err;
+        sqlite3_bind_text(stmt, 1, t.name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt,  2, t.item_type);
+        sqlite3_bind_int(stmt,  3, t.slot_type);
+        sqlite3_bind_int(stmt,  4, t.weapon_damage);
+        sqlite3_bind_int(stmt,  5, t.armor_level);
+        sqlite3_bind_int(stmt,  6, t.weapon_type);
+        sqlite3_bind_int(stmt,  7, t.max_stack);
+        sqlite3_bind_int(stmt,  8, t.item_value);
+        sqlite3_bind_int(stmt,  9, t.stackable ? 1 : 0);
+        rc = sqlite3_step(stmt);
+        if (rc != SQLITE_DONE) goto err;
+        t.id = (int)sqlite3_last_insert_rowid(db);
+    } else {
+        // UPDATE
+        const char* sql =
+            "UPDATE item_templates SET "
+            "name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, "
+            "weapon_type=?, max_stack=?, item_value=?, stackable=? "
+            "WHERE id=?";
+        rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
+        if (rc != SQLITE_OK) goto err;
+        sqlite3_bind_text(stmt, 1, t.name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt,  2, t.item_type);
+        sqlite3_bind_int(stmt,  3, t.slot_type);
+        sqlite3_bind_int(stmt,  4, t.weapon_damage);
+        sqlite3_bind_int(stmt,  5, t.armor_level);
+        sqlite3_bind_int(stmt,  6, t.weapon_type);
+        sqlite3_bind_int(stmt,  7, t.max_stack);
+        sqlite3_bind_int(stmt,  8, t.item_value);
+        sqlite3_bind_int(stmt,  9, t.stackable ? 1 : 0);
+        sqlite3_bind_int(stmt, 10, t.id);
+        rc = sqlite3_step(stmt);
+        if (rc != SQLITE_DONE) goto err;
+    }
+
+    sqlite3_finalize(stmt);
+    needFetch_ = true;
+    dirty_     = false;
+    std::snprintf(statusMsg_, sizeof(statusMsg_),
+                  "Saved '%s' (id=%d).", t.name.c_str(), t.id);
+    return true;
+
+err:
+    std::snprintf(statusMsg_, sizeof(statusMsg_),
+                  "Save error: %s", sqlite3_errmsg(db));
+    if (stmt) sqlite3_finalize(stmt);
+    return false;
+}
+
+bool ItemsTab::Delete(sqlite3* db, int id) {
+    // Guard: reject if item is in use
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db,
+        "SELECT COUNT(*) FROM character_items WHERE item_id=?",
+        -1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, id);
+    int count = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) count = sqlite3_column_int(stmt, 0);
+    sqlite3_finalize(stmt);
+    if (count > 0) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Cannot delete: item %d is in %d inventory slot(s).", id, count);
+        return false;
+    }
+
+    sqlite3_prepare_v2(db, "DELETE FROM item_templates WHERE id=?", -1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, id);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Delete error: %s", sqlite3_errmsg(db));
+        return false;
+    }
+    needFetch_ = true;
+    selected_  = -1;
+    std::snprintf(statusMsg_, sizeof(statusMsg_), "Deleted item %d.", id);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// DrawFields — shared editor form
+// ---------------------------------------------------------------------------
+
+static bool DrawFields(ItemTemplate& t) {
+    bool changed = false;
+
+    char buf[128];
+    std::strncpy(buf, t.name.c_str(), sizeof(buf)-1); buf[sizeof(buf)-1] = 0;
+    if (ImGui::InputText("Name", buf, sizeof(buf))) { t.name = buf; changed = true; }
+
+    if (ImGui::Combo("Type", &t.item_type, kItemTypes, 4)) changed = true;
+
+    if (t.item_type == 0 || t.item_type == 1) {
+        int st = (t.slot_type < 10) ? t.slot_type : 0;
+        if (ImGui::Combo("Equip Slot", &st, kSlotTypes, 10)) {
+            t.slot_type = st; changed = true;
+        }
+    } else {
+        t.slot_type = 255;
+    }
+
+    if (t.item_type == 0) {
+        if (ImGui::InputInt("Damage",      &t.weapon_damage)) changed = true;
+        if (ImGui::Combo("Weapon Type",    &t.weapon_type, kWeaponTypes, 4)) changed = true;
+    }
+    if (t.item_type == 1) {
+        if (ImGui::InputInt("Armor Level", &t.armor_level)) changed = true;
+    }
+
+    if (ImGui::InputInt("Value (gold)",    &t.item_value))  changed = true;
+    if (ImGui::InputInt("Max Stack",       &t.max_stack))   changed = true;
+    if (ImGui::Checkbox("Stackable",       &t.stackable))   changed = true;
+
+    if (t.weapon_damage < 0)  t.weapon_damage = 0;
+    if (t.armor_level   < 0)  t.armor_level   = 0;
+    if (t.item_value    < 0)  t.item_value    = 0;
+    if (t.max_stack     < 1)  t.max_stack     = 1;
+    if (t.max_stack     > 99) t.max_stack     = 99;
+
+    return changed;
+}
+
+// ---------------------------------------------------------------------------
+// Draw
+// ---------------------------------------------------------------------------
+
+void ItemsTab::Draw(sqlite3* db) {
+    if (needFetch_) { Fetch(db); needFetch_ = false; }
+
+    if (ImGui::Button("Refresh")) needFetch_ = true;
+    ImGui::SameLine();
+    if (ImGui::Button("New Item")) { newItem_ = {}; showNew_ = true; selected_ = -1; }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", statusMsg_);
+    ImGui::Separator();
+
+    float listW = 240.f;
+    ImGui::BeginChild("##item_list", {listW, 0}, true);
+    for (int i = 0; i < (int)items_.size(); ++i) {
+        auto& it = items_[i];
+        const char* typeIcon = (it.item_type == 0) ? "[W]"
+                             : (it.item_type == 1) ? "[A]"
+                             : (it.item_type == 2) ? "[C]" : "[M]";
+        char label[160];
+        std::snprintf(label, sizeof(label), "%s %s##li%d", typeIcon, it.name.c_str(), i);
+        if (ImGui::Selectable(label, selected_ == i)) {
+            selected_ = i;
+            editing_  = it;
+            dirty_    = false;
+            showNew_  = false;
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("##item_edit", {0, 0}, true);
+
+    if (showNew_) {
+        ImGui::TextColored({0.4f, 1.f, 0.4f, 1.f}, "New Item");
+        ImGui::Separator();
+        DrawFields(newItem_);
+        ImGui::Spacing();
+        if (ImGui::Button("Create")) {
+            if (Save(db, newItem_)) showNew_ = false;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) showNew_ = false;
+
+    } else if (selected_ >= 0 && selected_ < (int)items_.size()) {
+        ImGui::Text("Editing: [id=%d]  %s", editing_.id, editing_.name.c_str());
+        ImGui::Separator();
+        if (DrawFields(editing_)) dirty_ = true;
+        ImGui::Spacing();
+
+        ImGui::BeginDisabled(!dirty_);
+        if (ImGui::Button("Save"))   Save(db, editing_);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Revert")) { editing_ = items_[selected_]; dirty_ = false; }
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, {0.65f, 0.1f, 0.1f, 1.f});
+        if (ImGui::Button("Delete")) Delete(db, editing_.id);
+        ImGui::PopStyleColor();
+
+    } else {
+        ImGui::TextDisabled("Select an item, or click \"New Item\".");
+    }
+
+    ImGui::EndChild();
+}
+
+} // namespace gue

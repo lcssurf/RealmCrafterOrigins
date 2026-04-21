@@ -26,13 +26,14 @@ type Actor struct {
 	Yaw         float32
 	AreaName    string
 
-	// HP / EP / XP — read/write under Mu.
+	// HP / EP / XP / Gold — read/write under Mu.
 	Mu        sync.Mutex
 	Health    int32
 	HealthMax int32
 	Energy    int32
 	EnergyMax int32
 	XP        int64
+	Gold      int64
 
 	// Combat — read/write under Mu.
 	LastPortal    int64  // unix ms of last portal use (cooldown)
@@ -43,9 +44,10 @@ type Actor struct {
 	DeadAt        int64  // unix ms when killed; 0 = alive
 
 	// Combat config — set once at spawn, then read-only.
-	IsNPC          bool
-	Aggressiveness int     // 0=passive 1=defensive 2=aggressive 3=no-combat
-	AggressiveRange float32
+	IsNPC           bool
+	Aggressiveness  int     // 0=passive 1=defensive 2=aggressive 3=no-combat
+	AggressiveRange float32 // detection radius; NPC starts chasing when player enters this
+	AttackRange     float32 // radius at which NPC can land an attack (melee ~2, ranged ~20)
 	Radius          float32
 	Strength        int32
 	WeaponDamage    int32
@@ -59,9 +61,48 @@ type Actor struct {
 	// SpellCooldowns tracks last-cast timestamp per spell ID (unix ms), under Mu.
 	SpellCooldowns map[uint16]int64
 
+	// Appearance — resolved from media_actor_defs at spawn time.
+	// nil = client uses its default model fallback.
+	Appearance *Appearance
+
 	// SendCh receives outbound packets for this client.
 	SendCh chan []byte
 	done   chan struct{}
+}
+
+// Appearance bundles the visual composition of an actor: one or more mesh
+// slots (each with its own model + optional material override) and a mapping
+// from high-level action names ("Idle", "Walk", …) to specific animation clip
+// files. Built once at spawn time from the Media registry in the DB.
+type Appearance struct {
+	Meshes []MeshSlot
+	Anims  []AnimBinding
+}
+
+// MeshSlot is one mesh attached to an actor. Slot values match the GUE:
+// 0=Body 1=Hair 2=Helm 3=Chest 4=Hands 5=Belt 6=Legs 7=Feet 8=Weapon 9=Shield 10=Attachment.
+type MeshSlot struct {
+	Slot       uint8
+	ModelPath  string
+	Scale      float32
+
+	// Material overrides. Empty string = use model's embedded material.
+	AlbedoPath string
+	NormalPath string
+	ORMPath    string
+	AlbedoR    float32
+	AlbedoG    float32
+	AlbedoB    float32
+	Roughness  float32
+	Metallic   float32
+}
+
+// AnimBinding maps a game action to a concrete animation clip.
+// SourcePath empty = the clip is embedded in the body model.
+type AnimBinding struct {
+	Action       string
+	SourcePath   string
+	ClipOverride string
 }
 
 // NewActor creates an Actor with initialised channels.

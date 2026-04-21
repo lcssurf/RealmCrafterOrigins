@@ -1,0 +1,3 @@
+desert-rocks1 4
+patchy-meadow1 4
+rocky-rugged-terrain 0.5

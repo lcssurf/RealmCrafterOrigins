@@ -26,7 +26,8 @@ constexpr uint16_t kPDialog           = 21;
 constexpr uint16_t kPStatUpdate       = 22;
 constexpr uint16_t kPXPUpdate         = 32;
 constexpr uint16_t kPFloatingNumber   = 48;
-constexpr uint16_t kPRepositionActor  = 49;  // [u8 channel][str sender][str text] (rx) / [u8 channel][str text] (tx)
+constexpr uint16_t kPRepositionActor  = 49;
+constexpr uint16_t kPAnimateActor     = 30;  // payload: rid(u32)+state(u8) — 0=Idle 1=Walk 2=Attack 3=Death
 constexpr uint16_t kPKickedPlayer     = 60;
 constexpr uint16_t kPLoginResult      = 100;
 constexpr uint16_t kPCharListResult   = 101;
@@ -38,9 +39,18 @@ constexpr uint16_t kPInventorySwap    = 106;
 constexpr uint16_t kPUseItem          = 107;
 constexpr uint16_t kPRespawnPlayer    = 108;
 constexpr uint16_t kPPortalInfo       = 109;
+constexpr uint16_t kPGoldChange       = 24;
 constexpr uint16_t kPKnownSpells      = 26;
+constexpr uint16_t kPCreateEmitter    = 28;
+constexpr uint16_t kPSound            = 29;
+constexpr uint16_t kPMusic            = 34;
 constexpr uint16_t kPCastSpell        = 110;
+constexpr uint16_t kPWorldItem        = 111;
 constexpr uint16_t kPDialogChoice     = 112;
+constexpr uint16_t kPPickupItem       = 113;
+constexpr uint16_t kPRemoveWorldItem  = 114;
+constexpr uint16_t kPOpenShop         = 115;
+constexpr uint16_t kPShopAction       = 116;
 
 // ---------------------------------------------------------------------------
 // Result codes

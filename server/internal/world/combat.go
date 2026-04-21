@@ -6,27 +6,36 @@ import (
 )
 
 const (
-	CombatDelay = 800 // ms between attacks
-	MeleeRange  = 7.0 // world units
+	CombatDelay      = 800 // ms between attacks
+	MeleeRange       = 2.0 // default melee attack range (world units)
+	pStandardUpdate  uint16 = 14
 )
 
 // Packet type constants mirrored from protocol (avoids circular import).
 const (
-	pAttackActor  uint16 = 18
-	pActorDead    uint16 = 19
-	pStatUpdate   uint16 = 22
-	pNewActor     uint16 = 11
-	pActorGone    uint16 = 13
-	pFloatingNum  uint16 = 48
+	pAttackActor     uint16 = 18
+	pActorDead       uint16 = 19
+	pStatUpdate      uint16 = 22
+	pNewActor        uint16 = 11
+	pActorGone       uint16 = 13
+	pFloatingNum     uint16 = 48
+	pWorldItem       uint16 = 111
+	pRemoveWorldItem uint16 = 114
+	pAnimateActor    uint16 = 30
 )
 
-// InMeleeRange returns true if a1 is close enough to hit a2 in melee.
+// InMeleeRange returns true if a1 is close enough to hit a2.
+// Uses a1.AttackRange if set; falls back to the MeleeRange constant.
 func InMeleeRange(a1, a2 *Actor) bool {
 	dx := a1.X - a2.X
 	dz := a1.Z - a2.Z
 	dy := (a1.Y - a2.Y) / 5.0
 	distSq := dx*dx + dz*dz + dy*dy
-	max := MeleeRange + a1.Radius + a2.Radius
+	base := a1.AttackRange
+	if base == 0 {
+		base = MeleeRange
+	}
+	max := base + a1.Radius + a2.Radius
 	return distSq <= max*max
 }
 
@@ -99,6 +108,8 @@ func ProcessAttack(attacker, target *Actor) (damage int32, isCrit bool, onCooldo
 // Returns true if the target died.
 func BroadcastAttack(area *Area, attacker, target *Actor, damage int32, isCrit bool) bool {
 	dmgType := uint8(0) // physical
+
+	BroadcastAnimate(area, attacker, "Attack")
 
 	// "H" packet → attacker (if player).
 	if !attacker.IsNPC {
@@ -192,6 +203,7 @@ func BroadcastAttack(area *Area, attacker, target *Actor, damage int32, isCrit b
 	}
 
 	if dead {
+		BroadcastAnimate(area, target, "Death")
 		// PActorDead → all players.
 		var p pb
 		p.u32(target.RuntimeID)
@@ -207,6 +219,22 @@ func BroadcastAttack(area *Area, attacker, target *Actor, damage int32, isCrit b
 	}
 
 	return dead
+}
+
+// BroadcastAnimate sends PAnimateActor to all players in the area.
+// animName is the clip name string (e.g. "Idle", "Walk", "Attack", "Death").
+func BroadcastAnimate(area *Area, actor *Actor, animName string) {
+	var p pb
+	p.u32(actor.RuntimeID)
+	p.str(animName)
+	frame := buildFrame(pAnimateActor, p)
+	area.Mu.RLock()
+	for _, a := range area.actors {
+		if !a.IsNPC {
+			a.Send(frame)
+		}
+	}
+	area.Mu.RUnlock()
 }
 
 func boolU8(v bool) uint8 {

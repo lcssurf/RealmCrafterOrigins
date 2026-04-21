@@ -25,9 +25,13 @@ const (
 	PStatUpdate      uint16 = 22
 	PFloatingNumber  uint16 = 48
 	PGoldChange      uint16 = 24
-	PXPUpdate         uint16 = 32
-	PKnownSpells      uint16 = 26
+	PXPUpdate        uint16 = 32
+	PKnownSpells     uint16 = 26
+	PCreateEmitter   uint16 = 28
+	PSound           uint16 = 29
+	PMusic           uint16 = 34
 	PRepositionActor uint16 = 49
+	PAnimateActor    uint16 = 30  // payload: rid(u32)+anim_name(str)
 	PKickedPlayer    uint16 = 60
 
 	// RCO extensions
@@ -42,7 +46,45 @@ const (
 	PRespawnPlayer    uint16 = 108
 	PPortalInfo       uint16 = 109
 	PCastSpell        uint16 = 110
+	PWorldItem        uint16 = 111
 	PDialogChoice     uint16 = 112
+	PPickupItem       uint16 = 113
+	PRemoveWorldItem  uint16 = 114
+	POpenShop         uint16 = 115
+	PShopAction       uint16 = 116
+)
+
+// EmitterType values for PCreateEmitter.
+const (
+	EmitterFire      uint8 = 0
+	EmitterExplosion uint8 = 1
+	EmitterHeal      uint8 = 2
+	EmitterPortal    uint8 = 3
+	EmitterBlood     uint8 = 4
+	EmitterSmoke     uint8 = 5
+)
+
+// SoundID values for PSound.
+const (
+	SoundSwordHit    uint8 = 0
+	SoundSpellFire   uint8 = 1
+	SoundSpellHeal   uint8 = 2
+	SoundSpellLight  uint8 = 3
+	SoundNPCDeath    uint8 = 4
+	SoundPlayerDeath uint8 = 5
+	SoundLevelUp     uint8 = 6
+	SoundPickupItem  uint8 = 7
+	SoundPortal      uint8 = 8
+	SoundBuyItem     uint8 = 9
+	SoundSellItem    uint8 = 10
+)
+
+// MusicTrack values for PMusic (0 = stop).
+const (
+	MusicStop        uint8 = 0
+	MusicStarterZone uint8 = 1
+	MusicForest      uint8 = 2
+	MusicCombat      uint8 = 3
 )
 
 // Result codes for server responses.

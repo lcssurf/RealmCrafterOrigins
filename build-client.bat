@@ -14,5 +14,5 @@ if %ERRORLEVEL% neq 0 (
     pause
     exit /b 1
 )
-echo [RCO] Build OK -- rco_client.exe ready in client\build\Release\
+echo [RCO] Build OK -- rco_client.exe ready in dist\client\
 pause

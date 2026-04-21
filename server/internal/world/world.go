@@ -86,9 +86,10 @@ func (w *World) SpawnNPC(area *Area, name, race, class string, level int, x, y, 
 	npc.Health        = hp
 	npc.HealthMax     = hp
 	npc.IsNPC         = true
-	npc.Aggressiveness = 1 // defensive: fights back when attacked
+	npc.Aggressiveness  = 1   // defensive: fights back when attacked
 	npc.AggressiveRange = 10.0
-	npc.Radius        = 0.4
+	npc.AttackRange     = 2.0 // tight melee; override after spawn for ranged NPCs
+	npc.Radius          = 0.4
 	npc.Strength      = int32(level) * 3
 	npc.WeaponDamage  = int32(level) * 2
 	npc.SpawnX, npc.SpawnY, npc.SpawnZ, npc.SpawnYaw = x, y, z, yaw

@@ -1,0 +1,176 @@
+#pragma once
+#include <glad/glad.h>
+#include <stb_image.h>
+#include <string>
+#include <vector>
+#include <filesystem>
+#include <algorithm>
+#include <cctype>
+
+// ---------------------------------------------------------------------------
+// Texture-role auto-detection from filenames
+// Supports: PolyHaven (_col_, _nor_gl_, _rough_, _ao_)
+//           Substance Painter (_BaseColor, _Normal, _Roughness)
+//           Simple (albedo.png, normal.png, roughness.png)
+// ---------------------------------------------------------------------------
+enum class TexRole { Albedo, Normal, Roughness, AO, ORM, Unknown };
+
+inline TexRole GuessRole(const std::string& stem) {
+    std::string s = stem;
+    std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+
+    // ORM / ARM packed — check first to avoid false matches
+    if (s.find("orm") != std::string::npos ||
+        s.find("arm") != std::string::npos) return TexRole::ORM;
+
+    // Normal map — OpenGL convention (green = up)
+    // Reject DirectX normal maps (_nor_dx, normdx)
+    bool isDX = s.find("_dx") != std::string::npos || s.find("dx_") != std::string::npos;
+    if (!isDX && (s.find("nor")    != std::string::npos ||
+                  s.find("nrm")    != std::string::npos ||
+                  s.find("normal") != std::string::npos)) return TexRole::Normal;
+
+    // Albedo / Base Color
+    if (s.find("col")       != std::string::npos ||
+        s.find("albedo")    != std::string::npos ||
+        s.find("diffuse")   != std::string::npos ||
+        s.find("diff")      != std::string::npos ||
+        s.find("basecolor") != std::string::npos ||
+        s.find("base_color")!= std::string::npos) return TexRole::Albedo;
+
+    // Roughness
+    if (s.find("rough") != std::string::npos) return TexRole::Roughness;
+
+    // AO
+    if (s == "ao" ||
+        s.find("_ao")      != std::string::npos ||
+        s.find("ao_")      != std::string::npos ||
+        s.find("ambient")  != std::string::npos ||
+        s.find("occlusion")!= std::string::npos) return TexRole::AO;
+
+    return TexRole::Unknown;
+}
+
+// ---------------------------------------------------------------------------
+// GL texture helpers
+// ---------------------------------------------------------------------------
+static GLuint LoadTex(const std::string& path, bool srgb = true) {
+    int w, h, ch;
+    stbi_set_flip_vertically_on_load(true);
+    unsigned char* px = stbi_load(path.c_str(), &w, &h, &ch, 4);
+    if (!px) return 0;
+
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    // Albedo → sRGB; normal/roughness → linear
+    GLenum internal = srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+    glTexImage2D(GL_TEXTURE_2D, 0, internal, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    stbi_image_free(px);
+    return tex;
+}
+
+// 1×1 solid-color placeholder textures
+inline GLuint MakeSolidTex(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
+    GLuint t;
+    glGenTextures(1, &t);
+    glBindTexture(GL_TEXTURE_2D, t);
+    const uint8_t px[4] = {r, g, b, a};
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    return t;
+}
+
+// ---------------------------------------------------------------------------
+// Material — one folder = one PBR material
+// ---------------------------------------------------------------------------
+struct Material {
+    std::string name;
+    float       tiling    = 4.f;
+
+    GLuint albedo    = 0; // sRGB
+    GLuint normal    = 0; // linear — flat (128,128,255) when missing
+    GLuint roughness = 0; // linear — grey (180) when missing → ~0.7 rough
+
+    void Unload() {
+        auto del = [](GLuint& t){ if (t) { glDeleteTextures(1, &t); t = 0; } };
+        del(albedo); del(normal); del(roughness);
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Scanner — one subfolder = one material, auto-detects texture roles
+// Flat .png/.jpg in root = one material each (albedo only)
+// ---------------------------------------------------------------------------
+inline std::vector<Material> ScanMaterials(const std::string& dir,
+                                            GLuint defaultNormal,
+                                            GLuint defaultRoughness)
+{
+    namespace fs = std::filesystem;
+    fs::path root(dir);
+    std::vector<Material> out;
+    if (!fs::exists(root)) return out;
+
+    static const auto isImg = [](const fs::path& p) {
+        auto e = p.extension().string();
+        std::transform(e.begin(), e.end(), e.begin(), ::tolower);
+        return e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".tga";
+    };
+
+    // --- Subfolders: each is a material ---
+    for (auto& sub : fs::directory_iterator(root)) {
+        if (!sub.is_directory()) continue;
+
+        Material m;
+        m.name      = sub.path().filename().string();
+        m.normal    = defaultNormal;
+        m.roughness = defaultRoughness;
+
+        for (auto& f : fs::directory_iterator(sub.path())) {
+            if (!f.is_regular_file() || !isImg(f.path())) continue;
+            TexRole role = GuessRole(f.path().stem().string());
+            switch (role) {
+            case TexRole::Albedo:
+                if (!m.albedo) m.albedo = LoadTex(f.path().string(), true);
+                break;
+            case TexRole::Normal:
+                if (m.normal == defaultNormal)
+                    m.normal = LoadTex(f.path().string(), false);
+                break;
+            case TexRole::Roughness:
+                if (m.roughness == defaultRoughness)
+                    m.roughness = LoadTex(f.path().string(), false);
+                break;
+            case TexRole::ORM:
+                // ORM: use as roughness (shader reads G channel)
+                if (m.roughness == defaultRoughness)
+                    m.roughness = LoadTex(f.path().string(), false);
+                break;
+            default: break;
+            }
+        }
+
+        if (m.albedo) out.push_back(std::move(m));
+    }
+
+    // --- Root-level images: flat files = albedo-only materials ---
+    for (auto& f : fs::directory_iterator(root)) {
+        if (!f.is_regular_file() || !isImg(f.path())) continue;
+        Material m;
+        m.name      = f.path().stem().string();
+        m.normal    = defaultNormal;
+        m.roughness = defaultRoughness;
+        m.albedo    = LoadTex(f.path().string(), true);
+        if (m.albedo) out.push_back(std::move(m));
+    }
+
+    std::sort(out.begin(), out.end(),
+              [](const Material& a, const Material& b){ return a.name < b.name; });
+    return out;
+}

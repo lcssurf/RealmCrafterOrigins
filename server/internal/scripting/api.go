@@ -39,6 +39,8 @@ func (r *Registry) registerSpellAPI() {
 			CooldownMs: int64(luaIntField(L, t, "cooldown_ms", 2000)),
 			Range:      float32(luaNumField(t, "range", 25.0)),
 			Icon:       uint8(luaIntField(L, t, "icon", 0)),
+			AoEType:    uint8(luaIntField(L, t, "aoe_type", 0)),
+			AoERadius:  float32(luaNumField(t, "aoe_radius", 0.0)),
 		}
 
 		// on_cast is set later via spell:on_cast = function() end
@@ -115,12 +117,14 @@ func (r *Registry) registerCombatAPI() {
 
 	// Combat.deal_damage(caster_id, target_id, amount [, dmg_type])
 	// dmg_type: "magic" (default) | "physical"
-	// Returns: died (bool)
+	// AoE: if the spell has aoe_type > 0 and aoe_radius > 0, the engine
+	// automatically spreads damage to nearby actors after hitting the primary target.
+	// Returns: died (bool) — true if the primary target died.
 	r.L.SetField(mod, "deal_damage", r.L.NewFunction(func(L *lua.LState) int {
 		casterRID := uint32(L.CheckNumber(1))
 		targetRID := uint32(L.CheckNumber(2))
 		amount := int32(L.CheckNumber(3))
-		_ = L.OptString(4, "magic") // dmg_type reserved for future use
+		_ = L.OptString(4, "magic")
 
 		area := r.ctx.area
 		if area == nil {
@@ -128,24 +132,51 @@ func (r *Registry) registerCombatAPI() {
 			return 1
 		}
 
-		target, _ := area.GetActor(targetRID)
-		if target == nil {
-			L.Push(lua.LFalse)
-			return 1
+		primaryDied := false
+
+		// Hit primary target (skipped for ground-AoE where target_id == 0).
+		if targetRID != 0 {
+			target, _ := area.GetActor(targetRID)
+			if target != nil {
+				hp, died := world.ApplyDamage(target, amount, casterRID)
+				world.BroadcastFloatingNumber(area, target, int16(amount), 1)
+				world.BroadcastHPUpdate(area, target, hp)
+				if died {
+					r.ctx.killedRID = targetRID
+					world.BroadcastActorDead(area, targetRID, casterRID)
+					primaryDied = true
+				}
+			}
 		}
 
-		hp, died := world.ApplyDamage(target, amount, casterRID)
-
-		// Floating number — type 1 = magic (blue on client)
-		world.BroadcastFloatingNumber(area, target, int16(amount), 1)
-		world.BroadcastHPUpdate(area, target, hp)
-
-		if died {
-			r.ctx.killedRID = targetRID
-			world.BroadcastActorDead(area, targetRID, casterRID)
+		// AoE splash — find actors within radius of primary target or ground point.
+		if r.ctx.aoeRadius > 0 {
+			var cx, cz float32
+			switch r.ctx.aoeType {
+			case 1: // around primary target
+				if t, _ := area.GetActor(targetRID); t != nil {
+					cx, cz = t.X, t.Z
+				}
+			case 2: // ground-targeted
+				cx, cz = r.ctx.groundX, r.ctx.groundZ
+			}
+			if cx != 0 || cz != 0 || r.ctx.aoeType == 2 {
+				for _, splash := range world.ActorsInRadius(area, cx, cz, r.ctx.aoeRadius) {
+					if splash.RuntimeID == targetRID || splash.RuntimeID == casterRID {
+						continue // already hit or is the caster
+					}
+					hp, died := world.ApplyDamage(splash, amount, casterRID)
+					world.BroadcastFloatingNumber(area, splash, int16(amount), 1)
+					world.BroadcastHPUpdate(area, splash, hp)
+					if died && r.ctx.killedRID == 0 {
+						r.ctx.killedRID = splash.RuntimeID
+						world.BroadcastActorDead(area, splash.RuntimeID, casterRID)
+					}
+				}
+			}
 		}
 
-		L.Push(lua.LBool(died))
+		L.Push(lua.LBool(primaryDied))
 		return 1
 	}))
 
@@ -248,6 +279,19 @@ func (r *Registry) registerActorAPI() {
 		return 1
 	}))
 
+	// Actor.play_anim(rid, anim_name) — broadcast a custom animation to all players in the area.
+	r.L.SetField(mod, "play_anim", r.L.NewFunction(func(L *lua.LState) int {
+		actor, ok := lookup(L)
+		if !ok {
+			return 0
+		}
+		animName := L.CheckString(2)
+		if r.ctx.area != nil {
+			world.BroadcastAnimate(r.ctx.area, actor, animName)
+		}
+		return 0
+	}))
+
 	r.L.SetGlobal("Actor", mod)
 }
 
@@ -289,6 +333,15 @@ func (r *Registry) registerDialogAPI() {
 			})
 		}
 		r.ctx.pendingDialog = &DialogPending{Text: text, Options: options}
+		return 0
+	}))
+
+	// Dialog.open_shop() — signals the server to open the NPC's shop for the player.
+	r.L.SetField(mod, "open_shop", r.L.NewFunction(func(L *lua.LState) int {
+		if r.ctx.pendingDialog == nil {
+			r.ctx.pendingDialog = &DialogPending{}
+		}
+		r.ctx.pendingDialog.OpenShop = true
 		return 0
 	}))
 

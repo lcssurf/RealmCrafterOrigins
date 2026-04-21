@@ -14,6 +14,7 @@ public:
     void Use() const;
 
     void SetInt  (const char* name, int v)              const;
+    void SetBool (const char* name, bool v)             const;
     void SetFloat(const char* name, float v)            const;
     void SetVec3 (const char* name, const glm::vec3& v) const;
     void SetVec4 (const char* name, const glm::vec4& v) const;

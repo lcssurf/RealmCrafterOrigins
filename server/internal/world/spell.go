@@ -91,3 +91,23 @@ func BroadcastActorDead(area *Area, targetRID, killerRID uint32) {
 	}
 	area.Mu.RUnlock()
 }
+
+// ActorsInRadius returns all living actors within radius world units of (cx, cz).
+func ActorsInRadius(area *Area, cx, cz, radius float32) []*Actor {
+	r2 := radius * radius
+	area.Mu.RLock()
+	defer area.Mu.RUnlock()
+	var out []*Actor
+	for _, a := range area.actors {
+		if a.IsDead() {
+			continue
+		}
+		dx := a.X - cx
+		dz := a.Z - cz
+		if dx*dx+dz*dz <= r2 {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+

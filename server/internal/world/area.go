@@ -2,6 +2,8 @@ package world
 
 import (
 	"context"
+	"log"
+	"math"
 	"sync"
 	"time"
 )
@@ -21,13 +23,18 @@ type Area struct {
 	// Dead NPCs waiting to respawn.
 	dnmu     sync.Mutex
 	deadNPCs []deadNPC
+
+	// Dropped items sitting in the world.
+	diMu         sync.Mutex
+	droppedItems map[uint32]*DroppedItem
 }
 
 // NewArea creates an empty Area.
 func NewArea(name string) *Area {
 	return &Area{
-		Name:   name,
-		actors: make(map[uint32]*Actor),
+		Name:         name,
+		actors:       make(map[uint32]*Actor),
+		droppedItems: make(map[uint32]*DroppedItem),
 	}
 }
 
@@ -169,9 +176,64 @@ func (a *Area) StartAI(ctx context.Context) {
 	}()
 }
 
+const (
+	npcMoveSpeed  = 5.0  // world units per second
+	aiTickSec     = 0.5  // seconds per AI tick (matches 500ms ticker)
+	leashMultiple = 2.5  // NPC leashes when player is > aggro * leashMultiple from NPC spawn
+)
+
+// broadcastNPCPosition sends a PStandardUpdate for the NPC to every player in the area.
+func broadcastNPCPosition(a *Area, npc *Actor) {
+	var p pb
+	p.u32(npc.RuntimeID)
+	p.f32(npc.X)
+	p.f32(npc.Y)
+	p.f32(npc.Z)
+	p.f32(npc.Yaw)
+	p.u8(0) // flags
+	a.BroadcastAll(buildFrame(pStandardUpdate, p))
+}
+
+// moveNPCToward advances npc one AI step toward target and updates its yaw.
+// Returns true if the NPC moved (was not already in attack range).
+func moveNPCToward(npc, target *Actor) {
+	dx := target.X - npc.X
+	dz := target.Z - npc.Z
+	dist := float32(math.Sqrt(float64(dx*dx + dz*dz)))
+	if dist < 0.05 {
+		return
+	}
+	step := float32(npcMoveSpeed * aiTickSec)
+	if step > dist {
+		step = dist
+	}
+	npc.X += (dx / dist) * step
+	npc.Z += (dz / dist) * step
+	// Face the movement direction.
+	yaw := float32(math.Atan2(float64(dx), float64(dz)) * 180.0 / math.Pi)
+	if yaw < 0 {
+		yaw += 360
+	}
+	npc.Yaw = yaw
+}
+
+// leashNPC resets an NPC to its spawn point and clears its AI state.
+func leashNPC(npc *Actor, a *Area) {
+	npc.Mu.Lock()
+	npc.X = npc.SpawnX
+	npc.Y = npc.SpawnY
+	npc.Z = npc.SpawnZ
+	npc.Yaw = npc.SpawnYaw
+	npc.AITarget = nil
+	npc.AIMode = AIWait
+	npc.Mu.Unlock()
+	broadcastNPCPosition(a, npc)
+}
+
 // tickAI runs one AI update step for all NPCs in the area.
 func (a *Area) tickAI() {
 	now := time.Now().UnixMilli()
+	a.tickDropDespawn(now)
 
 	// Snapshot live NPCs.
 	a.Mu.RLock()
@@ -240,7 +302,18 @@ func (a *Area) tickAI() {
 				continue
 			}
 
-			// Attack if in range.
+			// Leash check: if NPC is too far from its spawn point, reset.
+			{
+				sdx := npc.X - npc.SpawnX
+				sdz := npc.Z - npc.SpawnZ
+				leash := npc.AggressiveRange * leashMultiple
+				if sdx*sdx+sdz*sdz > leash*leash {
+					leashNPC(npc, a)
+					continue
+				}
+			}
+
+			// Either attack (if in range) or move closer.
 			if InMeleeRange(npc, target) {
 				dmg, isCrit, onCD := ProcessAttack(npc, target)
 				if !onCD {
@@ -253,6 +326,11 @@ func (a *Area) tickAI() {
 						npc.Mu.Unlock()
 					}
 				}
+			} else {
+				// Not in attack range — step toward the target.
+				moveNPCToward(npc, target)
+				broadcastNPCPosition(a, npc)
+				BroadcastAnimate(a, npc, "Walk")
 			}
 		}
 	}
@@ -298,6 +376,97 @@ func (a *Area) KillNPC(npc *Actor) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Dropped items
+// ---------------------------------------------------------------------------
+
+// AddDroppedItem inserts a world item and broadcasts PWorldItem to all players.
+func (a *Area) AddDroppedItem(item *DroppedItem) {
+	a.diMu.Lock()
+	a.droppedItems[item.RuntimeID] = item
+	a.diMu.Unlock()
+
+	var p pb
+	p.u32(item.RuntimeID)
+	p.f32(item.X)
+	p.f32(item.Y)
+	p.f32(item.Z)
+	p.u16(item.ItemID)
+	p.u8(item.Quantity)
+	p.str(item.Name)
+	p.u8(item.ItemType)
+	a.BroadcastAll(buildFrame(pWorldItem, p))
+}
+
+// RemoveDroppedItem deletes a world item and broadcasts PRemoveWorldItem.
+// Returns false if the item was not found (already picked up).
+func (a *Area) RemoveDroppedItem(rid uint32) bool {
+	a.diMu.Lock()
+	_, ok := a.droppedItems[rid]
+	if ok {
+		delete(a.droppedItems, rid)
+	}
+	a.diMu.Unlock()
+	if !ok {
+		return false
+	}
+	var p pb
+	p.u32(rid)
+	a.BroadcastAll(buildFrame(pRemoveWorldItem, p))
+	return true
+}
+
+// GetDroppedItem returns the dropped item with the given RuntimeID.
+func (a *Area) GetDroppedItem(rid uint32) (*DroppedItem, bool) {
+	a.diMu.Lock()
+	defer a.diMu.Unlock()
+	item, ok := a.droppedItems[rid]
+	return item, ok
+}
+
+// SnapshotDroppedItems returns a copy of all dropped items.
+func (a *Area) SnapshotDroppedItems() []*DroppedItem {
+	a.diMu.Lock()
+	defer a.diMu.Unlock()
+	out := make([]*DroppedItem, 0, len(a.droppedItems))
+	for _, item := range a.droppedItems {
+		out = append(out, item)
+	}
+	return out
+}
+
+// SpawnDropsForNPC rolls the drop table for npc and adds any results to the world.
+func (a *Area) SpawnDropsForNPC(npc *Actor) {
+	drops := RollDrops(npc.Name, npc.X, npc.Y, npc.Z)
+	if len(drops) > 0 {
+		log.Printf("world: %s dropped %d item(s)", npc.Name, len(drops))
+	}
+	for _, d := range drops {
+		a.AddDroppedItem(d)
+	}
+}
+
+// tickDropDespawn removes dropped items older than 60 s and broadcasts removal.
+func (a *Area) tickDropDespawn(now int64) {
+	a.diMu.Lock()
+	var expired []uint32
+	for rid, item := range a.droppedItems {
+		if now-item.SpawnedAt >= 60_000 {
+			expired = append(expired, rid)
+		}
+	}
+	for _, rid := range expired {
+		delete(a.droppedItems, rid)
+	}
+	a.diMu.Unlock()
+
+	for _, rid := range expired {
+		var p pb
+		p.u32(rid)
+		a.BroadcastAll(buildFrame(pRemoveWorldItem, p))
+	}
+}
+
 // respawnNPC resets an NPC and adds it back to the area.
 func (a *Area) respawnNPC(npc *Actor) {
 	npc.Mu.Lock()
@@ -314,5 +483,5 @@ func (a *Area) respawnNPC(npc *Actor) {
 	a.AddActor(npc)
 
 	// Broadcast PNewActor so clients see the NPC again.
-	a.BroadcastAll(buildFrame(pNewActor, newActorPayload(npc)))
+	a.BroadcastAll(buildFrame(pNewActor, NewActorPayload(npc)))
 }

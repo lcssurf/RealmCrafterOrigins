@@ -45,6 +45,8 @@ struct PlayerState {
     uint32_t    xp         = 0;
     uint32_t    xp_next    = 100;
     std::string name;
+    std::string race;
+    std::string charClass;
     std::string areaName;
 };
 

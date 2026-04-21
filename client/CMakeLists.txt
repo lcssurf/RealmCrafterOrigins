@@ -25,6 +25,8 @@ find_package(imgui   CONFIG REQUIRED)
 find_package(assimp  CONFIG REQUIRED)
 find_package(Stb     REQUIRED)
 
+find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h" REQUIRED)
+
 # msquic: CONFIG package first; if no target resolves, fall back to find_library.
 find_package(msquic CONFIG QUIET)
 if (TARGET msquic::msquic)
@@ -54,6 +56,7 @@ message(STATUS "msquic target: ${MSQUIC_TARGET}")
 target_include_directories(rco_client PRIVATE
     "${CMAKE_SOURCE_DIR}/src"
     "${Stb_INCLUDE_DIR}"
+    "${MINIAUDIO_INCLUDE_DIRS}"
 )
 
 # --------------------------------------------------------------------------
@@ -70,7 +73,7 @@ target_link_libraries(rco_client PRIVATE
 
 # Windows extras
 if (WIN32)
-    target_link_libraries(rco_client PRIVATE ws2_32 secur32)
+    target_link_libraries(rco_client PRIVATE ws2_32 secur32 ole32)
 endif()
 
 # Linux extras
@@ -79,36 +82,16 @@ if (UNIX AND NOT APPLE)
 endif()
 
 # --------------------------------------------------------------------------
-# Working directory and post-build
+# Output directory — exe lives directly in dist/client/ alongside its assets.
+# No copy steps needed; shaders/assets/data are the source of truth in dist/.
 # --------------------------------------------------------------------------
+set(RCO_CLIENT_DIST "${CMAKE_SOURCE_DIR}/../dist/client")
+
 set_target_properties(rco_client PROPERTIES
-    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    VS_DEBUGGER_WORKING_DIRECTORY       "${RCO_CLIENT_DIST}"
+    RUNTIME_OUTPUT_DIRECTORY            "${RCO_CLIENT_DIST}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG      "${RCO_CLIENT_DIST}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE    "${RCO_CLIENT_DIST}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${RCO_CLIENT_DIST}"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${RCO_CLIENT_DIST}"
 )
-
-# Copy config.toml to build dir after build (ignore if it doesn't exist yet)
-if (EXISTS "${CMAKE_SOURCE_DIR}/config.toml")
-    add_custom_command(TARGET rco_client POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/config.toml"
-            "$<TARGET_FILE_DIR:rco_client>/config.toml"
-        COMMENT "Copying config.toml"
-    )
-endif()
-
-# Copy shaders directory to build output so the exe can find them at runtime.
-add_custom_command(TARGET rco_client POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/shaders"
-        "$<TARGET_FILE_DIR:rco_client>/shaders"
-    COMMENT "Copying shaders"
-)
-
-# Copy assets directory to build output (models, textures, etc.)
-if (EXISTS "${CMAKE_SOURCE_DIR}/assets")
-    add_custom_command(TARGET rco_client POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_SOURCE_DIR}/assets"
-            "$<TARGET_FILE_DIR:rco_client>/assets"
-        COMMENT "Copying assets"
-    )
-endif()

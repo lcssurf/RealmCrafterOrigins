@@ -6,21 +6,27 @@
 
 namespace rco::ui {
 
-void SpellBar::Clear() { slots.clear(); }
+void SpellBar::Clear() { slots.clear(); pending_ground_spell = 0; }
 
 void SpellBar::AddSpell(uint16_t id, const std::string& name, uint8_t spell_type,
-                        uint16_t ep_cost, uint32_t cooldown_ms) {
+                        uint16_t ep_cost, uint32_t cooldown_ms,
+                        uint8_t aoe_type, float aoe_radius, float range) {
     SpellSlot s;
     s.id          = id;
     s.name        = name;
     s.spell_type  = spell_type;
+    s.aoe_type    = aoe_type;
+    s.aoe_radius  = aoe_radius;
+    s.range       = range;
     s.ep_cost     = ep_cost;
     s.cooldown_ms = cooldown_ms;
     slots.push_back(s);
 }
 
 void SpellBar::Render(int screen_w, int screen_h, uint32_t combat_target,
-                      float now, bool player_dead, int32_t player_ep) {
+                      float now, bool player_dead, int32_t player_ep,
+                      float target_dist) {
+    hovered_range = 0.f; hovered_aoe_radius = 0.f; hovered_aoe_type = 0;
     if (slots.empty()) return;
 
     constexpr float kSlotW = 60.f;
@@ -88,29 +94,56 @@ void SpellBar::Render(int screen_w, int screen_h, uint32_t combat_target,
         snprintf(hk, sizeof(hk), "%d", i + 1);
         dl->AddText({x0 + 3.f, y1 - 14.f}, IM_COL32(160, 160, 160, 160), hk);
 
-        // --- Border (highlight if usable) ---
-        bool can_cast = !player_dead &&
-                        (now - s.last_cast) >= (s.cooldown_ms / 1000.f) &&
-                        player_ep >= static_cast<int32_t>(s.ep_cost) &&
-                        (s.spell_type != 0 || combat_target != 0);
-        ImU32 border = can_cast ? IM_COL32(100, 140, 255, 200)
-                                : IM_COL32(60,  60,  90,  180);
-        dl->AddRect(p0, p1, border, 5.f, 0, 1.5f);
+        // --- Hover detection: expose range/aoe info for world-space circles ---
+        ImVec2 mp = ImGui::GetMousePos();
+        bool slot_hovered = mp.x >= x0 && mp.x <= x1 && mp.y >= y0 && mp.y <= y1;
+        if (slot_hovered) {
+            hovered_range      = s.range;
+            hovered_aoe_radius = s.aoe_radius;
+            hovered_aoe_type   = s.aoe_type;
+        }
+
+        // --- Border: usability + range ---
+        bool  awaiting  = (pending_ground_spell == s.id);
+        bool  off_cd    = (now - s.last_cast) >= (s.cooldown_ms / 1000.f);
+        bool  has_ep    = player_ep >= static_cast<int32_t>(s.ep_cost);
+        bool  is_heal   = (s.spell_type == 1);
+        bool  is_ground = (s.aoe_type == 2);
+        bool  has_tgt   = is_heal || is_ground || (combat_target != 0);
+        bool  in_range  = is_heal || (s.range <= 0.f) ||
+                          (combat_target != 0 && target_dist <= s.range);
+        bool  can_cast  = !player_dead && off_cd && has_ep && has_tgt && in_range;
+        ImU32 border;
+        if (awaiting)
+            border = IM_COL32(255, 220, 40, 220);
+        else if (!in_range && has_tgt)
+            border = IM_COL32(200, 60, 60, 200);   // red = out of range
+        else if (can_cast)
+            border = IM_COL32(100, 140, 255, 200);
+        else
+            border = IM_COL32(60, 60, 90, 180);
+        dl->AddRect(p0, p1, border, 5.f, 0, awaiting ? 2.5f : 1.5f);
 
         // --- Hotkey trigger (1–9) ---
         if (!player_dead && (i + 1) <= 9 && !ImGui::GetIO().WantTextInput) {
             ImGuiKey key = static_cast<ImGuiKey>(ImGuiKey_1 + i);
             if (ImGui::IsKeyPressed(key, false)) {
-                float cd_sec = s.cooldown_ms / 1000.f;
-                bool off_cooldown = (now - s.last_cast) >= cd_sec;
-                bool has_ep       = player_ep >= static_cast<int32_t>(s.ep_cost);
-                uint32_t target   = (s.spell_type == 1) ? 0 : combat_target;
-                bool has_target   = (s.spell_type == 1) || (combat_target != 0);
-                if (off_cooldown && has_ep && has_target && on_cast) {
-                    on_cast(s.id, target);
-                    s.last_cast = now;
+                if (off_cd && has_ep && has_tgt && in_range) {
+                    if (is_ground) {
+                        pending_ground_spell = s.id;
+                        s.last_cast = now;
+                    } else if (on_cast) {
+                        on_cast(s.id, is_heal ? 0 : combat_target);
+                        s.last_cast = now;
+                    }
                 }
             }
+        }
+        // ESC cancels ground targeting
+        if (pending_ground_spell == s.id &&
+            ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            pending_ground_spell = 0;
+            s.last_cast = -99999.f; // refund cooldown
         }
     }
 

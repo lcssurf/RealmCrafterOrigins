@@ -1,10 +1,25 @@
 # ---------------------------------------------------------------------------
-# Build artifacts
+# Build artifacts (CMake / Go temp output, never committed)
 # ---------------------------------------------------------------------------
 client/build/
 server/server
 server/server.exe
 tools/build/
+tools/gue/build/
+tools/terrain-editor/build/
+
+# ---------------------------------------------------------------------------
+# Distributable runtime tree
+# Binaries land here after build. Assets, scripts, shaders, DB live here as
+# source-of-truth — what we ship is dist/client/.
+# Ignore only the binary artifacts and the database (which is regenerated).
+# ---------------------------------------------------------------------------
+dist/**/*.exe
+dist/**/*.dll
+dist/**/*.pdb
+dist/server/rco.db
+dist/server/rco.db-shm
+dist/server/rco.db-wal
 
 # ---------------------------------------------------------------------------
 # Go
@@ -53,6 +68,8 @@ client/assets/audio/
 # SQLite runtime file — generated automatically, never commit
 server/rco.db
 server/*.db
+dist/server/rco.db
+dist/server/*.db
 
 # ---------------------------------------------------------------------------
 # Logs
