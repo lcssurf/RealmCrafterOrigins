@@ -56,27 +56,37 @@ type CharacterItem struct {
 
 // Character mirrors the characters table.
 type Character struct {
-	ID        string
-	AccountID string
-	Slot      int
-	Name      string
-	Race      string
-	Class     string
-	Gender    int
-	Level     int
-	XP        int64
-	Gold      int64
-	AreaName  string
-	X, Y, Z  float32
-	Yaw       float32
-	FaceTex   int
-	Hair      int
-	Beard     int
-	BodyTex   int
-	Health    int32
-	HealthMax int32
-	Energy    int32
-	EnergyMax int32
+	ID          string
+	AccountID   string
+	Slot        int
+	Name        string
+	Race        string
+	Class       string
+	Gender      int
+	Level       int
+	XP          int64
+	Gold        int64
+	AreaName    string
+	X, Y, Z     float32
+	Yaw         float32
+	FaceTex     int
+	Hair        int
+	Beard       int
+	BodyTex     int
+	Health      int32
+	HealthMax   int32
+	Energy      int32
+	EnergyMax   int32
+	ActorDefID  int
+}
+
+// PlayableDef is a minimal view of media_actor_defs used for the character-
+// creation dropdown.
+type PlayableDef struct {
+	ID           int
+	Name         string
+	DefaultRace  string
+	DefaultClass string
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +146,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV6(ctx)
 	d.migrateV7(ctx)
 	d.migrateV9(ctx)
+	d.migrateV10(ctx)
 
 	return d, nil
 }
@@ -438,7 +449,7 @@ func (d *DB) ListCharacters(ctx context.Context, accountID string) ([]*Character
 	rows, err := d.db.QueryContext(ctx,
 		d.q(`SELECT id, account_id, slot, name, race, class, gender, level, xp, gold,
 		          area_name, x, y, z, yaw, face_tex, hair, beard, body_tex,
-		          health, health_max, energy, energy_max
+		          health, health_max, energy, energy_max, actor_def_id
 		     FROM characters WHERE account_id = ? ORDER BY slot`),
 		accountID,
 	)
@@ -454,7 +465,7 @@ func (d *DB) ListCharacters(ctx context.Context, accountID string) ([]*Character
 			&c.ID, &c.AccountID, &c.Slot, &c.Name, &c.Race, &c.Class, &c.Gender,
 			&c.Level, &c.XP, &c.Gold, &c.AreaName, &c.X, &c.Y, &c.Z, &c.Yaw,
 			&c.FaceTex, &c.Hair, &c.Beard, &c.BodyTex,
-			&c.Health, &c.HealthMax, &c.Energy, &c.EnergyMax,
+			&c.Health, &c.HealthMax, &c.Energy, &c.EnergyMax, &c.ActorDefID,
 		); err != nil {
 			return nil, fmt.Errorf("db: ListCharacters scan: %w", err)
 		}
@@ -467,14 +478,14 @@ func (d *DB) ListCharacters(ctx context.Context, accountID string) ([]*Character
 // Initial x/z put the character at the center of the default Starter Zone
 // (1024×1024 world units → center is 512). Column defaults can't be relied
 // on across SQLite/Postgres for this — so we set them explicitly.
-func (d *DB) CreateCharacter(ctx context.Context, accountID string, slot int, name, race, className string, gender, faceTex, hair, beard, bodyTex int) (*Character, error) {
+func (d *DB) CreateCharacter(ctx context.Context, accountID string, slot int, name, race, className string, gender, faceTex, hair, beard, bodyTex, actorDefID int) (*Character, error) {
 	id := uuid.New().String()
 	_, err := d.db.ExecContext(ctx,
 		d.q(`INSERT INTO characters
-		       (id, account_id, slot, name, race, class, gender, face_tex, hair, beard, body_tex, created_at,
+		       (id, account_id, slot, name, race, class, gender, face_tex, hair, beard, body_tex, actor_def_id, created_at,
 		        x, z)
-		     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 512, 512)`),
-		id, accountID, slot, name, race, className, gender, faceTex, hair, beard, bodyTex, now(),
+		     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 512, 512)`),
+		id, accountID, slot, name, race, className, gender, faceTex, hair, beard, bodyTex, actorDefID, now(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("db: CreateCharacter: %w", err)
@@ -504,14 +515,14 @@ func (d *DB) GetCharacterBySlot(ctx context.Context, accountID string, slot int)
 	err := d.db.QueryRowContext(ctx,
 		d.q(`SELECT id, account_id, slot, name, race, class, gender, level, xp, gold,
 		          area_name, x, y, z, yaw, face_tex, hair, beard, body_tex,
-		          health, health_max, energy, energy_max
+		          health, health_max, energy, energy_max, actor_def_id
 		     FROM characters WHERE account_id = ? AND slot = ?`),
 		accountID, slot,
 	).Scan(
 		&c.ID, &c.AccountID, &c.Slot, &c.Name, &c.Race, &c.Class, &c.Gender,
 		&c.Level, &c.XP, &c.Gold, &c.AreaName, &c.X, &c.Y, &c.Z, &c.Yaw,
 		&c.FaceTex, &c.Hair, &c.Beard, &c.BodyTex,
-		&c.Health, &c.HealthMax, &c.Energy, &c.EnergyMax,
+		&c.Health, &c.HealthMax, &c.Energy, &c.EnergyMax, &c.ActorDefID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("db: GetCharacterBySlot: %w", err)
@@ -1179,6 +1190,16 @@ func (d *DB) migrateV9(ctx context.Context) {
 	        AND x BETWEEN -100 AND 100 AND z BETWEEN -100 AND 100`)
 }
 
+// migrateV10 — adds actor_def_id to characters so player appearance is driven
+// by the Media registry (same path as NPCs).
+func (d *DB) migrateV10(ctx context.Context) {
+	if d.driver == "postgres" {
+		_, _ = d.db.ExecContext(ctx, `ALTER TABLE characters ADD COLUMN IF NOT EXISTS actor_def_id INTEGER NOT NULL DEFAULT 0`)
+	} else {
+		_, _ = d.db.ExecContext(ctx, `ALTER TABLE characters ADD COLUMN actor_def_id INTEGER NOT NULL DEFAULT 0`)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Media registry — read-only accessors used by the server to resolve an
 // NpcSpawn.ActorDefID into concrete asset paths for PNewActor.
@@ -1365,6 +1386,27 @@ func (d *DB) ListMediaMaterials(ctx context.Context) (map[string]*MediaMaterial,
 		}
 	}
 	return out, nil
+}
+
+// ListPlayableDefs returns all actor defs marked is_playable=1.
+// Used by the server to send available character options to the client.
+func (d *DB) ListPlayableDefs(ctx context.Context) ([]PlayableDef, error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, name, default_race, default_class
+		 FROM media_actor_defs WHERE is_playable = 1 ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("db: ListPlayableDefs: %w", err)
+	}
+	defer rows.Close()
+	var out []PlayableDef
+	for rows.Next() {
+		var p PlayableDef
+		if err := rows.Scan(&p.ID, &p.Name, &p.DefaultRace, &p.DefaultClass); err != nil {
+			return nil, fmt.Errorf("db: ListPlayableDefs scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // parseMaterialMap deserialises the "k1=v1;k2=v2" format used by

@@ -9,13 +9,23 @@ public:
     void Update(float dt);
     void ProcessScroll(float delta);
 
-    // RMB drag feeds pixel deltas here to rotate yaw + pitch.
+    // Mouse drag feeds pixel deltas here to rotate yaw + pitch.
     void ApplyMouseDelta(float dx, float dy);
+
+    // Smooth yaw toward target angle (handles 360° wrap). speed is units/s.
+    void LerpYawToward(float target_deg, float speed, float dt);
 
     // Called by A/D turning so the camera follows the character's facing.
     void SetYaw(float yaw)   { yaw_ = yaw; }
     void SetPitch(float p)   { pitch_ = p; }
     void AddYaw(float delta) { yaw_ += delta; }
+
+    // Derive pivot and lookat heights from the model's world-space height.
+    // Call once after the player model is initialized (or when it changes).
+    void SetActorHeight(float h) {
+        pivot_h_  = h * 1.00f;   // orbit anchor: top of head
+        lookat_h_ = h * 0.45f;   // focus: chest/torso level
+    }
 
     // Instantly snap smooth target (use after teleport / area change).
     void SnapTarget(const glm::vec3& t) { target_ = t; target_smooth_ = t; }
@@ -43,7 +53,10 @@ private:
     static constexpr float kPitchMax =  85.f;
     static constexpr float kDistMin  =   3.f;
     static constexpr float kDistMax  =  25.f;
-    float dist_ = 10.f;
+    float dist_        = 10.f;
+    float dist_target_ = 10.f;  // zoom target — dist_ lerps toward this
+    float pivot_h_     = 2.0f;  // orbit anchor height (top of head)
+    float lookat_h_    = 0.9f;  // focus height (chest)
 };
 
 } // namespace rco::renderer

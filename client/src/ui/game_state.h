@@ -15,17 +15,28 @@ enum class GameState {
 };
 
 // ---------------------------------------------------------------------------
-// Data returned by PCharListResult for one character slot
+// Data returned by PPlayableDefs — one entry per playable actor def
 // ---------------------------------------------------------------------------
-struct CharacterInfo {
-    int         slot       = 0;
+struct PlayableDef {
+    uint16_t    id         = 0;
     std::string name;
     std::string race;
     std::string charClass;
-    uint16_t    level      = 0;
+};
+
+// ---------------------------------------------------------------------------
+// Data returned by PCharListResult for one character slot
+// ---------------------------------------------------------------------------
+struct CharacterInfo {
+    int         slot        = 0;
+    std::string name;
+    std::string race;
+    std::string charClass;
+    uint16_t    level       = 0;
     std::string area;
-    int32_t     health     = 0;
-    int32_t     healthMax  = 0;
+    int32_t     health      = 0;
+    int32_t     healthMax   = 0;
+    uint16_t    actorDefID  = 0;
 };
 
 // ---------------------------------------------------------------------------

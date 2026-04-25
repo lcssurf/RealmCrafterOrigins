@@ -53,6 +53,7 @@ const (
 	POpenShop         uint16 = 115
 	PShopAction       uint16 = 116
 	PAreaConfig       uint16 = 117 // S→C: fog/ambient/pvp settings for the current area
+	PPlayableDefs     uint16 = 118 // S→C: list of actor defs available for character creation
 )
 
 // EmitterType values for PCreateEmitter.

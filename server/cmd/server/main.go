@@ -161,7 +161,7 @@ func main() {
 
 		// Resolve actor_def_id → full Appearance (meshes + anim bindings).
 		if s.ActorDefID > 0 {
-			if app := buildAppearance(ctx, database, s.ActorDefID); app != nil {
+			if app := rconet.BuildAppearance(ctx, database, s.ActorDefID); app != nil {
 				npc.Appearance = app
 			}
 		}
@@ -341,92 +341,3 @@ func setupDropsAndShops(ctx context.Context, database *db.DB) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Media resolution
-// ---------------------------------------------------------------------------
-
-// buildAppearance resolves an actor def id (from npc_spawns.actor_def_id) into
-// a fully concrete world.Appearance by looking up each mesh slot's model +
-// material and each anim mapping's clip. Returns nil if the def has no meshes.
-func buildAppearance(ctx context.Context, database *db.DB, defID int) *world.Appearance {
-	def, err := database.LoadActorDef(ctx, defID)
-	if err != nil || def == nil {
-		return nil
-	}
-
-	out := &world.Appearance{}
-
-	// Actor-level multiplier on top of each model's import-scale. This lets
-	// one Goblin model power both "Baby Goblin" (scale=0.5) and "Goblin Chief"
-	// (scale=2.0) without duplicating the mesh file. Guarded against zero
-	// rows from before the gameplay migration.
-	actorScale := def.Scale
-	if actorScale <= 0 {
-		actorScale = 1.0
-	}
-
-	// Load all materials once so per-aiMaterial lookups are O(1). Used
-	// below to resolve each model's material_map into concrete PBR paths
-	// that ride along in the slot's MaterialMap.
-	matsByName, _ := database.ListMediaMaterials(ctx)
-
-	for _, m := range def.Meshes {
-		model, _ := database.GetMediaModel(ctx, m.ModelID)
-		if model == nil || model.FilePath == "" {
-			continue // skip unresolvable slots
-		}
-		slot := world.MeshSlot{
-			Slot:      uint8(m.Slot),
-			ModelPath: model.FilePath,
-			Scale:     model.Scale * actorScale,
-		}
-		if mat, _ := database.GetMediaMaterial(ctx, m.MaterialID); mat != nil {
-			slot.AlbedoPath = mat.AlbedoPath
-			slot.NormalPath = mat.NormalPath
-			slot.ORMPath    = mat.ORMPath
-			slot.AlbedoR    = mat.AlbedoR
-			slot.AlbedoG    = mat.AlbedoG
-			slot.AlbedoB    = mat.AlbedoB
-			slot.Roughness  = mat.Roughness
-			slot.Metallic   = mat.Metallic
-		}
-		// Resolve the model's per-aiMaterial mapping so multi-material meshes
-		// (Substance imports, GLBs with named blinn slots, etc.) display the
-		// correct textures on the client. Each entry pairs an aiMaterial
-		// name from the mesh file with the resolved media_material's PBR set.
-		for aiName, matName := range model.MaterialMap {
-			mm := matsByName[matName]
-			if mm == nil {
-				continue
-			}
-			slot.MaterialMap = append(slot.MaterialMap, world.AiMaterial{
-				AiName:     aiName,
-				AlbedoPath: mm.AlbedoPath,
-				NormalPath: mm.NormalPath,
-				ORMPath:    mm.ORMPath,
-				AlbedoR:    mm.AlbedoR,
-				AlbedoG:    mm.AlbedoG,
-				AlbedoB:    mm.AlbedoB,
-				Roughness:  mm.Roughness,
-				Metallic:   mm.Metallic,
-			})
-		}
-		out.Meshes = append(out.Meshes, slot)
-	}
-	if len(out.Meshes) == 0 {
-		return nil
-	}
-
-	for _, a := range def.Anims {
-		clip, _ := database.GetMediaAnimClip(ctx, a.ClipID)
-		if clip == nil {
-			continue
-		}
-		out.Anims = append(out.Anims, world.AnimBinding{
-			Action:       a.Action,
-			SourcePath:   clip.SourcePath,
-			ClipOverride: clip.ClipOverride,
-		})
-	}
-	return out
-}

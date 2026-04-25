@@ -159,7 +159,8 @@ void Model::Destroy() {
     bones_.clear();
     bone_map_.clear();
     clips_.clear();
-    skinned_ = false;
+    skinned_    = false;
+    aabb_max_y_ = 0.f;
     for (GLuint t : owned_textures_) {
         if (t) glDeleteTextures(1, &t);
     }
@@ -391,6 +392,7 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
 
     for (unsigned i = 0; i < mesh->mNumVertices; ++i) {
         glm::vec3 pos = xformPos(mesh->mVertices[i]);
+        if (pos.y > aabb_max_y_) aabb_max_y_ = pos.y;
         verts.push_back(pos.x); verts.push_back(pos.y); verts.push_back(pos.z);
         if (mesh->HasNormals()) {
             glm::vec3 n = xformDir(mesh->mNormals[i]);

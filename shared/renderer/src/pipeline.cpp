@@ -258,15 +258,22 @@ void Pipeline::terrainPass_() {
 
         glBindTextureUnit(0, c.splatmap);
         sh->SetInt("u_splatmap", 0);
+        // 5 textures per material × 4 materials = 20 units, slots 1..20.
         for (int i = 0; i < 4; ++i) {
-            glBindTextureUnit(1 + i*3 + 0, c.mat_albedo[i]);
-            glBindTextureUnit(1 + i*3 + 1, c.mat_normal[i]);
-            glBindTextureUnit(1 + i*3 + 2, c.mat_roughness[i]);
+            glBindTextureUnit(1 + i*5 + 0, c.mat_albedo[i]);
+            glBindTextureUnit(1 + i*5 + 1, c.mat_normal[i]);
+            glBindTextureUnit(1 + i*5 + 2, c.mat_roughness[i]);
+            glBindTextureUnit(1 + i*5 + 3, c.mat_ao[i]);
+            glBindTextureUnit(1 + i*5 + 4, c.mat_height[i]);
         }
-        sh->SetInt("u_mat0_albedo",  1); sh->SetInt("u_mat0_normal",  2); sh->SetInt("u_mat0_roughness",  3);
-        sh->SetInt("u_mat1_albedo",  4); sh->SetInt("u_mat1_normal",  5); sh->SetInt("u_mat1_roughness",  6);
-        sh->SetInt("u_mat2_albedo",  7); sh->SetInt("u_mat2_normal",  8); sh->SetInt("u_mat2_roughness",  9);
-        sh->SetInt("u_mat3_albedo", 10); sh->SetInt("u_mat3_normal", 11); sh->SetInt("u_mat3_roughness", 12);
+        sh->SetInt("u_mat0_albedo",  1); sh->SetInt("u_mat0_normal",  2);
+        sh->SetInt("u_mat0_roughness", 3); sh->SetInt("u_mat0_ao",  4); sh->SetInt("u_mat0_height",  5);
+        sh->SetInt("u_mat1_albedo",  6); sh->SetInt("u_mat1_normal",  7);
+        sh->SetInt("u_mat1_roughness", 8); sh->SetInt("u_mat1_ao",  9); sh->SetInt("u_mat1_height", 10);
+        sh->SetInt("u_mat2_albedo", 11); sh->SetInt("u_mat2_normal", 12);
+        sh->SetInt("u_mat2_roughness", 13); sh->SetInt("u_mat2_ao", 14); sh->SetInt("u_mat2_height", 15);
+        sh->SetInt("u_mat3_albedo", 16); sh->SetInt("u_mat3_normal", 17);
+        sh->SetInt("u_mat3_roughness", 18); sh->SetInt("u_mat3_ao", 19); sh->SetInt("u_mat3_height", 20);
 
         glBindVertexArray(c.vao);
         glDrawElements(GL_TRIANGLES, c.index_count, GL_UNSIGNED_INT, nullptr);

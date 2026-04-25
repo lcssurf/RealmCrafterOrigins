@@ -14,6 +14,8 @@ struct MatTex {
     GLuint albedo    = 0;
     GLuint normal    = 0;
     GLuint roughness = 0;
+    GLuint ao        = 0;   // ambient occlusion (R channel)
+    GLuint height    = 0;   // displacement height (R channel) — used for height-blend
     float  tiling    = 4.f;
 };
 
@@ -55,6 +57,8 @@ private:
     std::vector<MatTex> materials_;
     GLuint def_normal_    = 0;
     GLuint def_roughness_ = 0;
+    GLuint def_ao_        = 0;
+    GLuint def_height_    = 0;
     bool   has_materials_ = false;
 };
 

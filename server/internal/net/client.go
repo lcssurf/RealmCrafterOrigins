@@ -223,10 +223,28 @@ func (c *ClientConn) handleVerifyAccount(ctx context.Context, payload []byte) er
 // ---------------------------------------------------------------------------
 
 func (c *ClientConn) handleFetchCharacter(ctx context.Context, _ []byte) error {
+	// Send the list of playable actor defs first so the client can populate
+	// its character-creation dropdown before rendering the char select screen.
+	if defs, err := c.server.db.ListPlayableDefs(ctx); err == nil {
+		log.Printf("client: sending %d playable def(s) to %s", len(defs), c.account.Username)
+		var wd Writer
+		wd.WriteUint8(uint8(len(defs)))
+		for _, d := range defs {
+			wd.WriteUint16(uint16(d.ID))
+			wd.WriteString(d.Name)
+			wd.WriteString(d.DefaultRace)
+			wd.WriteString(d.DefaultClass)
+		}
+		if sendErr := c.sendPacket(protocol.PPlayableDefs, wd.Bytes()); sendErr != nil {
+			return sendErr
+		}
+	} else {
+		log.Printf("client: ListPlayableDefs error: %v", err)
+	}
+
 	chars, err := c.server.db.ListCharacters(ctx, c.account.ID)
 	if err != nil {
 		log.Printf("client: list characters: %v", err)
-		// Send empty list rather than crashing.
 		chars = nil
 	}
 
@@ -241,6 +259,7 @@ func (c *ClientConn) handleFetchCharacter(ctx context.Context, _ []byte) error {
 		w.WriteString(ch.AreaName)
 		w.WriteInt32(ch.Health)
 		w.WriteInt32(ch.HealthMax)
+		w.WriteUint16(uint16(ch.ActorDefID))
 	}
 	return c.sendPacket(protocol.PCharListResult, w.Bytes())
 }
@@ -255,11 +274,7 @@ func (c *ClientConn) handleCreateCharacter(ctx context.Context, payload []byte) 
 	if err != nil {
 		return err
 	}
-	race, err := r.ReadString()
-	if err != nil {
-		return err
-	}
-	class, err := r.ReadString()
+	actorDefID16, err := r.ReadUint16()
 	if err != nil {
 		return err
 	}
@@ -267,29 +282,34 @@ func (c *ClientConn) handleCreateCharacter(ctx context.Context, payload []byte) 
 	if err != nil {
 		return err
 	}
-	// Appearance fields are optional in Phase 1 — default to 0 if the client
-	// omits them. Phase 2 will add a proper character-creation UI with sliders.
-	readOptU8 := func() uint8 {
-		v, _ := r.ReadUint8()
-		return v
-	}
-	faceTex := readOptU8()
-	hair    := readOptU8()
-	beard   := readOptU8()
-	bodyTex := readOptU8()
 
 	if slot > 8 {
 		return c.sendCreateCharResult(protocol.ResultInvalidName, "Invalid slot")
 	}
 
+	actorDefID := int(actorDefID16)
+
+	// Resolve race/class from the actor def so they're stored correctly.
+	race, class := "Unknown", "Unknown"
+	if actorDefID > 0 {
+		if def, defErr := c.server.db.LoadActorDef(ctx, actorDefID); defErr == nil && def != nil {
+			if def.DefaultRace != "" {
+				race = def.DefaultRace
+			}
+			if def.DefaultClass != "" {
+				class = def.DefaultClass
+			}
+		}
+	}
+
 	_, createErr := c.server.db.CreateCharacter(ctx, c.account.ID, int(slot), name, race, class,
-		int(gender), int(faceTex), int(hair), int(beard), int(bodyTex))
+		int(gender), 0, 0, 0, 0, actorDefID)
 	if createErr != nil {
 		log.Printf("client: create character: %v", createErr)
 		return c.sendCreateCharResult(protocol.ResultCharExists, "Name already taken")
 	}
 
-	log.Printf("client: %s created character %q slot=%d", c.account.Username, name, slot)
+	log.Printf("client: %s created character %q slot=%d actor_def_id=%d", c.account.Username, name, slot, actorDefID)
 	return c.sendCreateCharResult(protocol.ResultOK, "Character created")
 }
 
@@ -351,6 +371,17 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	}
 	actor.SpellCooldowns = make(map[uint16]int64)
 
+	// Resolve player appearance from the actor def (same path as NPCs).
+	log.Printf("client: handleStartGame actor_def_id=%d for char %q", char.ActorDefID, char.Name)
+	if char.ActorDefID > 0 {
+		if app := BuildAppearance(ctx, c.server.db, char.ActorDefID); app != nil {
+			actor.Appearance = app
+			log.Printf("client: appearance resolved: %d mesh(es)", len(app.Meshes))
+		} else {
+			log.Printf("client: BuildAppearance returned nil for actor_def_id=%d", char.ActorDefID)
+		}
+	}
+
 	// Close the dummy actor created at connect time and swap in the real one.
 	c.actor.Close()
 	c.actor = actor
@@ -371,6 +402,8 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 		c.account.Username, char.Name, actor.RuntimeID, char.AreaName)
 
 	// Send PStartGame to the entering player.
+	// Appearance section is appended after the base fields so the client can
+	// initialize the player model before the first render frame.
 	{
 		var w Writer
 		w.WriteUint32(actor.RuntimeID)
@@ -383,7 +416,8 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 		w.WriteInt32(actor.HealthMax)
 		w.WriteInt32(actor.Energy)
 		w.WriteInt32(actor.EnergyMax)
-		if err := c.sendPacket(protocol.PStartGame, w.Bytes()); err != nil {
+		payload := append(w.Bytes(), world.AppearanceBytes(actor.Appearance)...)
+		if err := c.sendPacket(protocol.PStartGame, payload); err != nil {
 			return err
 		}
 	}
@@ -406,6 +440,12 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	// Inform everyone already in the zone about the new player.
 	newActorPkt := world.NewActorPayload(actor)
 	area.Broadcast(buildFramedPacket(protocol.PNewActor, newActorPkt), actor.RuntimeID)
+
+	// Also send the player's own PNewActor to themselves so the client can
+	// resolve the actor def appearance (model path, animations, etc.).
+	if err := c.sendPacket(protocol.PNewActor, newActorPkt); err != nil {
+		return err
+	}
 
 	// Send portal positions so the client can render markers.
 	c.sendPortals(area)

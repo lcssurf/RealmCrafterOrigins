@@ -89,6 +89,7 @@ int main() {
     rco::GameState               state = rco::GameState::Login;
     rco::PlayerState             player{};
     std::vector<rco::CharacterInfo> characters;
+    std::vector<rco::PlayableDef>   playable_defs;
     std::string                  login_error;
 
     // Appearance data received in PNewActor. We store it on the entry (instead
@@ -205,6 +206,10 @@ int main() {
 
     uint32_t player_gold = 0;
 
+    // Local player appearance — populated from PNewActor when rid == player.runtimeId.
+    std::vector<WorldMesh> player_meshes;
+    std::vector<WorldAnim> player_anims;
+
     // Combat state
     uint32_t combat_target     = 0;
     double   last_attack_sent  = 0.0;
@@ -308,19 +313,34 @@ int main() {
                 break;
             }
 
+            case rco::net::kPPlayableDefs: {
+                playable_defs.clear();
+                uint8_t count = r.ReadU8();
+                for (int i = 0; i < count && r.OK(); ++i) {
+                    rco::PlayableDef d;
+                    d.id        = r.ReadU16();
+                    d.name      = r.ReadString();
+                    d.race      = r.ReadString();
+                    d.charClass = r.ReadString();
+                    playable_defs.push_back(std::move(d));
+                }
+                break;
+            }
+
             case rco::net::kPCharListResult: {
                 characters.clear();
                 uint8_t count = r.ReadU8();
                 for (int i = 0; i < count && r.OK(); ++i) {
                     rco::CharacterInfo c;
-                    c.slot      = static_cast<int>(r.ReadU8());
-                    c.name      = r.ReadString();
-                    c.race      = r.ReadString();
-                    c.charClass = r.ReadString();
-                    c.level     = r.ReadU16();
-                    c.area      = r.ReadString();
-                    c.health    = static_cast<int32_t>(r.ReadU32());
-                    c.healthMax = static_cast<int32_t>(r.ReadU32());
+                    c.slot        = static_cast<int>(r.ReadU8());
+                    c.name        = r.ReadString();
+                    c.race        = r.ReadString();
+                    c.charClass   = r.ReadString();
+                    c.level       = r.ReadU16();
+                    c.area        = r.ReadString();
+                    c.health      = static_cast<int32_t>(r.ReadU32());
+                    c.healthMax   = static_cast<int32_t>(r.ReadU32());
+                    c.actorDefID  = r.ReadU16();
                     characters.push_back(std::move(c));
                 }
                 state = rco::GameState::CharacterSelect;
@@ -365,6 +385,56 @@ int main() {
                 player.energy    = static_cast<int32_t>(r.ReadU32());
                 player.energyMax = static_cast<int32_t>(r.ReadU32());
                 if (!r.OK()) break;
+
+                // Read appearance section (same format as PNewActor tail).
+                player_meshes.clear();
+                player_anims.clear();
+                {
+                    uint8_t nm = r.ReadU8();
+                    for (uint8_t i = 0; i < nm && r.OK(); ++i) {
+                        WorldMesh wm;
+                        wm.slot       = r.ReadU8();
+                        wm.model_path = r.ReadString();
+                        wm.scale      = r.ReadF32();
+                        wm.albedo     = r.ReadString();
+                        wm.normal     = r.ReadString();
+                        wm.orm        = r.ReadString();
+                        wm.ar         = r.ReadF32();
+                        wm.ag         = r.ReadF32();
+                        wm.ab         = r.ReadF32();
+                        wm.roughness  = r.ReadF32();
+                        wm.metallic   = r.ReadF32();
+                        uint8_t nmm   = r.ReadU8();
+                        for (uint8_t j = 0; j < nmm && r.OK(); ++j) {
+                            WorldAiMat wam;
+                            wam.ai_name  = r.ReadString();
+                            wam.albedo   = r.ReadString();
+                            wam.normal   = r.ReadString();
+                            wam.orm      = r.ReadString();
+                            wam.ar       = r.ReadF32();
+                            wam.ag       = r.ReadF32();
+                            wam.ab       = r.ReadF32();
+                            wam.roughness= r.ReadF32();
+                            wam.metallic = r.ReadF32();
+                            wm.material_map.push_back(std::move(wam));
+                        }
+                        player_meshes.push_back(std::move(wm));
+                    }
+                    uint8_t na = r.ReadU8();
+                    for (uint8_t i = 0; i < na && r.OK(); ++i) {
+                        WorldAnim wa;
+                        wa.action        = r.ReadString();
+                        wa.source_path   = r.ReadString();
+                        wa.clip_override = r.ReadString();
+                        player_anims.push_back(std::move(wa));
+                    }
+                }
+                std::fprintf(stderr,
+                    "[PStartGame] rid=%u player_meshes=%u player_anims=%u\n",
+                    player.runtimeId,
+                    (unsigned)player_meshes.size(),
+                    (unsigned)player_anims.size());
+
                 state = rco::GameState::InGame;
                 // Seed character sheet stats
                 inventory.stat_name   = player.name;
@@ -472,6 +542,80 @@ int main() {
                     anims.push_back(std::move(a));
                 }
                 if (!r.OK()) break;
+
+                // If this is the local player's own PNewActor, store the
+                // appearance data for use when initializing player_actor.
+                std::fprintf(stderr,
+                    "[PNewActor] rid=%u (player.runtimeId=%u) meshes=%u anims=%u\n",
+                    rid, player.runtimeId,
+                    (unsigned)meshes.size(), (unsigned)anims.size());
+                if (rid == player.runtimeId) {
+                    std::fprintf(stderr,
+                        "[PNewActor-self] intercepted rid=%u meshes=%u — storing player appearance\n",
+                        rid, (unsigned)meshes.size());
+                    player_meshes.clear();
+                    player_meshes.reserve(meshes.size());
+                    for (auto& m : meshes) {
+                        WorldMesh wm;
+                        wm.slot       = m.slot;
+                        wm.model_path = std::move(m.model_path);
+                        wm.scale      = m.scale;
+                        wm.albedo     = std::move(m.albedo);
+                        wm.normal     = std::move(m.normal);
+                        wm.orm        = std::move(m.orm);
+                        wm.ar = m.ar; wm.ag = m.ag; wm.ab = m.ab;
+                        wm.roughness = m.roughness;
+                        wm.metallic  = m.metallic;
+                        wm.material_map.reserve(m.material_map.size());
+                        for (auto& am : m.material_map) {
+                            WorldAiMat wam;
+                            wam.ai_name = std::move(am.ai_name);
+                            wam.albedo  = std::move(am.albedo);
+                            wam.normal  = std::move(am.normal);
+                            wam.orm     = std::move(am.orm);
+                            wam.ar = am.ar; wam.ag = am.ag; wam.ab = am.ab;
+                            wam.roughness = am.roughness;
+                            wam.metallic  = am.metallic;
+                            wm.material_map.push_back(std::move(wam));
+                        }
+                        player_meshes.push_back(std::move(wm));
+                    }
+                    player_anims.clear();
+                    player_anims.reserve(anims.size());
+                    for (auto& a : anims) {
+                        player_anims.push_back({std::move(a.action),
+                                                std::move(a.source_path),
+                                                std::move(a.clip_override)});
+                    }
+                    // Re-init player_actor if renderer is already up.
+                    if (renderer_ready && !player_meshes.empty()) {
+                        const WorldMesh& body = player_meshes[0];
+                        player_actor.Init("shaders",
+                                          body.model_path.c_str(),
+                                          &engine.materials());
+                        player_actor.scale = body.scale > 0.f ? body.scale : 1.f;
+                        if (player_actor.IsLoaded() && !body.material_map.empty()) {
+                            std::unordered_map<std::string,
+                                rco::renderer::Model::MaterialPaths> by_name;
+                            for (const auto& am : body.material_map) {
+                                rco::renderer::Model::MaterialPaths mp;
+                                mp.albedo = am.albedo;
+                                mp.normal = am.normal;
+                                mp.orm    = am.orm;
+                                by_name[am.ai_name] = std::move(mp);
+                            }
+                            player_actor.ApplyMaterialsByName(engine.materials(), by_name);
+                        }
+                        for (auto& wa : player_anims) {
+                            if (!wa.source_path.empty())
+                                player_actor.LoadAnim(wa.source_path.c_str(),
+                                                      wa.action.c_str());
+                        }
+                        engine.RebuildMaterialsBuffer();
+                        camera.SetActorHeight(player_actor.ModelHeight());
+                    }
+                    break;
+                }
 
                 auto& e = world_actors[rid];  // in-place; avoids copy (actor is unique_ptr)
                 e.x = x; e.y = y; e.z = z; e.yaw = yaw;
@@ -928,14 +1072,12 @@ int main() {
         },
         .OnCreate = [&](int slot,
                         const std::string& name,
-                        const std::string& race,
-                        const std::string& cls,
+                        uint16_t actor_def_id,
                         int gender) {
             rco::net::Writer w;
             w.WriteU8(static_cast<uint8_t>(slot));
             w.WriteString(name);
-            w.WriteString(race);
-            w.WriteString(cls);
+            w.WriteU16(actor_def_id);
             w.WriteU8(static_cast<uint8_t>(gender));
             conn.SendPacket(rco::net::kPCreateCharacter, w);
         },
@@ -960,6 +1102,18 @@ int main() {
     audio.Init();
 
     double last_time = glfwGetTime();
+
+    // ---------------------------------------------------------------------------
+    // Persistent mouse state — shared between the camera-orbit section and the
+    // LMB-targeting section inside the game loop.
+    // ---------------------------------------------------------------------------
+    bool   ms_rmb_prev    = false;  // RMB state last frame
+    bool   ms_lmb_prev    = false;  // LMB state last frame
+    bool   ms_lmb_drag    = false;  // true while LMB drag (orbit) is active
+    bool   ms_lmb_click   = false;  // true for exactly one frame: LMB released without drag
+    double ms_prev_x      = 0.0, ms_prev_y = 0.0;
+    double ms_lmb_start_x = 0.0, ms_lmb_start_y = 0.0;
+    constexpr float kDragThresholdPx = 4.f;
 
     while (!window.ShouldClose()) {
 
@@ -992,9 +1146,36 @@ int main() {
                 std::fprintf(stderr, "[engine] init ok\n");
 
                 if (terrain.Init()) {
-                    player_actor.Init("shaders", "assets/models/player.glb",
+                    // Use the appearance from the actor def if already received,
+                    // otherwise fall back to the default placeholder model.
+                    const char* player_model = !player_meshes.empty()
+                        ? player_meshes[0].model_path.c_str()
+                        : "assets/models/player.glb";
+                    player_actor.Init("shaders", player_model,
                                       &engine.materials());
+                    if (!player_meshes.empty()) {
+                        const WorldMesh& body = player_meshes[0];
+                        player_actor.scale = body.scale > 0.f ? body.scale : 1.f;
+                        if (player_actor.IsLoaded() && !body.material_map.empty()) {
+                            std::unordered_map<std::string,
+                                rco::renderer::Model::MaterialPaths> by_name;
+                            for (const auto& am : body.material_map) {
+                                rco::renderer::Model::MaterialPaths mp;
+                                mp.albedo = am.albedo;
+                                mp.normal = am.normal;
+                                mp.orm    = am.orm;
+                                by_name[am.ai_name] = std::move(mp);
+                            }
+                            player_actor.ApplyMaterialsByName(engine.materials(), by_name);
+                        }
+                    }
+                    for (auto& wa : player_anims) {
+                        if (!wa.source_path.empty())
+                            player_actor.LoadAnim(wa.source_path.c_str(),
+                                                  wa.action.c_str());
+                    }
                     engine.RebuildMaterialsBuffer();
+                    camera.SetActorHeight(player_actor.ModelHeight());
                     particles.Init();
                     renderer_ready = true;
                     terrain.LoadFromEditor(player.areaName);
@@ -1008,53 +1189,95 @@ int main() {
             if (renderer_ready) {
                 GLFWwindow* w = window.Handle();
 
-                // ---- RMB held: lock cursor + mouselook (RC 1.26 style) ----
-                // Holding RMB decouples the camera from the character: the
-                // mouse rotates CAM yaw/pitch freely, but the character keeps
-                // facing wherever A/D pointed it. Releasing RMB does NOT
-                // re-sync the camera — only W/S without RMB does that.
+                // ---- Mouse orbit (WoW-style LMB + RMB) ----
+                // LMB drag : orbit camera only — player yaw stays unchanged.
+                // RMB drag : orbit camera AND rotate the character (player.yaw
+                //            syncs to camera.GetYaw() every frame while held).
+                // Both held: move forward in the camera's facing direction
+                //            (handled in the movement section below).
                 {
-                    static bool   rmb_prev = false;
-                    static double prev_mx  = 0, prev_my = 0;
                     bool cur_rmb = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+                    bool cur_lmb = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
 
-                    if (cur_rmb && !rmb_prev) {
-                        glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-                        glfwGetCursorPos(w, &prev_mx, &prev_my);
+                    // --- LMB press: record start pos for drag detection ---
+                    if (cur_lmb && !ms_lmb_prev) {
+                        glfwGetCursorPos(w, &ms_lmb_start_x, &ms_lmb_start_y);
+                        ms_lmb_drag  = false;
+                        ms_lmb_click = false;
                     }
-                    if (!cur_rmb && rmb_prev)
-                        glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-
-                    if (cur_rmb) {
+                    // --- LMB held without RMB: promote to drag if moved enough ---
+                    if (cur_lmb && !cur_rmb && !ms_lmb_drag && !ImGui::GetIO().WantCaptureMouse) {
                         double cx, cy;
                         glfwGetCursorPos(w, &cx, &cy);
-                        camera.ApplyMouseDelta((float)(cx - prev_mx), (float)(cy - prev_my));
-                        prev_mx = cx; prev_my = cy;
-                        // NOTE: player.yaw intentionally NOT touched here —
-                        // RC does not rotate the character during mouselook.
+                        float moved = std::hypot((float)(cx - ms_lmb_start_x),
+                                                 (float)(cy - ms_lmb_start_y));
+                        if (moved > kDragThresholdPx) {
+                            ms_lmb_drag = true;
+                            glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                            glfwGetCursorPos(w, &ms_prev_x, &ms_prev_y);
+                        }
                     }
-                    rmb_prev = cur_rmb;
+                    // --- LMB release ---
+                    if (!cur_lmb && ms_lmb_prev) {
+                        if (ms_lmb_drag) {
+                            ms_lmb_drag = false;
+                            if (!cur_rmb)
+                                glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                        } else {
+                            ms_lmb_click = true;  // click without drag → targeting fires below
+                        }
+                    }
+
+                    // --- RMB press ---
+                    if (cur_rmb && !ms_rmb_prev) {
+                        glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                        glfwGetCursorPos(w, &ms_prev_x, &ms_prev_y);
+                        ms_lmb_drag = false;  // LMB drag superseded by RMB
+                    }
+                    // --- RMB release ---
+                    if (!cur_rmb && ms_rmb_prev && !ms_lmb_drag)
+                        glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+
+                    // --- Apply mouse delta for any active drag ---
+                    if (cur_rmb || ms_lmb_drag) {
+                        double cx, cy;
+                        glfwGetCursorPos(w, &cx, &cy);
+                        camera.ApplyMouseDelta((float)(cx - ms_prev_x),
+                                               (float)(cy - ms_prev_y));
+                        ms_prev_x = cx; ms_prev_y = cy;
+
+                        if (cur_rmb) {
+                            // RMB: character rotates to face the same direction as camera.
+                            player.yaw = camera.GetYaw();
+                        }
+                        // LMB drag: camera-only orbit, player yaw unchanged.
+                    }
+
+                    ms_rmb_prev = cur_rmb;
+                    ms_lmb_prev = cur_lmb;
                 }
 
-                // ---- RC 1.26 keyboard movement ----
-                // W/S : walk forward/back along the CHARACTER's facing.
-                //       Without RMB held, W/S also centre the camera behind
-                //       the character (yaw=player.yaw, pitch=0) — this is
-                //       the classic RC "snap follow" when you start walking.
-                // A/D : rotate the character. Camera keeps its current
-                //       relative offset (AddYaw by the same delta) so the
-                //       chase angle stays consistent through turns.
-                // Q/E : strafe (RCO extension — RC 1.26 has no strafe key).
+                // ---- Keyboard + mouse-button movement ----
+                // W/S           : walk forward/back along the character's facing.
+                // A/D           : turn character (camera follows 1:1).
+                // Q/E           : strafe.
+                // LMB+RMB held  : run forward in the camera's facing direction.
+                // W/S without RMB+drag → smooth camera snap behind the player.
                 if (!player_dead && !ImGui::GetIO().WantCaptureKeyboard) {
-                    bool rmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+                    bool rmb_held  = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+                    bool lmb_held  = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
+                    bool both_held = rmb_held && lmb_held;
                     constexpr float kSpeed    = 8.f;
                     constexpr float kTurnRate = 150.f;
 
-                    bool moving_fwd  = glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS;
+                    bool moving_fwd  = glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS || both_held;
                     bool moving_back = glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS;
 
-                    // A/D — turn the character. Camera follows 1:1 so the
-                    // relative chase-cam offset stays fixed during turns.
+                    // When both buttons are held the character faces the camera's
+                    // direction so movement goes where you're looking.
+                    if (both_held) player.yaw = camera.GetYaw();
+
+                    // A/D — turn character; camera keeps its relative offset.
                     float turn = 0.f;
                     if (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS) turn += kTurnRate * dt;
                     if (glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS) turn -= kTurnRate * dt;
@@ -1063,9 +1286,11 @@ int main() {
                         camera.AddYaw(turn);
                     }
 
-                    // W/S without RMB → snap camera directly behind the player.
-                    if ((moving_fwd || moving_back) && !rmb_held) {
-                        camera.SetYaw(player.yaw);
+                    // W/S/both-btn without RMB drag → smooth camera re-centre.
+                    bool no_manual_drag = !rmb_held && !ms_lmb_drag;
+                    if ((moving_fwd || moving_back) && no_manual_drag) {
+                        // Fast lerp back behind the player (~270°/s).
+                        camera.LerpYawToward(player.yaw, 270.f, dt);
                         camera.SetPitch(0.f);
                     }
 
@@ -1322,8 +1547,9 @@ int main() {
                 // HDRI skybox is now drawn by pipeline->skyboxPass_().
 
                 // Left-click: select closest actor within 55 px of cursor.
+                // ms_lmb_click is set by the orbit section above: true for one
+                // frame when LMB was released without dragging.
                 {
-                    static bool prev_lmb = false;
                     // Ground-AoE targeting: resolve mouse ray to world XZ plane.
                     float ground_cursor_x = 0.f, ground_cursor_z = 0.f;
                     if (spellbar.pending_ground_spell != 0) {
@@ -1373,17 +1599,16 @@ int main() {
                                             5.f, IM_COL32(255, 220, 40, 200));
                     }
 
-                    bool cur_lmb = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-                    // Ground-AoE click: consume LMB and fire the spell.
-                    if (cur_lmb && !prev_lmb && spellbar.pending_ground_spell != 0
+                    // Ground-AoE click: consume LMB click and fire the spell.
+                    if (ms_lmb_click && spellbar.pending_ground_spell != 0
                         && !ImGui::GetIO().WantCaptureMouse) {
                         if (spellbar.on_cast_ground)
                             spellbar.on_cast_ground(spellbar.pending_ground_spell,
                                                     ground_cursor_x, ground_cursor_z);
                         spellbar.pending_ground_spell = 0;
-                        prev_lmb = cur_lmb;
+                        ms_lmb_click = false;
                     } else
-                    if (cur_lmb && !prev_lmb && !player_dead && !ImGui::GetIO().WantCaptureMouse) {
+                    if (ms_lmb_click && !player_dead && !ImGui::GetIO().WantCaptureMouse) {
                         double mx, my;
                         glfwGetCursorPos(w, &mx, &my);
                         float best_dist2 = 55.f * 55.f;
@@ -1431,7 +1656,7 @@ int main() {
                             pending_interact = 0;
                         }
                     }
-                    prev_lmb = cur_lmb;
+                    ms_lmb_click = false;  // consumed; reset for next frame
                 }
 
                 // ---- Tab: cycle to nearest hostile actor ----
@@ -1500,6 +1725,7 @@ int main() {
 
             case rco::GameState::CharacterSelect:
                 char_select.SetCharacters(characters);
+                char_select.SetPlayableDefs(playable_defs);
                 char_select.SetError(login_error);
                 char_select.Render(window.Width(), window.Height());
                 break;

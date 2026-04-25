@@ -61,18 +61,35 @@ GLuint Terrain::LoadLinearTex(const std::string& path) { return LoadTexInternal(
 // ---------------------------------------------------------------------------
 // Texture role detection (mirrors terrain-editor material.h)
 // ---------------------------------------------------------------------------
-enum class TexRole { Albedo, Normal, Roughness, AO, ORM, Unknown };
+enum class TexRole { Albedo, Normal, Roughness, AO, Height, ORM, Unknown };
 
 static TexRole GuessRole(const std::string& stem) {
     std::string s = stem;
     std::transform(s.begin(), s.end(), s.begin(), ::tolower);
-    if (s.find("orm") != std::string::npos || s.find("arm") != std::string::npos)
-        return TexRole::ORM;
+
+    // Normal must be tested BEFORE ORM/ARM, otherwise "_normal-ogl" matches
+    // the "orm" substring inside "n[orm]al" and gets miscategorised.
     bool isDX = s.find("_dx") != std::string::npos || s.find("dx_") != std::string::npos;
     if (!isDX && (s.find("nor") != std::string::npos ||
                   s.find("nrm") != std::string::npos ||
                   s.find("normal") != std::string::npos))
         return TexRole::Normal;
+
+    // ORM/ARM must be matched on word-ish boundaries to avoid the "normal"
+    // collision above. We require a separator (_/-/.) before or after.
+    auto isMatchedToken = [&](const std::string& tok) {
+        size_t pos = 0;
+        while ((pos = s.find(tok, pos)) != std::string::npos) {
+            bool leftOk  = (pos == 0) || s[pos-1] == '_' || s[pos-1] == '-' || s[pos-1] == '.';
+            size_t end   = pos + tok.size();
+            bool rightOk = (end == s.size()) || s[end] == '_' || s[end] == '-' || s[end] == '.';
+            if (leftOk && rightOk) return true;
+            pos = end;
+        }
+        return false;
+    };
+    if (isMatchedToken("orm") || isMatchedToken("arm"))
+        return TexRole::ORM;
     if (s.find("col") != std::string::npos || s.find("albedo") != std::string::npos ||
         s.find("diffuse") != std::string::npos || s.find("diff") != std::string::npos ||
         s.find("basecolor") != std::string::npos || s.find("base_color") != std::string::npos)
@@ -81,6 +98,9 @@ static TexRole GuessRole(const std::string& stem) {
     if (s == "ao" || s.find("_ao") != std::string::npos || s.find("ao_") != std::string::npos ||
         s.find("ambient") != std::string::npos || s.find("occlusion") != std::string::npos)
         return TexRole::AO;
+    if (s.find("height") != std::string::npos || s.find("disp") != std::string::npos ||
+        s.find("bump") != std::string::npos)
+        return TexRole::Height;
     return TexRole::Unknown;
 }
 
@@ -99,6 +119,8 @@ bool Terrain::Init(int gw, int gh) {
 
     def_normal_    = MakeSolidTex(128, 128, 255);
     def_roughness_ = MakeSolidTex(180, 180, 180);
+    def_ao_        = MakeSolidTex(255, 255, 255);   // no occlusion
+    def_height_    = MakeSolidTex(128, 128, 128);   // mid-height (neutral for height-blend)
 
     GenerateProcedural();
     return true;
@@ -232,6 +254,8 @@ bool Terrain::LoadFromEditor(const std::string& area_name) {
                 m.tiling    = tiling;
                 m.normal    = def_normal_;
                 m.roughness = def_roughness_;
+                m.ao        = def_ao_;
+                m.height    = def_height_;
 
                 for (auto& entry : fs::directory_iterator(mat_dir)) {
                     if (!entry.is_regular_file() || !IsImg(entry.path())) continue;
@@ -248,6 +272,14 @@ bool Terrain::LoadFromEditor(const std::string& area_name) {
                     case TexRole::ORM:
                         if (m.roughness == def_roughness_)
                             m.roughness = LoadLinearTex(entry.path().string());
+                        break;
+                    case TexRole::AO:
+                        if (m.ao == def_ao_)
+                            m.ao = LoadLinearTex(entry.path().string());
+                        break;
+                    case TexRole::Height:
+                        if (m.height == def_height_)
+                            m.height = LoadLinearTex(entry.path().string());
                         break;
                     default: break;
                     }
@@ -339,10 +371,14 @@ void Terrain::Submit(Pipeline& pipeline) const {
             base.mat_albedo[i]    = materials_[i].albedo;
             base.mat_normal[i]    = materials_[i].normal    ? materials_[i].normal    : def_normal_;
             base.mat_roughness[i] = materials_[i].roughness ? materials_[i].roughness : def_roughness_;
+            base.mat_ao[i]        = materials_[i].ao        ? materials_[i].ao        : def_ao_;
+            base.mat_height[i]    = materials_[i].height    ? materials_[i].height    : def_height_;
         } else {
             base.mat_albedo[i]    = 0;
             base.mat_normal[i]    = def_normal_;
             base.mat_roughness[i] = def_roughness_;
+            base.mat_ao[i]        = def_ao_;
+            base.mat_height[i]    = def_height_;
         }
     }
     base.tiling         = materials_.empty() ? 4.0f : materials_[0].tiling;
@@ -402,6 +438,8 @@ void Terrain::UnloadMaterials() {
         del(m.albedo);
         if (m.normal    != def_normal_)    del(m.normal);
         if (m.roughness != def_roughness_) del(m.roughness);
+        if (m.ao        != def_ao_)        del(m.ao);
+        if (m.height    != def_height_)    del(m.height);
     }
     materials_.clear();
     has_materials_ = false;
@@ -415,6 +453,8 @@ void Terrain::Destroy() {
     UnloadMaterials();
     if (def_normal_)    { glDeleteTextures(1, &def_normal_);    def_normal_    = 0; }
     if (def_roughness_) { glDeleteTextures(1, &def_roughness_); def_roughness_ = 0; }
+    if (def_ao_)        { glDeleteTextures(1, &def_ao_);        def_ao_        = 0; }
+    if (def_height_)    { glDeleteTextures(1, &def_height_);    def_height_    = 0; }
     if (splatmap_tex_)  { glDeleteTextures(1, &splatmap_tex_);  splatmap_tex_  = 0; }
 }
 

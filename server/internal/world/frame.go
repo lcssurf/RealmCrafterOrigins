@@ -36,6 +36,70 @@ func (b *pb) str(s string) {
 	*b = append(*b, []byte(s)...)
 }
 
+// AppearanceBytes serialises only the appearance section (num_meshes … num_anims)
+// using the same layout as the tail of NewActorPayload. The result can be
+// appended to any packet that needs to carry appearance data (e.g. PStartGame).
+func AppearanceBytes(app *Appearance) []byte {
+	var p pb
+	if app == nil {
+		p.u8(0) // num_meshes
+		p.u8(0) // num_anims
+		return p
+	}
+	n := len(app.Meshes)
+	if n > 255 {
+		n = 255
+	}
+	p.u8(uint8(n))
+	for i := 0; i < n; i++ {
+		m := &app.Meshes[i]
+		p.u8(m.Slot)
+		p.str(m.ModelPath)
+		if m.Scale == 0 {
+			p.f32(1.0)
+		} else {
+			p.f32(m.Scale)
+		}
+		p.str(m.AlbedoPath)
+		p.str(m.NormalPath)
+		p.str(m.ORMPath)
+		p.f32(m.AlbedoR)
+		p.f32(m.AlbedoG)
+		p.f32(m.AlbedoB)
+		p.f32(m.Roughness)
+		p.f32(m.Metallic)
+		nm := len(m.MaterialMap)
+		if nm > 255 {
+			nm = 255
+		}
+		p.u8(uint8(nm))
+		for j := 0; j < nm; j++ {
+			am := &m.MaterialMap[j]
+			p.str(am.AiName)
+			p.str(am.AlbedoPath)
+			p.str(am.NormalPath)
+			p.str(am.ORMPath)
+			p.f32(am.AlbedoR)
+			p.f32(am.AlbedoG)
+			p.f32(am.AlbedoB)
+			p.f32(am.Roughness)
+			p.f32(am.Metallic)
+		}
+	}
+	na := len(app.Anims)
+	if na > 255 {
+		na = 255
+	}
+	p.u8(uint8(na))
+	for i := 0; i < na; i++ {
+		b := &app.Anims[i]
+		p.str(b.Action)
+		p.str(b.SourcePath)
+		p.str(b.ClipOverride)
+	}
+	return p
+}
+
 // NewActorPayload builds a PNewActor payload for any actor. Exported so the
 // `net` package can use it when a new client enters an area and needs to be
 // informed about the existing actors. Keeping this as the single source of

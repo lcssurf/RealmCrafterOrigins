@@ -51,6 +51,7 @@ constexpr uint16_t kPPickupItem       = 113;
 constexpr uint16_t kPRemoveWorldItem  = 114;
 constexpr uint16_t kPOpenShop         = 115;
 constexpr uint16_t kPShopAction       = 116;
+constexpr uint16_t kPPlayableDefs     = 118; // S→C: list of actor defs available for character creation
 
 // ---------------------------------------------------------------------------
 // Result codes

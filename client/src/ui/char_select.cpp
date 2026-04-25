@@ -22,6 +22,11 @@ void CharSelect::SetCharacters(const std::vector<rco::CharacterInfo>& chars) {
     characters_ = chars;
 }
 
+void CharSelect::SetPlayableDefs(const std::vector<rco::PlayableDef>& defs) {
+    playable_defs_ = defs;
+    new_def_idx_   = 0;
+}
+
 void CharSelect::SetError(const std::string& msg) {
     error_msg_ = msg;
 }
@@ -286,17 +291,33 @@ void CharSelect::RenderCreateForm(int /*screenW*/, int /*screenH*/) {
 
     ImGui::SameLine();
 
-    // Race
-    ImGui::Text("Race");
-    ImGui::SetNextItemWidth(120.f);
-    ImGui::Combo("##new_race", &new_race_, kRaces, 4);
-
-    ImGui::SameLine();
-
-    // Class
-    ImGui::Text("Class");
-    ImGui::SetNextItemWidth(120.f);
-    ImGui::Combo("##new_class", &new_class_, kClasses, 4);
+    // Character type (actor def)
+    ImGui::Text("Type");
+    ImGui::SetNextItemWidth(200.f);
+    if (playable_defs_.empty()) {
+        ImGui::TextDisabled("(no playable characters defined in GUE)");
+    } else {
+        const char* preview = playable_defs_[new_def_idx_].name.c_str();
+        if (ImGui::BeginCombo("##new_def", preview)) {
+            for (int i = 0; i < static_cast<int>(playable_defs_.size()); ++i) {
+                const bool selected = (i == new_def_idx_);
+                char label[128];
+                std::snprintf(label, sizeof(label), "%s  (%s / %s)",
+                    playable_defs_[i].name.c_str(),
+                    playable_defs_[i].race.c_str(),
+                    playable_defs_[i].charClass.c_str());
+                if (ImGui::Selectable(label, selected))
+                    new_def_idx_ = i;
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        // Show race/class hint beneath the combo
+        ImGui::TextDisabled("  %s  |  %s",
+            playable_defs_[new_def_idx_].race.c_str(),
+            playable_defs_[new_def_idx_].charClass.c_str());
+    }
 
     ImGui::Spacing();
 
@@ -308,27 +329,25 @@ void CharSelect::RenderCreateForm(int /*screenW*/, int /*screenH*/) {
 
     ImGui::Spacing();
 
+    const bool can_create = (std::strlen(new_name_) > 0) && !playable_defs_.empty();
+
+    if (!can_create) ImGui::BeginDisabled();
     if (ImGui::Button("Create", {120.f, 30.f})) {
         error_msg_.clear();
-        if (std::strlen(new_name_) == 0) {
-            error_msg_ = "Please enter a character name.";
-        } else {
-            if (cb_.OnCreate) {
-                cb_.OnCreate(
-                    selected_slot_,
-                    new_name_,
-                    kRaces[new_race_],
-                    kClasses[new_class_],
-                    new_gender_);
-            }
-            // Reset form
-            std::memset(new_name_, 0, sizeof(new_name_));
-            new_race_    = 0;
-            new_class_   = 0;
-            new_gender_  = 0;
-            show_create_ = false;
+        if (cb_.OnCreate) {
+            cb_.OnCreate(
+                selected_slot_,
+                new_name_,
+                playable_defs_[new_def_idx_].id,
+                new_gender_);
         }
+        // Reset form
+        std::memset(new_name_, 0, sizeof(new_name_));
+        new_def_idx_ = 0;
+        new_gender_  = 0;
+        show_create_ = false;
     }
+    if (!can_create) ImGui::EndDisabled();
 
     ImGui::SameLine();
 

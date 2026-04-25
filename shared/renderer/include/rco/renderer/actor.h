@@ -94,6 +94,13 @@ public:
     const std::string& CurrentAnim() const { return cur_name_; }
     float              AnimTime()    const { return anim_t_; }
 
+    // World-space height of the model (bind-pose AABB top × scale).
+    // Returns a sensible default (1.8) if the model isn't loaded yet.
+    float ModelHeight() const {
+        float h = model_.MaxY() * scale;
+        return h > 0.1f ? h : 1.8f;
+    }
+
     // Read-only access to the wrapped Model — useful for callers that need
     // its clip metadata or submesh material names.
     const Model& model() const { return model_; }

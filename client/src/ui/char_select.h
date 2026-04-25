@@ -18,8 +18,7 @@ struct CharSelectCallbacks {
     // User submitted the create-character form.
     std::function<void(int slot,
                        const std::string& name,
-                       const std::string& race,
-                       const std::string& charClass,
+                       uint16_t actor_def_id,
                        int gender)> OnCreate;
 
     // User wants to delete the character in the given slot.
@@ -39,6 +38,9 @@ public:
     // Replace the character list (called after PCharListResult is parsed).
     void SetCharacters(const std::vector<rco::CharacterInfo>& chars);
 
+    // Replace the playable def list (called after PPlayableDefs is parsed).
+    void SetPlayableDefs(const std::vector<rco::PlayableDef>& defs);
+
     // Render the full-screen ImGui panel.  Call every frame while in
     // CharacterSelect state.
     void Render(int screenW, int screenH);
@@ -49,6 +51,7 @@ public:
 private:
     CharSelectCallbacks             cb_;
     std::vector<rco::CharacterInfo> characters_;
+    std::vector<rco::PlayableDef>   playable_defs_;
 
     // Which slot index (0–8) is currently highlighted, or -1 for none.
     int selected_slot_ = -1;
@@ -57,16 +60,12 @@ private:
 
     // Create-character form state
     char new_name_[33]{};
-    int  new_race_   = 0;
-    int  new_class_  = 0;
-    int  new_gender_ = 0;
+    int  new_def_idx_ = 0;
+    int  new_gender_  = 0;
     bool show_create_ = false;
 
     // Slot whose create / delete confirm popup is active (-1 = none).
     int  confirm_delete_slot_ = -1;
-
-    static constexpr const char* kRaces[]   = {"Human", "Elf", "Dwarf", "Orc"};
-    static constexpr const char* kClasses[] = {"Warrior", "Mage", "Rogue", "Ranger"};
 
     // Returns pointer to CharacterInfo for the given slot, or nullptr.
     const rco::CharacterInfo* FindChar(int slot) const;

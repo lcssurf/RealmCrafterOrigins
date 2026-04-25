@@ -12,8 +12,8 @@ namespace rco::renderer {
 class StaticBuffer;
 
 struct FeatureConfig {
-    bool ssao          = false;
-    bool volumetrics   = false;
+    bool ssao          = true;
+    bool volumetrics   = true;
     bool ssr           = false;
     bool fxaa          = true;
     int  shadow_method = SHADOW_METHOD_ESM;
@@ -41,10 +41,12 @@ struct TerrainChunkSubmission {
 
     GLuint    splatmap    = 0;
 
-    // 4 materials (albedo/normal/roughness). Unused slots can be 0.
+    // 4 materials (albedo/normal/roughness/ao/height). Unused slots can be 0.
     GLuint    mat_albedo[4]    = {0,0,0,0};
     GLuint    mat_normal[4]    = {0,0,0,0};
     GLuint    mat_roughness[4] = {0,0,0,0};
+    GLuint    mat_ao[4]        = {0,0,0,0};
+    GLuint    mat_height[4]    = {0,0,0,0};
 
     float     tiling         = 4.0f;
     glm::vec2 terrain_origin = glm::vec2(0.0f);

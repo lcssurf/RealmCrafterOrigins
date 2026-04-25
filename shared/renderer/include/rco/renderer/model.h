@@ -105,6 +105,10 @@ public:
     bool IsLoaded()      const { return !meshes_.empty(); }
     const std::vector<SubMesh>& meshes() const { return meshes_; }
 
+    // Y-extent of the model in bind-pose model space (feet assumed at y≈0).
+    // Multiply by Actor::scale to get the world-space height.
+    float MaxY() const { return aabb_max_y_; }
+
     // Unique aiMaterial names referenced by this model's submeshes, in the
     // order they first appear. Useful for building UI that lets the user
     // map each file-internal material to a user-created media_material.
@@ -164,6 +168,7 @@ public:
 private:
     std::vector<SubMesh>       meshes_;
     std::string                directory_;
+    float                      aabb_max_y_ = 0.f;
 
     std::vector<AnimNode>      anim_nodes_;
     std::map<std::string,int>  node_map_;
