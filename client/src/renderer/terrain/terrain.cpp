@@ -1,4 +1,5 @@
 #include "renderer/terrain/terrain.h"
+#include "rco/renderer/pipeline.h"
 #include <stb_image.h>
 #include <cstdio>
 #include <cmath>
@@ -92,14 +93,9 @@ static bool IsImg(const std::filesystem::path& p) {
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
-bool Terrain::Init(const char* shader_dir, int gw, int gh) {
+bool Terrain::Init(int gw, int gh) {
     grid_w_ = gw;
     grid_h_ = gh;
-
-    char vert[256], frag[256];
-    std::snprintf(vert, sizeof(vert), "%s/terrain.vert", shader_dir);
-    std::snprintf(frag, sizeof(frag), "%s/terrain.frag", shader_dir);
-    if (!shader_.Load(vert, frag)) return false;
 
     def_normal_    = MakeSolidTex(128, 128, 255);
     def_roughness_ = MakeSolidTex(180, 180, 180);
@@ -161,12 +157,14 @@ bool Terrain::LoadFromEditor(const std::string& area_name) {
         grid_w_ = cw;
         grid_h_ = ch;
 
-        // Origin and size derived from actual heightmap vertex count so
-        // SampleHeight and splatmap UVs stay pixel-accurate regardless of chunk count.
-        hmap_origin_x_ = -((lw - 1) * cs) * 0.5f;
-        hmap_origin_z_ = -((lh - 1) * cs) * 0.5f;
-        hmap_size_x_   =  (lw - 1) * cs;
-        hmap_size_z_   =  (lh - 1) * cs;
+        // World coords are 0-indexed to match the GUE Zone editor and the
+        // npc_spawns / scenery tables (which store positions in [0, W*cs]).
+        // Previously this was centered around the origin, causing every
+        // placed object to render off-map on the client.
+        hmap_origin_x_ = 0.f;
+        hmap_origin_z_ = 0.f;
+        hmap_size_x_   = (lw - 1) * cs;
+        hmap_size_z_   = (lh - 1) * cs;
     }
 
     // Rebuild chunks with loaded heights
@@ -334,57 +332,33 @@ void Terrain::GenerateProcedural() {
 // ---------------------------------------------------------------------------
 // Render
 // ---------------------------------------------------------------------------
-void Terrain::Render(const glm::mat4& view, const glm::mat4& proj,
-                     const glm::vec3& cam_pos, const glm::vec3& sun_dir) {
-    shader_.Use();
-    shader_.SetMat4("uView",     view);
-    shader_.SetMat4("uProj",     proj);
-    shader_.SetMat4("uModel",    glm::mat4(1.f));
-    shader_.SetVec3("uCamPos",   cam_pos);
-    shader_.SetVec3("uSunDir",   glm::normalize(sun_dir));
-    shader_.SetVec3("uSunColor", {1.0f, 0.95f, 0.80f});
-    shader_.SetVec3("uAmbient",  {0.15f, 0.18f, 0.22f});
-
-    if (has_materials_ && !materials_.empty()) {
-        shader_.SetInt("uUseMaterials", 1);
-        // Pass terrain bounds for correct splatmap UV mapping
-        glUniform2f(glGetUniformLocation(shader_.id(), "uTerrainOriginXZ"),
-                    hmap_origin_x_, hmap_origin_z_);
-        glUniform2f(glGetUniformLocation(shader_.id(), "uTerrainSizeXZ"),
-                    hmap_size_x_, hmap_size_z_);
-
-        int count = std::min((int)materials_.size(), 4);
-        shader_.SetInt("uMatCount", count);
-
-        for (int i = 0; i < count; ++i) {
-            glActiveTexture(GL_TEXTURE0 + i);
-            glBindTexture(GL_TEXTURE_2D, materials_[i].albedo);
-            glActiveTexture(GL_TEXTURE4 + i);
-            glBindTexture(GL_TEXTURE_2D, materials_[i].normal);
-            glActiveTexture(GL_TEXTURE8 + i);
-            glBindTexture(GL_TEXTURE_2D, materials_[i].roughness);
-
-            char buf[64];
-            std::snprintf(buf, sizeof(buf), "uAlbedo[%d]", i);
-            shader_.SetInt(buf, i);
-            std::snprintf(buf, sizeof(buf), "uNormal[%d]", i);
-            shader_.SetInt(buf, 4 + i);
-            std::snprintf(buf, sizeof(buf), "uRoughness[%d]", i);
-            shader_.SetInt(buf, 8 + i);
-            std::snprintf(buf, sizeof(buf), "uTiling[%d]", i);
-            shader_.SetFloat(buf, materials_[i].tiling);
+void Terrain::Submit(Pipeline& pipeline) const {
+    TerrainChunkSubmission base{};
+    for (int i = 0; i < 4; ++i) {
+        if (i < (int)materials_.size()) {
+            base.mat_albedo[i]    = materials_[i].albedo;
+            base.mat_normal[i]    = materials_[i].normal    ? materials_[i].normal    : def_normal_;
+            base.mat_roughness[i] = materials_[i].roughness ? materials_[i].roughness : def_roughness_;
+        } else {
+            base.mat_albedo[i]    = 0;
+            base.mat_normal[i]    = def_normal_;
+            base.mat_roughness[i] = def_roughness_;
         }
-
-        // Splatmap
-        glActiveTexture(GL_TEXTURE12);
-        glBindTexture(GL_TEXTURE_2D, splatmap_tex_ ? splatmap_tex_ : 0);
-        shader_.SetInt("uSplatmap", 12);
-    } else {
-        shader_.SetInt("uUseMaterials", 0);
-        shader_.SetInt("uMatCount",     0);
     }
+    base.tiling         = materials_.empty() ? 4.0f : materials_[0].tiling;
+    base.splatmap       = splatmap_tex_;
+    base.terrain_origin = { hmap_origin_x_, hmap_origin_z_ };
+    base.terrain_size   = { hmap_size_x_,   hmap_size_z_   };
 
-    for (auto& ch : chunks_) ch->Draw();
+    for (const auto& ch : chunks_) {
+        TerrainChunkSubmission c = base;
+        c.vao         = ch->vao();
+        c.vbo         = ch->vbo();
+        c.ebo         = ch->ebo();
+        c.index_count = ch->idx_count();
+        c.model       = glm::mat4(1.0f);
+        pipeline.SubmitTerrainChunk(c);
+    }
 }
 
 // ---------------------------------------------------------------------------

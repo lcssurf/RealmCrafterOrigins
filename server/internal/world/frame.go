@@ -101,6 +101,26 @@ func NewActorPayload(a *Actor) []byte {
 		p.f32(m.AlbedoB)
 		p.f32(m.Roughness)
 		p.f32(m.Metallic)
+
+		// Per-aiMaterial mapping — paint multi-material meshes correctly
+		// (e.g. Substance-named blinn slots). Capped at 255 entries.
+		nm := len(m.MaterialMap)
+		if nm > 255 {
+			nm = 255
+		}
+		p.u8(uint8(nm))
+		for j := 0; j < nm; j++ {
+			am := &m.MaterialMap[j]
+			p.str(am.AiName)
+			p.str(am.AlbedoPath)
+			p.str(am.NormalPath)
+			p.str(am.ORMPath)
+			p.f32(am.AlbedoR)
+			p.f32(am.AlbedoG)
+			p.f32(am.AlbedoB)
+			p.f32(am.Roughness)
+			p.f32(am.Metallic)
+		}
 	}
 
 	na := len(a.Appearance.Anims)

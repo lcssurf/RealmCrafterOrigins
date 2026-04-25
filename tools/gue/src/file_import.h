@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 
 namespace gue {
 
@@ -20,6 +21,28 @@ namespace gue {
 //                No leading/trailing slash. Examples: "models", "textures", "anims".
 std::string PickAndImportAsset(const char* filter_label,
                                const char* filter_exts,
+                               const char* target_subdir);
+
+// Opens the native folder picker (IFileDialog with FOS_PICKFOLDERS).
+// Returns the absolute path the user selected, or "" if cancelled.
+std::string PickFolder(const char* title = "Select folder");
+
+// Opens the native multi-select file dialog. Returns absolute paths of
+// every file the user picked. Empty vector if cancelled.
+//
+// filter_label / filter_exts — same semantics as PickAndImportAsset.
+// Pass "" to accept any file.
+std::vector<std::string> PickMultipleFiles(const char* filter_label,
+                                           const char* filter_exts);
+
+// Copies `src_abs` (absolute path on disk) into dist/client/assets/<subdir>/
+// and returns the asset-relative path (e.g. "assets/models/knight.glb").
+// If the file is already inside assets/, returns its relative path without
+// copying. Returns "" on failure.
+//
+// Shared between the single-file PickAndImportAsset flow and the batch
+// importer so both produce identical on-disk layouts.
+std::string ImportAbsolutePath(const std::string& src_abs,
                                const char* target_subdir);
 
 } // namespace gue

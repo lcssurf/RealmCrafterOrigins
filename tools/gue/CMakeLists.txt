@@ -5,21 +5,31 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Shared renderer (Model + Shader) — same code as the client uses.
+add_subdirectory(
+    "${CMAKE_SOURCE_DIR}/../../shared/renderer"
+    "${CMAKE_BINARY_DIR}/_rco_renderer"
+)
+
 file(GLOB_RECURSE GUE_SOURCES "${CMAKE_SOURCE_DIR}/src/*.cpp")
 add_executable(rco_gue ${GUE_SOURCES})
 
 find_package(glfw3                CONFIG REQUIRED)
-find_package(glad                 CONFIG REQUIRED)
+# glad is vendored in shared/renderer (bindless version) — do NOT find_package(glad)
 find_package(imgui                CONFIG REQUIRED)
+find_package(glm                  CONFIG REQUIRED)
 find_package(unofficial-sqlite3   CONFIG REQUIRED)
+find_package(Stb                  REQUIRED)
 
 target_include_directories(rco_gue PRIVATE
     "${CMAKE_SOURCE_DIR}/src"
+    ${Stb_INCLUDE_DIR}
 )
 
 target_link_libraries(rco_gue PRIVATE
+    rco_renderer
     glfw
-    glad::glad
+    glm::glm
     imgui::imgui
     unofficial::sqlite3::sqlite3
 )

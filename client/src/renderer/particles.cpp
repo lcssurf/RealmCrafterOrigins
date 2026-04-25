@@ -1,5 +1,6 @@
 #include "particles.h"
 
+#include "rco/renderer/shader.h"
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/random.hpp>
 #include <algorithm>
@@ -57,8 +58,7 @@ static float frand() { return static_cast<float>(rand()) / RAND_MAX; }
 // ---------------------------------------------------------------------------
 
 void ParticleSystem::Init() {
-    shader_.Load("shaders/particle.vert", "shaders/particle.frag");
-
+    // Shader compiled once by the engine via CompileAllShaders(); we just reference it.
     glGenVertexArrays(1, &vao_);
     glGenBuffers(1, &vbo_);
 
@@ -176,7 +176,11 @@ void ParticleSystem::Update(float now, float dt) {
 // ---------------------------------------------------------------------------
 
 void ParticleSystem::Render(const glm::mat4& view, const glm::mat4& proj) {
-    if (emitters_.empty() || shader_.id() == 0) return;
+    if (emitters_.empty()) return;
+
+    auto it = Shader::shaders.find("particle");
+    if (it == Shader::shaders.end() || !it->second) return;
+    auto& shader = *it->second;
 
     verts_.clear();
     for (const auto& e : emitters_) {
@@ -190,9 +194,9 @@ void ParticleSystem::Render(const glm::mat4& view, const glm::mat4& proj) {
     }
     if (verts_.empty()) return;
 
-    shader_.Use();
-    shader_.SetMat4("uView", view);
-    shader_.SetMat4("uProj", proj);
+    shader.Bind();
+    shader.SetMat4("uView", view);
+    shader.SetMat4("uProj", proj);
 
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);

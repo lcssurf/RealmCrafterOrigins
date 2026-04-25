@@ -33,11 +33,13 @@
 #include "../ui/spell_effects.h"
 #include "../ui/chat_bubbles.h"
 #include "../renderer/camera.h"
-#include "../renderer/skybox.h"
 #include "../renderer/terrain/terrain.h"
 #include "../renderer/actors/actor.h"
 #include "../renderer/particles.h"
 #include "../audio/audio.h"
+
+#include "rco/renderer/engine.h"
+#include "rco/renderer/pipeline.h"
 
 // Scroll callback routes wheel input to the camera.
 static rco::renderer::Camera* g_camera = nullptr;
@@ -89,6 +91,33 @@ int main() {
     std::vector<rco::CharacterInfo> characters;
     std::string                  login_error;
 
+    // Appearance data received in PNewActor. We store it on the entry (instead
+    // of instantiating rco::renderer::Actor immediately) because PNewActor
+    // packets arrive BEFORE the lazy renderer init runs — renderer_ready is
+    // still false at packet-handling time. The actual Actor is constructed on
+    // first render once renderer_ready becomes true.
+    struct WorldAiMat {
+        std::string ai_name;
+        std::string albedo, normal, orm;
+        float       ar = 0, ag = 0, ab = 0, roughness = 0, metallic = 0;
+    };
+    struct WorldMesh {
+        uint8_t     slot       = 0;
+        std::string model_path;
+        float       scale      = 1.f;
+        std::string albedo, normal, orm;
+        float       ar = 0, ag = 0, ab = 0, roughness = 0, metallic = 0;
+        // Per-aiMaterial map — server resolves the model's "blinn1=ID01"
+        // mapping into concrete texture paths. Applied on the client via
+        // Actor::ApplyMaterialsByName so multi-material meshes paint correctly.
+        std::vector<WorldAiMat> material_map;
+    };
+    struct WorldAnim {
+        std::string action;
+        std::string source_path;
+        std::string clip_override;
+    };
+
     struct WorldActorEntry {
         float x = 0, y = 0, z = 0, yaw = 0;
         std::string name;
@@ -98,8 +127,13 @@ int main() {
         std::string anim_name  = "Idle";
         float       anim_t     = 0.f;
 
-        // Per-actor rendering (from the Media Actor Def bound to this NPC).
-        // nullptr = fall back to the shared player_actor model.
+        // Appearance from the Media Actor Def bound to this NPC (if any).
+        std::vector<WorldMesh> meshes;
+        std::vector<WorldAnim> anims;
+
+        // Per-actor rendering — lazily instantiated from `meshes` on first
+        // render when renderer_ready is true. nullptr = fall back to the
+        // shared player_actor model.
         std::unique_ptr<rco::renderer::Actor> actor;
 
         WorldActorEntry() = default;
@@ -120,10 +154,12 @@ int main() {
     // Renderer
     // -----------------------------------------------------------------------
     rco::renderer::Camera  camera;
-    rco::renderer::Skybox  skybox;
     rco::renderer::Terrain terrain;
     rco::renderer::Actor   player_actor;
     bool renderer_ready = false;
+
+    rco::renderer::Engine engine;
+    std::unique_ptr<rco::renderer::Pipeline> pipeline;
 
     rco::ui::Chat            chat;
     rco::ui::Inventory       inventory;
@@ -377,12 +413,17 @@ int main() {
                 uint8_t atype    = r.ReadU8();
 
                 // Appearance — variable-length section.
+                struct IncomingAiMat {
+                    std::string ai_name, albedo, normal, orm;
+                    float       ar, ag, ab, roughness, metallic;
+                };
                 struct IncomingMesh {
                     uint8_t     slot;
                     std::string model_path;
                     float       scale;
                     std::string albedo, normal, orm;
                     float       ar, ag, ab, roughness, metallic;
+                    std::vector<IncomingAiMat> material_map;
                 };
                 struct IncomingAnim {
                     std::string action, source_path, clip_override;
@@ -403,6 +444,21 @@ int main() {
                     m.ab         = r.ReadF32();
                     m.roughness  = r.ReadF32();
                     m.metallic   = r.ReadF32();
+                    uint8_t nmm  = r.ReadU8();
+                    m.material_map.reserve(nmm);
+                    for (uint8_t j = 0; j < nmm && r.OK(); ++j) {
+                        IncomingAiMat am;
+                        am.ai_name  = r.ReadString();
+                        am.albedo   = r.ReadString();
+                        am.normal   = r.ReadString();
+                        am.orm      = r.ReadString();
+                        am.ar       = r.ReadF32();
+                        am.ag       = r.ReadF32();
+                        am.ab       = r.ReadF32();
+                        am.roughness= r.ReadF32();
+                        am.metallic = r.ReadF32();
+                        m.material_map.push_back(std::move(am));
+                    }
                     meshes.push_back(std::move(m));
                 }
                 uint8_t num_anims = r.ReadU8();
@@ -425,37 +481,52 @@ int main() {
                 e.anim_name = "Idle";
                 e.anim_t    = 0.f;
 
+                // Store appearance; the renderer-side Actor is created lazily
+                // on first render (see render loop) because renderer_ready is
+                // typically false when PNewActor arrives right after PStartGame.
+                e.meshes.clear();
+                e.meshes.reserve(meshes.size());
+                for (auto& m : meshes) {
+                    WorldMesh wm;
+                    wm.slot       = m.slot;
+                    wm.model_path = std::move(m.model_path);
+                    wm.scale      = m.scale;
+                    wm.albedo     = std::move(m.albedo);
+                    wm.normal     = std::move(m.normal);
+                    wm.orm        = std::move(m.orm);
+                    wm.ar = m.ar; wm.ag = m.ag; wm.ab = m.ab;
+                    wm.roughness = m.roughness;
+                    wm.metallic  = m.metallic;
+                    wm.material_map.reserve(m.material_map.size());
+                    for (auto& am : m.material_map) {
+                        WorldAiMat wam;
+                        wam.ai_name = std::move(am.ai_name);
+                        wam.albedo  = std::move(am.albedo);
+                        wam.normal  = std::move(am.normal);
+                        wam.orm     = std::move(am.orm);
+                        wam.ar = am.ar; wam.ag = am.ag; wam.ab = am.ab;
+                        wam.roughness = am.roughness;
+                        wam.metallic  = am.metallic;
+                        wm.material_map.push_back(std::move(wam));
+                    }
+                    e.meshes.push_back(std::move(wm));
+                }
+                e.anims.clear();
+                e.anims.reserve(anims.size());
+                for (auto& a : anims) {
+                    e.anims.push_back({std::move(a.action),
+                                       std::move(a.source_path),
+                                       std::move(a.clip_override)});
+                }
+                // Drop any pre-existing Actor — it'll be rebuilt on next render
+                // against the (possibly new) appearance data.
+                e.actor.reset();
+
                 std::fprintf(stderr,
                     "[PNewActor] rid=%u name=%s pos=(%.1f,%.1f,%.1f) "
-                    "meshes=%u anims=%u renderer_ready=%d\n",
-                    rid, name.c_str(), x, y, z,
-                    (unsigned)num_meshes, (unsigned)num_anims,
-                    renderer_ready ? 1 : 0);
-
-                // Instantiate a per-actor model if we have one. The primary
-                // renderable is the slot==0 (Body) mesh; other slots are kept
-                // for future multi-mesh rendering but not yet drawn.
-                if (renderer_ready && !meshes.empty()) {
-                    const IncomingMesh* body = nullptr;
-                    for (auto& m : meshes) {
-                        if (m.slot == 0) { body = &m; break; }
-                    }
-                    if (!body) body = &meshes.front();
-
-                    e.actor = std::make_unique<rco::renderer::Actor>();
-                    e.actor->Init("shaders", body->model_path.c_str());
-                    e.actor->scale = body->scale > 0.f ? body->scale : 1.f;
-
-                    // Load separate anim files (SourcePath non-empty) under
-                    // the action name. Embedded clips keep their file-resident
-                    // name and still work via PlayAnim("Walk"/"Attack"/…).
-                    for (auto& a : anims) {
-                        if (!a.source_path.empty()) {
-                            e.actor->LoadAnim(a.source_path.c_str(), a.action.c_str());
-                        }
-                    }
-                    e.actor->PlayAnim("Idle", true);
-                }
+                    "meshes=%u anims=%u\n",
+                    rid, e.name.c_str(), x, y, z,
+                    (unsigned)e.meshes.size(), (unsigned)e.anims.size());
                 break;
             }
 
@@ -513,7 +584,7 @@ int main() {
                     for (auto& [rid, e] : world_actors) {
                         if (e.name == sender) {
                             bx = e.x;
-                            by = renderer_ready ? terrain.SampleHeight(e.x, e.z) : e.y;
+                            by = e.y;   // chat bubble sits above the actor's actual Y
                             bz = e.z;
                             found = true;
                             break;
@@ -910,8 +981,20 @@ int main() {
 
             // Lazy-init renderer on first InGame frame
             if (!renderer_ready) {
-                if (skybox.Init("shaders") && terrain.Init("shaders")) {
-                    player_actor.Init("shaders", "assets/models/player.glb");
+                // --- New Engine/Pipeline (running in parallel to the old renderer during phase 4) ---
+                rco::renderer::EngineConfig ecfg{};
+                ecfg.width      = window.Width();
+                ecfg.height     = window.Height();
+                ecfg.shader_dir = "shaders/";
+                engine.Init(ecfg);
+                engine.LoadEnvironment("assets/ibl/default.hdr");
+                pipeline = std::make_unique<rco::renderer::Pipeline>(engine);
+                std::fprintf(stderr, "[engine] init ok\n");
+
+                if (terrain.Init()) {
+                    player_actor.Init("shaders", "assets/models/player.glb",
+                                      &engine.materials());
+                    engine.RebuildMaterialsBuffer();
                     particles.Init();
                     renderer_ready = true;
                     terrain.LoadFromEditor(player.areaName);
@@ -925,9 +1008,11 @@ int main() {
             if (renderer_ready) {
                 GLFWwindow* w = window.Handle();
 
-                // ---- RMB held: lock cursor + mouse-look (WoW style) ----
-                // Holding RMB locks the cursor and rotates the camera freely.
-                // Releasing RMB unlocks the cursor. No click-to-move on RMB.
+                // ---- RMB held: lock cursor + mouselook (RC 1.26 style) ----
+                // Holding RMB decouples the camera from the character: the
+                // mouse rotates CAM yaw/pitch freely, but the character keeps
+                // facing wherever A/D pointed it. Releasing RMB does NOT
+                // re-sync the camera — only W/S without RMB does that.
                 {
                     static bool   rmb_prev = false;
                     static double prev_mx  = 0, prev_my = 0;
@@ -944,48 +1029,58 @@ int main() {
                         double cx, cy;
                         glfwGetCursorPos(w, &cx, &cy);
                         camera.ApplyMouseDelta((float)(cx - prev_mx), (float)(cy - prev_my));
-                        player.yaw = camera.GetYaw(); // player model faces camera forward
                         prev_mx = cx; prev_my = cy;
+                        // NOTE: player.yaw intentionally NOT touched here —
+                        // RC does not rotate the character during mouselook.
                     }
                     rmb_prev = cur_rmb;
                 }
 
-                // ---- WASD movement — WoW style ----
-                // Camera sits at +yaw behind the player, so player forward = {-sin,-cos}.
-                // W/S  : move forward / back-pedal in camera-forward direction.
-                // A/D  : rotate player+camera (no RMB) or strafe (RMB held).
-                // Q/E  : always strafe.
+                // ---- RC 1.26 keyboard movement ----
+                // W/S : walk forward/back along the CHARACTER's facing.
+                //       Without RMB held, W/S also centre the camera behind
+                //       the character (yaw=player.yaw, pitch=0) — this is
+                //       the classic RC "snap follow" when you start walking.
+                // A/D : rotate the character. Camera keeps its current
+                //       relative offset (AddYaw by the same delta) so the
+                //       chase angle stays consistent through turns.
+                // Q/E : strafe (RCO extension — RC 1.26 has no strafe key).
                 if (!player_dead && !ImGui::GetIO().WantCaptureKeyboard) {
                     bool rmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
                     constexpr float kSpeed    = 8.f;
                     constexpr float kTurnRate = 150.f;
 
+                    bool moving_fwd  = glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS;
+                    bool moving_back = glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS;
+
+                    // A/D — turn the character. Camera follows 1:1 so the
+                    // relative chase-cam offset stays fixed during turns.
+                    float turn = 0.f;
+                    if (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS) turn += kTurnRate * dt;
+                    if (glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS) turn -= kTurnRate * dt;
+                    if (turn != 0.f) {
+                        player.yaw += turn;
+                        camera.AddYaw(turn);
+                    }
+
+                    // W/S without RMB → snap camera directly behind the player.
+                    if ((moving_fwd || moving_back) && !rmb_held) {
+                        camera.SetYaw(player.yaw);
+                        camera.SetPitch(0.f);
+                    }
+
                     float fwd = 0.f;
-                    if (glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS) fwd =  kSpeed;
-                    if (glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS) fwd = -kSpeed * 0.65f;
+                    if (moving_fwd)  fwd =  kSpeed;
+                    if (moving_back) fwd = -kSpeed * 0.65f;
 
                     float strafe = 0.f;
                     if (glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS) strafe -= kSpeed;
                     if (glfwGetKey(w, GLFW_KEY_E) == GLFW_PRESS) strafe += kSpeed;
-                    if (rmb_held) {
-                        if (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS) strafe -= kSpeed;
-                        if (glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS) strafe += kSpeed;
-                    } else {
-                        // A/D rotate camera; player model follows.
-                        if (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS) {
-                            camera.SetYaw(camera.GetYaw() + kTurnRate * dt);
-                            player.yaw = camera.GetYaw();
-                        }
-                        if (glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS) {
-                            camera.SetYaw(camera.GetYaw() - kTurnRate * dt);
-                            player.yaw = camera.GetYaw();
-                        }
-                    }
 
-                    // Camera is at +yaw from player → player forward is opposite.
-                    float yr = glm::radians(camera.GetYaw());
-                    glm::vec2 fdir = { -std::sin(yr), -std::cos(yr) }; // into screen
-                    glm::vec2 rdir = {  std::cos(yr), -std::sin(yr) }; // player's right
+                    // Move in the CHARACTER's facing direction, not the camera's.
+                    float yr = glm::radians(player.yaw);
+                    glm::vec2 fdir = { -std::sin(yr), -std::cos(yr) };
+                    glm::vec2 rdir = {  std::cos(yr), -std::sin(yr) };
                     glm::vec2 vel  = fdir * fwd + rdir * strafe;
 
                     if (vel.x*vel.x + vel.y*vel.y > 0.001f) {
@@ -993,8 +1088,6 @@ int main() {
                         player.z += vel.y * dt;
                         player.y  = terrain.SampleHeight(player.x, player.z);
                         has_move_target = false;
-                        // player.yaw intentionally NOT overwritten here —
-                        // the player model faces camera forward at all times.
                     }
                 }
 
@@ -1061,7 +1154,28 @@ int main() {
                 proj_mat = proj;
                 glm::vec3 sun  = glm::normalize(glm::vec3(0.3f, 1.f, 0.5f));
 
-                terrain.Render(view, proj, camera.Position(), sun);
+                // -- F8 cycles debug viz (0=full,1=albedo,2=normal,3=depth,4=AO,
+                // 5=shadow,6=irradiance,7=NoL,8=albedo*NoL,9=envDiffuse,10=direct).
+                {
+                    static bool f8_prev = false;
+                    bool f8_cur = glfwGetKey(w, GLFW_KEY_F8) == GLFW_PRESS;
+                    if (f8_cur && !f8_prev) {
+                        int m = (pipeline->DebugMode() + 1) % 11;
+                        pipeline->SetDebugMode(m);
+                        const char* names[] = {
+                            "0 FULL", "1 albedo", "2 normal", "3 depth", "4 AO",
+                            "5 shadow", "6 irradiance", "7 NoL", "8 albedo*NoL",
+                            "9 envDiffuse", "10 direct (no shadow)"
+                        };
+                        std::fprintf(stderr, "[debug] gPhongGlobal mode = %s\n", names[m]);
+                    }
+                    f8_prev = f8_cur;
+                }
+
+                // --- New pipeline: begin frame, submit all scene geometry, end writes to framebuffer 0 ---
+                pipeline->Begin(view, proj, camera.Position(), static_cast<float>(dt));
+                pipeline->SetSun(-sun, glm::vec3(1.0f, 0.95f, 0.80f));
+                terrain.Submit(*pipeline);
 
                 // Render local player
                 {
@@ -1078,29 +1192,104 @@ int main() {
                     player_actor.position = {player.x, player.y, player.z};
                     player_actor.yaw      = player.yaw;
                     player_actor.Update(dt);
-                    player_actor.Render(view, proj, camera.Position(), sun);
+                    player_actor.Submit(*pipeline);
                 }
 
                 // Render all other actors (NPCs + other players)
                 for (auto& [rid, e] : world_actors) {
                     e.anim_t += dt;
-                    glm::vec3 pos = {e.x, terrain.SampleHeight(e.x, e.z), e.z};
+
+                    // Lazy init: build the per-NPC Actor now that renderer_ready
+                    // is true and we have appearance data from PNewActor.
+                    if (!e.actor && !e.meshes.empty()) {
+                        const WorldMesh* body = nullptr;
+                        for (auto& m : e.meshes) {
+                            if (m.slot == 0) { body = &m; break; }
+                        }
+                        if (!body) body = &e.meshes.front();
+
+                        auto a = std::make_unique<rco::renderer::Actor>();
+                        a->Init("shaders", body->model_path.c_str(),
+                                &engine.materials());
+                        a->scale = body->scale > 0.f ? body->scale : 1.f;
+
+                        // Per-aiMaterial mapping FIRST — paints multi-material
+                        // meshes (Substance imports etc.) where each submesh
+                        // names a different material.
+                        if (a->IsLoaded() && !body->material_map.empty()) {
+                            std::unordered_map<std::string,
+                                rco::renderer::Model::MaterialPaths> by_name;
+                            for (const auto& am : body->material_map) {
+                                rco::renderer::Model::MaterialPaths mp;
+                                mp.albedo = am.albedo;
+                                mp.normal = am.normal;
+                                mp.orm    = am.orm;
+                                std::fprintf(stderr,
+                                    "[matmap] rid=%u ai='%s' albedo='%s' normal='%s' orm='%s'\n",
+                                    rid, am.ai_name.c_str(),
+                                    am.albedo.c_str(), am.normal.c_str(), am.orm.c_str());
+                                by_name[am.ai_name] = std::move(mp);
+                            }
+                            a->ApplyMaterialsByName(engine.materials(), by_name);
+                        }
+
+                        // Per-slot global override (from Body.material_id) goes
+                        // ON TOP of the per-aiMaterial map — same precedence as
+                        // the GUE Media preview / Zone editor.
+                        const bool has_material =
+                            !body->albedo.empty() ||
+                            !body->normal.empty() ||
+                            !body->orm.empty();
+                        if (has_material ||
+                            body->roughness > 0.f || body->metallic > 0.f ||
+                            body->ar > 0.f || body->ag > 0.f || body->ab > 0.f) {
+                            a->OverrideMaterial(body->albedo, body->normal, body->orm,
+                                                body->ar, body->ag, body->ab,
+                                                body->roughness, body->metallic);
+                        }
+                        engine.RebuildMaterialsBuffer();
+
+                        for (auto& an : e.anims) {
+                            if (!an.source_path.empty()) {
+                                a->LoadAnim(an.source_path.c_str(), an.action.c_str());
+                            }
+                        }
+                        a->PlayAnim("Idle", true);
+                        std::fprintf(stderr,
+                            "[Actor init] rid=%u model=%s scale=%.2f "
+                            "mat=albedo:'%s' normal:'%s' orm:'%s' extra_anims=%zu\n",
+                            rid, body->model_path.c_str(), a->scale,
+                            body->albedo.c_str(), body->normal.c_str(), body->orm.c_str(),
+                            e.anims.size());
+                        e.actor = std::move(a);
+                    }
+
+                    // Y is server-authoritative — the GUE places NPCs on
+                    // terrain and writes the hit-point Y to npc_spawns.y,
+                    // which reaches us via PNewActor. Resampling here would
+                    // hide that and leave NPCs floating when terrain has
+                    // been edited without re-broadcasting spawns.
+                    glm::vec3 pos = {e.x, e.y, e.z};
+                    const bool loop_flag = (e.anim_name != "Attack" && e.anim_name != "Death");
+
                     if (e.actor) {
-                        // Per-actor model from Media Actor Def.
                         e.actor->position = pos;
                         e.actor->yaw      = e.yaw;
-                        e.actor->RenderAs(e.anim_name, e.anim_t,
-                                          e.anim_name != "Attack" && e.anim_name != "Death",
-                                          view, proj, camera.Position(), sun);
+                        e.actor->SubmitAs(e.anim_name, e.anim_t, loop_flag, *pipeline);
                     } else {
-                        // Fallback to the shared player model.
                         player_actor.position = pos;
                         player_actor.yaw      = e.yaw;
-                        player_actor.RenderAs(e.anim_name, e.anim_t,
-                                              e.anim_name != "Attack" && e.anim_name != "Death",
-                                              view, proj, camera.Position(), sun);
+                        player_actor.SubmitAs(e.anim_name, e.anim_t, loop_flag, *pipeline);
                     }
                 }
+
+                // All scene submissions done. Step particles forward (sim) then run the
+                // deferred pipeline, letting particles render inside its forward pass
+                // so they benefit from depth coherence + tonemap + FXAA.
+                particles.Update(static_cast<float>(now), dt);
+                pipeline->End([&]() {
+                    particles.Render(view, proj);
+                });
 
                 last_player_pos = {player.x, player.z};
 
@@ -1129,11 +1318,8 @@ int main() {
                     }
                 }
 
-                skybox.Render(view, proj);
-
-                // Particle system: update simulation then render.
-                particles.Update(static_cast<float>(now), dt);
-                particles.Render(view, proj);
+                // Particles render inside pipeline->End() forward-pass callback above.
+                // HDRI skybox is now drawn by pipeline->skyboxPass_().
 
                 // Left-click: select closest actor within 55 px of cursor.
                 {
@@ -1205,7 +1391,9 @@ int main() {
                         float sw = static_cast<float>(window.Width());
                         float sh = static_cast<float>(window.Height());
                         for (auto& [rid, e] : world_actors) {
-                            float ey = terrain.SampleHeight(e.x, e.z) + 1.f;
+                            // Hit-test at the actor's actual Y + 1 (chest height).
+                            // Using terrain sample would miss NPCs placed off-ground.
+                            float ey = e.y + 1.f;
                             glm::vec4 clip = proj * view * glm::vec4(e.x, ey, e.z, 1.f);
                             if (clip.w <= 0.f) continue;
                             float sx2 = (clip.x / clip.w + 1.f) * 0.5f * sw;
@@ -1757,9 +1945,11 @@ int main() {
     // -----------------------------------------------------------------------
     // Shutdown
     // -----------------------------------------------------------------------
+    pipeline.reset();
+    engine.Shutdown();
+
     player_actor.Destroy();
     terrain.Destroy();
-    skybox.Destroy();
     particles.Shutdown();
     audio.Shutdown();
     conn.Disconnect();

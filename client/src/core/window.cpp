@@ -63,8 +63,10 @@ Window::Window(int width, int height, const std::string& title)
                           GL_DEBUG_SEVERITY_NOTIFICATION, 0, nullptr, GL_FALSE);
 #endif
 
-    // Sky-blue clear colour — matches a clear day.
-    glClearColor(0.53f, 0.81f, 0.98f, 1.0f);
+    // Black clear color. Sky / fallback look comes from the IBL cubemap via
+    // the skybox pass, NOT from the clear value — using sky-blue here would
+    // poison every glClear in the pipeline (gAlbedo, hdrFbo, postprocess).
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
     // Sensible defaults.
     glEnable(GL_DEPTH_TEST);

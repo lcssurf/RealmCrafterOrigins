@@ -34,8 +34,7 @@ There is no protocol compatibility with the original RC client — RCO is a comp
 | Config | TOML | Client and server configuration |
 | Build (client) | CMake + vcpkg | vcpkg root: C:/vcpkg |
 | Build (server) | Go modules | |
-| GUE (editor tool) | C++ + Dear ImGui + SQLite direct | `tools/gue/` |
-| Terrain editor | C++ + Dear ImGui + OpenGL 4.6 | `tools/terrain-editor/` |
+| GUE (editor tool) | C++ + Dear ImGui + SQLite direct | `tools/gue/` — includes terrain sculpt/paint in the Zones tab |
 
 > **Note on scripting**: The stack originally planned sol2 (C++ Lua), but server scripting uses **gopher-lua** (pure Go, Lua 5.1). Client-side scripting is not yet implemented.
 
@@ -68,14 +67,13 @@ RealmCrafterOrigins/
     │
     └── tools/                # dev-only — never ships
         ├── rco_gue.exe
-        ├── rco_terrain.exe
         └── *.dll
 ```
 
 **Every exe `chdir`s to its own directory on startup** (via `SetCwdToExeDir()` helper in C++ and `anchorCwdToExeDir()` in Go). This means:
 - All relative paths in code (`shaders/`, `assets/`, `data/`, `scripts/`, `config.toml`) resolve relative to where the exe is installed — not relative to where it was launched.
 - GUE reads DB via `../server/rco.db` (sibling folder).
-- Terrain editor writes via `../client/data/areas/` (sibling folder).
+- GUE writes terrain data (heightmap.bin, splatmap.bin) via `../client/data/areas/` (sibling folder).
 
 ## Building
 
@@ -88,22 +86,17 @@ cd client
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
 cmake --build build --config Release      # outputs to dist/client/
 
-# GUE + Terrain editor
+# GUE (the only dev tool — includes terrain editing in the Zones tab)
 cd tools/gue
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
 cmake --build build --config Release      # outputs to dist/tools/
 
-cd tools/terrain-editor
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
-cmake --build build --config Release      # outputs to dist/tools/
-
-# Or use the .bat helpers at repo root: build-client.bat, build-server.bat, build-gue.bat, build-terrain-editor.bat
+# Or use the .bat helpers at repo root: build-client.bat, build-server.bat, build-gue.bat
 
 # Run
 cd dist/server  && ./server.exe           # Terminal 1
 cd dist/client  && ./rco_client.exe       # Terminal 2
-cd dist/tools   && ./rco_gue.exe          # GUE (edits dist/server/rco.db directly)
-cd dist/tools   && ./rco_terrain.exe      # Terrain editor (writes dist/client/data/)
+cd dist/tools   && ./rco_gue.exe          # GUE — DB + terrain + zones in one app
 ```
 
 ## Shipping a public build
@@ -280,25 +273,22 @@ Standalone ImGui executable. Opens `rco.db` **directly** (no server required). O
 | `tools/gue/src/tabs/media.h/.cpp` | Media tab — registry of models, materials, anim clips, and composed actor defs |
 | `tools/gue/CMakeLists.txt` | Build: glfw + glad + imgui + sqlite3 (vcpkg) |
 
-### Terrain Editor — `tools/terrain-editor/`
+### Terrain editing (inside GUE Zones tab)
 
-Standalone OpenGL tool for sculpting heightmaps and painting material splatmaps. Completely independent — no server, no DB required. Outputs `heightmap.bin` + `splatmap.bin` which the client loads via `terrain.LoadFromEditor()`.
+Terrain sculpting + splatmap painting live inside the GUE's **Zones tab**, under `Mode: Terrain` in the top bar. No separate executable. Outputs `heightmap.bin` + `splatmap.bin` which the client loads via `terrain.LoadFromEditor()`.
 
 | File | Purpose |
 |---|---|
-| `tools/terrain-editor/src/main.cpp` | Main loop, input, ImGui panels, save/load |
-| `tools/terrain-editor/src/heightmap.h/.cpp` | Height data (`float[]`), Save/Load to `.bin`, `SampleHeight()` |
-| `tools/terrain-editor/src/splatmap.h` | Per-pixel material weights (RGBA), GPU upload |
-| `tools/terrain-editor/src/brush.h` | `ApplyBrush()` (Raise/Lower/Smooth/Flatten) and `PaintSplatmap()` |
-| `tools/terrain-editor/src/material.h` | Material descriptor: albedo/normal/roughness PNG paths, `ScanMaterials()` |
-| `tools/terrain-editor/src/terrain_renderer.h/.cpp` | Chunked mesh rebuild from heightmap, dirty-region updates |
-| `tools/terrain-editor/src/camera.h` | Fly-camera (RMB look, WASD, scroll) |
-| `tools/terrain-editor/CMakeLists.txt` | Build: glfw + glad + imgui + glm + stb (vcpkg) |
+| `tools/gue/src/terrain/heightmap.h/.cpp` | Height data (`float[]`), `Save/Load` `RCHM` format, bilinear `SampleWorld()` |
+| `tools/gue/src/terrain/splatmap.h` | Per-pixel material weights (RGBA), `RSPM` format, GPU upload + `PaintSplatmap()` |
+| `tools/gue/src/terrain/brush.h` | `ApplyBrush()` — Raise/Lower/Smooth/Flatten with Gaussian falloff |
+| `tools/gue/src/terrain/material.h` | Auto-role PBR texture detection + `ScanMaterials()` from `dist/client/data/terrain/materials/` |
+| `tools/gue/src/terrain/editable_terrain.h/.cpp` | GUE-side integration — chunked mesh, splatmap-blended shader, brush dispatch, `LoadArea/SaveArea` |
 
-**Editor modes**: Sculpt (Raise / Lower / Smooth / Flatten) and Paint (per-material splatmap layer).  
-**Terrain sizes**: 512×512, 768×768, 1024×1024 (resizable in-editor).  
-**Materials**: scanned from `dist/client/data/terrain/materials/` — each subfolder = one material (albedo.png, normal.png, roughness.png). Up to 4 materials blended via UE5 LB_HeightBlend formula.  
-**Save path**: `dist/client/data/areas/<area>/heightmap.bin` + `splatmap.bin`.
+**Brush modes**: Raise / Lower / Smooth / Flatten / Paint (choose one layer 0–3). LMB-drag the viewport with `Mode: Terrain` selected to apply; `[` / `]` adjust radius.  
+**Terrain sizes**: default 512×512 at cell_size=2 (1024×1024 world units). Loaded from whatever `heightmap.bin` already exists.  
+**Materials**: per-zone — each zone's `materials.txt` lists names that resolve to folders under `dist/client/data/terrain/materials/<name>/`. Up to 4 layers blended by the GUE's forward shader (client still does UE5 LB_HeightBlend in-game).  
+**Save path**: `dist/client/data/areas/<area>/{heightmap.bin, splatmap.bin, materials.txt}` — "Save terrain" button in the Terrain panel.
 
 ### Lua Scripts (server-side)
 
@@ -380,7 +370,7 @@ Standalone OpenGL tool for sculpting heightmaps and painting material splatmaps.
 | GUE — Items tab | ✓ | Full CRUD, SQLite direct, no server needed |
 | GUE — Spells tab | ✓ | Full CRUD + AoE mode + Debuff type |
 | GUE — Actors tab | ✓ | CRUD on `npc_spawns`; NPCs loaded from DB at server startup (no hardcoding) |
-| Terrain editor | ✓ | `tools/terrain-editor/` — sculpt + paint, save/load `.bin`, 4-material UE5 blend |
+| Terrain editing | ✓ | Merged into GUE Zones tab — `Mode: Terrain` → Raise/Lower/Smooth/Flatten/Paint, 4-material UE5 blend |
 | NPC movement + leash | ✓ | NPCs chase, move toward player at 5 u/s, leash back to spawn at 2.5× AggressiveRange |
 | Two-range NPC AI | ✓ | AggressiveRange = detection/chase trigger; AttackRange = melee swing (default 2.0) |
 | Bag window (I) | ✓ | Standalone 4×8 backpack grid + gold; toggled with I |

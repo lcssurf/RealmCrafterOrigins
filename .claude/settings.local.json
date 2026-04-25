@@ -65,7 +65,31 @@
       "Bash(rmdir scripts *)",
       "Bash(rm -f server/server.exe server/server.exe~)",
       "Bash(grep -rn \"shared/protocol\\\\|shared\\\\\\\\\\\\\\\\protocol\" --include=\"*.go\" --include=\"*.cpp\" --include=\"*.h\" --include=\"*.txt\" --include=\"*.cmake\" --include=\"*.bat\")",
-      "Bash(grep -v \"^$\")"
+      "Bash(grep -v \"^$\")",
+      "Bash(sqlite3 rco.db \"SELECT id, name, actor_def_id FROM npc_spawns WHERE actor_def_id > 0;\")",
+      "Bash(sqlite3 rco.db \"SELECT * FROM media_actor_defs;\")",
+      "Bash(sqlite3 rco.db \"SELECT actor_def_id, slot, model_id, material_id FROM media_actor_meshes;\")",
+      "Bash(sqlite3 rco.db \"SELECT id, name, file_path, scale FROM media_models;\")",
+      "Bash(command -v sqlite3.exe)",
+      "Bash(python *)",
+      "Bash(xargs -I{} basename \"{}\")",
+      "Bash(reg query *)",
+      "Bash(gh repo *)",
+      "Bash(sed -i 's|#include \"rco/renderer/shader.h\"|#include \"rco/renderer/shader_old.h\"|g' D:/Github/RealmCrafterOrigins/client/src/renderer/actors/actor.h D:/Github/RealmCrafterOrigins/client/src/renderer/particles.h D:/Github/RealmCrafterOrigins/client/src/renderer/skybox.h D:/Github/RealmCrafterOrigins/client/src/renderer/terrain/terrain.h)",
+      "Bash(sed -i 's|#include \"rco/renderer/model.h\"|#include \"rco/renderer/model_old.h\"|g' D:/Github/RealmCrafterOrigins/client/src/renderer/actors/actor.h)",
+      "Bash(cmake --build build --config Release --target rco_renderer)",
+      "Bash(dumpbin /SYMBOLS \"D:/Github/RealmCrafterOrigins/client/build/_rco_renderer/Release/rco_renderer.lib\")",
+      "Bash(lib /LIST \"D:/Github/RealmCrafterOrigins/client/build/_rco_renderer/Release/rco_renderer.lib\")",
+      "Bash(cmake --build tools/gue/build --config Release)",
+      "Bash(python3 *)",
+      "Bash(cmake -B tools/gue/build -S tools/gue -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake)",
+      "Bash(cmake --build client/build --config Release)",
+      "Read(//d/Github/**)",
+      "Read(//c/Github/**)",
+      "Read(//d//**)",
+      "Bash(cmake -B client/build -S client -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake)",
+      "Bash(cmake --build /d/Github/RealmCrafterOrigins/tools/gue/build --config Release)",
+      "Bash(cmake --build /d/Github/RealmCrafterOrigins/client/build --config Release)"
     ]
   }
 }

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "shader.h"
 #include <vector>
 #include <cstdint>
 #include <glad/glad.h>
@@ -60,7 +59,8 @@ private:
     struct Vertex { float x, y, z,  r, g, b, a,  s; };
     std::vector<Vertex> verts_;
 
-    Shader shader_;
+    // Shader is registered in compile_shaders.cpp as "particle" and accessed
+    // via Shader::shaders["particle"] at render time.
     GLuint vao_ = 0;
     GLuint vbo_ = 0;
 };

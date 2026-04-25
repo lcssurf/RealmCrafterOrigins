@@ -1,4 +1,5 @@
-#define STB_IMAGE_IMPLEMENTATION
+// stb_image impl lives in shared/renderer (stb_image_impl.cpp). We only
+// include the header here for declarations.
 #include "ui_texture.h"
 #include <stb_image.h>
 #include <cstdio>

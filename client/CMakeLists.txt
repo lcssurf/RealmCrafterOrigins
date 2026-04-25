@@ -6,6 +6,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # --------------------------------------------------------------------------
+# Shared renderer library (model + shader + future sharable primitives)
+# --------------------------------------------------------------------------
+add_subdirectory(
+    "${CMAKE_SOURCE_DIR}/../shared/renderer"
+    "${CMAKE_BINARY_DIR}/_rco_renderer"
+)
+
+# --------------------------------------------------------------------------
 # Source files
 # --------------------------------------------------------------------------
 file(GLOB_RECURSE RCO_SOURCES
@@ -19,7 +27,7 @@ add_executable(rco_client ${RCO_SOURCES})
 # vcpkg / find_package
 # --------------------------------------------------------------------------
 find_package(glfw3   CONFIG REQUIRED)
-find_package(glad    CONFIG REQUIRED)
+# glad is vendored in shared/renderer (bindless version) — do NOT find_package(glad)
 find_package(glm     CONFIG REQUIRED)
 find_package(imgui   CONFIG REQUIRED)
 find_package(assimp  CONFIG REQUIRED)
@@ -63,8 +71,8 @@ target_include_directories(rco_client PRIVATE
 # Link libraries
 # --------------------------------------------------------------------------
 target_link_libraries(rco_client PRIVATE
+    rco_renderer
     glfw
-    glad::glad
     glm::glm
     imgui::imgui
     assimp::assimp

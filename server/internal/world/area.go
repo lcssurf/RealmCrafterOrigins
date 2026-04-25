@@ -13,12 +13,39 @@ type deadNPC struct {
 	DeadAt int64 // unix ms
 }
 
+// Trigger is a script-activated zone volume (XZ cylinder).
+type Trigger struct {
+	ID          int
+	X, Z        float32
+	Radius      float32
+	Script      string
+	Func        string
+	TriggerOnce bool
+	// fired tracks which actor runtime IDs have already fired this (for TriggerOnce).
+	fired map[uint32]bool
+}
+
 // Area represents a game zone.
 type Area struct {
 	Name    string
 	actors  map[uint32]*Actor
 	Mu      sync.RWMutex
 	Portals []Portal
+
+	// Environment config (loaded from area_config at startup)
+	PvPEnabled  bool
+	IsOutdoor   bool
+	FogNear     float32
+	FogFar      float32
+	FogR, FogG, FogB float32 // 0.0–1.0
+	AmbientR, AmbientG, AmbientB uint8
+	Gravity     float32
+	EntryScript string
+	ExitScript  string
+	MusicTrack  uint8
+
+	// Script trigger volumes
+	Triggers []Trigger
 
 	// Dead NPCs waiting to respawn.
 	dnmu     sync.Mutex
@@ -27,6 +54,32 @@ type Area struct {
 	// Dropped items sitting in the world.
 	diMu         sync.Mutex
 	droppedItems map[uint32]*DroppedItem
+}
+
+// CheckTrigger returns the first trigger that contains the actor's XZ position,
+// or nil if none. For TriggerOnce triggers, the actor's runtime ID is recorded
+// and the trigger won't fire again for that actor.
+func (a *Area) CheckTrigger(actor *Actor) *Trigger {
+	a.Mu.RLock()
+	defer a.Mu.RUnlock()
+	for i := range a.Triggers {
+		t := &a.Triggers[i]
+		dx := actor.X - t.X
+		dz := actor.Z - t.Z
+		if dx*dx+dz*dz <= t.Radius*t.Radius {
+			if t.TriggerOnce {
+				if t.fired == nil {
+					t.fired = make(map[uint32]bool)
+				}
+				if t.fired[actor.RuntimeID] {
+					continue
+				}
+				t.fired[actor.RuntimeID] = true
+			}
+			return t
+		}
+	}
+	return nil
 }
 
 // NewArea creates an empty Area.

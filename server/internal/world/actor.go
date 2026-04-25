@@ -95,6 +95,26 @@ type MeshSlot struct {
 	AlbedoB    float32
 	Roughness  float32
 	Metallic   float32
+
+	// Per-aiMaterial mapping (Substance-style "blinn1"/"ID01") resolved into
+	// concrete PBR paths. Used by the client to call Actor::ApplyMaterialsByName
+	// after model load — every submesh that names one of these aiMaterials
+	// gets the corresponding media_material's textures.
+	MaterialMap []AiMaterial
+}
+
+// AiMaterial is one entry in MeshSlot.MaterialMap — the ai-material name as
+// it appears in the model file plus the resolved media_material PBR paths.
+type AiMaterial struct {
+	AiName     string
+	AlbedoPath string
+	NormalPath string
+	ORMPath    string
+	AlbedoR    float32
+	AlbedoG    float32
+	AlbedoB    float32
+	Roughness  float32
+	Metallic   float32
 }
 
 // AnimBinding maps a game action to a concrete animation clip.

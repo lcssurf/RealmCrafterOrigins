@@ -52,6 +52,7 @@ const (
 	PRemoveWorldItem  uint16 = 114
 	POpenShop         uint16 = 115
 	PShopAction       uint16 = 116
+	PAreaConfig       uint16 = 117 // S→C: fog/ambient/pvp settings for the current area
 )
 
 // EmitterType values for PCreateEmitter.

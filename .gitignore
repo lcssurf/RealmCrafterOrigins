@@ -110,3 +110,12 @@ desktop.ini
 # Lua bytecode
 # ---------------------------------------------------------------------------
 *.luac
+
+# ---------------------------------------------------------------------------
+# Unreal Engine generated files (plugin-only tree — the host .uproject lives
+# outside this repo; see unreal/README.md for the dev workflow)
+# ---------------------------------------------------------------------------
+unreal/Plugins/*/Binaries/
+unreal/Plugins/*/Intermediate/
+unreal/**/*.sln
+unreal/**/*.vcxproj*

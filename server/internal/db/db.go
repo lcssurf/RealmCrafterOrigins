@@ -135,6 +135,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV5(ctx)
 	d.migrateV6(ctx)
 	d.migrateV7(ctx)
+	d.migrateV9(ctx)
 
 	return d, nil
 }
@@ -463,12 +464,16 @@ func (d *DB) ListCharacters(ctx context.Context, accountID string) ([]*Character
 }
 
 // CreateCharacter inserts a new character into the specified slot.
+// Initial x/z put the character at the center of the default Starter Zone
+// (1024×1024 world units → center is 512). Column defaults can't be relied
+// on across SQLite/Postgres for this — so we set them explicitly.
 func (d *DB) CreateCharacter(ctx context.Context, accountID string, slot int, name, race, className string, gender, faceTex, hair, beard, bodyTex int) (*Character, error) {
 	id := uuid.New().String()
 	_, err := d.db.ExecContext(ctx,
 		d.q(`INSERT INTO characters
-		       (id, account_id, slot, name, race, class, gender, face_tex, hair, beard, body_tex, created_at)
-		     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		       (id, account_id, slot, name, race, class, gender, face_tex, hair, beard, body_tex, created_at,
+		        x, z)
+		     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 512, 512)`),
 		id, accountID, slot, name, race, className, gender, faceTex, hair, beard, bodyTex, now(),
 	)
 	if err != nil {
@@ -948,22 +953,24 @@ func (d *DB) migrateV6(ctx context.Context) {
 		aggRange, attackRange   float64
 		respawnMs               int64
 	}
+	// Coords are 0-indexed to match the GUE / client (terrain [0, W*cs]).
+	// Starter Zone = 1024×1024 → center is (512, 512); seeds cluster there.
 	seeds := []seed{
 		// Starter Zone — dialog NPCs (aggressiveness=3)
-		{"Guard",     "Human", "Warrior",  5, "Starter Zone",   5,  0,   0,   0, 3,  8, 2, 30000},
-		{"Merchant",  "Elf",   "Mage",     3, "Starter Zone",  -8,  0,   3, 180, 3,  8, 2, 30000},
-		{"Innkeeper", "Dwarf", "Warrior", 10, "Starter Zone",  12,  0,  -5, 270, 3,  8, 2, 30000},
+		{"Guard",     "Human", "Warrior",  5, "Starter Zone",  517, 0, 512,   0, 3,  8, 2, 30000},
+		{"Merchant",  "Elf",   "Mage",     3, "Starter Zone",  504, 0, 515, 180, 3,  8, 2, 30000},
+		{"Innkeeper", "Dwarf", "Warrior", 10, "Starter Zone",  524, 0, 507, 270, 3,  8, 2, 30000},
 		// Starter Zone — combat mobs (aggressiveness=2)
-		{"Goblin",       "Beast", "Warrior", 2, "Starter Zone",  15, 0,  8,   0, 2,  8, 2, 30000},
-		{"Goblin",       "Beast", "Warrior", 2, "Starter Zone",  20, 0, -6,  90, 2,  8, 2, 30000},
-		{"Goblin Scout", "Beast", "Rogue",   3, "Starter Zone",  10, 0, 18, 180, 2,  8, 2, 30000},
-		{"Slime",        "Beast", "Beast",   1, "Starter Zone", -15, 0, 10,   0, 2,  8, 2, 30000},
-		{"Slime",        "Beast", "Beast",   1, "Starter Zone", -18, 0, -4,   0, 2,  8, 2, 30000},
+		{"Goblin",       "Beast", "Warrior", 2, "Starter Zone", 527, 0, 520,   0, 2,  8, 2, 30000},
+		{"Goblin",       "Beast", "Warrior", 2, "Starter Zone", 532, 0, 506,  90, 2,  8, 2, 30000},
+		{"Goblin Scout", "Beast", "Rogue",   3, "Starter Zone", 522, 0, 530, 180, 2,  8, 2, 30000},
+		{"Slime",        "Beast", "Beast",   1, "Starter Zone", 497, 0, 522,   0, 2,  8, 2, 30000},
+		{"Slime",        "Beast", "Beast",   1, "Starter Zone", 494, 0, 508,   0, 2,  8, 2, 30000},
 		// Forest — combat mobs
-		{"Wolf",         "Beast", "Beast",  4, "Forest",   8, 0, 12,   0, 2, 10, 2, 30000},
-		{"Wolf",         "Beast", "Beast",  4, "Forest",  14, 0,  6,  90, 2, 10, 2, 30000},
-		{"Forest Troll", "Beast", "Beast",  8, "Forest",  -5, 0,  8,  90, 2, 10, 2, 30000},
-		{"Forest Troll", "Beast", "Beast",  8, "Forest", -10, 0, 16, 270, 2, 10, 2, 30000},
+		{"Wolf",         "Beast", "Beast",  4, "Forest", 520, 0, 524,   0, 2, 10, 2, 30000},
+		{"Wolf",         "Beast", "Beast",  4, "Forest", 526, 0, 518,  90, 2, 10, 2, 30000},
+		{"Forest Troll", "Beast", "Beast",  8, "Forest", 507, 0, 520,  90, 2, 10, 2, 30000},
+		{"Forest Troll", "Beast", "Beast",  8, "Forest", 502, 0, 528, 270, 2, 10, 2, 30000},
 	}
 	ins := d.q(`INSERT INTO npc_spawns
 		(name,race,class,level,area_name,x,y,z,yaw,aggressiveness,aggressive_range,attack_range,respawn_delay_ms)
@@ -1099,6 +1106,77 @@ func (d *DB) migrateV7(ctx context.Context) {
 		// SQLite: ADD COLUMN fails silently if already present (we don't use IF NOT EXISTS).
 		exec(`ALTER TABLE npc_spawns ADD COLUMN actor_def_id INTEGER NOT NULL DEFAULT 0`)
 	}
+
+	// Per-aiMaterial mapping for multi-material models (e.g. Substance imports
+	// where every submesh names a different "blinn"/"ID" material). Stored as
+	// a flat "k1=v1;k2=v2" string keyed by the model's ai-material name → the
+	// media_materials.name to use. Mirrors the GUE-side migration.
+	if d.driver == "postgres" {
+		exec(`ALTER TABLE media_models ADD COLUMN IF NOT EXISTS material_map TEXT NOT NULL DEFAULT ''`)
+	} else {
+		exec(`ALTER TABLE media_models ADD COLUMN material_map TEXT NOT NULL DEFAULT ''`)
+	}
+
+	// migrateV8 — extend media_actor_defs with gameplay defaults so an actor
+	// def carries everything needed to spawn a creature (appearance + stats +
+	// AI tuning). Zone placement copies these into npc_spawns at insert time.
+	if d.driver == "postgres" {
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS scale                  REAL NOT NULL DEFAULT 1.0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS default_name           VARCHAR(64)  NOT NULL DEFAULT ''`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS default_race           VARCHAR(32)  NOT NULL DEFAULT ''`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS default_class          VARCHAR(32)  NOT NULL DEFAULT ''`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS default_level          INTEGER NOT NULL DEFAULT 1`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS default_hp             INTEGER NOT NULL DEFAULT 100`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS default_ep             INTEGER NOT NULL DEFAULT 100`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS default_aggressiveness INTEGER NOT NULL DEFAULT 0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS default_aggro_range    REAL NOT NULL DEFAULT 8.0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS default_attack_range   REAL NOT NULL DEFAULT 2.0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS default_respawn_ms     INTEGER NOT NULL DEFAULT 30000`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS is_playable            INTEGER NOT NULL DEFAULT 0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS is_mountable           INTEGER NOT NULL DEFAULT 0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS is_interactive         INTEGER NOT NULL DEFAULT 0`)
+	} else {
+		// SQLite: these fail silently if the column is already present.
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN scale                  REAL    NOT NULL DEFAULT 1.0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN default_name           TEXT    NOT NULL DEFAULT ''`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN default_race           TEXT    NOT NULL DEFAULT ''`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN default_class          TEXT    NOT NULL DEFAULT ''`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN default_level          INTEGER NOT NULL DEFAULT 1`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN default_hp             INTEGER NOT NULL DEFAULT 100`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN default_ep             INTEGER NOT NULL DEFAULT 100`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN default_aggressiveness INTEGER NOT NULL DEFAULT 0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN default_aggro_range    REAL    NOT NULL DEFAULT 8.0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN default_attack_range   REAL    NOT NULL DEFAULT 2.0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN default_respawn_ms     INTEGER NOT NULL DEFAULT 30000`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN is_playable            INTEGER NOT NULL DEFAULT 0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN is_mountable           INTEGER NOT NULL DEFAULT 0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN is_interactive         INTEGER NOT NULL DEFAULT 0`)
+	}
+}
+
+// migrateV9 — coordinate-system alignment: previously the client terrain
+// was centered on the origin while the GUE stored positions in [0, W*cs].
+// Shift rows that still use the old "centered on origin" values into the
+// new 0-indexed convention (Starter Zone is 1024×1024 → center = 512,512).
+// Heuristic: positions inside the small ±100 window around the old origin
+// are assumed legacy and get bumped. Positions already in the new range
+// (hundreds of units) are left alone.
+// Safe to run multiple times: once a row's been shifted it falls outside
+// the window and no further migration is applied.
+func (d *DB) migrateV9(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+	// Characters still at (0, 0, 0) — the old map center — land at the
+	// new center of Starter Zone so they don't spawn at the corner.
+	exec(`UPDATE characters SET x = 512, z = 512
+	      WHERE x = 0 AND z = 0 AND area_name = 'Starter Zone'`)
+	// Seed NPCs in Starter Zone (coords around old origin) → shift by the
+	// old map half-extent.
+	exec(`UPDATE npc_spawns SET x = x + 512, z = z + 512
+	      WHERE area_name = 'Starter Zone'
+	        AND x BETWEEN -100 AND 100 AND z BETWEEN -100 AND 100`)
+	exec(`UPDATE npc_spawns SET x = x + 512, z = z + 512
+	      WHERE area_name = 'Forest'
+	        AND x BETWEEN -100 AND 100 AND z BETWEEN -100 AND 100`)
 }
 
 // ---------------------------------------------------------------------------
@@ -1112,6 +1190,11 @@ type MediaModel struct {
 	Name     string
 	FilePath string
 	Scale    float32
+
+	// MaterialMap maps an aiMaterial name (as it appears in the mesh file)
+	// to a media_materials.name. Built from the "k1=v1;k2=v2" persisted in
+	// the material_map column. Empty when the model has no overrides.
+	MaterialMap map[string]string
 }
 
 // MediaMaterial mirrors one row in media_materials.
@@ -1153,10 +1236,30 @@ type ActorDefAnim struct {
 	ClipID     int
 }
 
-// ActorDef bundles an actor definition with its meshes + animation map.
+// ActorDef bundles an actor definition with its meshes + animation map +
+// gameplay defaults. Zone placement copies the defaults into npc_spawns.
 type ActorDef struct {
 	ID       int
 	Name     string
+	Scale    float32 // multiplies each mesh slot's model scale (1.0 = natural size)
+
+	// Gameplay defaults — applied to freshly placed npc_spawns so users
+	// don't have to retype identical fields for every copy of the same
+	// creature. Empty strings / zero values mean "no default".
+	DefaultName           string
+	DefaultRace           string
+	DefaultClass          string
+	DefaultLevel          int
+	DefaultHP             int
+	DefaultEP             int
+	DefaultAggressiveness int
+	DefaultAggroRange     float32
+	DefaultAttackRange    float32
+	DefaultRespawnMs      int
+	IsPlayable            bool
+	IsMountable           bool
+	IsInteractive         bool
+
 	Meshes   []ActorDefMesh
 	Anims    []ActorDefAnim
 }
@@ -1168,10 +1271,30 @@ func (d *DB) LoadActorDef(ctx context.Context, id int) (*ActorDef, error) {
 		return nil, nil
 	}
 	out := &ActorDef{ID: id}
-	err := d.db.QueryRowContext(ctx,
-		d.q(`SELECT name FROM media_actor_defs WHERE id = ?`), id).Scan(&out.Name)
+	var playable, mountable, interactive int
+	err := d.db.QueryRowContext(ctx, d.q(
+		`SELECT name, scale,
+		        default_name, default_race, default_class,
+		        default_level, default_hp, default_ep,
+		        default_aggressiveness, default_aggro_range, default_attack_range,
+		        default_respawn_ms,
+		        is_playable, is_mountable, is_interactive
+		 FROM media_actor_defs WHERE id = ?`), id).Scan(
+		&out.Name, &out.Scale,
+		&out.DefaultName, &out.DefaultRace, &out.DefaultClass,
+		&out.DefaultLevel, &out.DefaultHP, &out.DefaultEP,
+		&out.DefaultAggressiveness, &out.DefaultAggroRange, &out.DefaultAttackRange,
+		&out.DefaultRespawnMs,
+		&playable, &mountable, &interactive,
+	)
 	if err != nil {
 		return nil, nil // missing / not found
+	}
+	out.IsPlayable    = playable    != 0
+	out.IsMountable   = mountable   != 0
+	out.IsInteractive = interactive != 0
+	if out.Scale <= 0 {
+		out.Scale = 1.0 // guard against rows from before this migration
 	}
 
 	rows, err := d.db.QueryContext(ctx,
@@ -1208,13 +1331,61 @@ func (d *DB) GetMediaModel(ctx context.Context, id int) (*MediaModel, error) {
 		return nil, nil
 	}
 	m := &MediaModel{ID: id}
+	var matMap string
 	err := d.db.QueryRowContext(ctx,
-		d.q(`SELECT name, file_path, scale FROM media_models WHERE id = ?`), id,
-	).Scan(&m.Name, &m.FilePath, &m.Scale)
+		d.q(`SELECT name, file_path, scale, material_map FROM media_models WHERE id = ?`), id,
+	).Scan(&m.Name, &m.FilePath, &m.Scale, &matMap)
 	if err != nil {
 		return nil, nil
 	}
+	m.MaterialMap = parseMaterialMap(matMap)
 	return m, nil
+}
+
+// ListMediaMaterials returns every row in media_materials, keyed by name.
+// Used by the spawn-time appearance builder to resolve a model's
+// material_map (aiMaterial → media material name) into concrete PBR paths.
+func (d *DB) ListMediaMaterials(ctx context.Context) (map[string]*MediaMaterial, error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, name, albedo_path, normal_path, orm_path,
+		        albedo_r, albedo_g, albedo_b, roughness, metallic
+		   FROM media_materials`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]*MediaMaterial)
+	for rows.Next() {
+		var m MediaMaterial
+		if err := rows.Scan(&m.ID, &m.Name, &m.AlbedoPath, &m.NormalPath,
+			&m.ORMPath, &m.AlbedoR, &m.AlbedoG, &m.AlbedoB,
+			&m.Roughness, &m.Metallic); err == nil {
+			mm := m
+			out[mm.Name] = &mm
+		}
+	}
+	return out, nil
+}
+
+// parseMaterialMap deserialises the "k1=v1;k2=v2" format used by
+// media_models.material_map. Empty / malformed rows return an empty map.
+func parseMaterialMap(s string) map[string]string {
+	if s == "" {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, pair := range strings.Split(s, ";") {
+		eq := strings.IndexByte(pair, '=')
+		if eq <= 0 {
+			continue
+		}
+		k := strings.TrimSpace(pair[:eq])
+		v := strings.TrimSpace(pair[eq+1:])
+		if k != "" && v != "" {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // GetMediaMaterial fetches one row by id. Returns nil if missing.
@@ -1592,6 +1763,48 @@ type AreaConfig struct {
 	Name       string
 	MusicTrack uint8
 	FogDensity float32
+
+	// Environment
+	IsOutdoor  bool
+	FogNear    float32
+	FogFar     float32
+	FogR, FogG, FogB float32 // 0.0–1.0
+	AmbientR, AmbientG, AmbientB uint8
+	Gravity    float32 // 1.0 = normal
+
+	// Gameplay
+	PvPEnabled  bool
+	EntryScript string
+	ExitScript  string
+
+	// Weather probabilities (0–100 %)
+	WeatherRain  uint8
+	WeatherSnow  uint8
+	WeatherFog   uint8
+	WeatherStorm uint8
+	WeatherWind  uint8
+}
+
+// AreaTrigger is a script-trigger volume in an area (XZ cylinder).
+type AreaTrigger struct {
+	ID          int
+	AreaName    string
+	X, Z        float32
+	Radius      float32
+	Script      string
+	Func        string
+	TriggerOnce bool
+}
+
+// AreaSoundZone is an ambient audio sphere in an area.
+type AreaSoundZone struct {
+	ID             int
+	AreaName       string
+	X, Z           float32
+	Radius         float32
+	SoundName      string
+	Volume         int
+	LoopIntervalMs int
 }
 
 // AreaPortal holds a portal definition loaded from area_portals.
@@ -1603,8 +1816,9 @@ type AreaPortal struct {
 	DestX, DestY, DestZ, DestYaw float32
 }
 
-// LoadAreaConfigs returns all rows from area_config; creates the table if absent.
+// LoadAreaConfigs returns all rows from area_config; creates/migrates table if needed.
 func (d *DB) LoadAreaConfigs(ctx context.Context) ([]*AreaConfig, error) {
+	// Base table (idempotent).
 	d.db.ExecContext(ctx, d.q(
 		`CREATE TABLE IF NOT EXISTS area_config (
 			name        TEXT PRIMARY KEY,
@@ -1612,8 +1826,39 @@ func (d *DB) LoadAreaConfigs(ctx context.Context) ([]*AreaConfig, error) {
 			fog_density REAL    NOT NULL DEFAULT 0.0
 		)`))
 
-	rows, err := d.db.QueryContext(ctx,
-		d.q(`SELECT name, music_track, fog_density FROM area_config ORDER BY name`))
+	// Migrate: add new columns if they don't exist yet (errors are ignored — column may already exist).
+	migs := []string{
+		`ALTER TABLE area_config ADD COLUMN is_outdoor    INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE area_config ADD COLUMN pvp_enabled   INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE area_config ADD COLUMN fog_near      REAL    NOT NULL DEFAULT 300.0`,
+		`ALTER TABLE area_config ADD COLUMN fog_far       REAL    NOT NULL DEFAULT 600.0`,
+		`ALTER TABLE area_config ADD COLUMN fog_r         REAL    NOT NULL DEFAULT 0.7`,
+		`ALTER TABLE area_config ADD COLUMN fog_g         REAL    NOT NULL DEFAULT 0.75`,
+		`ALTER TABLE area_config ADD COLUMN fog_b         REAL    NOT NULL DEFAULT 0.8`,
+		`ALTER TABLE area_config ADD COLUMN ambient_r     INTEGER NOT NULL DEFAULT 80`,
+		`ALTER TABLE area_config ADD COLUMN ambient_g     INTEGER NOT NULL DEFAULT 80`,
+		`ALTER TABLE area_config ADD COLUMN ambient_b     INTEGER NOT NULL DEFAULT 90`,
+		`ALTER TABLE area_config ADD COLUMN gravity       REAL    NOT NULL DEFAULT 1.0`,
+		`ALTER TABLE area_config ADD COLUMN entry_script  TEXT    NOT NULL DEFAULT ''`,
+		`ALTER TABLE area_config ADD COLUMN exit_script   TEXT    NOT NULL DEFAULT ''`,
+		`ALTER TABLE area_config ADD COLUMN weather_rain  INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE area_config ADD COLUMN weather_snow  INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE area_config ADD COLUMN weather_fog   INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE area_config ADD COLUMN weather_storm INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE area_config ADD COLUMN weather_wind  INTEGER NOT NULL DEFAULT 0`,
+	}
+	for _, m := range migs {
+		d.db.ExecContext(ctx, d.q(m))
+	}
+
+	rows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT name, music_track, fog_density,
+		       is_outdoor, pvp_enabled,
+		       fog_near, fog_far, fog_r, fog_g, fog_b,
+		       ambient_r, ambient_g, ambient_b,
+		       gravity, entry_script, exit_script,
+		       weather_rain, weather_snow, weather_fog, weather_storm, weather_wind
+		FROM area_config ORDER BY name`))
 	if err != nil {
 		return nil, err
 	}
@@ -1622,10 +1867,94 @@ func (d *DB) LoadAreaConfigs(ctx context.Context) ([]*AreaConfig, error) {
 	var out []*AreaConfig
 	for rows.Next() {
 		c := &AreaConfig{}
-		var track int
-		_ = rows.Scan(&c.Name, &track, &c.FogDensity)
+		var (
+			track, outdoor, pvp             int
+			ambR, ambG, ambB                int
+			wRain, wSnow, wFog, wStr, wWind int
+		)
+		_ = rows.Scan(
+			&c.Name, &track, &c.FogDensity,
+			&outdoor, &pvp,
+			&c.FogNear, &c.FogFar, &c.FogR, &c.FogG, &c.FogB,
+			&ambR, &ambG, &ambB,
+			&c.Gravity, &c.EntryScript, &c.ExitScript,
+			&wRain, &wSnow, &wFog, &wStr, &wWind,
+		)
 		c.MusicTrack = uint8(track)
+		c.IsOutdoor = outdoor != 0
+		c.PvPEnabled = pvp != 0
+		c.AmbientR, c.AmbientG, c.AmbientB = uint8(ambR), uint8(ambG), uint8(ambB)
+		c.WeatherRain, c.WeatherSnow = uint8(wRain), uint8(wSnow)
+		c.WeatherFog, c.WeatherStorm, c.WeatherWind = uint8(wFog), uint8(wStr), uint8(wWind)
 		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// LoadAreaTriggers returns all trigger volumes; creates table if absent.
+func (d *DB) LoadAreaTriggers(ctx context.Context) ([]*AreaTrigger, error) {
+	d.db.ExecContext(ctx, d.q(
+		`CREATE TABLE IF NOT EXISTS area_triggers (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			area_name    TEXT    NOT NULL DEFAULT '',
+			x            REAL    NOT NULL DEFAULT 0,
+			z            REAL    NOT NULL DEFAULT 0,
+			radius       REAL    NOT NULL DEFAULT 5,
+			script       TEXT    NOT NULL DEFAULT '',
+			func         TEXT    NOT NULL DEFAULT '',
+			trigger_once INTEGER NOT NULL DEFAULT 0
+		)`))
+
+	rows, err := d.db.QueryContext(ctx, d.q(
+		`SELECT id, area_name, x, z, radius, script, func, trigger_once
+		 FROM area_triggers ORDER BY area_name, id`))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*AreaTrigger
+	for rows.Next() {
+		t := &AreaTrigger{}
+		var once int
+		var x, z, r float64
+		_ = rows.Scan(&t.ID, &t.AreaName, &x, &z, &r, &t.Script, &t.Func, &once)
+		t.X, t.Z, t.Radius = float32(x), float32(z), float32(r)
+		t.TriggerOnce = once != 0
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// LoadAreaSoundZones returns all sound zones; creates table if absent.
+func (d *DB) LoadAreaSoundZones(ctx context.Context) ([]*AreaSoundZone, error) {
+	d.db.ExecContext(ctx, d.q(
+		`CREATE TABLE IF NOT EXISTS area_sound_zones (
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			area_name        TEXT    NOT NULL DEFAULT '',
+			x                REAL    NOT NULL DEFAULT 0,
+			z                REAL    NOT NULL DEFAULT 0,
+			radius           REAL    NOT NULL DEFAULT 15,
+			sound_name       TEXT    NOT NULL DEFAULT '',
+			volume           INTEGER NOT NULL DEFAULT 100,
+			loop_interval_ms INTEGER NOT NULL DEFAULT 0
+		)`))
+
+	rows, err := d.db.QueryContext(ctx, d.q(
+		`SELECT id, area_name, x, z, radius, sound_name, volume, loop_interval_ms
+		 FROM area_sound_zones ORDER BY area_name, id`))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*AreaSoundZone
+	for rows.Next() {
+		s := &AreaSoundZone{}
+		var x, z, r float64
+		_ = rows.Scan(&s.ID, &s.AreaName, &x, &z, &r, &s.SoundName, &s.Volume, &s.LoopIntervalMs)
+		s.X, s.Z, s.Radius = float32(x), float32(z), float32(r)
+		out = append(out, s)
 	}
 	return out, rows.Err()
 }

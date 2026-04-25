@@ -16,7 +16,11 @@ public:
     void SetHeights(const std::vector<float>& h);
     void Draw() const;
 
-    glm::vec3 Origin() const { return origin_; }
+    glm::vec3 Origin()    const { return origin_; }
+    GLuint    vao()       const { return vao_; }
+    GLuint    vbo()       const { return vbo_; }
+    GLuint    ebo()       const { return ebo_; }
+    int       idx_count() const { return idx_count_; }
 
 private:
     void Upload();

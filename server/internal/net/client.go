@@ -543,6 +543,10 @@ func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) er
 	c.sendPortals(newArea)
 	c.sendWorldItems(newArea)
 
+	// Resend known spells — the client clears its spellbar on PChangeArea,
+	// so without this the bar stays empty after a portal.
+	c.sendKnownSpells()
+
 	// Portal FX and area music for the arriving player.
 	c.sendSound(protocol.SoundPortal, 220)
 	c.broadcastEmitter(newArea, protocol.EmitterPortal, portal.DestX, portal.DestY, portal.DestZ, 2000)

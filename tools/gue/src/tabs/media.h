@@ -1,7 +1,12 @@
 #pragma once
 
+#include "../preview_viewport.h"
+#include "../texture_importer.h"
+
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <memory>
 #include <sqlite3.h>
 
 namespace gue {
@@ -15,7 +20,14 @@ struct MediaModel {
     std::string name;
     std::string file_path;  // relative to project root, e.g. "client/assets/models/human.glb"
     float       scale = 1.f;
+    // aiMaterial name (from the mesh file) → media_materials.name.
+    // Persisted as "k1=v1;k2=v2" in the DB column `material_map`.
+    std::unordered_map<std::string, std::string> material_map;
 };
+
+// Serialize / parse the per-model material map column.
+std::string SerializeMaterialMap(const std::unordered_map<std::string, std::string>& m);
+std::unordered_map<std::string, std::string> ParseMaterialMap(const std::string& s);
 
 struct MediaMaterial {
     int         id = 0;
@@ -68,11 +80,40 @@ struct ActorAnimMap {
     int         actor_def_id = 0;
     std::string action;   // "Idle", "Walk", "Attack", "Death", ...
     int         clip_id   = 0;
+
+    // Denormalized view of the backing media_anim_clips row — copied in on
+    // fetch and written back on save so the UI can edit action + source +
+    // clip inline without the user ever seeing the clips registry. Empty
+    // source_path means "embedded in the actor's Body model".
+    std::string source_path;
+    std::string clip_override;
 };
 
 struct ActorDef {
     int         id = 0;
     std::string name;
+
+    // Multiplies each mesh slot's model scale at render time.
+    // 1.0 = natural size, 0.5 = filhote, 2.0 = pai grandão.
+    float       scale = 1.f;
+
+    // Gameplay defaults — used when the user places this actor in a zone
+    // (or spawns an NPC from it). Empty strings / zero values mean "no
+    // default, ask the user to fill it in".
+    std::string default_name;
+    std::string default_race;
+    std::string default_class;
+    int         default_level          = 1;
+    int         default_hp             = 100;
+    int         default_ep             = 100;
+    int         default_aggressiveness = 0;     // 0=passive 1=defensive 2=aggressive 3=dialog
+    float       default_aggro_range   = 8.f;
+    float       default_attack_range  = 2.f;
+    int         default_respawn_ms    = 30000;
+    bool        is_playable    = false;
+    bool        is_mountable   = false;
+    bool        is_interactive = false;
+
     std::vector<ActorMeshSlot> mesh_slots;
     std::vector<ActorAnimMap>  anim_map;
 };
@@ -85,6 +126,14 @@ class MediaTab {
 public:
     void Draw(sqlite3* db);
 
+    // Borrow the shared deferred renderer from GUE main. Must be called before
+    // the first Draw() that touches the 3D preview (Models / Actor Defs sub-tabs).
+    void SetRenderer(::rco::renderer::Engine* engine,
+                     ::rco::renderer::Pipeline* pipeline) {
+        engine_   = engine;
+        pipeline_ = pipeline;
+    }
+
     // Public so other tabs (Actors) can build pickers without their own query.
     void EnsureTables(sqlite3* db);
     void FetchAll(sqlite3* db);
@@ -94,12 +143,24 @@ public:
     const std::vector<MediaAnimClip>& Clips()      const { return clips_;      }
     const std::vector<ActorDef>&      ActorDefs()  const { return actor_defs_; }
 
+    // Monotonic revision — bumped whenever the Media data that other tabs
+    // consume (materials, model material_map) changes. Consumers poll this
+    // and refresh their caches when it moves. Centralising the change
+    // signal here means every tab picks up edits without per-tab wiring.
+    int MediaRevision() const { return media_revision_; }
+
 private:
     // Sub-tabs
     void DrawModels     (sqlite3* db);
     void DrawMaterials  (sqlite3* db);
     void DrawAnimClips  (sqlite3* db);
     void DrawActorDefs  (sqlite3* db);
+
+    // Multi-file import: opens the native picker, classifies each file
+    // by extension (model vs texture), copies into the right assets/
+    // subfolder, and inserts a row in the matching DB table. Counts are
+    // reported in statusMsg_.
+    void ImportFilesBatch(sqlite3* db);
 
     // CRUD helpers
     void SaveModel      (sqlite3* db, MediaModel& m);
@@ -108,8 +169,12 @@ private:
     void DeleteMaterial (sqlite3* db, int id);
     void SaveAnimClip   (sqlite3* db, MediaAnimClip& c);
     void DeleteAnimClip (sqlite3* db, int id);
-    void SaveActorDef   (sqlite3* db, ActorDef& d);
-    void DeleteActorDef (sqlite3* db, int id);
+    void SaveActorDef      (sqlite3* db, ActorDef& d);
+    void DeleteActorDef    (sqlite3* db, int id);
+    // Clone an actor def plus its mesh slots and anim mappings. The new
+    // def's name is the source name + " (copy)". Selects the new def in
+    // the list on success.
+    void DuplicateActorDef (sqlite3* db, int sourceId);
     void SaveMeshSlot   (sqlite3* db, ActorMeshSlot& s);
     void DeleteMeshSlot (sqlite3* db, int id);
     void SaveAnimMap    (sqlite3* db, ActorAnimMap& a);
@@ -122,6 +187,14 @@ private:
 
     bool needFetch_        = true;
     char statusMsg_[256]   = {};
+
+    // Lazy-initialized preview (needs a valid GL context → built on first use).
+    std::unique_ptr<PreviewViewport> preview_;
+    bool preview_init_ok_ = false;
+
+    // Borrowed from GUE main via SetRenderer().
+    ::rco::renderer::Engine*   engine_   = nullptr;
+    ::rco::renderer::Pipeline* pipeline_ = nullptr;
 
     // --- Models sub-tab state ---
     int        selModel_   = -1;
@@ -137,6 +210,13 @@ private:
     bool          newMat_   = false;
     MediaMaterial pendingMat_;
 
+    // --- Bulk texture folder import (Materials tab) ---
+    bool                        showImportDlg_ = false;
+    std::vector<TextureGroup>   importGroups_;
+    TextureImportOptions        importOpts_;
+    std::string                 importSourceFolder_;
+    char                        importSubdir_[128] = {};
+
     // --- Anim Clips sub-tab state ---
     int           selClip_ = -1;
     MediaAnimClip editClip_;
@@ -146,6 +226,23 @@ private:
 
     // --- Actor Defs sub-tab state ---
     int      selActorDef_   = -1;
+    // Track the last (model, material) pair applied to preview_ so we don't
+    // re-upload textures from disk every frame.
+    int      preview_last_model_id_    = -1;
+    int      preview_last_material_id_ = -1;
+    // Set whenever materials_ changes — forces the Models preview to
+    // re-resolve name-based material bindings next frame.
+    bool     materialsDirtyForPreview_ = true;
+
+    // Revision counter. Bumped by SaveModel / SaveMaterial / DeleteMaterial
+    // / the import flow. Read via MediaRevision() by other tabs.
+    int      media_revision_ = 0;
+
+    // Per-model user-supplied mapping from aiMaterial name → media_material
+    // name. Lets the user bridge Maya/Substance naming mismatches (e.g.
+    // "blinn1" → "ID01"). In-memory only — resets when the model reloads.
+    std::unordered_map<std::string, std::string> previewAiToMedia_;
+    std::string preview_material_names_model_;  // path this mapping belongs to
     ActorDef editActorDef_;
     bool     dirtyActorDef_ = false;
     bool     newActorDef_   = false;

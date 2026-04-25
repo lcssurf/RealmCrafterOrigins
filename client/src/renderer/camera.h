@@ -13,7 +13,9 @@ public:
     void ApplyMouseDelta(float dx, float dy);
 
     // Called by A/D turning so the camera follows the character's facing.
-    void SetYaw(float yaw) { yaw_ = yaw; }
+    void SetYaw(float yaw)   { yaw_ = yaw; }
+    void SetPitch(float p)   { pitch_ = p; }
+    void AddYaw(float delta) { yaw_ += delta; }
 
     // Instantly snap smooth target (use after teleport / area change).
     void SnapTarget(const glm::vec3& t) { target_ = t; target_smooth_ = t; }
@@ -28,19 +30,20 @@ public:
 
     float fov   = 60.f;
     float znear = 0.5f;
-    float zfar  = 2000.f;
+    float zfar  = 1000.f;
 
 private:
     glm::vec3 target_        = {};
     glm::vec3 target_smooth_ = {};
     float     yaw_           = 0.f;
-    float     pitch_         = 30.f;
+    float     pitch_         = 15.f;   // RC: 0° is eye-level; we start slightly tilted
 
-    static constexpr float kPitchMin = 5.f;
-    static constexpr float kPitchMax = 85.f;
-    static constexpr float kDistMin  = 4.f;
-    static constexpr float kDistMax  = 60.f;
-    float dist_ = 16.f;
+    // RC 1.26 ranges — allows looking up (negative pitch) and clamps zoom tight.
+    static constexpr float kPitchMin = -70.f;
+    static constexpr float kPitchMax =  85.f;
+    static constexpr float kDistMin  =   3.f;
+    static constexpr float kDistMax  =  25.f;
+    float dist_ = 10.f;
 };
 
 } // namespace rco::renderer

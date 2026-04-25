@@ -1,6 +1,5 @@
 #pragma once
 #include "renderer/terrain/terrain_chunk.h"
-#include "renderer/shader.h"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 #include <vector>
@@ -8,6 +7,8 @@
 #include <string>
 
 namespace rco::renderer {
+
+class Pipeline;
 
 struct MatTex {
     GLuint albedo    = 0;
@@ -22,10 +23,9 @@ public:
     // (kSize-1) cells per chunk so adjacent chunks share their border vertex.
     static constexpr float kChunkSize = (TerrainChunk::kSize - 1) * kCellSize;
 
-    bool  Init(const char* shader_dir, int grid_w = 8, int grid_h = 8);
+    bool  Init(int grid_w = 8, int grid_h = 8);
     bool  LoadFromEditor(const std::string& area_name);
-    void  Render(const glm::mat4& view, const glm::mat4& proj,
-                 const glm::vec3& cam_pos, const glm::vec3& sun_dir);
+    void  Submit(Pipeline& pipeline) const;
     void  Destroy();
     float SampleHeight(float wx, float wz) const;
 
@@ -37,7 +37,6 @@ private:
     GLuint LoadLinearTex(const std::string& path);
     GLuint LoadSRGBTex(const std::string& path);
 
-    Shader shader_;
     std::vector<std::unique_ptr<TerrainChunk>> chunks_;
     int grid_w_ = 0, grid_h_ = 0;
 

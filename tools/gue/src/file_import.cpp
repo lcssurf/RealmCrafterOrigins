@@ -8,6 +8,8 @@
   #define NOMINMAX
   #include <windows.h>
   #include <commdlg.h>
+  #include <shobjidl.h>
+  #include <objbase.h>
 #endif
 
 namespace gue {
@@ -54,6 +56,57 @@ static std::wstring BuildFilter(const char* label, const char* exts) {
 }
 #endif
 
+std::string ImportAbsolutePath(const std::string& src_abs,
+                               const char* target_subdir) {
+    if (src_abs.empty()) return {};
+
+    std::error_code ec;
+#ifdef _WIN32
+    std::filesystem::path picked = Widen(src_abs.c_str());
+#else
+    std::filesystem::path picked = src_abs;
+#endif
+    picked = std::filesystem::canonical(picked, ec);
+    if (ec) return {};
+
+    // dist/tools/ (cwd after SetCwdToExeDir) → ../client/assets/
+    std::filesystem::path cwd = std::filesystem::current_path();
+    std::filesystem::path assetsDir = cwd.parent_path() / "client" / "assets";
+    std::filesystem::create_directories(assetsDir, ec);
+    assetsDir = std::filesystem::canonical(assetsDir, ec);
+    if (ec) return {};
+
+    // If the picked file is already under assets/, reuse it in-place.
+    auto rel = std::filesystem::relative(picked, assetsDir, ec);
+    bool inside = !ec
+                  && !rel.empty()
+#ifdef _WIN32
+                  && rel.native().front() != L'.'
+#else
+                  && rel.native().front() != '.'
+#endif
+                  && !rel.is_absolute();
+    if (inside) {
+        return std::string("assets/") + rel.generic_string();
+    }
+
+    // Otherwise copy into assets/<target_subdir>/<basename>.
+    std::string sub = (target_subdir && *target_subdir) ? target_subdir : "imported";
+    std::filesystem::path dstDir = assetsDir / sub;
+    std::filesystem::create_directories(dstDir, ec);
+    std::filesystem::path dstFile = dstDir / picked.filename();
+
+    std::filesystem::copy_file(picked, dstFile,
+        std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) return {};
+
+    std::string out = "assets/";
+    out += sub;
+    out += "/";
+    out += picked.filename().generic_string();
+    return out;
+}
+
 std::string PickAndImportAsset(const char* filter_label,
                                const char* filter_exts,
                                const char* target_subdir) {
@@ -75,43 +128,119 @@ std::string PickAndImportAsset(const char* filter_label,
 
     if (!GetOpenFileNameW(&ofn)) return {};
 
-    std::error_code ec;
-    std::filesystem::path picked = buf;
-    picked = std::filesystem::canonical(picked, ec);
-    if (ec) return {};
+    // Convert UTF-16 buf to UTF-8 and delegate to ImportAbsolutePath.
+    int n = WideCharToMultiByte(CP_UTF8, 0, buf, -1, nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string utf8((size_t)(n - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, buf, -1, utf8.data(), n, nullptr, nullptr);
+    return ImportAbsolutePath(utf8, target_subdir);
+#endif
+}
 
-    // dist/tools/ (cwd after SetCwdToExeDir) → ../client/assets/
-    std::filesystem::path cwd = std::filesystem::current_path();
-    std::filesystem::path assetsDir = cwd.parent_path() / "client" / "assets";
-    std::filesystem::create_directories(assetsDir, ec);
-    assetsDir = std::filesystem::canonical(assetsDir, ec);
-    if (ec) return {};
+// ---------------------------------------------------------------------------
+// Folder picker — modern Win32 IFileDialog (FOS_PICKFOLDERS)
+// ---------------------------------------------------------------------------
 
-    // If the picked file is already under assets/, reuse it.
-    auto rel = std::filesystem::relative(picked, assetsDir, ec);
-    bool inside = !ec
-                  && !rel.empty()
-                  && rel.native().front() != L'.'
-                  && !rel.is_absolute();
-    if (inside) {
-        return std::string("assets/") + rel.generic_string();
+std::vector<std::string> PickMultipleFiles(const char* filter_label,
+                                           const char* filter_exts) {
+#ifndef _WIN32
+    (void)filter_label; (void)filter_exts;
+    return {};
+#else
+    // Use a generous buffer — OFN_ALLOWMULTISELECT returns the folder
+    // followed by every filename, each separated by NUL. 32 KB handles
+    // dozens of long paths.
+    std::vector<wchar_t> buf(32 * 1024, L'\0');
+
+    std::wstring filter = BuildFilter(filter_label, filter_exts);
+
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = filter.c_str();
+    ofn.lpstrFile   = buf.data();
+    ofn.nMaxFile    = (DWORD)buf.size();
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR
+                    | OFN_ALLOWMULTISELECT | OFN_EXPLORER;
+
+    if (!GetOpenFileNameW(&ofn)) return {};
+
+    // Parse the double-null-terminated result.
+    //   Single file selected: buf holds the full path, one NUL at the end.
+    //   Multi-select:         buf holds <folder>\0<name1>\0<name2>\0...\0\0
+    std::vector<std::string> out;
+    auto toUtf8 = [](const std::wstring& w) {
+        if (w.empty()) return std::string();
+        int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1,
+                                    nullptr, 0, nullptr, nullptr);
+        if (n <= 0) return std::string();
+        std::string s(static_cast<size_t>(n - 1), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1,
+                            s.data(), n, nullptr, nullptr);
+        return s;
+    };
+
+    const wchar_t* p = buf.data();
+    std::wstring first = p;
+    p += first.size() + 1;
+
+    if (*p == L'\0') {
+        // Single file: `first` IS the full path.
+        out.push_back(toUtf8(first));
+    } else {
+        // Multi: `first` is the folder; subsequent strings are filenames.
+        std::filesystem::path folder = first;
+        while (*p) {
+            std::wstring name = p;
+            out.push_back(toUtf8((folder / name).wstring()));
+            p += name.size() + 1;
+        }
     }
-
-    // Otherwise copy into assets/<target_subdir>/<basename>.
-    std::string sub = (target_subdir && *target_subdir) ? target_subdir : "imported";
-    std::filesystem::path dstDir = assetsDir / sub;
-    std::filesystem::create_directories(dstDir, ec);
-    std::filesystem::path dstFile = dstDir / picked.filename();
-
-    std::filesystem::copy_file(picked, dstFile,
-        std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) return {};
-
-    std::string out = "assets/";
-    out += sub;
-    out += "/";
-    out += picked.filename().generic_string();
     return out;
+#endif
+}
+
+std::string PickFolder(const char* title) {
+#ifdef _WIN32
+    // COM init is per-thread. Idempotent when already initialised.
+    HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    bool needsUninit = SUCCEEDED(hrInit);
+
+    IFileDialog* dialog = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
+                                  IID_PPV_ARGS(&dialog));
+    std::string result;
+    if (SUCCEEDED(hr) && dialog) {
+        DWORD flags = 0;
+        dialog->GetOptions(&flags);
+        dialog->SetOptions(flags | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        if (title && *title) {
+            std::wstring t = Widen(title);
+            dialog->SetTitle(t.c_str());
+        }
+        if (SUCCEEDED(dialog->Show(nullptr))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+                PWSTR pszPath = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &pszPath)) && pszPath) {
+                    int n = WideCharToMultiByte(CP_UTF8, 0, pszPath, -1,
+                                                nullptr, 0, nullptr, nullptr);
+                    if (n > 0) {
+                        result.resize((size_t)n - 1);
+                        WideCharToMultiByte(CP_UTF8, 0, pszPath, -1,
+                                            result.data(), n, nullptr, nullptr);
+                    }
+                    CoTaskMemFree(pszPath);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
+    }
+    if (needsUninit) CoUninitialize();
+    return result;
+#else
+    (void)title;
+    return {};
 #endif
 }
 

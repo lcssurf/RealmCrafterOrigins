@@ -187,15 +187,16 @@ func main() {
 	}
 	if len(areaPortals) == 0 {
 		log.Printf("main: no portals in DB — using built-in defaults")
+		// 0-indexed coords matching the GUE / client terrain [0, W*cs].
 		gameWorld.AddPortal("Starter Zone", world.Portal{
-			X: 25, Z: 25, Radius: 3,
+			X: 537, Z: 537, Radius: 3,
 			TargetArea: "Forest",
-			DestX: 0, DestY: 0, DestZ: 5, DestYaw: 180,
+			DestX: 512, DestY: 0, DestZ: 517, DestYaw: 180,
 		})
 		gameWorld.AddPortal("Forest", world.Portal{
-			X: 0, Z: 0, Radius: 3,
+			X: 512, Z: 512, Radius: 3,
 			TargetArea: "Starter Zone",
-			DestX: 22, DestY: 0, DestZ: 22, DestYaw: 0,
+			DestX: 534, DestY: 0, DestZ: 534, DestYaw: 0,
 		})
 	} else {
 		for _, p := range areaPortals {
@@ -355,6 +356,20 @@ func buildAppearance(ctx context.Context, database *db.DB, defID int) *world.App
 
 	out := &world.Appearance{}
 
+	// Actor-level multiplier on top of each model's import-scale. This lets
+	// one Goblin model power both "Baby Goblin" (scale=0.5) and "Goblin Chief"
+	// (scale=2.0) without duplicating the mesh file. Guarded against zero
+	// rows from before the gameplay migration.
+	actorScale := def.Scale
+	if actorScale <= 0 {
+		actorScale = 1.0
+	}
+
+	// Load all materials once so per-aiMaterial lookups are O(1). Used
+	// below to resolve each model's material_map into concrete PBR paths
+	// that ride along in the slot's MaterialMap.
+	matsByName, _ := database.ListMediaMaterials(ctx)
+
 	for _, m := range def.Meshes {
 		model, _ := database.GetMediaModel(ctx, m.ModelID)
 		if model == nil || model.FilePath == "" {
@@ -363,7 +378,7 @@ func buildAppearance(ctx context.Context, database *db.DB, defID int) *world.App
 		slot := world.MeshSlot{
 			Slot:      uint8(m.Slot),
 			ModelPath: model.FilePath,
-			Scale:     model.Scale,
+			Scale:     model.Scale * actorScale,
 		}
 		if mat, _ := database.GetMediaMaterial(ctx, m.MaterialID); mat != nil {
 			slot.AlbedoPath = mat.AlbedoPath
@@ -374,6 +389,27 @@ func buildAppearance(ctx context.Context, database *db.DB, defID int) *world.App
 			slot.AlbedoB    = mat.AlbedoB
 			slot.Roughness  = mat.Roughness
 			slot.Metallic   = mat.Metallic
+		}
+		// Resolve the model's per-aiMaterial mapping so multi-material meshes
+		// (Substance imports, GLBs with named blinn slots, etc.) display the
+		// correct textures on the client. Each entry pairs an aiMaterial
+		// name from the mesh file with the resolved media_material's PBR set.
+		for aiName, matName := range model.MaterialMap {
+			mm := matsByName[matName]
+			if mm == nil {
+				continue
+			}
+			slot.MaterialMap = append(slot.MaterialMap, world.AiMaterial{
+				AiName:     aiName,
+				AlbedoPath: mm.AlbedoPath,
+				NormalPath: mm.NormalPath,
+				ORMPath:    mm.ORMPath,
+				AlbedoR:    mm.AlbedoR,
+				AlbedoG:    mm.AlbedoG,
+				AlbedoB:    mm.AlbedoB,
+				Roughness:  mm.Roughness,
+				Metallic:   mm.Metallic,
+			})
 		}
 		out.Meshes = append(out.Meshes, slot)
 	}

@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
+#include <filesystem>
 
 namespace gue {
 
@@ -30,6 +31,39 @@ static constexpr int kSlotCount = (int)(sizeof(kSlotNames) / sizeof(kSlotNames[0
 const char* ActorSlotName(int slot) {
     if (slot < 0 || slot >= kSlotCount) return "?";
     return kSlotNames[slot];
+}
+
+// ---------------------------------------------------------------------------
+// material_map serialization — "k1=v1;k2=v2"
+// ---------------------------------------------------------------------------
+
+std::string SerializeMaterialMap(const std::unordered_map<std::string, std::string>& m) {
+    std::string out;
+    bool first = true;
+    for (const auto& [k, v] : m) {
+        if (k.empty() || v.empty()) continue;
+        if (!first) out.push_back(';');
+        first = false;
+        out += k; out.push_back('='); out += v;
+    }
+    return out;
+}
+
+std::unordered_map<std::string, std::string> ParseMaterialMap(const std::string& s) {
+    std::unordered_map<std::string, std::string> out;
+    size_t i = 0;
+    while (i < s.size()) {
+        size_t semi = s.find(';', i);
+        size_t end  = (semi == std::string::npos) ? s.size() : semi;
+        size_t eq   = s.find('=', i);
+        if (eq != std::string::npos && eq < end) {
+            std::string k = s.substr(i, eq - i);
+            std::string v = s.substr(eq + 1, end - eq - 1);
+            if (!k.empty() && !v.empty()) out[std::move(k)] = std::move(v);
+        }
+        i = (semi == std::string::npos) ? s.size() : semi + 1;
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +123,36 @@ void MediaTab::EnsureTables(sqlite3* db) {
     };
     for (const char* s : sql)
         sqlite3_exec(db, s, nullptr, nullptr, nullptr);
+
+    // Additive migrations (safe no-ops when the column already exists).
+    // Stores the per-model aiMaterial → media_material name mapping as
+    // "blinn1=ID01;blinn2=ID02" so multi-part models retain their texture
+    // hookups across sessions.
+    sqlite3_exec(db,
+        "ALTER TABLE media_models ADD COLUMN material_map TEXT NOT NULL DEFAULT ''",
+        nullptr, nullptr, nullptr);
+
+    // Actor-def gameplay defaults (mirrors server migrateV8). Each ALTER is
+    // a no-op when the column is already present; errors are ignored on
+    // purpose so this runs unconditionally every launch.
+    const char* adefColumns[] = {
+        "ALTER TABLE media_actor_defs ADD COLUMN scale                  REAL    NOT NULL DEFAULT 1.0",
+        "ALTER TABLE media_actor_defs ADD COLUMN default_name           TEXT    NOT NULL DEFAULT ''",
+        "ALTER TABLE media_actor_defs ADD COLUMN default_race           TEXT    NOT NULL DEFAULT ''",
+        "ALTER TABLE media_actor_defs ADD COLUMN default_class          TEXT    NOT NULL DEFAULT ''",
+        "ALTER TABLE media_actor_defs ADD COLUMN default_level          INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE media_actor_defs ADD COLUMN default_hp             INTEGER NOT NULL DEFAULT 100",
+        "ALTER TABLE media_actor_defs ADD COLUMN default_ep             INTEGER NOT NULL DEFAULT 100",
+        "ALTER TABLE media_actor_defs ADD COLUMN default_aggressiveness INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE media_actor_defs ADD COLUMN default_aggro_range    REAL    NOT NULL DEFAULT 8.0",
+        "ALTER TABLE media_actor_defs ADD COLUMN default_attack_range   REAL    NOT NULL DEFAULT 2.0",
+        "ALTER TABLE media_actor_defs ADD COLUMN default_respawn_ms     INTEGER NOT NULL DEFAULT 30000",
+        "ALTER TABLE media_actor_defs ADD COLUMN is_playable            INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE media_actor_defs ADD COLUMN is_mountable           INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE media_actor_defs ADD COLUMN is_interactive         INTEGER NOT NULL DEFAULT 0",
+    };
+    for (const char* s : adefColumns)
+        sqlite3_exec(db, s, nullptr, nullptr, nullptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -112,14 +176,15 @@ void MediaTab::FetchAll(sqlite3* db) {
 
     // Models
     if (sqlite3_prepare_v2(db,
-        "SELECT id, name, file_path, scale FROM media_models ORDER BY name",
+        "SELECT id, name, file_path, scale, material_map FROM media_models ORDER BY name",
         -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             MediaModel m;
-            m.id        = sqlite3_column_int   (stmt, 0);
-            m.name      = colText              (stmt, 1);
-            m.file_path = colText              (stmt, 2);
-            m.scale     = (float)sqlite3_column_double(stmt, 3);
+            m.id           = sqlite3_column_int   (stmt, 0);
+            m.name         = colText              (stmt, 1);
+            m.file_path    = colText              (stmt, 2);
+            m.scale        = (float)sqlite3_column_double(stmt, 3);
+            m.material_map = ParseMaterialMap(colText(stmt, 4));
             models_.push_back(std::move(m));
         }
         sqlite3_finalize(stmt);
@@ -166,12 +231,32 @@ void MediaTab::FetchAll(sqlite3* db) {
 
     // Actor Defs
     if (sqlite3_prepare_v2(db,
-        "SELECT id, name FROM media_actor_defs ORDER BY name",
+        "SELECT id, name, scale,"
+        "       default_name, default_race, default_class,"
+        "       default_level, default_hp, default_ep,"
+        "       default_aggressiveness, default_aggro_range, default_attack_range,"
+        "       default_respawn_ms, is_playable, is_mountable, is_interactive"
+        " FROM media_actor_defs ORDER BY name",
         -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             ActorDef d;
-            d.id   = sqlite3_column_int(stmt, 0);
-            d.name = colText(stmt, 1);
+            d.id                      = sqlite3_column_int(stmt, 0);
+            d.name                    = colText(stmt, 1);
+            d.scale                   = (float)sqlite3_column_double(stmt, 2);
+            if (d.scale <= 0.f) d.scale = 1.f;  // guard pre-migration rows
+            d.default_name            = colText(stmt, 3);
+            d.default_race            = colText(stmt, 4);
+            d.default_class           = colText(stmt, 5);
+            d.default_level           = sqlite3_column_int(stmt, 6);
+            d.default_hp              = sqlite3_column_int(stmt, 7);
+            d.default_ep              = sqlite3_column_int(stmt, 8);
+            d.default_aggressiveness  = sqlite3_column_int(stmt, 9);
+            d.default_aggro_range     = (float)sqlite3_column_double(stmt, 10);
+            d.default_attack_range    = (float)sqlite3_column_double(stmt, 11);
+            d.default_respawn_ms      = sqlite3_column_int(stmt, 12);
+            d.is_playable             = sqlite3_column_int(stmt, 13) != 0;
+            d.is_mountable            = sqlite3_column_int(stmt, 14) != 0;
+            d.is_interactive          = sqlite3_column_int(stmt, 15) != 0;
             actor_defs_.push_back(std::move(d));
         }
         sqlite3_finalize(stmt);
@@ -196,7 +281,9 @@ void MediaTab::FetchAll(sqlite3* db) {
         sqlite3_finalize(stmt);
     }
 
-    // Actor anim map
+    // Actor anim map — also pulls each backing clip's source_path + clip_override
+    // so the Actor Def editor can edit them inline without visiting the
+    // Anim Clips registry.
     if (sqlite3_prepare_v2(db,
         "SELECT id, actor_def_id, action, clip_id"
         " FROM media_actor_anims ORDER BY actor_def_id, action",
@@ -207,6 +294,14 @@ void MediaTab::FetchAll(sqlite3* db) {
             a.actor_def_id = sqlite3_column_int(stmt, 1);
             a.action       = colText(stmt, 2);
             a.clip_id      = sqlite3_column_int(stmt, 3);
+            // Denormalize the backing clip's fields into the map row.
+            for (const auto& c : clips_) {
+                if (c.id == a.clip_id) {
+                    a.source_path   = c.source_path;
+                    a.clip_override = c.clip_override;
+                    break;
+                }
+            }
             for (auto& d : actor_defs_) {
                 if (d.id == a.actor_def_id) { d.anim_map.push_back(a); break; }
             }
@@ -227,14 +322,15 @@ void MediaTab::FetchAll(sqlite3* db) {
 void MediaTab::SaveModel(sqlite3* db, MediaModel& m) {
     sqlite3_stmt* stmt = nullptr;
     int rc;
+    const std::string mapSerialized = SerializeMaterialMap(m.material_map);
     if (m.id == 0) {
         rc = sqlite3_prepare_v2(db,
-            "INSERT INTO media_models (name, file_path, scale) VALUES (?, ?, ?)",
-            -1, &stmt, nullptr);
+            "INSERT INTO media_models (name, file_path, scale, material_map)"
+            " VALUES (?, ?, ?, ?)", -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
-            "UPDATE media_models SET name=?, file_path=?, scale=? WHERE id=?",
-            -1, &stmt, nullptr);
+            "UPDATE media_models SET name=?, file_path=?, scale=?, material_map=?"
+            " WHERE id=?", -1, &stmt, nullptr);
     }
     if (rc != SQLITE_OK) {
         std::snprintf(statusMsg_, sizeof(statusMsg_),
@@ -244,7 +340,8 @@ void MediaTab::SaveModel(sqlite3* db, MediaModel& m) {
     sqlite3_bind_text  (stmt, 1, m.name.c_str(),      -1, SQLITE_TRANSIENT);
     sqlite3_bind_text  (stmt, 2, m.file_path.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_double(stmt, 3, m.scale);
-    if (m.id != 0) sqlite3_bind_int(stmt, 4, m.id);
+    sqlite3_bind_text  (stmt, 4, mapSerialized.c_str(), -1, SQLITE_TRANSIENT);
+    if (m.id != 0) sqlite3_bind_int(stmt, 5, m.id);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         std::snprintf(statusMsg_, sizeof(statusMsg_),
@@ -252,6 +349,7 @@ void MediaTab::SaveModel(sqlite3* db, MediaModel& m) {
     } else {
         if (m.id == 0) m.id = (int)sqlite3_last_insert_rowid(db);
         needFetch_ = true;
+        ++media_revision_;  // material_map edits need to reach Zone/Client
         std::snprintf(statusMsg_, sizeof(statusMsg_),
                       "Saved model '%s' (id=%d).", m.name.c_str(), m.id);
     }
@@ -310,6 +408,8 @@ void MediaTab::SaveMaterial(sqlite3* db, MediaMaterial& m) {
     } else {
         if (m.id == 0) m.id = (int)sqlite3_last_insert_rowid(db);
         needFetch_ = true;
+        materialsDirtyForPreview_ = true;  // re-apply by-name on next Models preview
+        ++media_revision_;
         std::snprintf(statusMsg_, sizeof(statusMsg_),
                       "Saved material '%s' (id=%d).", m.name.c_str(), m.id);
     }
@@ -323,6 +423,8 @@ void MediaTab::DeleteMaterial(sqlite3* db, int id) {
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     needFetch_ = true;
+    materialsDirtyForPreview_ = true;
+    ++media_revision_;
     selMat_    = -1;
 }
 
@@ -381,20 +483,55 @@ void MediaTab::DeleteAnimClip(sqlite3* db, int id) {
 void MediaTab::SaveActorDef(sqlite3* db, ActorDef& d) {
     sqlite3_stmt* stmt = nullptr;
     int rc;
+    const char* columns =
+        "name, scale,"
+        " default_name, default_race, default_class,"
+        " default_level, default_hp, default_ep,"
+        " default_aggressiveness, default_aggro_range, default_attack_range,"
+        " default_respawn_ms, is_playable, is_mountable, is_interactive";
     if (d.id == 0) {
         rc = sqlite3_prepare_v2(db,
-            "INSERT INTO media_actor_defs (name) VALUES (?)", -1, &stmt, nullptr);
+            "INSERT INTO media_actor_defs"
+            " (name, scale, default_name, default_race, default_class,"
+            "  default_level, default_hp, default_ep,"
+            "  default_aggressiveness, default_aggro_range, default_attack_range,"
+            "  default_respawn_ms, is_playable, is_mountable, is_interactive)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
-            "UPDATE media_actor_defs SET name=? WHERE id=?", -1, &stmt, nullptr);
+            "UPDATE media_actor_defs SET"
+            "  name=?, scale=?,"
+            "  default_name=?, default_race=?, default_class=?,"
+            "  default_level=?, default_hp=?, default_ep=?,"
+            "  default_aggressiveness=?, default_aggro_range=?, default_attack_range=?,"
+            "  default_respawn_ms=?, is_playable=?, is_mountable=?, is_interactive=?"
+            " WHERE id=?",
+            -1, &stmt, nullptr);
     }
+    (void)columns; // kept for grep-ability; params are positional below
     if (rc != SQLITE_OK) {
         std::snprintf(statusMsg_, sizeof(statusMsg_),
                       "Save actor def error: %s", sqlite3_errmsg(db));
         return;
     }
-    sqlite3_bind_text(stmt, 1, d.name.c_str(), -1, SQLITE_TRANSIENT);
-    if (d.id != 0) sqlite3_bind_int(stmt, 2, d.id);
+    int i = 1;
+    sqlite3_bind_text  (stmt, i++, d.name.c_str(),          -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, i++, d.scale);
+    sqlite3_bind_text  (stmt, i++, d.default_name.c_str(),  -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text  (stmt, i++, d.default_race.c_str(),  -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text  (stmt, i++, d.default_class.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int   (stmt, i++, d.default_level);
+    sqlite3_bind_int   (stmt, i++, d.default_hp);
+    sqlite3_bind_int   (stmt, i++, d.default_ep);
+    sqlite3_bind_int   (stmt, i++, d.default_aggressiveness);
+    sqlite3_bind_double(stmt, i++, d.default_aggro_range);
+    sqlite3_bind_double(stmt, i++, d.default_attack_range);
+    sqlite3_bind_int   (stmt, i++, d.default_respawn_ms);
+    sqlite3_bind_int   (stmt, i++, d.is_playable    ? 1 : 0);
+    sqlite3_bind_int   (stmt, i++, d.is_mountable   ? 1 : 0);
+    sqlite3_bind_int   (stmt, i++, d.is_interactive ? 1 : 0);
+    if (d.id != 0) sqlite3_bind_int(stmt, i++, d.id);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         std::snprintf(statusMsg_, sizeof(statusMsg_),
@@ -406,6 +543,68 @@ void MediaTab::SaveActorDef(sqlite3* db, ActorDef& d) {
                       "Saved actor def '%s' (id=%d).", d.name.c_str(), d.id);
     }
     sqlite3_finalize(stmt);
+}
+
+void MediaTab::DuplicateActorDef(sqlite3* db, int sourceId) {
+    // Find the source def in the cached list.
+    const ActorDef* src = nullptr;
+    for (const auto& d : actor_defs_) {
+        if (d.id == sourceId) { src = &d; break; }
+    }
+    if (!src) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Duplicate: actor def id=%d not found.", sourceId);
+        return;
+    }
+
+    sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr);
+
+    // Clone the def row (including scale + gameplay defaults).
+    ActorDef copy = *src;
+    copy.id   = 0;
+    copy.name = src->name + " (copy)";
+    SaveActorDef(db, copy);
+    if (copy.id == 0) {
+        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Duplicate failed: could not insert new actor def row.");
+        return;
+    }
+
+    // Clone mesh slots under the new def id.
+    for (const auto& s : src->mesh_slots) {
+        ActorMeshSlot ns = s;
+        ns.id           = 0;
+        ns.actor_def_id = copy.id;
+        SaveMeshSlot(db, ns);
+    }
+    // Clone anim mappings. Clear clip_id so SaveAnimMap creates a fresh
+    // backing media_anim_clips row for the copy — otherwise editing an
+    // animation on the duplicate would mutate the source's clip.
+    for (const auto& a : src->anim_map) {
+        ActorAnimMap na = a;
+        na.id           = 0;
+        na.actor_def_id = copy.id;
+        na.clip_id      = 0;
+        SaveAnimMap(db, na);
+    }
+
+    sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
+
+    // Refetch so the list shows the new def, then select it.
+    FetchAll(db);
+    for (int i = 0; i < (int)actor_defs_.size(); ++i) {
+        if (actor_defs_[i].id == copy.id) {
+            selActorDef_   = i;
+            editActorDef_  = actor_defs_[i];
+            dirtyActorDef_ = false;
+            newActorDef_   = false;
+            break;
+        }
+    }
+    std::snprintf(statusMsg_, sizeof(statusMsg_),
+                  "Duplicated '%s' → '%s' (id=%d).",
+                  src->name.c_str(), copy.name.c_str(), copy.id);
 }
 
 void MediaTab::DeleteActorDef(sqlite3* db, int id) {
@@ -478,6 +677,38 @@ void MediaTab::DeleteMeshSlot(sqlite3* db, int id) {
 }
 
 void MediaTab::SaveAnimMap(sqlite3* db, ActorAnimMap& a) {
+    // Upsert the backing media_anim_clips row first, so the map row always
+    // points at a valid clip. We auto-manage the clip so the user only sees
+    // the Actor Def editor (action + source + clip_override), never the
+    // Anim Clips registry.
+    {
+        sqlite3_stmt* cs = nullptr;
+        if (a.clip_id == 0) {
+            if (sqlite3_prepare_v2(db,
+                "INSERT INTO media_anim_clips (name, source_path, clip_override)"
+                " VALUES (?, ?, ?)",
+                -1, &cs, nullptr) == SQLITE_OK) {
+                sqlite3_bind_text(cs, 1, a.action.c_str(),        -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(cs, 2, a.source_path.c_str(),   -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(cs, 3, a.clip_override.c_str(), -1, SQLITE_TRANSIENT);
+                if (sqlite3_step(cs) == SQLITE_DONE)
+                    a.clip_id = (int)sqlite3_last_insert_rowid(db);
+                sqlite3_finalize(cs);
+            }
+        } else {
+            if (sqlite3_prepare_v2(db,
+                "UPDATE media_anim_clips SET name=?, source_path=?, clip_override=? WHERE id=?",
+                -1, &cs, nullptr) == SQLITE_OK) {
+                sqlite3_bind_text(cs, 1, a.action.c_str(),        -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(cs, 2, a.source_path.c_str(),   -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(cs, 3, a.clip_override.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int (cs, 4, a.clip_id);
+                sqlite3_step(cs);
+                sqlite3_finalize(cs);
+            }
+        }
+    }
+
     sqlite3_stmt* stmt = nullptr;
     int rc;
     if (a.id == 0) {
@@ -530,6 +761,24 @@ static bool InputString(const char* id, std::string& s, size_t maxLen = 256) {
         return true;
     }
     return false;
+}
+
+// Sanitize a user-supplied name into a filesystem-safe folder fragment:
+// lowercase, alphanumerics and underscores only. Used by Models + Materials
+// editors so single-file imports land under assets/<kind>/<name>/ instead
+// of flattening under assets/<kind>/.
+static std::string SafeFolderName(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c >= 'A' && c <= 'Z') out.push_back(char(c - 'A' + 'a'));
+        else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')
+            out.push_back(c);
+        else if (!out.empty() && out.back() != '_')
+            out.push_back('_');
+    }
+    while (!out.empty() && out.back() == '_') out.pop_back();
+    return out;
 }
 
 // Path input field with a native "Browse..." button. Picking a file outside
@@ -610,10 +859,29 @@ static std::vector<std::pair<int, std::string>>
 }
 
 // ---------------------------------------------------------------------------
+// Lazy-init the preview viewport (needs a live GL context + shared Engine/
+// Pipeline from GUE main; built on first use).
+// ---------------------------------------------------------------------------
+static void EnsurePreview(std::unique_ptr<PreviewViewport>& pv, bool& ok,
+                          ::rco::renderer::Engine* engine,
+                          ::rco::renderer::Pipeline* pipeline) {
+    if (pv) return;
+    if (!engine || !pipeline) {
+        ok = false;
+        return;
+    }
+    pv = std::make_unique<PreviewViewport>();
+    pv->Init(engine, pipeline);
+    ok = true;
+}
+
+// ---------------------------------------------------------------------------
 // Models sub-tab
 // ---------------------------------------------------------------------------
 
 void MediaTab::DrawModels(sqlite3* db) {
+    EnsurePreview(preview_, preview_init_ok_, engine_, pipeline_);
+
     if (ImGui::Button("Refresh")) needFetch_ = true;
     ImGui::SameLine();
     if (ImGui::Button("New Model")) {
@@ -625,7 +893,7 @@ void MediaTab::DrawModels(sqlite3* db) {
     ImGui::TextDisabled("%s", statusMsg_);
     ImGui::Separator();
 
-    ImGui::BeginChild("##mdl_list", {260, 0}, true);
+    ImGui::BeginChild("##mdl_list", {240, 0}, true);
     for (int i = 0; i < (int)models_.size(); ++i) {
         char label[256];
         std::snprintf(label, sizeof(label), "%s##ml%d", models_[i].name.c_str(), i);
@@ -639,16 +907,33 @@ void MediaTab::DrawModels(sqlite3* db) {
     ImGui::EndChild();
     ImGui::SameLine();
 
-    ImGui::BeginChild("##mdl_edit", {0, 0}, true);
+    // Middle column: properties (fixed width).
+    float total_w   = ImGui::GetContentRegionAvail().x;
+    float preview_w = std::max(280.f, total_w * 0.45f);
+    float props_w   = total_w - preview_w - 8.f;
+
+    ImGui::BeginChild("##mdl_edit", {props_w, 0}, true);
+    // Per-model subfolder so side-files (textures referenced by .gltf, .mtl,
+    // etc.) stay grouped with the mesh file instead of flattening under
+    // assets/models/. Folder name derived from the model's Name field.
+    auto modelSubdir = [](const std::string& name) {
+        std::string f = SafeFolderName(name);
+        return f.empty() ? std::string("models")
+                         : std::string("models/") + f;
+    };
+
     if (newModel_) {
         ImGui::TextColored({0.4f, 1.f, 0.4f, 1.f}, "New Model");
         ImGui::Separator();
         InputString("Name", pendingModel_.name);
-        PathField("File Path", pendingModel_.file_path,
-                  "3D Model", "glb,fbx,obj,dae,b3d,gltf", "models");
+        {
+            std::string sub = modelSubdir(pendingModel_.name);
+            PathField("File Path", pendingModel_.file_path,
+                      "3D Model", "glb,fbx,obj,dae,b3d,gltf", sub.c_str());
+        }
         ImGui::InputFloat("Scale", &pendingModel_.scale, 0.1f, 1.f, "%.2f");
         ImGui::TextDisabled("Click [...] to pick a file. If it's outside dist/client/assets/,");
-        ImGui::TextDisabled("it's copied into assets/models/ automatically.");
+        ImGui::TextDisabled("it's copied into assets/models/<name>/ automatically.");
         ImGui::Spacing();
         if (ImGui::Button("Create")) { SaveModel(db, pendingModel_); newModel_ = false; }
         ImGui::SameLine();
@@ -657,12 +942,15 @@ void MediaTab::DrawModels(sqlite3* db) {
         ImGui::Text("Editing: [id=%d] %s", editModel_.id, editModel_.name.c_str());
         ImGui::Separator();
         if (InputString("Name", editModel_.name)) dirtyModel_ = true;
-        if (PathField("File Path", editModel_.file_path,
-                      "3D Model", "glb,fbx,obj,dae,b3d,gltf", "models"))
-            dirtyModel_ = true;
+        {
+            std::string sub = modelSubdir(editModel_.name);
+            if (PathField("File Path", editModel_.file_path,
+                          "3D Model", "glb,fbx,obj,dae,b3d,gltf", sub.c_str()))
+                dirtyModel_ = true;
+        }
         if (ImGui::InputFloat("Scale", &editModel_.scale, 0.1f, 1.f, "%.2f"))
             dirtyModel_ = true;
-        ImGui::TextDisabled("[...] imports automatically into assets/models/ if needed.");
+        ImGui::TextDisabled("[...] imports automatically into assets/models/<name>/ if needed.");
         ImGui::Spacing();
 
         ImGui::BeginDisabled(!dirtyModel_);
@@ -677,6 +965,125 @@ void MediaTab::DrawModels(sqlite3* db) {
     } else {
         ImGui::TextDisabled("Select a model, or click \"New Model\".");
     }
+    ImGui::EndChild();  // end of ##mdl_edit
+
+    // --- Right column: 3D preview ---
+    ImGui::SameLine();
+    ImGui::BeginChild("##mdl_preview", {0, 0}, true);
+    if (!preview_init_ok_) {
+        ImGui::TextDisabled("Preview unavailable (shader load failed).");
+    } else {
+        const MediaModel* show = nullptr;
+        if (newModel_ && !pendingModel_.file_path.empty())       show = &pendingModel_;
+        else if (selModel_ >= 0 && selModel_ < (int)models_.size()) show = &editModel_;
+
+        if (show) {
+            bool path_changed = preview_->CurrentPath() != show->file_path;
+            if (path_changed) {
+                preview_->LoadModel(show->file_path);
+                // Seed the in-memory mapping with whatever the DB persisted
+                // for this model so the preview comes back textured after
+                // reopening the GUE.
+                if (preview_material_names_model_ != show->file_path) {
+                    previewAiToMedia_ = show->material_map;
+                    preview_material_names_model_ = show->file_path;
+                }
+            }
+
+            auto buildLookups = [&]() {
+                // Index media_materials by name for fast override lookup.
+                std::unordered_map<std::string, const MediaMaterial*> byName;
+                for (const auto& m : materials_) byName[m.name] = &m;
+
+                // For every distinct aiMaterial name in the loaded model,
+                // resolve which media_material to use: user's explicit
+                // override first, otherwise same-name match, otherwise none.
+                std::vector<PreviewViewport::MaterialLookup> out;
+                for (const auto& ai_name : preview_->MaterialNames()) {
+                    const MediaMaterial* mm = nullptr;
+                    auto it = previewAiToMedia_.find(ai_name);
+                    if (it != previewAiToMedia_.end()) {
+                        auto nit = byName.find(it->second);
+                        if (nit != byName.end()) mm = nit->second;
+                    }
+                    if (!mm) {
+                        auto nit = byName.find(ai_name);
+                        if (nit != byName.end()) mm = nit->second;
+                    }
+                    if (!mm) continue;
+
+                    // Use ai_name as the lookup key so ApplyMaterialsByName
+                    // matches the submesh's material_name correctly.
+                    PreviewViewport::MaterialLookup l;
+                    l.name       = ai_name;
+                    l.albedo_rel = mm->albedo_path;
+                    l.normal_rel = mm->normal_path;
+                    l.orm_rel    = mm->orm_path;
+                    out.push_back(std::move(l));
+                }
+                return out;
+            };
+
+            if (path_changed || materialsDirtyForPreview_) {
+                preview_->ApplyMaterialsFromMedia(buildLookups());
+                materialsDirtyForPreview_ = false;
+            }
+            preview_->DrawImGui();
+
+            // ── Material mapping UI ──────────────────────────────────────
+            auto ai_names = preview_->MaterialNames();
+            if (!ai_names.empty()) {
+                ImGui::Separator();
+                ImGui::TextColored({0.6f, 0.85f, 1.f, 1.f}, "Material mapping");
+                ImGui::TextDisabled("Link each material slot inside the model to an "
+                                    "imported media_material.");
+
+                bool mapping_changed = false;
+                for (const auto& ai : ai_names) {
+                    ImGui::PushID(ai.c_str());
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::Text("%s", ai.c_str());
+                    ImGui::SameLine(140.f);
+
+                    auto it = previewAiToMedia_.find(ai);
+                    std::string current = (it != previewAiToMedia_.end()) ? it->second : ai;
+                    ImGui::SetNextItemWidth(-1.f);
+                    if (ImGui::BeginCombo("##map", current.c_str())) {
+                        if (ImGui::Selectable("(auto — match by name)",
+                                              it == previewAiToMedia_.end())) {
+                            previewAiToMedia_.erase(ai);
+                            mapping_changed = true;
+                        }
+                        for (const auto& m : materials_) {
+                            bool sel = (current == m.name);
+                            if (ImGui::Selectable(m.name.c_str(), sel)) {
+                                previewAiToMedia_[ai] = m.name;
+                                mapping_changed = true;
+                            }
+                            if (sel) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::PopID();
+                }
+                if (mapping_changed) {
+                    preview_->ApplyMaterialsFromMedia(buildLookups());
+
+                    // Persist to the model row so the mapping survives
+                    // GUE restarts and is available to Actor Def / Zones
+                    // rendering without re-editing.
+                    if (selModel_ >= 0 && selModel_ < (int)models_.size()) {
+                        editModel_.material_map = previewAiToMedia_;
+                        models_[selModel_].material_map = previewAiToMedia_;
+                        SaveModel(db, editModel_);
+                    }
+                }
+            }
+        } else {
+            preview_->Clear();
+            ImGui::TextDisabled("No model selected.");
+        }
+    }
     ImGui::EndChild();
 }
 
@@ -687,11 +1094,19 @@ void MediaTab::DrawModels(sqlite3* db) {
 static bool DrawMaterialFields(MediaMaterial& m) {
     bool changed = false;
     if (InputString("Name", m.name)) changed = true;
-    if (PathField("Albedo", m.albedo_path, "Texture", "png,jpg,jpeg,tga,bmp", "textures"))
+
+    // Route texture imports into a per-material subfolder so every material's
+    // albedo/normal/ORM stay grouped on disk (matches user expectation:
+    // "importar texturas que ja ficam em pastas separadas").
+    std::string folder = SafeFolderName(m.name);
+    std::string subdir = folder.empty() ? std::string("textures")
+                                        : std::string("textures/") + folder;
+
+    if (PathField("Albedo", m.albedo_path, "Texture", "png,jpg,jpeg,tga,bmp", subdir.c_str()))
         changed = true;
-    if (PathField("Normal", m.normal_path, "Texture", "png,jpg,jpeg,tga,bmp", "textures"))
+    if (PathField("Normal", m.normal_path, "Texture", "png,jpg,jpeg,tga,bmp", subdir.c_str()))
         changed = true;
-    if (PathField("ORM",    m.orm_path,    "Texture", "png,jpg,jpeg,tga,bmp", "textures"))
+    if (PathField("ORM",    m.orm_path,    "Texture", "png,jpg,jpeg,tga,bmp", subdir.c_str()))
         changed = true;
 
     ImGui::Separator();
@@ -717,8 +1132,124 @@ void MediaTab::DrawMaterials(sqlite3* db) {
         selMat_  = -1;
     }
     ImGui::SameLine();
+    if (ImGui::Button("Import Texture Folder...")) {
+        std::string folder = PickFolder("Pick a folder with PBR textures");
+        if (!folder.empty()) {
+            importGroups_.clear();
+            importSourceFolder_ = folder;
+            if (ScanTextureFolder(folder, importGroups_) && !importGroups_.empty()) {
+                // Default output subdir = source folder's basename, sanitized.
+                std::string base = folder;
+                size_t slash = base.find_last_of("/\\");
+                if (slash != std::string::npos) base = base.substr(slash + 1);
+                for (char& c : base) if (c == ' ' || c == '-') c = '_';
+                std::strncpy(importSubdir_, base.c_str(), sizeof(importSubdir_) - 1);
+                importSubdir_[sizeof(importSubdir_) - 1] = 0;
+                showImportDlg_ = true;
+            } else {
+                std::snprintf(statusMsg_, sizeof(statusMsg_),
+                              "No PBR texture groups found in '%s'.", folder.c_str());
+            }
+        }
+    }
+    ImGui::SameLine();
     ImGui::TextDisabled("%s", statusMsg_);
     ImGui::Separator();
+
+    // ── Import-folder modal dialog ────────────────────────────────────────
+    if (showImportDlg_) ImGui::OpenPopup("Import Texture Folder");
+    {
+        ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, {0.5f, 0.5f});
+        ImGui::SetNextWindowSize({640.f, 0.f}, ImGuiCond_Appearing);
+    }
+    if (ImGui::BeginPopupModal("Import Texture Folder", &showImportDlg_,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextDisabled("Source: %s", importSourceFolder_.c_str());
+        ImGui::Spacing();
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::InputText("Target subfolder (under assets/textures/)##ti",
+                         importSubdir_, sizeof(importSubdir_));
+        ImGui::Checkbox("Pack AO+Rough+Metal into ORM (recommended)", &importOpts_.pack_orm);
+        ImGui::Checkbox("Flip Y channel on Normal_DirectX",            &importOpts_.flip_normal_dx);
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextUnformatted("Detected groups:");
+        ImGui::Spacing();
+
+        if (ImGui::BeginTable("##ti_groups", 8,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+            ImGui::TableSetupColumn("Use");
+            ImGui::TableSetupColumn("Prefix / name");
+            ImGui::TableSetupColumn("Albedo");
+            ImGui::TableSetupColumn("Normal");
+            ImGui::TableSetupColumn("Rough");
+            ImGui::TableSetupColumn("Metal");
+            ImGui::TableSetupColumn("AO");
+            ImGui::TableSetupColumn("Alpha");
+            ImGui::TableHeadersRow();
+
+            auto cell = [](bool have, const char* extra = "") {
+                if (have) ImGui::TextColored({0.4f, 1.f, 0.4f, 1.f}, "✓%s", extra);
+                else      ImGui::TextDisabled("—");
+            };
+
+            for (size_t i = 0; i < importGroups_.size(); ++i) {
+                auto& g = importGroups_[i];
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::PushID((int)i);
+                ImGui::Checkbox("##on", &g.enabled);
+                ImGui::TableSetColumnIndex(1);
+                char name[96];
+                std::strncpy(name, g.material_name.c_str(), 95); name[95] = 0;
+                ImGui::SetNextItemWidth(150.f);
+                if (ImGui::InputText("##mn", name, sizeof(name))) g.material_name = name;
+                ImGui::TableSetColumnIndex(2);  cell(!g.albedo_src.empty());
+                ImGui::TableSetColumnIndex(3);  cell(!g.normal_src.empty(), g.normal_is_dx ? " DX" : "");
+                ImGui::TableSetColumnIndex(4);  cell(!g.roughness_src.empty());
+                ImGui::TableSetColumnIndex(5);  cell(!g.metallic_src.empty());
+                ImGui::TableSetColumnIndex(6);  cell(!g.ao_src.empty());
+                ImGui::TableSetColumnIndex(7);  cell(!g.alpha_src.empty());
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        int nEnabled = 0;
+        for (const auto& g : importGroups_) if (g.enabled) ++nEnabled;
+        if (ImGui::Button("Import##ti")) {
+            importOpts_.target_subdir = importSubdir_;
+            int done = 0;
+            for (auto& g : importGroups_) {
+                if (!g.enabled) continue;
+                if (!ImportTextureGroup(g, importOpts_)) continue;
+                MediaMaterial m;
+                m.name        = g.material_name;
+                m.albedo_path = g.albedo_rel;
+                m.normal_path = g.normal_rel;
+                m.orm_path    = g.orm_rel;   // empty when pack_orm=false
+                SaveMaterial(db, m);
+                ++done;
+            }
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                          "Imported %d material%s.", done, done == 1 ? "" : "s");
+            needFetch_ = true;
+            showImportDlg_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("%d group%s enabled", nEnabled, nEnabled == 1 ? "" : "s");
+        ImGui::SameLine(0, 12.f);
+        if (ImGui::Button("Cancel##ti")) {
+            showImportDlg_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 
     ImGui::BeginChild("##mat_list", {260, 0}, true);
     for (int i = 0; i < (int)materials_.size(); ++i) {
@@ -846,6 +1377,8 @@ static const char* lookupName(const std::vector<std::pair<int, std::string>>& v,
 }
 
 void MediaTab::DrawActorDefs(sqlite3* db) {
+    EnsurePreview(preview_, preview_init_ok_, engine_, pipeline_);
+
     auto modelList = idNameList(models_);
     auto matList   = idNameList(materials_);
     auto clipList  = idNameList(clips_);
@@ -861,7 +1394,7 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
     ImGui::TextDisabled("%s", statusMsg_);
     ImGui::Separator();
 
-    ImGui::BeginChild("##ad_list", {260, 0}, true);
+    ImGui::BeginChild("##ad_list", {220, 0}, true);
     for (int i = 0; i < (int)actor_defs_.size(); ++i) {
         char label[256];
         std::snprintf(label, sizeof(label), "%s##adl%d",
@@ -876,7 +1409,11 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
     ImGui::EndChild();
     ImGui::SameLine();
 
-    ImGui::BeginChild("##ad_edit", {0, 0}, true);
+    float ad_total_w   = ImGui::GetContentRegionAvail().x;
+    float ad_preview_w = std::max(280.f, ad_total_w * 0.40f);
+    float ad_props_w   = ad_total_w - ad_preview_w - 8.f;
+
+    ImGui::BeginChild("##ad_edit", {ad_props_w, 0}, true);
 
     if (newActorDef_) {
         ImGui::TextColored({0.4f, 1.f, 0.4f, 1.f}, "New Actor Def");
@@ -894,10 +1431,93 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         ImGui::Separator();
 
         if (InputString("Name", d.name)) dirtyActorDef_ = true;
+
+        // Scale — drives the preview live; multiplies each mesh slot's
+        // model scale at render/spawn time. 0.5 = filhote, 2.0 = pai grandão.
+        ImGui::SetNextItemWidth(200);
+        if (ImGui::SliderFloat("Scale", &d.scale, 0.1f, 5.f, "%.2fx"))
+            dirtyActorDef_ = true;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("1x##sc_reset")) { d.scale = 1.f; dirtyActorDef_ = true; }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Multiplies the model's import-scale.\n"
+                              "Same model → filhote (0.5) and pai grandão (2.0).");
+
+        ImGui::Spacing();
+
+        // Gameplay defaults — copied into npc_spawns when this actor is
+        // placed in a zone. Leave empty/zero to force the user to fill in.
+        if (ImGui::CollapsingHeader("Gameplay defaults",
+                                    ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (InputString("Default name",  d.default_name))  dirtyActorDef_ = true;
+            if (InputString("Default race",  d.default_race))  dirtyActorDef_ = true;
+            if (InputString("Default class", d.default_class)) dirtyActorDef_ = true;
+
+            ImGui::SetNextItemWidth(120);
+            if (ImGui::InputInt("Level##lvl", &d.default_level))
+                dirtyActorDef_ = true;
+            ImGui::SameLine(0, 16.f);
+            ImGui::SetNextItemWidth(100);
+            if (ImGui::InputInt("HP##hp", &d.default_hp)) dirtyActorDef_ = true;
+            ImGui::SameLine(0, 16.f);
+            ImGui::SetNextItemWidth(100);
+            if (ImGui::InputInt("EP##ep", &d.default_ep)) dirtyActorDef_ = true;
+
+            static const char* kAggroNames[] = {
+                "Passive", "Defensive", "Aggressive", "Dialog only"
+            };
+            ImGui::SetNextItemWidth(150);
+            if (ImGui::Combo("Aggressiveness",
+                             &d.default_aggressiveness, kAggroNames, 4))
+                dirtyActorDef_ = true;
+
+            ImGui::SetNextItemWidth(120);
+            if (ImGui::InputFloat("Aggro range##ar",
+                                  &d.default_aggro_range, 0.f, 0.f, "%.1f"))
+                dirtyActorDef_ = true;
+            ImGui::SameLine(0, 16.f);
+            ImGui::SetNextItemWidth(120);
+            if (ImGui::InputFloat("Attack range##atk",
+                                  &d.default_attack_range, 0.f, 0.f, "%.1f"))
+                dirtyActorDef_ = true;
+
+            ImGui::SetNextItemWidth(140);
+            if (ImGui::InputInt("Respawn (ms)##rsp", &d.default_respawn_ms,
+                                1000, 5000))
+                dirtyActorDef_ = true;
+            ImGui::SameLine();
+            ImGui::TextDisabled("(0 = permanent death)");
+
+            if (ImGui::Checkbox("Playable",   &d.is_playable))    dirtyActorDef_ = true;
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Mountable",  &d.is_mountable))   dirtyActorDef_ = true;
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Has dialog", &d.is_interactive)) dirtyActorDef_ = true;
+        }
+
         ImGui::Spacing();
         ImGui::BeginDisabled(!dirtyActorDef_);
-        if (ImGui::Button("Save Name")) { SaveActorDef(db, d); dirtyActorDef_ = false; }
+        if (ImGui::Button("Save")) { SaveActorDef(db, d); dirtyActorDef_ = false; }
         ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Revert")) {
+            editActorDef_  = actor_defs_[selActorDef_];
+            dirtyActorDef_ = false;
+        }
+        ImGui::SameLine();
+        // Duplicate — clones def + mesh slots + anim map under a "(copy)"
+        // name. Core plug-and-play move for making skin variants of the
+        // same model (Red Knight / Blue Knight), or level variants.
+        if (ImGui::Button("Duplicate")) {
+            DuplicateActorDef(db, d.id);
+            // DuplicateActorDef already refetched + selected the new def,
+            // but the outer frame still holds a stale iterator to d. Bail
+            // out of this frame — next frame draws the new def cleanly.
+            ImGui::EndChild();
+            return;
+        }
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, {0.65f, 0.1f, 0.1f, 1.f});
         if (ImGui::Button("Delete Def")) DeleteActorDef(db, d.id);
@@ -1002,90 +1622,237 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         ImGui::Spacing();
         ImGui::Separator();
 
-        // --- Animation Map section ---
-        ImGui::TextColored({0.8f, 0.9f, 1.f, 1.f}, "Animation Mapping");
-        ImGui::BeginChild("##anims", {0, 220}, true);
+        // --- Animations section (inline: action + source file + clip name) ---
+        // No more visiting an Anim Clips registry — each row carries the
+        // full definition of the animation it needs.  Leave source_path
+        // empty to use a clip embedded in the model.
+        ImGui::TextColored({0.8f, 0.9f, 1.f, 1.f}, "Animations");
+        ImGui::BeginChild("##anims", {0, 240}, true);
 
         if (ImGui::BeginTable("##anim_tbl", 4,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Action");
-            ImGui::TableSetupColumn("Clip");
-            ImGui::TableSetupColumn("##edit", ImGuiTableColumnFlags_WidthFixed, 60);
-            ImGui::TableSetupColumn("##del",  ImGuiTableColumnFlags_WidthFixed, 60);
+            ImGui::TableSetupColumn("Action",     ImGuiTableColumnFlags_WidthFixed, 110);
+            ImGui::TableSetupColumn("Source file");
+            ImGui::TableSetupColumn("Clip name",  ImGuiTableColumnFlags_WidthFixed, 120);
+            ImGui::TableSetupColumn("##ops",      ImGuiTableColumnFlags_WidthFixed, 110);
             ImGui::TableHeadersRow();
 
             for (size_t i = 0; i < d.anim_map.size(); ++i) {
                 ActorAnimMap& a = d.anim_map[i];
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(a.action.c_str());
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(
-                    lookupName(clipList, a.clip_id, "(none)"));
-
-                ImGui::TableNextColumn();
                 ImGui::PushID((int)(i + 20000));
-                if (ImGui::SmallButton("Edit")) ImGui::OpenPopup("edit_anim");
-                if (ImGui::BeginPopup("edit_anim")) {
-                    InputString("Action", a.action, 64);
-                    ComboId("Clip", a.clip_id, clipList);
-                    if (ImGui::Button("Save##ea")) {
-                        SaveAnimMap(db, a);
-                        ImGui::CloseCurrentPopup();
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Close##ea")) ImGui::CloseCurrentPopup();
-                    ImGui::EndPopup();
-                }
-                ImGui::PopID();
+                ImGui::TableNextRow();
 
                 ImGui::TableNextColumn();
-                ImGui::PushID((int)(i + 30000));
+                ImGui::SetNextItemWidth(-1);
+                InputString("##act", a.action, 64);
+
+                ImGui::TableNextColumn();
+                // Embedded animations live inside the model — empty path.
+                PathField("##src", a.source_path,
+                          "Animation",
+                          "glb,fbx,dae,b3d",
+                          "anims");
+
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-1);
+                InputString("##co", a.clip_override, 64);
+
+                ImGui::TableNextColumn();
+                if (ImGui::SmallButton("Save")) {
+                    if (a.action.empty()) {
+                        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                                      "Animation needs an action name.");
+                    } else {
+                        SaveAnimMap(db, a);
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Button, {0.55f, 0.1f, 0.1f, 1.f});
                 if (ImGui::SmallButton("Del")) DeleteAnimMap(db, a.id);
+                ImGui::PopStyleColor();
+
                 ImGui::PopID();
             }
             ImGui::EndTable();
         }
 
-        ImGui::Separator();
-        ImGui::TextUnformatted("Add mapping:");
-        ImGui::SetNextItemWidth(160);
-        ImGui::InputTextWithHint("##nact", "Idle, Walk, Attack, Death...",
-                                 newAnimAction_, sizeof(newAnimAction_));
+        ImGui::Spacing();
+        if (ImGui::Button("+ Add animation")) {
+            ActorAnimMap a;
+            a.actor_def_id  = d.id;
+            a.action        = "Idle";     // sensible default, user edits inline
+            a.source_path   = "";         // empty = embedded in body model
+            a.clip_override = "";
+            SaveAnimMap(db, a);
+        }
         ImGui::SameLine();
+        ImGui::TextDisabled("Leave Source empty for a clip embedded in the Body model.");
 
-        int newClipId = newAnimClipIdx_ >= 0 && newAnimClipIdx_ < (int)clipList.size()
-                      ? clipList[newAnimClipIdx_].first : 0;
-        ImGui::SetNextItemWidth(180);
-        if (ComboId("##nclip", newClipId, clipList)) {
-            newAnimClipIdx_ = -1;
-            for (int k = 0; k < (int)clipList.size(); ++k)
-                if (clipList[k].first == newClipId) { newAnimClipIdx_ = k; break; }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Add Mapping")) {
-            if (!newAnimAction_[0] || newClipId == 0) {
-                std::snprintf(statusMsg_, sizeof(statusMsg_),
-                              "Need both Action name and Clip to add a mapping.");
-            } else {
-                ActorAnimMap a;
-                a.actor_def_id = d.id;
-                a.action       = newAnimAction_;
-                a.clip_id      = newClipId;
-                SaveAnimMap(db, a);
-                newAnimAction_[0] = 0;
-                newAnimClipIdx_   = -1;
-            }
-        }
         ImGui::EndChild();
     } else {
         ImGui::TextDisabled("Select an actor def, or click \"New Actor Def\".");
     }
 
+    ImGui::EndChild();  // end of ##ad_edit
+
+    // --- Right column: 3D preview of the composed actor ---
+    ImGui::SameLine();
+    ImGui::BeginChild("##ad_preview", {0, 0}, true);
+    if (!preview_init_ok_) {
+        ImGui::TextDisabled("Preview unavailable (shader load failed).");
+    } else if (selActorDef_ >= 0 && selActorDef_ < (int)actor_defs_.size()) {
+        // Resolve the Body slot mesh + material from the edit state.
+        const ActorMeshSlot* body = nullptr;
+        for (auto& s : editActorDef_.mesh_slots) {
+            if (s.slot == 0) { body = &s; break; }
+        }
+        if (!body && !editActorDef_.mesh_slots.empty())
+            body = &editActorDef_.mesh_slots.front();
+
+        if (!body) {
+            preview_->Clear();
+            ImGui::TextDisabled("Add a Body slot to see the actor.");
+        } else {
+            const MediaModel* mdl = nullptr;
+            for (auto& m : models_) if (m.id == body->model_id) { mdl = &m; break; }
+
+            if (!mdl || mdl->file_path.empty()) {
+                preview_->Clear();
+                ImGui::TextDisabled("Body slot points to an invalid model.");
+            } else {
+                bool model_changed = preview_->CurrentPath() != mdl->file_path;
+                if (model_changed) {
+                    preview_->LoadModel(mdl->file_path);
+                    preview_last_material_id_ = -1;    // force re-apply below
+                    preview_last_model_id_    = -1;    // force re-apply mapping
+                }
+
+                // Apply the Model's persisted per-aiMaterial mapping first
+                // so multi-part models (e.g. 44-submesh dwarf) show up with
+                // correct textures. This only runs when the model or the
+                // materials list changes — OverrideMaterial below is
+                // deliberately gated the same way.
+                const bool apply_map_needed =
+                    preview_last_model_id_ != mdl->id || materialsDirtyForPreview_;
+                if (apply_map_needed && !mdl->material_map.empty()) {
+                    std::unordered_map<std::string, const MediaMaterial*> byName;
+                    for (const auto& mm : materials_) byName[mm.name] = &mm;
+
+                    std::vector<PreviewViewport::MaterialLookup> lookups;
+                    for (const auto& ai_name : preview_->MaterialNames()) {
+                        auto mit = mdl->material_map.find(ai_name);
+                        const MediaMaterial* mm = nullptr;
+                        if (mit != mdl->material_map.end()) {
+                            auto nit = byName.find(mit->second);
+                            if (nit != byName.end()) mm = nit->second;
+                        }
+                        if (!mm) continue;
+                        PreviewViewport::MaterialLookup l;
+                        l.name       = ai_name;
+                        l.albedo_rel = mm->albedo_path;
+                        l.normal_rel = mm->normal_path;
+                        l.orm_rel    = mm->orm_path;
+                        lookups.push_back(std::move(l));
+                    }
+                    preview_->ApplyMaterialsFromMedia(lookups);
+                    materialsDirtyForPreview_ = false;
+                }
+                preview_last_model_id_ = mdl->id;
+
+                // Actor Def's own Body-slot material_id (if set) is applied
+                // ON TOP of the per-aiMaterial mapping — useful as a global
+                // override for single-material models where no map exists.
+                const MediaMaterial* mat = nullptr;
+                for (auto& mm : materials_)
+                    if (mm.id == body->material_id) { mat = &mm; break; }
+                if (mat && preview_last_material_id_ != mat->id) {
+                    preview_->OverrideMaterial(mat->albedo_path, mat->normal_path,
+                                               mat->orm_path,
+                                               mat->albedo_r, mat->albedo_g, mat->albedo_b,
+                                               mat->roughness, mat->metallic);
+                    preview_last_material_id_ = mat->id;
+                }
+                // Live scale preview — cheap to set every frame; lets the
+                // user drag the Scale slider and see the result immediately.
+                preview_->SetActorScale(editActorDef_.scale);
+                preview_->DrawImGui();
+            }
+        }
+    } else {
+        preview_->Clear();
+        ImGui::TextDisabled("No actor def selected.");
+    }
     ImGui::EndChild();
 }
 
 // ---------------------------------------------------------------------------
 // Main Draw
 // ---------------------------------------------------------------------------
+
+// Classify a file extension (without leading dot, lowercased) into the kind
+// of asset the batch importer should treat it as. Returns nullptr for
+// unknown extensions.
+static const char* ClassifyAsset(const std::string& ext) {
+    static const char* kModel[]   = {"glb", "fbx", "obj", "gltf", "dae", "b3d"};
+    static const char* kTexture[] = {"png", "jpg", "jpeg", "tga", "bmp", "ktx", "ktx2"};
+    for (const char* e : kModel)   if (ext == e) return "model";
+    for (const char* e : kTexture) if (ext == e) return "texture";
+    return nullptr;
+}
+
+static std::string LowerExt(const std::filesystem::path& p) {
+    std::string e = p.extension().string();
+    if (!e.empty() && e[0] == '.') e.erase(0, 1);
+    for (char& c : e) if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+    return e;
+}
+
+void MediaTab::ImportFilesBatch(sqlite3* db) {
+    auto picks = gue::PickMultipleFiles("Assets",
+                                        "glb,fbx,obj,gltf,dae,b3d,"
+                                        "png,jpg,jpeg,tga,bmp,ktx,ktx2");
+    if (picks.empty()) return;
+
+    int nModels = 0, nTextures = 0, nSkipped = 0;
+
+    for (const auto& abs : picks) {
+        std::filesystem::path p(abs);
+        std::string ext   = LowerExt(p);
+        std::string base  = p.stem().string();                // no extension
+        std::string folder = SafeFolderName(base);
+        if (folder.empty()) folder = "asset";
+
+        const char* kind = ClassifyAsset(ext);
+        if (!kind) { ++nSkipped; continue; }
+
+        if (std::strcmp(kind, "model") == 0) {
+            std::string sub = "models/" + folder;
+            std::string rel = gue::ImportAbsolutePath(abs, sub.c_str());
+            if (rel.empty()) { ++nSkipped; continue; }
+            MediaModel m;
+            m.name      = base;
+            m.file_path = rel;
+            m.scale     = 1.f;
+            SaveModel(db, m);
+            ++nModels;
+        } else { // "texture"
+            std::string sub = "textures/" + folder;
+            std::string rel = gue::ImportAbsolutePath(abs, sub.c_str());
+            if (rel.empty()) { ++nSkipped; continue; }
+            MediaMaterial m;
+            m.name        = base;
+            m.albedo_path = rel;
+            SaveMaterial(db, m);
+            ++nTextures;
+        }
+    }
+
+    ++media_revision_;
+    needFetch_ = true;
+    std::snprintf(statusMsg_, sizeof(statusMsg_),
+                  "Batch imported: %d model(s), %d texture(s), %d skipped.",
+                  nModels, nTextures, nSkipped);
+}
 
 void MediaTab::Draw(sqlite3* db) {
     if (needFetch_) {
@@ -1112,10 +1879,25 @@ void MediaTab::Draw(sqlite3* db) {
         }
     }
 
+    // ── Top bar: cross-sub-tab actions ─────────────────────────────────
+    // "Import files..." opens a multi-select dialog and auto-sorts each
+    // file into Models or Materials by extension — the plug-and-play
+    // entry point for new assets.
+    ImGui::PushStyleColor(ImGuiCol_Button,        {0.20f, 0.50f, 0.20f, 1.f});
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.25f, 0.60f, 0.25f, 1.f});
+    if (ImGui::Button("Import files...")) ImportFilesBatch(db);
+    ImGui::PopStyleColor(2);
+    ImGui::SameLine();
+    ImGui::TextDisabled(
+        "pick N files → auto-classified: glb/fbx/obj → models, png/jpg/tga → textures");
+    ImGui::Separator();
+
     if (ImGui::BeginTabBar("##media_subtabs")) {
         if (ImGui::BeginTabItem("Models"))     { DrawModels    (db); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Materials"))  { DrawMaterials (db); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Anim Clips")) { DrawAnimClips (db); ImGui::EndTabItem(); }
+        // "Anim Clips" sub-tab is hidden: animations are now managed inline
+        // inside each Actor Def (action + source file + clip name). The
+        // media_anim_clips table is still used under the hood by SaveAnimMap.
         if (ImGui::BeginTabItem("Actor Defs")) { DrawActorDefs (db); ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }

@@ -11,7 +11,11 @@
 #include <cstring>
 #include <string>
 #include <array>
+#include <memory>
 #include <filesystem>
+
+#include "rco/renderer/engine.h"
+#include "rco/renderer/pipeline.h"
 
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
@@ -27,6 +31,7 @@
 #include "tabs/actors.h"
 #include "tabs/areas.h"
 #include "tabs/media.h"
+#include "tabs/zones.h"
 
 // Anchor cwd to the exe's directory so sibling paths (../server/rco.db) resolve
 // correctly regardless of how the tool was launched.
@@ -124,11 +129,53 @@ int main() {
         sqlite3_exec(db, "PRAGMA journal_mode=WAL", nullptr, nullptr, nullptr);
     }
 
+    // --- Shared deferred renderer (same lib as the client) ---
+    int initW, initH; glfwGetFramebufferSize(win, &initW, &initH);
+    rco::renderer::Engine engine;
+    {
+        rco::renderer::EngineConfig ecfg{};
+        ecfg.width      = initW > 0 ? initW : 1200;
+        ecfg.height     = initH > 0 ? initH : 700;
+        ecfg.shader_dir = "../client/shaders/";
+        engine.Init(ecfg);
+        engine.LoadEnvironment("../client/assets/ibl/default.hdr");
+    }
+    auto pipeline = std::make_unique<rco::renderer::Pipeline>(engine);
+
+    // Editor viewports look much cleaner without atmospheric scattering —
+    // volumetric fog is tuned for in-game exterior scenes, not placement
+    // previews. SSAO stays on because it still adds useful contact shadows.
+    {
+        rco::renderer::FeatureConfig cfg;
+        cfg.volumetrics = false;
+        pipeline->SetFeatures(cfg);
+    }
+
     gue::ItemsTab  itemsTab;
     gue::SpellsTab spellsTab;
     gue::ActorsTab actorsTab;
     gue::AreasTab  areasTab;
     gue::MediaTab  mediaTab;
+    gue::ZonesTab  zonesTab;
+    mediaTab.SetRenderer(&engine, pipeline.get());
+    zonesTab.SetRenderer(&engine, pipeline.get());
+
+    // Scan available HDR skyboxes so users can swap environments from the
+    // View menu. File name (stem) is the display label; full path feeds
+    // Engine::LoadEnvironment on selection.
+    std::vector<std::string> hdrList;
+    std::string hdrCurrent = "default";
+    {
+        std::error_code ec;
+        for (auto& e : std::filesystem::directory_iterator("../client/assets/ibl/", ec)) {
+            if (!e.is_regular_file()) continue;
+            auto p = e.path();
+            auto ext = p.extension().string();
+            if (ext == ".hdr" || ext == ".HDR")
+                hdrList.push_back(p.stem().string());
+        }
+        std::sort(hdrList.begin(), hdrList.end());
+    }
 
     while (!glfwWindowShouldClose(win)) {
         glfwPollEvents();
@@ -154,6 +201,22 @@ int main() {
                     ImGui::TextColored({1.f,0.4f,0.4f,1.f}, "No database");
                 ImGui::Separator();
                 if (ImGui::MenuItem("Change DB path...")) showDbDlg = true;
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("View")) {
+                ImGui::TextDisabled("Skybox (HDRI)");
+                if (hdrList.empty()) {
+                    ImGui::TextDisabled("  (no .hdr files in assets/ibl/)");
+                } else {
+                    for (const auto& name : hdrList) {
+                        bool sel = (hdrCurrent == name);
+                        if (ImGui::MenuItem(name.c_str(), nullptr, sel)) {
+                            std::string path = "../client/assets/ibl/" + name + ".hdr";
+                            engine.LoadEnvironment(path);
+                            hdrCurrent = name;
+                        }
+                    }
+                }
                 ImGui::EndMenu();
             }
             ImGui::EndMenuBar();
@@ -194,16 +257,21 @@ int main() {
                 spellsTab.Draw(db);
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Media")) {
+            if (ImGui::BeginTabItem("Assets")) {
                 mediaTab.Draw(db);
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Actors")) {
-                actorsTab.Draw(db, &mediaTab);
-                ImGui::EndTabItem();
-            }
+            // "Actors" tab is hidden: the global npc_spawns CRUD is now
+            // redundant. Placement + per-instance overrides happen in the
+            // Zones tab via the Creature Library. The class stays built so
+            // it can be resurrected as an NPC Browser later if needed.
+            (void)actorsTab;
             if (ImGui::BeginTabItem("Areas")) {
                 areasTab.Draw(db);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Zones")) {
+                zonesTab.Draw(db, &mediaTab);
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
@@ -227,6 +295,8 @@ int main() {
     }
 
     if (db) sqlite3_close(db);
+    pipeline.reset();
+    engine.Shutdown();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
