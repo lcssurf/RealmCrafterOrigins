@@ -96,6 +96,8 @@ class Model {
 public:
     ~Model();
 
+    bool log_bones = false;  // enable verbose load/animation diagnostics
+
     // Load geometry + textures from `path`. If `mm` is provided, each submesh's
     // textures are also registered in the MaterialManager and `material_idx`
     // is written back so the submesh can be drawn via the deferred pipeline
@@ -134,6 +136,10 @@ public:
     // (pass "" to keep the file's own name). Returns the index of the first
     // appended clip, or -1 on failure.
     int AppendAnimationsFrom(const char* path, const char* name_override = "");
+
+    // Rename an embedded clip by its FBX-native name (e.g. "mixamo.com") to a
+    // game action name (e.g. "Idle") so FindClip resolves it. No-op if not found.
+    void AliasClip(const std::string& native_name, const std::string& new_name);
 
     // Replace the material of ALL submeshes with external PBR data. Useful
     // when the model file doesn't embed textures (e.g. FBX rigs shipped
@@ -175,8 +181,9 @@ private:
     std::vector<BoneInfo>      bones_;
     std::map<std::string,int>  bone_map_;
     std::vector<AnimClip>      clips_;
-    glm::mat4                  global_inv_ = glm::mat4(1.f);
-    bool                       skinned_    = false;
+    glm::mat4                  global_inv_    = glm::mat4(1.f);
+    glm::vec3                  hips_bind_pos_ = glm::vec3(0.f);
+    bool                       skinned_       = false;
 
     // GL textures created by ApplyMaterialsByName — we own them, destroy in Destroy().
     std::vector<GLuint>        owned_textures_;

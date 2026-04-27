@@ -170,6 +170,12 @@ func BroadcastAttack(area *Area, attacker, target *Actor, damage int32, isCrit b
 		area.Mu.RUnlock()
 	}
 
+	// Broadcast "Hit" animation on the target if it has that action.
+	// Only when damage was actually dealt (not a miss).
+	if damage > 0 {
+		BroadcastAnimate(area, target, "Hit")
+	}
+
 	// PStatUpdate → target if it's a player.
 	target.Mu.Lock()
 	hp := target.Health
@@ -221,12 +227,29 @@ func BroadcastAttack(area *Area, attacker, target *Actor, damage int32, isCrit b
 	return dead
 }
 
-// BroadcastAnimate sends PAnimateActor to all players in the area.
-// animName is the clip name string (e.g. "Idle", "Walk", "Attack", "Death").
-func BroadcastAnimate(area *Area, actor *Actor, animName string) {
+// BroadcastAnimate sends PAnimateActor{rid, action_id} to all players in the area.
+// action_id is the 0-based index of the action in actor.Appearance.Anims.
+// If the actor has no Appearance or the action is not found, the call is a no-op.
+func BroadcastAnimate(area *Area, actor *Actor, actionName string) {
+	if actor.Appearance == nil || len(actor.Appearance.Anims) == 0 {
+		return
+	}
+	var actionID uint8 = 0xFF
+	for i, anim := range actor.Appearance.Anims {
+		if anim.Action == actionName {
+			actionID = uint8(i)
+			break
+		}
+	}
+	if actionID == 0xFF {
+		return
+	}
+	actor.Mu.Lock()
+	actor.CurrentAction = actionName
+	actor.Mu.Unlock()
 	var p pb
 	p.u32(actor.RuntimeID)
-	p.str(animName)
+	p.u8(actionID)
 	frame := buildFrame(pAnimateActor, p)
 	area.Mu.RLock()
 	for _, a := range area.actors {

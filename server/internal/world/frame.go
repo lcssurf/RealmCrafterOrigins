@@ -36,14 +36,62 @@ func (b *pb) str(s string) {
 	*b = append(*b, []byte(s)...)
 }
 
-// AppearanceBytes serialises only the appearance section (num_meshes … num_anims)
+// appendAnimBindings writes the animation section shared by AppearanceBytes and
+// NewActorPayload:
+//
+//	binding_count u16,
+//	for each binding:
+//	  action str, source_path str, start_frame i32, end_frame i32, fps f32,
+//	  loop u8, speed f32, blend_in f32, return_to str, priority u8,
+//	  event_count u16,
+//	  for each event: frame i32, event_type str, payload str
+func appendAnimBindings(p *pb, anims []AnimBinding) {
+	na := len(anims)
+	if na > 255 {
+		na = 255
+	}
+	p.u16(uint16(na))
+	for i := 0; i < na; i++ {
+		b := &anims[i]
+		p.str(b.Action)
+		p.str(b.SourcePath)
+		p.str(b.ClipOverride)
+		p.i32(b.StartFrame)
+		p.i32(b.EndFrame)
+		p.f32(b.FPS)
+		if b.Loop {
+			p.u8(1)
+		} else {
+			p.u8(0)
+		}
+		p.f32(b.Speed)
+		p.f32(b.BlendIn)
+		p.str(b.ReturnTo)
+		p.u8(b.Priority)
+		ne := len(b.Events)
+		if ne > 65535 {
+			ne = 65535
+		}
+		p.u16(uint16(ne))
+		for j := 0; j < ne; j++ {
+			ev := &b.Events[j]
+			p.i32(ev.Frame)
+			p.str(ev.EventType)
+			p.str(ev.Payload)
+		}
+	}
+}
+
+// AppearanceBytes serialises only the appearance section (num_meshes … binding_count)
 // using the same layout as the tail of NewActorPayload. The result can be
 // appended to any packet that needs to carry appearance data (e.g. PStartGame).
 func AppearanceBytes(app *Appearance) []byte {
 	var p pb
 	if app == nil {
-		p.u8(0) // num_meshes
-		p.u8(0) // num_anims
+		p.u8(0)   // num_meshes
+		p.u16(0)  // binding_count
+		p.f32(0)  // yaw_offset
+		p.f32(0)  // y_offset
 		return p
 	}
 	n := len(app.Meshes)
@@ -86,17 +134,9 @@ func AppearanceBytes(app *Appearance) []byte {
 			p.f32(am.Metallic)
 		}
 	}
-	na := len(app.Anims)
-	if na > 255 {
-		na = 255
-	}
-	p.u8(uint8(na))
-	for i := 0; i < na; i++ {
-		b := &app.Anims[i]
-		p.str(b.Action)
-		p.str(b.SourcePath)
-		p.str(b.ClipOverride)
-	}
+	appendAnimBindings(&p, app.Anims)
+	p.f32(app.YawOffset)
+	p.f32(app.YOffset)
 	return p
 }
 
@@ -114,9 +154,12 @@ func AppearanceBytes(app *Appearance) []byte {
 //     slot u8, model_path str, scale f32,
 //     albedo str, normal str, orm str,
 //     albedo_r f32, albedo_g f32, albedo_b f32, roughness f32, metallic f32,
-//   num_anims u8,
-//   for each anim:
-//     action str, source_path str, clip_override str
+//     num_ai_mats u8, for each: ai_name str + PBR paths + factors,
+//   binding_count u16,
+//   for each binding:
+//     action str, source_path str, start_frame i32, end_frame i32, fps f32,
+//     loop u8, speed f32, blend_in f32, return_to str, priority u8,
+//     event_count u16, for each event: frame i32, event_type str, payload str
 //
 // If Appearance is nil (or has zero meshes), num_meshes=0 and the client
 // falls back to its default model for this actor.
@@ -139,8 +182,10 @@ func NewActorPayload(a *Actor) []byte {
 
 	// Appearance
 	if a.Appearance == nil {
-		p.u8(0) // num_meshes
-		p.u8(0) // num_anims
+		p.u8(0)   // num_meshes
+		p.u16(0)  // binding_count
+		p.f32(0)  // yaw_offset
+		p.f32(0)  // y_offset
 		return p
 	}
 	n := len(a.Appearance.Meshes)
@@ -187,16 +232,8 @@ func NewActorPayload(a *Actor) []byte {
 		}
 	}
 
-	na := len(a.Appearance.Anims)
-	if na > 255 {
-		na = 255
-	}
-	p.u8(uint8(na))
-	for i := 0; i < na; i++ {
-		b := &a.Appearance.Anims[i]
-		p.str(b.Action)
-		p.str(b.SourcePath)
-		p.str(b.ClipOverride)
-	}
+	appendAnimBindings(&p, a.Appearance.Anims)
+	p.f32(a.Appearance.YawOffset)
+	p.f32(a.Appearance.YOffset)
 	return p
 }

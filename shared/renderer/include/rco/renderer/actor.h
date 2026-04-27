@@ -3,6 +3,7 @@
 #include <string>
 #include <array>
 #include <vector>
+#include <memory>
 #include <unordered_map>
 #include "rco/renderer/model.h"
 
@@ -29,9 +30,18 @@ public:
     void Init(const char* shader_dir, const char* model_path,
               MaterialManager* mm = nullptr);
 
+    ~Actor() { Destroy(); }
+
     // Load animations from a separate file.
     // name: clip name used for PlayAnim(); "" keeps the file's embedded name.
     void LoadAnim(const char* path, const char* name = "");
+
+    // Rename an embedded clip by its native FBX name to a game action name.
+    // Needed when the body model contains the animation under a name like
+    // "mixamo.com" and the Actor Def maps it to "Idle".
+    void AliasClip(const std::string& native_name, const std::string& action_name) {
+        if (model_) model_->AliasClip(native_name, action_name);
+    }
 
     // Override the model's material with external PBR textures. Passes through
     // to Model::OverrideMaterial; safe to call any time after Init().
@@ -40,7 +50,7 @@ public:
                           const std::string& orm_path,
                           float albedo_r, float albedo_g, float albedo_b,
                           float roughness, float metallic) {
-        model_.OverrideMaterial(albedo_path, normal_path, orm_path,
+        if (model_) model_->OverrideMaterial(albedo_path, normal_path, orm_path,
                                 albedo_r, albedo_g, albedo_b,
                                 roughness, metallic);
     }
@@ -50,14 +60,16 @@ public:
     // MaterialManager.
     void ApplyMaterialsByName(MaterialManager& mm,
         const std::unordered_map<std::string, Model::MaterialPaths>& by_name) {
-        model_.ApplyMaterialsByName(mm, by_name);
+        if (model_) model_->ApplyMaterialsByName(mm, by_name);
     }
 
     // Names of the distinct aiMaterials this actor's model references.
-    std::vector<std::string> MaterialNames() const { return model_.MaterialNames(); }
+    std::vector<std::string> MaterialNames() const {
+        return model_ ? model_->MaterialNames() : std::vector<std::string>{};
+    }
 
     // True once Init() successfully loaded a model.
-    bool IsLoaded() const { return model_.IsLoaded(); }
+    bool IsLoaded() const { return model_ && model_->IsLoaded(); }
 
     // Play an animation by name.
     //   loop     : true = loop forever; false = play once then switch to return_to
@@ -79,6 +91,13 @@ public:
     void SubmitAs(const std::string& anim_name, float anim_t, bool loop,
                   Pipeline& pipeline);
 
+    // Submit with SLERP-blended pose between two clips.
+    // blend_alpha: 0.0 = fully from_anim, 1.0 = fully to_anim (smoothstep already applied by caller).
+    void SubmitBlended(Pipeline& pipeline,
+                       const std::string& from_anim, float from_t,
+                       const std::string& to_anim,   float to_t,
+                       float blend_alpha);
+
     // Like Submit(), but the caller supplies the object-to-world matrix.
     // Bypasses position/yaw/scale so full Euler rotation + anisotropic
     // scaling are supported (e.g. scenery props with pitch/roll/non-uniform
@@ -87,26 +106,35 @@ public:
 
     void Destroy();
 
-    glm::vec3 position = {0.f, 0.f, 0.f};
-    float     yaw      = 0.f;
-    float     scale    = 1.f;
+    glm::vec3 position   = {0.f, 0.f, 0.f};
+    float     yaw        = 0.f;
+    float     scale      = 1.f;
+    float     yaw_offset = 0.f;  // extra Y rotation (deg) applied before world yaw
+    float     y_offset   = 0.f;  // vertical offset (world units) added to position
 
-    const std::string& CurrentAnim() const { return cur_name_; }
-    float              AnimTime()    const { return anim_t_; }
+    const std::string& CurrentAnim()  const { return cur_name_; }
+    float              AnimTime()     const { return anim_t_; }
+    float ClipDuration(const std::string& name) const {
+        int idx = FindClip(name);
+        return (model_ && idx >= 0) ? model_->ClipDuration(idx) : 0.f;
+    }
 
     // World-space height of the model (bind-pose AABB top × scale).
     // Returns a sensible default (1.8) if the model isn't loaded yet.
     float ModelHeight() const {
-        float h = model_.MaxY() * scale;
+        float h = model_ ? model_->MaxY() * scale : 0.f;
         return h > 0.1f ? h : 1.8f;
     }
 
     // Read-only access to the wrapped Model — useful for callers that need
     // its clip metadata or submesh material names.
-    const Model& model() const { return model_; }
+    const Model& model() const {
+        static Model s_empty;
+        return model_ ? *model_ : s_empty;
+    }
 
 private:
-    Model  model_;
+    std::shared_ptr<Model> model_;
 
     std::string cur_name_;     // currently playing clip name
     int         clip_idx_ = -1;
@@ -118,7 +146,7 @@ private:
     // so their bone matrices differ. Pipeline submissions are deferred and
     // all sample their SSBO at End(), so we can't reuse a single buffer
     // across multiple submissions in the same frame.
-    std::vector<unsigned int> bone_ssbos_;   // sized to model_.meshes().size()
+    std::vector<unsigned int> bone_ssbos_;   // sized to model_->meshes().size()
 
     int  FindClip(const std::string& name) const;
     void EnsureBoneSSBOs_(size_t count);

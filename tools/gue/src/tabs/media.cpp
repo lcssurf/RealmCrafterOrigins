@@ -96,7 +96,10 @@ void MediaTab::EnsureTables(sqlite3* db) {
         "  id            INTEGER PRIMARY KEY AUTOINCREMENT,"
         "  name          TEXT    NOT NULL DEFAULT 'New Clip',"
         "  source_path   TEXT    NOT NULL DEFAULT '',"
-        "  clip_override TEXT    NOT NULL DEFAULT ''"
+        "  clip_override TEXT    NOT NULL DEFAULT '',"
+        "  start_frame   INTEGER NOT NULL DEFAULT 0,"
+        "  end_frame     INTEGER NOT NULL DEFAULT -1,"
+        "  fps           REAL    NOT NULL DEFAULT 30.0"
         ")",
 
         "CREATE TABLE IF NOT EXISTS media_actor_defs ("
@@ -118,7 +121,21 @@ void MediaTab::EnsureTables(sqlite3* db) {
         "  actor_def_id INTEGER NOT NULL,"
         "  action       TEXT    NOT NULL DEFAULT 'Idle',"
         "  clip_id      INTEGER NOT NULL DEFAULT 0,"
+        "  loop         INTEGER NOT NULL DEFAULT 1,"
+        "  speed        REAL    NOT NULL DEFAULT 1.0,"
+        "  blend_in     REAL    NOT NULL DEFAULT 0.15,"
+        "  return_to    TEXT    NOT NULL DEFAULT '',"
+        "  priority     INTEGER NOT NULL DEFAULT 0,"
         "  FOREIGN KEY(actor_def_id) REFERENCES media_actor_defs(id)"
+        ")",
+
+        "CREATE TABLE IF NOT EXISTS media_anim_events ("
+        "  id         INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  clip_id    INTEGER NOT NULL,"
+        "  frame      INTEGER NOT NULL DEFAULT 0,"
+        "  event_type TEXT    NOT NULL DEFAULT 'sfx',"
+        "  payload    TEXT    NOT NULL DEFAULT '',"
+        "  FOREIGN KEY(clip_id) REFERENCES media_anim_clips(id) ON DELETE CASCADE"
         ")",
     };
     for (const char* s : sql)
@@ -132,11 +149,33 @@ void MediaTab::EnsureTables(sqlite3* db) {
         "ALTER TABLE media_models ADD COLUMN material_map TEXT NOT NULL DEFAULT ''",
         nullptr, nullptr, nullptr);
 
+    // Additive migrations for media_anim_clips new columns (V11).
+    const char* clipColumns[] = {
+        "ALTER TABLE media_anim_clips ADD COLUMN start_frame INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE media_anim_clips ADD COLUMN end_frame   INTEGER NOT NULL DEFAULT -1",
+        "ALTER TABLE media_anim_clips ADD COLUMN fps         REAL    NOT NULL DEFAULT 30.0",
+    };
+    for (const char* s : clipColumns)
+        sqlite3_exec(db, s, nullptr, nullptr, nullptr);
+
+    // Additive migrations for media_actor_anims new columns (V11).
+    const char* animColumns[] = {
+        "ALTER TABLE media_actor_anims ADD COLUMN loop      INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE media_actor_anims ADD COLUMN speed     REAL    NOT NULL DEFAULT 1.0",
+        "ALTER TABLE media_actor_anims ADD COLUMN blend_in  REAL    NOT NULL DEFAULT 0.15",
+        "ALTER TABLE media_actor_anims ADD COLUMN return_to TEXT    NOT NULL DEFAULT ''",
+        "ALTER TABLE media_actor_anims ADD COLUMN priority  INTEGER NOT NULL DEFAULT 0",
+    };
+    for (const char* s : animColumns)
+        sqlite3_exec(db, s, nullptr, nullptr, nullptr);
+
     // Actor-def gameplay defaults (mirrors server migrateV8). Each ALTER is
     // a no-op when the column is already present; errors are ignored on
     // purpose so this runs unconditionally every launch.
     const char* adefColumns[] = {
         "ALTER TABLE media_actor_defs ADD COLUMN scale                  REAL    NOT NULL DEFAULT 1.0",
+        "ALTER TABLE media_actor_defs ADD COLUMN yaw_offset             REAL    NOT NULL DEFAULT 0",
+        "ALTER TABLE media_actor_defs ADD COLUMN y_offset               REAL    NOT NULL DEFAULT 0",
         "ALTER TABLE media_actor_defs ADD COLUMN default_name           TEXT    NOT NULL DEFAULT ''",
         "ALTER TABLE media_actor_defs ADD COLUMN default_race           TEXT    NOT NULL DEFAULT ''",
         "ALTER TABLE media_actor_defs ADD COLUMN default_class          TEXT    NOT NULL DEFAULT ''",
@@ -215,7 +254,7 @@ void MediaTab::FetchAll(sqlite3* db) {
 
     // Anim Clips
     if (sqlite3_prepare_v2(db,
-        "SELECT id, name, source_path, clip_override"
+        "SELECT id, name, source_path, clip_override, start_frame, end_frame, fps"
         " FROM media_anim_clips ORDER BY name",
         -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -224,6 +263,9 @@ void MediaTab::FetchAll(sqlite3* db) {
             c.name          = colText(stmt, 1);
             c.source_path   = colText(stmt, 2);
             c.clip_override = colText(stmt, 3);
+            c.start_frame   = sqlite3_column_int(stmt, 4);
+            c.end_frame     = sqlite3_column_int(stmt, 5);
+            c.fps           = (float)sqlite3_column_double(stmt, 6);
             clips_.push_back(std::move(c));
         }
         sqlite3_finalize(stmt);
@@ -231,7 +273,7 @@ void MediaTab::FetchAll(sqlite3* db) {
 
     // Actor Defs
     if (sqlite3_prepare_v2(db,
-        "SELECT id, name, scale,"
+        "SELECT id, name, scale, yaw_offset, y_offset,"
         "       default_name, default_race, default_class,"
         "       default_level, default_hp, default_ep,"
         "       default_aggressiveness, default_aggro_range, default_attack_range,"
@@ -244,19 +286,21 @@ void MediaTab::FetchAll(sqlite3* db) {
             d.name                    = colText(stmt, 1);
             d.scale                   = (float)sqlite3_column_double(stmt, 2);
             if (d.scale <= 0.f) d.scale = 1.f;  // guard pre-migration rows
-            d.default_name            = colText(stmt, 3);
-            d.default_race            = colText(stmt, 4);
-            d.default_class           = colText(stmt, 5);
-            d.default_level           = sqlite3_column_int(stmt, 6);
-            d.default_hp              = sqlite3_column_int(stmt, 7);
-            d.default_ep              = sqlite3_column_int(stmt, 8);
-            d.default_aggressiveness  = sqlite3_column_int(stmt, 9);
-            d.default_aggro_range     = (float)sqlite3_column_double(stmt, 10);
-            d.default_attack_range    = (float)sqlite3_column_double(stmt, 11);
-            d.default_respawn_ms      = sqlite3_column_int(stmt, 12);
-            d.is_playable             = sqlite3_column_int(stmt, 13) != 0;
-            d.is_mountable            = sqlite3_column_int(stmt, 14) != 0;
-            d.is_interactive          = sqlite3_column_int(stmt, 15) != 0;
+            d.yaw_offset              = (float)sqlite3_column_double(stmt, 3);
+            d.y_offset                = (float)sqlite3_column_double(stmt, 4);
+            d.default_name            = colText(stmt, 5);
+            d.default_race            = colText(stmt, 6);
+            d.default_class           = colText(stmt, 7);
+            d.default_level           = sqlite3_column_int(stmt, 8);
+            d.default_hp              = sqlite3_column_int(stmt, 9);
+            d.default_ep              = sqlite3_column_int(stmt, 10);
+            d.default_aggressiveness  = sqlite3_column_int(stmt, 11);
+            d.default_aggro_range     = (float)sqlite3_column_double(stmt, 12);
+            d.default_attack_range    = (float)sqlite3_column_double(stmt, 13);
+            d.default_respawn_ms      = sqlite3_column_int(stmt, 14);
+            d.is_playable             = sqlite3_column_int(stmt, 15) != 0;
+            d.is_mountable            = sqlite3_column_int(stmt, 16) != 0;
+            d.is_interactive          = sqlite3_column_int(stmt, 17) != 0;
             actor_defs_.push_back(std::move(d));
         }
         sqlite3_finalize(stmt);
@@ -285,7 +329,7 @@ void MediaTab::FetchAll(sqlite3* db) {
     // so the Actor Def editor can edit them inline without visiting the
     // Anim Clips registry.
     if (sqlite3_prepare_v2(db,
-        "SELECT id, actor_def_id, action, clip_id"
+        "SELECT id, actor_def_id, action, clip_id, loop, speed, blend_in, return_to, priority"
         " FROM media_actor_anims ORDER BY actor_def_id, action",
         -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -294,6 +338,11 @@ void MediaTab::FetchAll(sqlite3* db) {
             a.actor_def_id = sqlite3_column_int(stmt, 1);
             a.action       = colText(stmt, 2);
             a.clip_id      = sqlite3_column_int(stmt, 3);
+            a.loop         = sqlite3_column_int(stmt, 4) != 0;
+            a.speed        = (float)sqlite3_column_double(stmt, 5);
+            a.blend_in     = (float)sqlite3_column_double(stmt, 6);
+            a.return_to    = colText(stmt, 7);
+            a.priority     = sqlite3_column_int(stmt, 8);
             // Denormalize the backing clip's fields into the map row.
             for (const auto& c : clips_) {
                 if (c.id == a.clip_id) {
@@ -437,11 +486,14 @@ void MediaTab::SaveAnimClip(sqlite3* db, MediaAnimClip& c) {
     int rc;
     if (c.id == 0) {
         rc = sqlite3_prepare_v2(db,
-            "INSERT INTO media_anim_clips (name, source_path, clip_override)"
-            " VALUES (?, ?, ?)", -1, &stmt, nullptr);
+            "INSERT INTO media_anim_clips"
+            " (name, source_path, clip_override, start_frame, end_frame, fps)"
+            " VALUES (?, ?, ?, ?, ?, ?)", -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
-            "UPDATE media_anim_clips SET name=?, source_path=?, clip_override=? WHERE id=?",
+            "UPDATE media_anim_clips"
+            " SET name=?, source_path=?, clip_override=?, start_frame=?, end_frame=?, fps=?"
+            " WHERE id=?",
             -1, &stmt, nullptr);
     }
     if (rc != SQLITE_OK) {
@@ -449,10 +501,13 @@ void MediaTab::SaveAnimClip(sqlite3* db, MediaAnimClip& c) {
                       "Save clip error: %s", sqlite3_errmsg(db));
         return;
     }
-    sqlite3_bind_text(stmt, 1, c.name.c_str(),          -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, c.source_path.c_str(),   -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, c.clip_override.c_str(), -1, SQLITE_TRANSIENT);
-    if (c.id != 0) sqlite3_bind_int(stmt, 4, c.id);
+    sqlite3_bind_text  (stmt, 1, c.name.c_str(),          -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text  (stmt, 2, c.source_path.c_str(),   -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text  (stmt, 3, c.clip_override.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int   (stmt, 4, c.start_frame);
+    sqlite3_bind_int   (stmt, 5, c.end_frame);
+    sqlite3_bind_double(stmt, 6, c.fps);
+    if (c.id != 0) sqlite3_bind_int(stmt, 7, c.id);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         std::snprintf(statusMsg_, sizeof(statusMsg_),
@@ -483,25 +538,19 @@ void MediaTab::DeleteAnimClip(sqlite3* db, int id) {
 void MediaTab::SaveActorDef(sqlite3* db, ActorDef& d) {
     sqlite3_stmt* stmt = nullptr;
     int rc;
-    const char* columns =
-        "name, scale,"
-        " default_name, default_race, default_class,"
-        " default_level, default_hp, default_ep,"
-        " default_aggressiveness, default_aggro_range, default_attack_range,"
-        " default_respawn_ms, is_playable, is_mountable, is_interactive";
     if (d.id == 0) {
         rc = sqlite3_prepare_v2(db,
             "INSERT INTO media_actor_defs"
-            " (name, scale, default_name, default_race, default_class,"
+            " (name, scale, yaw_offset, y_offset, default_name, default_race, default_class,"
             "  default_level, default_hp, default_ep,"
             "  default_aggressiveness, default_aggro_range, default_attack_range,"
             "  default_respawn_ms, is_playable, is_mountable, is_interactive)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
             "UPDATE media_actor_defs SET"
-            "  name=?, scale=?,"
+            "  name=?, scale=?, yaw_offset=?, y_offset=?,"
             "  default_name=?, default_race=?, default_class=?,"
             "  default_level=?, default_hp=?, default_ep=?,"
             "  default_aggressiveness=?, default_aggro_range=?, default_attack_range=?,"
@@ -509,7 +558,6 @@ void MediaTab::SaveActorDef(sqlite3* db, ActorDef& d) {
             " WHERE id=?",
             -1, &stmt, nullptr);
     }
-    (void)columns; // kept for grep-ability; params are positional below
     if (rc != SQLITE_OK) {
         std::snprintf(statusMsg_, sizeof(statusMsg_),
                       "Save actor def error: %s", sqlite3_errmsg(db));
@@ -518,6 +566,8 @@ void MediaTab::SaveActorDef(sqlite3* db, ActorDef& d) {
     int i = 1;
     sqlite3_bind_text  (stmt, i++, d.name.c_str(),          -1, SQLITE_TRANSIENT);
     sqlite3_bind_double(stmt, i++, d.scale);
+    sqlite3_bind_double(stmt, i++, d.yaw_offset);
+    sqlite3_bind_double(stmt, i++, d.y_offset);
     sqlite3_bind_text  (stmt, i++, d.default_name.c_str(),  -1, SQLITE_TRANSIENT);
     sqlite3_bind_text  (stmt, i++, d.default_race.c_str(),  -1, SQLITE_TRANSIENT);
     sqlite3_bind_text  (stmt, i++, d.default_class.c_str(), -1, SQLITE_TRANSIENT);
@@ -713,23 +763,36 @@ void MediaTab::SaveAnimMap(sqlite3* db, ActorAnimMap& a) {
     int rc;
     if (a.id == 0) {
         rc = sqlite3_prepare_v2(db,
-            "INSERT INTO media_actor_anims (actor_def_id, action, clip_id)"
-            " VALUES (?, ?, ?)", -1, &stmt, nullptr);
+            "INSERT INTO media_actor_anims"
+            " (actor_def_id, action, clip_id, loop, speed, blend_in, return_to, priority)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
-            "UPDATE media_actor_anims SET action=?, clip_id=? WHERE id=?",
+            "UPDATE media_actor_anims"
+            " SET action=?, clip_id=?, loop=?, speed=?, blend_in=?, return_to=?, priority=?"
+            " WHERE id=?",
             -1, &stmt, nullptr);
     }
     if (rc != SQLITE_OK) return;
 
     if (a.id == 0) {
-        sqlite3_bind_int (stmt, 1, a.actor_def_id);
-        sqlite3_bind_text(stmt, 2, a.action.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int (stmt, 3, a.clip_id);
+        sqlite3_bind_int   (stmt, 1, a.actor_def_id);
+        sqlite3_bind_text  (stmt, 2, a.action.c_str(),    -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int   (stmt, 3, a.clip_id);
+        sqlite3_bind_int   (stmt, 4, a.loop ? 1 : 0);
+        sqlite3_bind_double(stmt, 5, a.speed);
+        sqlite3_bind_double(stmt, 6, a.blend_in);
+        sqlite3_bind_text  (stmt, 7, a.return_to.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int   (stmt, 8, a.priority);
     } else {
-        sqlite3_bind_text(stmt, 1, a.action.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int (stmt, 2, a.clip_id);
-        sqlite3_bind_int (stmt, 3, a.id);
+        sqlite3_bind_text  (stmt, 1, a.action.c_str(),    -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int   (stmt, 2, a.clip_id);
+        sqlite3_bind_int   (stmt, 3, a.loop ? 1 : 0);
+        sqlite3_bind_double(stmt, 4, a.speed);
+        sqlite3_bind_double(stmt, 5, a.blend_in);
+        sqlite3_bind_text  (stmt, 6, a.return_to.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int   (stmt, 7, a.priority);
+        sqlite3_bind_int   (stmt, 8, a.id);
     }
     if (sqlite3_step(stmt) == SQLITE_DONE) {
         if (a.id == 0) a.id = (int)sqlite3_last_insert_rowid(db);
@@ -746,6 +809,77 @@ void MediaTab::DeleteAnimMap(sqlite3* db, int id) {
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     needFetch_ = true;
+}
+
+// ---------------------------------------------------------------------------
+// Animation Events CRUD
+// ---------------------------------------------------------------------------
+
+void MediaTab::LoadEventsForClip(sqlite3* db, int clip_id) {
+    clip_events_.clear();
+    if (clip_id <= 0) return;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, clip_id, frame, event_type, payload"
+        " FROM media_anim_events WHERE clip_id = ? ORDER BY frame",
+        -1, &stmt, nullptr) != SQLITE_OK) return;
+    sqlite3_bind_int(stmt, 1, clip_id);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        MediaAnimEvent ev;
+        ev.id         = sqlite3_column_int(stmt, 0);
+        ev.clip_id    = sqlite3_column_int(stmt, 1);
+        ev.frame      = sqlite3_column_int(stmt, 2);
+        ev.event_type = colText(stmt, 3);
+        ev.payload    = colText(stmt, 4);
+        clip_events_.push_back(std::move(ev));
+    }
+    sqlite3_finalize(stmt);
+}
+
+void MediaTab::SaveAnimEvent(sqlite3* db, MediaAnimEvent& e) {
+    sqlite3_stmt* stmt = nullptr;
+    int rc;
+    if (e.id == 0) {
+        rc = sqlite3_prepare_v2(db,
+            "INSERT INTO media_anim_events (clip_id, frame, event_type, payload)"
+            " VALUES (?, ?, ?, ?)",
+            -1, &stmt, nullptr);
+    } else {
+        rc = sqlite3_prepare_v2(db,
+            "UPDATE media_anim_events SET frame=?, event_type=?, payload=? WHERE id=?",
+            -1, &stmt, nullptr);
+    }
+    if (rc != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Save event error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    if (e.id == 0) {
+        sqlite3_bind_int (stmt, 1, e.clip_id);
+        sqlite3_bind_int (stmt, 2, e.frame);
+        sqlite3_bind_text(stmt, 3, e.event_type.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 4, e.payload.c_str(),    -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_int (stmt, 1, e.frame);
+        sqlite3_bind_text(stmt, 2, e.event_type.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, e.payload.c_str(),    -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int (stmt, 4, e.id);
+    }
+    if (sqlite3_step(stmt) == SQLITE_DONE) {
+        if (e.id == 0) e.id = (int)sqlite3_last_insert_rowid(db);
+    } else {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Save event error: %s", sqlite3_errmsg(db));
+    }
+    sqlite3_finalize(stmt);
+}
+
+void MediaTab::DeleteAnimEvent(sqlite3* db, int id) {
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db, "DELETE FROM media_anim_events WHERE id=?", -1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,6 +1441,22 @@ static bool DrawClipFields(MediaAnimClip& c) {
     if (InputString("Clip Override", c.clip_override)) changed = true;
     ImGui::TextDisabled("Source empty = clip is embedded in the actor's Body model.");
     ImGui::TextDisabled("Clip Override empty = use first clip inside the source file.");
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextUnformatted("Frame Range & Timing");
+    if (ImGui::InputInt("Start Frame", &c.start_frame)) changed = true;
+    if (c.start_frame < 0) c.start_frame = 0;
+
+    if (ImGui::InputInt("End Frame", &c.end_frame)) changed = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("-1 = play to end of file (Scenario A).\n"
+                          "Set a positive frame number to slice (Scenario B).");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(-1 = to end)");
+
+    if (ImGui::InputFloat("FPS", &c.fps, 1.f, 5.f, "%.1f")) changed = true;
+    if (c.fps < 0.1f) c.fps = 0.1f;
     return changed;
 }
 
@@ -1360,6 +1510,89 @@ void MediaTab::DrawAnimClips(sqlite3* db) {
         ImGui::PushStyleColor(ImGuiCol_Button, {0.65f, 0.1f, 0.1f, 1.f});
         if (ImGui::Button("Delete")) DeleteAnimClip(db, editClip_.id);
         ImGui::PopStyleColor();
+
+        // --- Animation Events section ---
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextColored({0.8f, 0.9f, 1.f, 1.f}, "Animation Events");
+        ImGui::TextDisabled("Frame markers that fire gameplay callbacks (hitbox, sfx, vfx, footstep).");
+
+        // Reload events when the selected clip changes.
+        if (events_loaded_for_clip_ != editClip_.id) {
+            LoadEventsForClip(db, editClip_.id);
+            events_loaded_for_clip_ = editClip_.id;
+            sel_event_              = -1;
+        }
+
+        ImGui::BeginChild("##events_list", ImVec2(0, 120), true);
+        for (int i = 0; i < (int)clip_events_.size(); ++i) {
+            const auto& ev = clip_events_[i];
+            bool selected = (sel_event_ == i);
+            char elabel[128];
+            std::snprintf(elabel, sizeof(elabel), "[frame %d] %s", ev.frame, ev.event_type.c_str());
+            if (ImGui::Selectable(elabel, selected)) {
+                sel_event_   = i;
+                edit_event_  = ev;
+                dirty_event_ = false;
+            }
+        }
+        ImGui::EndChild();
+
+        if (ImGui::Button("+ Add Event")) {
+            MediaAnimEvent new_ev;
+            new_ev.clip_id     = editClip_.id;
+            new_ev.frame       = 0;
+            new_ev.event_type  = "sfx";
+            new_ev.payload     = "";
+            SaveAnimEvent(db, new_ev);
+            LoadEventsForClip(db, editClip_.id);
+            sel_event_ = (int)clip_events_.size() - 1;
+            if (sel_event_ >= 0) edit_event_ = clip_events_[sel_event_];
+            dirty_event_ = false;
+        }
+
+        if (sel_event_ >= 0 && sel_event_ < (int)clip_events_.size()) {
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, {0.65f, 0.1f, 0.1f, 1.f});
+            if (ImGui::Button("Delete Event")) {
+                DeleteAnimEvent(db, edit_event_.id);
+                LoadEventsForClip(db, editClip_.id);
+                sel_event_   = -1;
+                dirty_event_ = false;
+            }
+            ImGui::PopStyleColor();
+
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Edit event:");
+            if (ImGui::InputInt("Frame##ev", &edit_event_.frame)) dirty_event_ = true;
+            if (edit_event_.frame < 0) edit_event_.frame = 0;
+
+            static const char* kEventTypes[] = {"sfx", "vfx", "hitbox", "footstep"};
+            int evt_idx = 0;
+            for (int i = 0; i < 4; ++i)
+                if (edit_event_.event_type == kEventTypes[i]) { evt_idx = i; break; }
+            if (ImGui::Combo("Type##ev", &evt_idx, kEventTypes, 4)) {
+                edit_event_.event_type = kEventTypes[evt_idx];
+                dirty_event_ = true;
+            }
+
+            char payload_buf[512];
+            std::strncpy(payload_buf, edit_event_.payload.c_str(), sizeof(payload_buf) - 1);
+            payload_buf[sizeof(payload_buf) - 1] = '\0';
+            if (ImGui::InputText("Payload (JSON)##ev", payload_buf, sizeof(payload_buf))) {
+                edit_event_.payload = payload_buf;
+                dirty_event_        = true;
+            }
+            ImGui::TextDisabled("e.g.: {\"radius\":1.5,\"damage_mult\":1.0} for hitbox");
+
+            ImGui::BeginDisabled(!dirty_event_);
+            if (ImGui::Button("Save Event")) {
+                clip_events_[sel_event_] = edit_event_;
+                SaveAnimEvent(db, edit_event_);
+                dirty_event_ = false;
+            }
+            ImGui::EndDisabled();
+        }
     } else {
         ImGui::TextDisabled("Select a clip, or click \"New Clip\".");
     }
@@ -1444,6 +1677,31 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Multiplies the model's import-scale.\n"
                               "Same model → filhote (0.5) and pai grandão (2.0).");
+
+        ImGui::SetNextItemWidth(200);
+        if (ImGui::InputFloat("Yaw Offset°##yo", &d.yaw_offset, 45.f, 90.f, "%.0f°"))
+            dirtyActorDef_ = true;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("0°##yo_reset")) { d.yaw_offset = 0.f; dirtyActorDef_ = true; }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("180°##yo_flip")) { d.yaw_offset = 180.f; dirtyActorDef_ = true; }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Extra Y-axis rotation (degrees) baked into this actor def.\n"
+                              "Use 180 to fix a model that was exported facing backwards.\n"
+                              "Applied after world yaw, so the model always faces correctly.");
+
+        ImGui::SetNextItemWidth(200);
+        if (ImGui::InputFloat("Y Offset##yoff", &d.y_offset, 0.1f, 0.5f, "%.2f m"))
+            dirtyActorDef_ = true;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("0##yoff_reset")) { d.y_offset = 0.f; dirtyActorDef_ = true; }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Vertical offset (metres) added to the model's position.\n"
+                              "Use a positive value to lift a model that appears underground.");
 
         ImGui::Spacing();
 
@@ -1622,19 +1880,26 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         ImGui::Spacing();
         ImGui::Separator();
 
-        // --- Animations section (inline: action + source file + clip name) ---
+        // --- Animations section (inline: action + source file + clip name + playback) ---
         // No more visiting an Anim Clips registry — each row carries the
         // full definition of the animation it needs.  Leave source_path
         // empty to use a clip embedded in the model.
         ImGui::TextColored({0.8f, 0.9f, 1.f, 1.f}, "Animations");
-        ImGui::BeginChild("##anims", {0, 240}, true);
+        ImGui::BeginChild("##anims", {0, 300}, true);
 
-        if (ImGui::BeginTable("##anim_tbl", 4,
-            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Action",     ImGuiTableColumnFlags_WidthFixed, 110);
+        if (ImGui::BeginTable("##anim_tbl", 9,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp |
+            ImGuiTableFlags_ScrollX)) {
+            ImGui::TableSetupScrollFreeze(1, 1);
+            ImGui::TableSetupColumn("Action",    ImGuiTableColumnFlags_WidthFixed, 100);
             ImGui::TableSetupColumn("Source file");
-            ImGui::TableSetupColumn("Clip name",  ImGuiTableColumnFlags_WidthFixed, 120);
-            ImGui::TableSetupColumn("##ops",      ImGuiTableColumnFlags_WidthFixed, 110);
+            ImGui::TableSetupColumn("Clip name", ImGuiTableColumnFlags_WidthFixed, 110);
+            ImGui::TableSetupColumn("Loop",      ImGuiTableColumnFlags_WidthFixed,  40);
+            ImGui::TableSetupColumn("Speed",     ImGuiTableColumnFlags_WidthFixed,  60);
+            ImGui::TableSetupColumn("Blend In",  ImGuiTableColumnFlags_WidthFixed,  65);
+            ImGui::TableSetupColumn("Return To", ImGuiTableColumnFlags_WidthFixed,  90);
+            ImGui::TableSetupColumn("Priority",  ImGuiTableColumnFlags_WidthFixed,  60);
+            ImGui::TableSetupColumn("##ops",     ImGuiTableColumnFlags_WidthFixed,  90);
             ImGui::TableHeadersRow();
 
             for (size_t i = 0; i < d.anim_map.size(); ++i) {
@@ -1647,15 +1912,34 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                 InputString("##act", a.action, 64);
 
                 ImGui::TableNextColumn();
-                // Embedded animations live inside the model — empty path.
-                PathField("##src", a.source_path,
-                          "Animation",
-                          "glb,fbx,dae,b3d",
-                          "anims");
+                PathField("##src", a.source_path, "Animation", "glb,fbx,dae,b3d", "anims");
 
                 ImGui::TableNextColumn();
                 ImGui::SetNextItemWidth(-1);
                 InputString("##co", a.clip_override, 64);
+
+                ImGui::TableNextColumn();
+                ImGui::Checkbox("##loop", &a.loop);
+
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputFloat("##spd", &a.speed, 0.f, 0.f, "%.2f");
+                if (a.speed < 0.01f) a.speed = 0.01f;
+
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputFloat("##bi", &a.blend_in, 0.f, 0.f, "%.2f");
+                if (a.blend_in < 0.f) a.blend_in = 0.f;
+
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-1);
+                InputString("##rt", a.return_to, 64);
+
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputInt("##pri", &a.priority);
+                if (a.priority < 0)  a.priority = 0;
+                if (a.priority > 99) a.priority = 99;
 
                 ImGui::TableNextColumn();
                 if (ImGui::SmallButton("Save")) {
@@ -1680,10 +1964,47 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         if (ImGui::Button("+ Add animation")) {
             ActorAnimMap a;
             a.actor_def_id  = d.id;
-            a.action        = "Idle";     // sensible default, user edits inline
-            a.source_path   = "";         // empty = embedded in body model
+            a.action        = "Idle";
+            a.source_path   = "";
             a.clip_override = "";
+            a.loop          = true;
+            a.speed         = 1.f;
+            a.blend_in      = 0.15f;
+            a.return_to     = "";
+            a.priority      = 0;
             SaveAnimMap(db, a);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Add Standard Actions")) {
+            struct StdAction { const char* action; bool loop; int priority; const char* return_to; };
+            static const StdAction kStdActions[] = {
+                {"Idle",   true,  0,  ""},
+                {"Walk",   true,  1,  ""},
+                {"Run",    true,  1,  ""},
+                {"Jump",   false, 2,  "Idle"},
+                {"Attack", false, 2,  "Idle"},
+                {"Cast",   false, 2,  "Idle"},
+                {"Hit",    false, 3,  "Idle"},
+                {"Death",  false, 99, ""},
+            };
+            for (const auto& sa : kStdActions) {
+                bool exists = false;
+                for (const auto& am : d.anim_map)
+                    if (am.action == sa.action) { exists = true; break; }
+                if (!exists) {
+                    ActorAnimMap new_am;
+                    new_am.actor_def_id = d.id;
+                    new_am.action       = sa.action;
+                    new_am.clip_id      = 0;
+                    new_am.loop         = sa.loop;
+                    new_am.priority     = sa.priority;
+                    new_am.return_to    = sa.return_to;
+                    new_am.speed        = 1.f;
+                    new_am.blend_in     = 0.15f;
+                    SaveAnimMap(db, new_am);
+                }
+            }
+            FetchAll(db);
         }
         ImGui::SameLine();
         ImGui::TextDisabled("Leave Source empty for a clip embedded in the Body model.");

@@ -279,17 +279,72 @@ func (r *Registry) registerActorAPI() {
 		return 1
 	}))
 
-	// Actor.play_anim(rid, anim_name) — broadcast a custom animation to all players in the area.
+	// Actor.play_action(rid, action_name) — semantic action: looks up action_id in
+	// the actor's appearance table and broadcasts PAnimateActor to all clients.
+	r.L.SetField(mod, "play_action", r.L.NewFunction(func(L *lua.LState) int {
+		actor, ok := lookup(L)
+		if !ok {
+			return 0
+		}
+		actionName := L.CheckString(2)
+		if r.ctx.area != nil {
+			world.BroadcastAnimate(r.ctx.area, actor, actionName)
+		}
+		return 0
+	}))
+
+	// Actor.play_anim(rid, action_name) — backward-compatible alias for play_action.
 	r.L.SetField(mod, "play_anim", r.L.NewFunction(func(L *lua.LState) int {
 		actor, ok := lookup(L)
 		if !ok {
 			return 0
 		}
-		animName := L.CheckString(2)
+		actionName := L.CheckString(2)
 		if r.ctx.area != nil {
-			world.BroadcastAnimate(r.ctx.area, actor, animName)
+			world.BroadcastAnimate(r.ctx.area, actor, actionName)
 		}
 		return 0
+	}))
+
+	// Actor.has_action(rid, action_name) — returns bool: true if the actor's
+	// appearance table contains a binding with that action name.
+	r.L.SetField(mod, "has_action", r.L.NewFunction(func(L *lua.LState) int {
+		actor, ok := lookup(L)
+		if !ok {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		actionName := L.CheckString(2)
+		found := false
+		if actor.Appearance != nil {
+			for _, anim := range actor.Appearance.Anims {
+				if anim.Action == actionName {
+					found = true
+					break
+				}
+			}
+		}
+		if found {
+			L.Push(lua.LTrue)
+		} else {
+			L.Push(lua.LFalse)
+		}
+		return 1
+	}))
+
+	// Actor.current_action(rid) — returns the name of the last action broadcast
+	// for this actor (written by BroadcastAnimate under actor.Mu).
+	r.L.SetField(mod, "current_action", r.L.NewFunction(func(L *lua.LState) int {
+		actor, ok := lookup(L)
+		if !ok {
+			L.Push(lua.LString(""))
+			return 1
+		}
+		actor.Mu.Lock()
+		cur := actor.CurrentAction
+		actor.Mu.Unlock()
+		L.Push(lua.LString(cur))
+		return 1
 	}))
 
 	r.L.SetGlobal("Actor", mod)

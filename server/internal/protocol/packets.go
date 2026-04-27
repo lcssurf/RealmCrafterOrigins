@@ -31,7 +31,7 @@ const (
 	PSound           uint16 = 29
 	PMusic           uint16 = 34
 	PRepositionActor uint16 = 49
-	PAnimateActor    uint16 = 30  // payload: rid(u32)+anim_name(str)
+	PAnimateActor    uint16 = 30  // payload: rid(u32)+action_id(u8)
 	PKickedPlayer    uint16 = 60
 
 	// RCO extensions
@@ -54,6 +54,9 @@ const (
 	PShopAction       uint16 = 116
 	PAreaConfig       uint16 = 117 // S→C: fog/ambient/pvp settings for the current area
 	PPlayableDefs     uint16 = 118 // S→C: list of actor defs available for character creation
+	PPlayerAction     uint16 = 119 // C→S: action(str)+state(u8)+axis_value(f32)
+	PSetInputContext  uint16 = 120 // S→C: context(str)
+	PInputBindings    uint16 = 121 // S→C: sends input bindings for the active preset
 )
 
 // EmitterType values for PCreateEmitter.

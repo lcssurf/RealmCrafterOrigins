@@ -25,10 +25,11 @@ enum ZoneMode {
     kModeTrigger   = 6,
     kModeWaypoint  = 7,
     kModePortal    = 8,
-    kModeNPC       = 9,
-    kModeEnviro    = 10,
-    kModeOther     = 11,
-    kModeCount     = 12,
+    kModeNPC        = 9,
+    kModeEnviro     = 10,
+    kModeOther      = 11,
+    kModeSpawnPoint = 12,
+    kModeCount      = 13,
 };
 
 // ── Gizmo / transform mode ───────────────────────────────────────────────────
@@ -69,8 +70,9 @@ private:
     void DrawPanelTerrain  (sqlite3*, bool placement);
     void DrawPanelEmitters (sqlite3*, bool placement);
     void DrawPanelWater    (sqlite3*, bool placement);
-    void DrawPanelEnviro   (sqlite3*);
-    void DrawPanelOther    (sqlite3*);
+    void DrawPanelEnviro      (sqlite3*);
+    void DrawPanelOther       (sqlite3*);
+    void DrawPanelSpawnPoint  (sqlite3*, MediaTab*, bool placement);
 
     // ── Undo ─────────────────────────────────────────────────────────────────
     enum UndoAction { kUndoCreate, kUndoDelete, kUndoMove, kUndoRotate, kUndoScale };
@@ -222,6 +224,10 @@ private:
     static constexpr const char* kEmitterNames[] = {
         "Fire", "Explosion", "Heal", "Portal", "Blood", "Smoke"
     };
+
+    // Spawn Points
+    float spawnPtRadius_      = 5.f;
+    int   spawnPtSelMob_      = -1;   // index into selected spawn point's mobs
 
     std::vector<std::string> scriptList_;
     bool scriptListLoaded_ = false;

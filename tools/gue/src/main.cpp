@@ -32,6 +32,8 @@
 #include "tabs/areas.h"
 #include "tabs/media.h"
 #include "tabs/zones.h"
+#include "tabs/input_maps.h"
+#include "tabs/spawn_points.h"
 
 // Anchor cwd to the exe's directory so sibling paths (../server/rco.db) resolve
 // correctly regardless of how the tool was launched.
@@ -151,12 +153,14 @@ int main() {
         pipeline->SetFeatures(cfg);
     }
 
-    gue::ItemsTab  itemsTab;
-    gue::SpellsTab spellsTab;
-    gue::ActorsTab actorsTab;
-    gue::AreasTab  areasTab;
-    gue::MediaTab  mediaTab;
-    gue::ZonesTab  zonesTab;
+    gue::ItemsTab        itemsTab;
+    gue::SpellsTab       spellsTab;
+    gue::ActorsTab       actorsTab;
+    gue::AreasTab        areasTab;
+    gue::MediaTab        mediaTab;
+    gue::ZonesTab        zonesTab;
+    gue::InputMapsTab    inputMapsTab;
+    gue::SpawnPointsTab  spawnPointsTab;
     mediaTab.SetRenderer(&engine, pipeline.get());
     zonesTab.SetRenderer(&engine, pipeline.get());
 
@@ -272,6 +276,10 @@ int main() {
             }
             if (ImGui::BeginTabItem("Zones")) {
                 zonesTab.Draw(db, &mediaTab);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Input Maps")) {
+                inputMapsTab.Draw(db);
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();

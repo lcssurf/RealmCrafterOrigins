@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"log"
+	"math"
+	"math/rand"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -167,6 +169,43 @@ func main() {
 		}
 	}
 	log.Printf("main: spawned %d NPCs from database", len(npcSpawns))
+
+	// Spawn NPCs from spawn points (scatter within radius).
+	spawnPoints, err := database.LoadSpawnPoints(ctx)
+	if err != nil {
+		log.Printf("main: load spawn_points: %v", err)
+	} else {
+		totalFromGroups := 0
+		for _, sp := range spawnPoints {
+			mobs, mobErr := database.LoadSpawnPointMobs(ctx, sp.ID)
+			if mobErr != nil {
+				log.Printf("main: load spawn_point_mobs id=%d: %v", sp.ID, mobErr)
+				continue
+			}
+			area := gameWorld.GetOrCreateArea(sp.AreaName)
+			for _, m := range mobs {
+				for i := 0; i < m.Count; i++ {
+					angle := rand.Float64() * 2 * math.Pi
+					r := math.Sqrt(rand.Float64()) * sp.Radius
+					nx := sp.X + r*math.Cos(angle)
+					nz := sp.Z + r*math.Sin(angle)
+					npc := gameWorld.SpawnNPC(area, m.Name, m.Race, m.Class, m.Level,
+						float32(nx), float32(sp.Y), float32(nz), 0)
+					npc.Aggressiveness = m.Aggressiveness
+					npc.AggressiveRange = float32(m.AggressiveRange)
+					npc.AttackRange = float32(m.AttackRange)
+					npc.RespawnDelay = m.RespawnDelayMs
+					if m.ActorDefID > 0 {
+						if app := rconet.BuildAppearance(ctx, database, m.ActorDefID); app != nil {
+							npc.Appearance = app
+						}
+					}
+					totalFromGroups++
+				}
+			}
+		}
+		log.Printf("main: spawned %d NPCs from %d spawn points", totalFromGroups, len(spawnPoints))
+	}
 
 	// Load area configs (music tracks) from DB.
 	areaCfgs, err := database.LoadAreaConfigs(ctx)

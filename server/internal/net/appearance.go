@@ -2,6 +2,7 @@ package net
 
 import (
 	"context"
+	"log"
 
 	"realm-crafter/server/internal/db"
 	"realm-crafter/server/internal/world"
@@ -70,16 +71,43 @@ func BuildAppearance(ctx context.Context, database *db.DB, defID int) *world.App
 	if len(out.Meshes) == 0 {
 		return nil
 	}
+	out.YawOffset = float32(def.YawOffset)
+	out.YOffset   = float32(def.YOffset)
 
 	for _, a := range def.Anims {
 		clip, _ := database.GetMediaAnimClip(ctx, a.ClipID)
 		if clip == nil {
 			continue
 		}
+		// Skip bindings that have neither a source file nor an embedded clip alias —
+		// the client has nothing to load or alias, so the binding is truly empty.
+		if clip.SourcePath == "" && clip.ClipOverride == "" {
+			log.Printf("[appearance] skipping binding action=%q clip_id=%d: no source_path and no clip_override",
+				a.Action, a.ClipID)
+			continue
+		}
+		events, _ := database.LoadAnimEvents(ctx, a.ClipID)
+		var animEvents []world.AnimEvent
+		for _, e := range events {
+			animEvents = append(animEvents, world.AnimEvent{
+				Frame:     e.Frame,
+				EventType: e.EventType,
+				Payload:   e.Payload,
+			})
+		}
 		out.Anims = append(out.Anims, world.AnimBinding{
 			Action:       a.Action,
 			SourcePath:   clip.SourcePath,
 			ClipOverride: clip.ClipOverride,
+			StartFrame:   clip.StartFrame,
+			EndFrame:     clip.EndFrame,
+			FPS:          clip.FPS,
+			Loop:         a.Loop,
+			Speed:        a.Speed,
+			BlendIn:      a.BlendIn,
+			ReturnTo:     a.ReturnTo,
+			Priority:     a.Priority,
+			Events:       animEvents,
 		})
 	}
 	return out

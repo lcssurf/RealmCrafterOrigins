@@ -65,6 +65,10 @@ type Actor struct {
 	// nil = client uses its default model fallback.
 	Appearance *Appearance
 
+	// CurrentAction tracks the last action broadcast to clients (e.g. "Idle", "Walk", "Attack").
+	// Written under Mu by BroadcastAnimate.
+	CurrentAction string
+
 	// SendCh receives outbound packets for this client.
 	SendCh chan []byte
 	done   chan struct{}
@@ -75,8 +79,10 @@ type Actor struct {
 // from high-level action names ("Idle", "Walk", …) to specific animation clip
 // files. Built once at spawn time from the Media registry in the DB.
 type Appearance struct {
-	Meshes []MeshSlot
-	Anims  []AnimBinding
+	Meshes    []MeshSlot
+	Anims     []AnimBinding
+	YawOffset float32 // model-space Y rotation (degrees) applied before world yaw
+	YOffset   float32 // vertical offset (world units) added to position at render time
 }
 
 // MeshSlot is one mesh attached to an actor. Slot values match the GUE:
@@ -117,12 +123,31 @@ type AiMaterial struct {
 	Metallic   float32
 }
 
-// AnimBinding maps a game action to a concrete animation clip.
-// SourcePath empty = the clip is embedded in the body model.
+// AnimEvent is a frame-marker inside a clip that triggers a gameplay callback
+// (hitbox spawn, footstep SFX, VFX, etc.) when the animation reaches that frame.
+type AnimEvent struct {
+	Frame     int32
+	EventType string
+	Payload   string
+}
+
+// AnimBinding maps a game action to a concrete animation clip with full
+// playback metadata. SourcePath empty = clip is embedded in the body model.
+// ClipOverride holds the FBX-native clip name when SourcePath is empty, so
+// the client can alias the embedded clip to the Action name.
 type AnimBinding struct {
 	Action       string
 	SourcePath   string
 	ClipOverride string
+	StartFrame int32
+	EndFrame   int32   // -1 = play to end of file
+	FPS        float32
+	Loop       bool
+	Speed      float32
+	BlendIn    float32
+	ReturnTo   string
+	Priority   uint8
+	Events     []AnimEvent
 }
 
 // NewActor creates an Actor with initialised channels.

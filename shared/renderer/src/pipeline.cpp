@@ -38,6 +38,7 @@ void Pipeline::Begin(const glm::mat4& view, const glm::mat4& proj,
     dynamicDraws_.clear();
     skinnedDraws_.clear();
     terrainChunks_.clear();
+    pending_stats_ = {};
 }
 
 void Pipeline::AddPointLight(const glm::vec3& pos, const glm::vec3& color, float radius) {
@@ -203,6 +204,8 @@ void Pipeline::gBufferPass_() {
                 if (r.ebo) glVertexArrayElementBuffer(engine_->vao_, r.ebo);
             }
             glDrawElements(GL_TRIANGLES, r.index_count, GL_UNSIGNED_INT, nullptr);
+            pending_stats_.triangles += r.index_count / 3;
+            pending_stats_.draw_calls++;
         }
         glBindVertexArray(engine_->vao_);
     }
@@ -221,9 +224,12 @@ void Pipeline::gBufferPass_() {
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, r.bone_ssbo);
             }
             // Skinned meshes MUST use their own VAO (attributes 4/5 for bone ids/weights).
-            GLuint vao = r.vao ? r.vao : engine_->vao_;
-            glBindVertexArray(vao);
+            // engine_->vao_ lacks those bindings — skip any request whose VAO was deleted.
+            if (!r.vao) continue;
+            glBindVertexArray(r.vao);
             glDrawElements(GL_TRIANGLES, r.index_count, GL_UNSIGNED_INT, nullptr);
+            pending_stats_.triangles += r.index_count / 3;
+            pending_stats_.draw_calls++;
         }
         glBindVertexArray(engine_->vao_);
     }
@@ -277,6 +283,8 @@ void Pipeline::terrainPass_() {
 
         glBindVertexArray(c.vao);
         glDrawElements(GL_TRIANGLES, c.index_count, GL_UNSIGNED_INT, nullptr);
+        pending_stats_.triangles += c.index_count / 3;
+        pending_stats_.draw_calls++;
     }
     glBindVertexArray(engine_->vao_);
 }
@@ -712,6 +720,8 @@ void Pipeline::End(const EndConfig& cfg) {
     }
     // When blit_to_default == false, the caller samples engine.finalImage() as
     // ImTextureID and handles presentation (e.g. ImGui::Image inside a panel).
+
+    frame_stats_ = pending_stats_;
 }
 
 } // namespace rco::renderer

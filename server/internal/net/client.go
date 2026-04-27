@@ -154,6 +154,8 @@ func (c *ClientConn) dispatch(ctx context.Context, pktType uint16, payload []byt
 			return c.handlePickupItem(ctx, payload)
 		case protocol.PShopAction:
 			return c.handleShopAction(ctx, payload)
+		case protocol.PPlayerAction:
+			return c.handlePlayerAction(ctx, payload)
 		case protocol.PPing:
 			return c.sendPong()
 		default:
@@ -376,7 +378,7 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	if char.ActorDefID > 0 {
 		if app := BuildAppearance(ctx, c.server.db, char.ActorDefID); app != nil {
 			actor.Appearance = app
-			log.Printf("client: appearance resolved: %d mesh(es)", len(app.Meshes))
+			log.Printf("client: appearance resolved: %d mesh(es), %d anim(s)", len(app.Meshes), len(app.Anims))
 		} else {
 			log.Printf("client: BuildAppearance returned nil for actor_def_id=%d", char.ActorDefID)
 		}
@@ -462,7 +464,60 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	// Start area music.
 	c.sendMusic(musicForArea(actor.AreaName), 128)
 
+	// Send input bindings from the default preset.
+	c.sendInputBindings(ctx)
+
 	return nil
+}
+
+// sendInputBindings loads the default preset (id=1) from the DB and sends
+// PInputBindings to the client.
+//
+// Wire format:
+//   preset_name  str
+//   count        u16
+//   [count times]:
+//     context      str
+//     key          str
+//     modifier     str
+//     trigger_type str
+//     action       str
+//     axis_value   f32
+//     remappable   u8
+func (c *ClientConn) sendInputBindings(ctx context.Context) {
+	bindings, err := c.server.db.LoadInputBindings(ctx, 1)
+	if err != nil || len(bindings) == 0 {
+		return
+	}
+
+	// Filter to enabled bindings only.
+	var enabled []db.InputBinding
+	for _, b := range bindings {
+		if b.Enabled {
+			enabled = append(enabled, b)
+		}
+	}
+	if len(enabled) == 0 {
+		return
+	}
+
+	var w Writer
+	w.WriteString("Default")
+	w.WriteUint16(uint16(len(enabled)))
+	for _, b := range enabled {
+		w.WriteString(b.Context)
+		w.WriteString(b.Key)
+		w.WriteString(b.Modifier)
+		w.WriteString(b.TriggerType)
+		w.WriteString(b.Action)
+		w.WriteFloat32(b.AxisValue)
+		remappable := uint8(0)
+		if b.Remappable {
+			remappable = 1
+		}
+		w.WriteUint8(remappable)
+	}
+	_ = c.sendPacket(protocol.PInputBindings, w.Bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -1460,6 +1515,50 @@ func musicForArea(areaName string) uint8 {
 	default:
 		return protocol.MusicStarterZone
 	}
+}
+
+// handlePlayerAction processes PPlayerAction (C→S). The client sends an action
+// string, a state byte (0=press, 1=hold_start, 2=hold_end), and an axis value.
+// For press/hold_start, the action is validated and propagated as PAnimateActor
+// to all clients in the area. Future: stamina, stun, grounded checks.
+func (c *ClientConn) handlePlayerAction(ctx context.Context, payload []byte) error {
+	r := NewReader(payload)
+	action, err := r.ReadString()
+	if err != nil {
+		return nil // malformed — ignore
+	}
+	state, err := r.ReadUint8()
+	if err != nil {
+		return nil
+	}
+	_, err = r.ReadFloat32() // axis_value — reserved for future use
+	if err != nil {
+		return nil
+	}
+
+	if c.actor == nil || c.actor.IsDead() {
+		return nil
+	}
+
+	area := c.server.world.GetOrCreateArea(c.actor.AreaName)
+	if area == nil {
+		return nil
+	}
+
+	// Propagate press/hold_start as an animation action to all clients.
+	if state == 0 || state == 1 {
+		world.BroadcastAnimate(area, c.actor, action)
+		// Fire scripting event for server-side validation/effects.
+		c.server.scripting.DispatchPlayerAction(c.actor, action, state)
+	}
+	return nil
+}
+
+// sendInputContext sends PSetInputContext to this client only.
+func (c *ClientConn) sendInputContext(ctxName string) {
+	var w Writer
+	w.WriteString(ctxName)
+	_ = c.sendPacket(protocol.PSetInputContext, w.Bytes())
 }
 
 // isClosedErr returns true for errors that represent a normally closed connection.

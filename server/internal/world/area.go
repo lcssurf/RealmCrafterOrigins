@@ -281,6 +281,7 @@ func leashNPC(npc *Actor, a *Area) {
 	npc.AIMode = AIWait
 	npc.Mu.Unlock()
 	broadcastNPCPosition(a, npc)
+	BroadcastAnimate(a, npc, "Idle")
 }
 
 // tickAI runs one AI update step for all NPCs in the area.
@@ -333,6 +334,7 @@ func (a *Area) tickAI() {
 				npc.Mu.Lock()
 				npc.AIMode = AIWait
 				npc.Mu.Unlock()
+				BroadcastAnimate(a, npc, "Idle")
 				continue
 			}
 
@@ -342,6 +344,7 @@ func (a *Area) tickAI() {
 				npc.AITarget = nil
 				npc.AIMode = AIWait
 				npc.Mu.Unlock()
+				BroadcastAnimate(a, npc, "Idle")
 				continue
 			}
 			target.Mu.Lock()
@@ -352,6 +355,7 @@ func (a *Area) tickAI() {
 				npc.AITarget = nil
 				npc.AIMode = AIWait
 				npc.Mu.Unlock()
+				BroadcastAnimate(a, npc, "Idle")
 				continue
 			}
 
@@ -377,6 +381,7 @@ func (a *Area) tickAI() {
 						npc.AITarget = nil
 						npc.AIMode = AIWait
 						npc.Mu.Unlock()
+						BroadcastAnimate(a, npc, "Idle")
 					}
 				}
 			} else {

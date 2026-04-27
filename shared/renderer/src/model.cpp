@@ -12,8 +12,73 @@
 #include <cstring>
 #include <string>
 #include <algorithm>
+#include <memory>
+#include <unordered_map>
+#include <unordered_set>
+#include <chrono>
 
 namespace rco::renderer {
+
+// ---------------------------------------------------------------------------
+// Animation file cache — raw parsed data keyed by file path.
+// Channels have the pipe-prefix stripped but are NOT filtered by any specific
+// model's node_map_ — that filtering happens at AppendAnimationsFrom() time so
+// different body skeletons can share the same cached FBX parse.
+// ---------------------------------------------------------------------------
+struct RawAnimChannel {
+    std::string           name;
+    std::vector<AnimKey3> pos;
+    std::vector<AnimKeyQ> rot;
+    std::vector<AnimKey3> scl;
+};
+struct RawAnimClip {
+    std::string                 fbx_name;
+    float                       duration_sec = 0.f;
+    std::vector<RawAnimChannel> channels;
+};
+struct AnimFileCache { std::vector<RawAnimClip> clips; };
+static std::unordered_map<std::string, std::shared_ptr<AnimFileCache>> g_anim_file_cache;
+
+// ---------------------------------------------------------------------------
+// Global texture cache — keyed by "path|srgb" so the same file loaded as
+// sRGB (albedo) vs. linear (normal/ORM) gets distinct entries.
+// Textures live for the process lifetime (appropriate for a game that always
+// needs them). Cached handles are NEVER pushed into Model::owned_textures_
+// because multiple models share the same GL object.
+// ---------------------------------------------------------------------------
+static std::unordered_map<std::string, GLuint> g_tex_cache;
+
+static GLuint LoadTexCached(const std::string& path, bool srgb) {
+    if (path.empty()) return 0;
+    std::string key = path + (srgb ? "|srgb" : "|lin");
+    auto it = g_tex_cache.find(key);
+    if (it != g_tex_cache.end()) {
+        std::fprintf(stderr, "[tex-cache] HIT  '%s'\n", path.c_str());
+        return it->second;
+    }
+    std::fprintf(stderr, "[tex-cache] MISS '%s'\n", path.c_str());
+    int w = 0, h = 0, ch = 0;
+    stbi_set_flip_vertically_on_load(false);
+    unsigned char* px = stbi_load(path.c_str(), &w, &h, &ch, 4);
+    if (!px) {
+        std::fprintf(stderr, "[tex-cache] ERROR can't read '%s': %s\n",
+                     path.c_str(), stbi_failure_reason());
+        return 0;
+    }
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    GLenum internal = srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+    glTexImage2D(GL_TEXTURE_2D, 0, internal, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_REPEAT);
+    stbi_image_free(px);
+    g_tex_cache[key] = tex;
+    return tex;
+}
 
 // ---------------------------------------------------------------------------
 // Shared default textures
@@ -231,6 +296,8 @@ void Model::GeneratePlaceholder() {
     m.roughness_factor = 0.6f;
     m.idx_count        = (int)(sizeof(kBoxIdx) / sizeof(kBoxIdx[0]));
 
+    GLint prev_vao_ph = 0;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao_ph);
     glGenVertexArrays(1, &m.vao);
     glGenBuffers(1, &m.vbo);
     glGenBuffers(1, &m.ebo);
@@ -244,7 +311,7 @@ void Model::GeneratePlaceholder() {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)12); glEnableVertexAttribArray(1);
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)24); glEnableVertexAttribArray(2);
     glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, stride, (void*)32); glEnableVertexAttribArray(3);
-    glBindVertexArray(0);
+    glBindVertexArray((GLuint)prev_vao_ph);
     meshes_.push_back(m);
 }
 
@@ -301,6 +368,21 @@ void Model::LoadAnimations(const aiScene* scene) {
 }
 
 // ---------------------------------------------------------------------------
+// AliasClip — rename an embedded clip to a game action name
+// ---------------------------------------------------------------------------
+void Model::AliasClip(const std::string& native_name, const std::string& new_name) {
+    for (auto& clip : clips_) {
+        if (clip.name == native_name) {
+            if (log_bones)
+                std::fprintf(stderr, "[model] AliasClip '%s' -> '%s'\n",
+                             native_name.c_str(), new_name.c_str());
+            clip.name = new_name;
+            return;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ComputeBones — evaluate animation, fill out_mats
 // ---------------------------------------------------------------------------
 void Model::ComputeBones(int clip_idx, float time_sec, int mesh_idx,
@@ -333,6 +415,18 @@ void Model::ComputeBones(int clip_idx, float time_sec, int mesh_idx,
     float t = 0.f;
     if (clip) {
         t = clip->duration_sec > 0.f ? std::fmod(time_sec, clip->duration_sec) : 0.f;
+
+        // TESTE B: log channel->bone_idx mapping once per clip name
+        static std::unordered_set<std::string> s_chan_map_printed;
+        if (!s_chan_map_printed.count(clip->name)) {
+            s_chan_map_printed.insert(clip->name);
+            for (const auto& ch : clip->channels) {
+                auto nit = node_map_.find(ch.name);
+                int bidx = (nit != node_map_.end()) ? anim_nodes_[nit->second].bone_idx : -1;
+                std::fprintf(stderr, "[chan-map] clip='%s' chan='%s' -> bone_idx=%d\n",
+                             clip->name.c_str(), ch.name.c_str(), bidx);
+            }
+        }
     }
 
     std::vector<glm::mat4> global(anim_nodes_.size(), glm::mat4(1.f));
@@ -344,9 +438,22 @@ void Model::ComputeBones(int clip_idx, float time_sec, int mesh_idx,
             auto it = clip->chan_map.find(node.name);
             if (it != clip->chan_map.end()) {
                 const BoneChannel& ch = clip->channels[it->second];
-                glm::vec3 pos = InterpV(ch.pos, t);
                 glm::quat rot = InterpQ(ch.rot, t);
                 glm::vec3 scl = ch.scl.empty() ? glm::vec3(1.f) : InterpV(ch.scl, t);
+                glm::vec3 pos;
+                if (node.name == "mixamorig:Hips") {
+                    // Apply Hips translation as delta from the clip's own frame-0,
+                    // anchored to the body's bind-pose Hips position. This retargets
+                    // clips exported from a differently-proportioned reference rig
+                    // (e.g. Mixamo Y Bot) onto the Dwarf skeleton without vertical shift.
+                    glm::vec3 anim_pos  = InterpV(ch.pos, t);
+                    glm::vec3 anim_base = ch.pos.empty() ? glm::vec3(0.f) : glm::vec3(ch.pos[0].v);
+                    pos = hips_bind_pos_ + (anim_pos - anim_base);
+                } else {
+                    // Non-root bones: translation comes from the body's bind pose so
+                    // the skeleton's proportions are preserved regardless of the clip's rig.
+                    pos = glm::vec3(node.local[3]);
+                }
                 local = glm::translate(glm::mat4(1.f), pos)
                       * glm::mat4_cast(rot)
                       * glm::scale(glm::mat4(1.f), scl);
@@ -357,6 +464,27 @@ void Model::ComputeBones(int clip_idx, float time_sec, int mesh_idx,
 
         if (node.bone_idx >= 0 && node.bone_idx < max_out) {
             out_mats[node.bone_idx] = global_inv_ * global[ni] * offsetFor(node.bone_idx);
+        }
+    }
+
+    // TESTE 1: log final bone matrix translation once per clip for key bones
+    if (clip) {
+        static std::unordered_set<std::string> s_final_mat_printed;
+        if (!s_final_mat_printed.count(clip->name)) {
+            s_final_mat_printed.insert(clip->name);
+            static const char* kLogBones[] = {
+                "mixamorig:Hips", "mixamorig:LeftUpLeg", "mixamorig:Spine"
+            };
+            for (const char* bname : kLogBones) {
+                auto nit = node_map_.find(bname);
+                if (nit == node_map_.end()) continue;
+                int bidx = anim_nodes_[nit->second].bone_idx;
+                if (bidx < 0 || bidx >= max_out) continue;
+                const glm::mat4& fm = out_mats[bidx];
+                std::fprintf(stderr,
+                    "[final-mat] clip='%s' bone='%s' final_pos=(%.4f,%.4f,%.4f)\n",
+                    clip->name.c_str(), bname, fm[3][0], fm[3][1], fm[3][2]);
+            }
         }
     }
 }
@@ -443,6 +571,8 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
                 auto nit = node_map_.find(bname);
                 if (nit != node_map_.end())
                     anim_nodes_[nit->second].bone_idx = bidx;
+                else
+                    std::fprintf(stderr, "[bone-miss] '%s' bone has no matching node in tree!\n", bname.c_str());
             } else {
                 bidx = it->second;
             }
@@ -498,6 +628,8 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
     }
 
     // --- Build VAO ---
+    GLint prev_vao = 0;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao);
     glGenVertexArrays(1, &sm.vao);
     glGenBuffers(1, &sm.vbo);
     glGenBuffers(1, &sm.ebo);
@@ -535,7 +667,7 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
         glEnableVertexAttribArray(5);
     }
 
-    glBindVertexArray(0);
+    glBindVertexArray((GLuint)prev_vao);
 
     // Record per-bone offsets for this submesh. They will be padded with
     // identity for unused bone slots after all meshes have been loaded,
@@ -608,9 +740,44 @@ bool Model::Load(const char* path, MaterialManager* mm) {
     size_t slash = p.find_last_of("/\\");
     directory_ = (slash != std::string::npos) ? p.substr(0, slash) : ".";
 
+    std::fprintf(stderr, "[body-load] '%s' scene has %u animations\n", path, scene->mNumAnimations);
+
     // Build the node hierarchy first (needed for bone→node linking in ProcessMesh).
     BuildNodeTree(scene->mRootNode, -1);
     global_inv_ = glm::inverse(ToGLM(scene->mRootNode->mTransformation));
+
+    {
+        auto nit = node_map_.find("mixamorig:Hips");
+        if (nit != node_map_.end()) {
+            const glm::mat4& m = anim_nodes_[nit->second].local;
+            hips_bind_pos_ = glm::vec3(m[3]);
+            std::fprintf(stderr, "[body-node] 'mixamorig:Hips' local_pos=(%.4f,%.4f,%.4f)\n",
+                         hips_bind_pos_.x, hips_bind_pos_.y, hips_bind_pos_.z);
+        } else {
+            std::fprintf(stderr, "[body-node] 'mixamorig:Hips' NOT FOUND in node tree\n");
+        }
+    }
+
+    if (log_bones) {
+        // bind-pose comparison: root transform diagonal + Hips local position.
+        std::function<aiNode*(aiNode*, const char*)> findNode =
+            [&](aiNode* n, const char* name) -> aiNode* {
+                if (std::strstr(n->mName.C_Str(), name)) return n;
+                for (unsigned i = 0; i < n->mNumChildren; ++i)
+                    if (auto* f = findNode(n->mChildren[i], name)) return f;
+                return nullptr;
+            };
+        const aiMatrix4x4& rt = scene->mRootNode->mTransformation;
+        std::fprintf(stderr, "[body-bind] '%s' root_transform_diag=(%.6f,%.6f,%.6f)",
+                     path, rt.a1, rt.b2, rt.c3);
+        aiNode* hips = findNode(scene->mRootNode, "mixamorig:Hips");
+        if (hips) {
+            const aiMatrix4x4& ht = hips->mTransformation;
+            std::fprintf(stderr, " hips_local_pos=(%.4f,%.4f,%.4f)\n", ht.a4, ht.b4, ht.c4);
+        } else {
+            std::fprintf(stderr, " hips=NOT_FOUND\n");
+        }
+    }
 
     // Process meshes (bone indices are registered into bone_map_ / bones_ here).
     std::vector<std::vector<glm::ivec4>> bids;
@@ -623,13 +790,20 @@ bool Model::Load(const char* path, MaterialManager* mm) {
     // skinned body renders upright.
     ProcessNode(scene->mRootNode, scene, bids, bwts, global_inv_);
 
+    if (log_bones) {
+        int mxcount = 0, linked = 0;
+        for (const auto& an : anim_nodes_) {
+            if (an.name.find("mixamorig") != std::string::npos) ++mxcount;
+            if (an.bone_idx >= 0) ++linked;
+        }
+        std::fprintf(stderr, "[model] '%s' total_nodes=%d mixamorig=%d bones_linked=%d/%d\n",
+                     path, (int)anim_nodes_.size(), mxcount, linked, (int)bones_.size());
+    }
+
     // Load animations after bones are known.
     if (scene->mNumAnimations > 0) {
         LoadAnimations(scene);
         skinned_ = !bones_.empty();
-        if (skinned_)
-            std::fprintf(stderr, "[model] '%s' — %d bones, %d clips\n",
-                         path, (int)bones_.size(), (int)clips_.size());
     }
 
     // Pad each submesh's bone_offsets to the final bones_.size() with
@@ -641,23 +815,21 @@ bool Model::Load(const char* path, MaterialManager* mm) {
             sm.bone_offsets.resize(bones_.size(), glm::mat4(1.f));
     }
 
-    // Diagnostic dump — per-submesh info so we can see what landed where when
-    // a multi-part model (armour etc.) shows parts in wrong positions.
-    std::fprintf(stderr, "[model] '%s' — %d submeshes\n", path, (int)meshes_.size());
-    for (size_t i = 0; i < meshes_.size(); ++i) {
-        const auto& m = meshes_[i];
-        std::fprintf(stderr,
-            "  [%zu] verts=%d skinned=%d mat_idx=%d tex(a/n/o)=%u/%u/%u\n",
-            i, m.idx_count / 3 /*tris*/,
-            m.skinned ? 1 : 0, m.material_idx,
-            m.tex_albedo, m.tex_normal, m.tex_orm);
-    }
-    // Node → bone map so we can see which nodes the skeleton lives under.
-    std::fprintf(stderr, "[model] bone-bearing nodes (%d):\n", (int)bones_.size());
-    for (const auto& an : anim_nodes_) {
-        if (an.bone_idx < 0) continue;
-        std::fprintf(stderr, "   bone%d  node='%s'  parent=%d\n",
-                     an.bone_idx, an.name.c_str(), an.parent);
+    // TESTE 2: log inverse-bind offset translation for key bones
+    {
+        static const char* kLogBones[] = {
+            "mixamorig:Hips", "mixamorig:LeftUpLeg", "mixamorig:Spine"
+        };
+        for (const char* bname : kLogBones) {
+            auto it = bone_map_.find(bname);
+            if (it == bone_map_.end()) {
+                std::fprintf(stderr, "[bone-offset] body bone='%s' NOT FOUND\n", bname);
+                continue;
+            }
+            const glm::mat4& off = bones_[it->second].offset;
+            std::fprintf(stderr, "[bone-offset] body bone='%s' offset_translation=(%.4f,%.4f,%.4f)\n",
+                         bname, off[3][0], off[3][1], off[3][2]);
+        }
     }
 
     // Register each submesh's textures in the shared MaterialManager so the
@@ -678,59 +850,173 @@ bool Model::Load(const char* path, MaterialManager* mm) {
 }
 
 // ---------------------------------------------------------------------------
-// AppendAnimationsFrom — load clips from a separate file
+// AppendAnimationsFrom — load clips from a separate file, with FBX parse cache
 // ---------------------------------------------------------------------------
 int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
-    Assimp::Importer importer;
-    const aiScene* scene = importer.ReadFile(path,
-        aiProcess_Triangulate | aiProcess_LimitBoneWeights);
+    std::fprintf(stderr, "[anim-load-entry] path='%s' name='%s'\n",
+                 path, name_override ? name_override : "");
 
-    if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) ||
-        scene->mNumAnimations == 0) {
-        std::fprintf(stderr, "[model] AppendAnimationsFrom '%s': %s\n",
-                     path, importer.GetErrorString());
-        return -1;
+    if (name_override && name_override[0] != '\0') {
+        for (int i = 0; i < (int)clips_.size(); ++i) {
+            if (clips_[i].name == name_override) {
+                std::fprintf(stderr, "[anim-load-early-exit] '%s' already present as clip[%d]\n",
+                             name_override, i);
+                return i;
+            }
+        }
     }
 
+    auto t0 = std::chrono::steady_clock::now();
+
+    // ── File cache: parse FBX once, reuse raw channels for every actor ────
+    std::shared_ptr<AnimFileCache> fcache;
+    {
+        auto it = g_anim_file_cache.find(path);
+        if (it != g_anim_file_cache.end()) {
+            std::fprintf(stderr, "[anim-cache] HIT  '%s'\n", path);
+            fcache = it->second;
+        } else {
+            std::fprintf(stderr, "[anim-cache] MISS '%s' — parsing FBX\n", path);
+
+            Assimp::Importer importer;
+            // preserve_pivots=false collapses _$AssimpFbx$_* aux nodes so
+            // channel names match the body model's node tree.
+            importer.SetPropertyFloat(AI_CONFIG_GLOBAL_SCALE_FACTOR_KEY, 1.0f);
+            importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, false);
+            const aiScene* scene = importer.ReadFile(path,
+                aiProcess_Triangulate | aiProcess_LimitBoneWeights | aiProcess_GlobalScale);
+
+            if (!scene) {
+                std::fprintf(stderr, "[model] AppendAnimationsFrom '%s': FILE NOT LOADED — %s\n",
+                             path, importer.GetErrorString());
+                return -1;
+            }
+            // AI_SCENE_FLAGS_INCOMPLETE is expected for animation-only "Without Skin" exports.
+            if (scene->mNumAnimations == 0) {
+                std::fprintf(stderr,
+                    "[model] AppendAnimationsFrom '%s': FILE LOADED but mNumAnimations==0 "
+                    "(try downloading with an animation selected on Mixamo)\n", path);
+                return -1;
+            }
+
+            if (log_bones) {
+                std::function<aiNode*(aiNode*, const char*)> findNode =
+                    [&](aiNode* n, const char* name) -> aiNode* {
+                        if (std::strstr(n->mName.C_Str(), name)) return n;
+                        for (unsigned i = 0; i < n->mNumChildren; ++i)
+                            if (auto* f = findNode(n->mChildren[i], name)) return f;
+                        return nullptr;
+                    };
+                const char* label = (name_override && name_override[0]) ? name_override : path;
+                const aiMatrix4x4& rt = scene->mRootNode->mTransformation;
+                std::fprintf(stderr, "[clip-bind] '%s' root_transform_diag=(%.6f,%.6f,%.6f)",
+                             label, rt.a1, rt.b2, rt.c3);
+                aiNode* hips = findNode(scene->mRootNode, "mixamorig:Hips");
+                if (hips) {
+                    const aiMatrix4x4& ht = hips->mTransformation;
+                    std::fprintf(stderr, " hips_local_pos=(%.4f,%.4f,%.4f)\n", ht.a4, ht.b4, ht.c4);
+                } else {
+                    std::fprintf(stderr, " hips=NOT_FOUND\n");
+                }
+            }
+
+            fcache = std::make_shared<AnimFileCache>();
+            for (unsigned ai = 0; ai < scene->mNumAnimations; ++ai) {
+                const aiAnimation* src = scene->mAnimations[ai];
+                RawAnimClip raw;
+                raw.fbx_name = src->mName.C_Str();
+                double tps = src->mTicksPerSecond > 0.0 ? src->mTicksPerSecond : 25.0;
+                raw.duration_sec = float(src->mDuration / tps);
+
+                for (unsigned ci = 0; ci < src->mNumChannels; ++ci) {
+                    const aiNodeAnim* ch = src->mChannels[ci];
+                    RawAnimChannel rc;
+                    // Mixamo "With Skin" packs names as "ArmatureName|BoneName" — strip prefix.
+                    std::string raw_name = ch->mNodeName.C_Str();
+                    size_t pipe = raw_name.rfind('|');
+                    rc.name = (pipe != std::string::npos) ? raw_name.substr(pipe + 1) : raw_name;
+                    for (unsigned k = 0; k < ch->mNumPositionKeys; ++k)
+                        rc.pos.push_back({ch->mPositionKeys[k].mTime / tps,
+                            {ch->mPositionKeys[k].mValue.x,
+                             ch->mPositionKeys[k].mValue.y,
+                             ch->mPositionKeys[k].mValue.z}});
+                    for (unsigned k = 0; k < ch->mNumRotationKeys; ++k)
+                        rc.rot.push_back({ch->mRotationKeys[k].mTime / tps,
+                            ToGLM(ch->mRotationKeys[k].mValue)});
+                    for (unsigned k = 0; k < ch->mNumScalingKeys; ++k)
+                        rc.scl.push_back({ch->mScalingKeys[k].mTime / tps,
+                            {ch->mScalingKeys[k].mValue.x,
+                             ch->mScalingKeys[k].mValue.y,
+                             ch->mScalingKeys[k].mValue.z}});
+                    raw.channels.push_back(std::move(rc));
+                }
+                fcache->clips.push_back(std::move(raw));
+            }
+            g_anim_file_cache[path] = fcache;
+        }
+    }
+
+    // ── Pick longest clip when name_override is set (skip Mixamo accessories) ─
+    int target_ai = -1;
+    if (name_override && name_override[0] != '\0') {
+        double longest = -1.0;
+        for (int ai = 0; ai < (int)fcache->clips.size(); ++ai) {
+            double dur = fcache->clips[ai].duration_sec;
+            if (dur > longest) { longest = dur; target_ai = ai; }
+        }
+    }
+
+    // ── Build AnimClip(s), filtering channels against this body's node_map_ ──
     int first = (int)clips_.size();
-    for (unsigned ai = 0; ai < scene->mNumAnimations; ++ai) {
-        const aiAnimation* src = scene->mAnimations[ai];
+    for (int ai = 0; ai < (int)fcache->clips.size(); ++ai) {
+        if (target_ai >= 0 && ai != target_ai) continue;
+
+        const RawAnimClip& raw = fcache->clips[ai];
         AnimClip clip;
+        clip.name         = (name_override && name_override[0] != '\0') ? name_override : raw.fbx_name;
+        clip.duration_sec = raw.duration_sec;
 
-        // Name: override > file's own name
-        if (name_override && name_override[0] != '\0')
-            clip.name = (scene->mNumAnimations == 1)
-                        ? name_override
-                        : std::string(name_override) + "_" + std::to_string(ai);
-        else
-            clip.name = src->mName.C_Str();
-
-        double tps = src->mTicksPerSecond > 0.0 ? src->mTicksPerSecond : 25.0;
-        clip.duration_sec = float(src->mDuration / tps);
-
-        for (unsigned ci = 0; ci < src->mNumChannels; ++ci) {
-            const aiNodeAnim* ch = src->mChannels[ci];
+        for (const RawAnimChannel& rc : raw.channels) {
+            // Skip channels absent from this body's skeleton (e.g. extra finger bones).
+            if (node_map_.find(rc.name) == node_map_.end()) {
+                std::fprintf(stderr,
+                    "[anim-skip] clip='%s' channel='%s' (no matching bone in body)\n",
+                    clip.name.c_str(), rc.name.c_str());
+                continue;
+            }
             BoneChannel bc;
-            bc.name = ch->mNodeName.C_Str();
-            for (unsigned k = 0; k < ch->mNumPositionKeys; ++k)
-                bc.pos.push_back({ch->mPositionKeys[k].mTime / tps,
-                    {ch->mPositionKeys[k].mValue.x,
-                     ch->mPositionKeys[k].mValue.y,
-                     ch->mPositionKeys[k].mValue.z}});
-            for (unsigned k = 0; k < ch->mNumRotationKeys; ++k)
-                bc.rot.push_back({ch->mRotationKeys[k].mTime / tps,
-                    ToGLM(ch->mRotationKeys[k].mValue)});
-            for (unsigned k = 0; k < ch->mNumScalingKeys; ++k)
-                bc.scl.push_back({ch->mScalingKeys[k].mTime / tps,
-                    {ch->mScalingKeys[k].mValue.x,
-                     ch->mScalingKeys[k].mValue.y,
-                     ch->mScalingKeys[k].mValue.z}});
+            bc.name = rc.name;
+            bc.pos  = rc.pos;
+            bc.rot  = rc.rot;
+            bc.scl  = rc.scl;
             clip.chan_map[bc.name] = (int)clip.channels.size();
             clip.channels.push_back(std::move(bc));
         }
-        std::fprintf(stderr, "[model] Appended clip '%s' (%.2fs) from '%s'\n",
-                     clip.name.c_str(), clip.duration_sec, path);
+
+        {
+            auto hit = clip.chan_map.find("mixamorig:Hips");
+            if (hit != clip.chan_map.end()) {
+                const auto& hc = clip.channels[hit->second];
+                if (!hc.pos.empty())
+                    std::fprintf(stderr, "[clip-frame0] '%s' Hips_pos=(%.4f,%.4f,%.4f)\n",
+                                 clip.name.c_str(), hc.pos[0].v.x, hc.pos[0].v.y, hc.pos[0].v.z);
+            }
+        }
+        if (log_bones) {
+            std::fprintf(stderr, "[model] Appended clip '%s' (%.2fs) from '%s'\n",
+                         clip.name.c_str(), clip.duration_sec, path);
+            std::fprintf(stderr, "[clip-channels] '%s' total=%d\n",
+                         clip.name.c_str(), (int)clip.channels.size());
+            for (int ci = 0; ci < (int)clip.channels.size(); ++ci)
+                std::fprintf(stderr, "  ch[%d]  '%s'\n", ci, clip.channels[ci].name.c_str());
+        }
         clips_.push_back(std::move(clip));
+    }
+    {
+        auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        std::fprintf(stderr, "[anim-load-time] path='%s' name='%s' took=%lldms\n",
+                     path, name_override ? name_override : "", (long long)dt);
     }
     return first;
 }
@@ -743,26 +1029,7 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
 // ---------------------------------------------------------------------------
 
 static GLuint LoadFileTexture(const char* path, bool srgb) {
-    int w = 0, h = 0, ch = 0;
-    stbi_set_flip_vertically_on_load(false);
-    unsigned char* px = stbi_load(path, &w, &h, &ch, 4);
-    if (!px) {
-        std::fprintf(stderr, "[model] OverrideMaterial: cannot load '%s': %s\n",
-                     path, stbi_failure_reason());
-        return 0;
-    }
-    GLuint tex;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    GLenum internal = srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
-    glTexImage2D(GL_TEXTURE_2D, 0, internal, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_REPEAT);
-    stbi_image_free(px);
-    return tex;
+    return LoadTexCached(path ? std::string(path) : std::string(), srgb);
 }
 
 void Model::OverrideMaterial(const std::string& albedo_path,
@@ -783,13 +1050,9 @@ void Model::OverrideMaterial(const std::string& albedo_path,
                      ? (new_albedo ? glm::vec3(1.f) : glm::vec3(0.72f, 0.68f, 0.60f))
                      : glm::vec3(albedo_r, albedo_g, albedo_b);
 
-    // The new textures are SHARED across all submeshes of this model (one
-    // copy, reassigned to each SubMesh.tex_*). Track them in owned_textures_
-    // so Destroy() frees them exactly once. Previously this method leaked
-    // every prior OverrideMaterial call's textures.
-    if (new_albedo) owned_textures_.push_back(new_albedo);
-    if (new_normal) owned_textures_.push_back(new_normal);
-    if (new_orm)    owned_textures_.push_back(new_orm);
+    // Textures come from the global cache — lifetime managed by g_tex_cache,
+    // not by this model. Don't push into owned_textures_ or Destroy() would
+    // delete handles shared by every other model using the same texture.
 
     for (auto& m : meshes_) {
         if (new_albedo) m.tex_albedo = new_albedo;
@@ -819,30 +1082,8 @@ std::vector<std::string> Model::MaterialNames() const {
 // in the MaterialManager, and assign per-submesh material indices by name.
 // ---------------------------------------------------------------------------
 
-// Load a PNG/JPG/etc into a GL texture with the requested colour space.
-// Returns 0 on failure (missing file, bad decode, empty path).
 static GLuint LoadTexFromDisk(const std::string& path, bool srgb) {
-    if (path.empty()) return 0;
-    int w = 0, h = 0, ch = 0;
-    stbi_set_flip_vertically_on_load(false);
-    unsigned char* px = stbi_load(path.c_str(), &w, &h, &ch, 4);
-    if (!px) {
-        std::fprintf(stderr, "[model] ApplyMaterials: can't read '%s'\n", path.c_str());
-        return 0;
-    }
-
-    GLuint tex = 0;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    GLenum internal = srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
-    glTexImage2D(GL_TEXTURE_2D, 0, internal, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_REPEAT);
-    stbi_image_free(px);
-    return tex;
+    return LoadTexCached(path, srgb);
 }
 
 void Model::ApplyMaterialsByName(
@@ -872,30 +1113,13 @@ void Model::ApplyMaterialsByName(
         l.normal = LoadTexFromDisk(p.normal, /*srgb*/false);
         l.orm    = LoadTexFromDisk(p.orm,    /*srgb*/false);
 
-        // Track for Destroy()
-        if (l.albedo) owned_textures_.push_back(l.albedo);
-        if (l.normal) owned_textures_.push_back(l.normal);
-        if (l.orm)    owned_textures_.push_back(l.orm);
-
+        // Textures come from g_tex_cache — not owned by this model.
         l.idx = mm.RegisterFromHandles(name, l.albedo, l.normal, l.orm);
         cache[name] = l;
         return l;
     };
 
-    // Diagnostic: show what the caller provided vs what the submeshes want.
-    std::fprintf(stderr, "[model] ApplyMaterialsByName: caller provided %zu material(s):",
-                 by_name.size());
-    for (const auto& [n, _] : by_name) std::fprintf(stderr, " '%s'", n.c_str());
-    std::fprintf(stderr, "\n[model] submesh aiMaterial names:\n");
-
     int applied = 0;
-    std::unordered_map<std::string, int> name_counts;
-    for (auto& sm : meshes_) {
-        ++name_counts[sm.material_name];
-    }
-    for (const auto& [n, c] : name_counts) {
-        std::fprintf(stderr, "   '%s' × %d\n", n.c_str(), c);
-    }
 
     for (auto& sm : meshes_) {
         if (sm.material_name.empty()) continue;
@@ -915,9 +1139,10 @@ void Model::ApplyMaterialsByName(
         if (l.orm)    sm.tex_orm    = l.orm;
         ++applied;
     }
-    std::fprintf(stderr,
-        "[model] ApplyMaterialsByName: %d submesh(es) matched to %zu material(s)\n",
-        applied, cache.size());
+    if (log_bones)
+        std::fprintf(stderr,
+            "[model] ApplyMaterialsByName: %d submesh(es) matched to %zu material(s)\n",
+            applied, cache.size());
 }
 
 } // namespace rco::renderer

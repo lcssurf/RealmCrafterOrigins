@@ -308,6 +308,36 @@ void ZonesTab::PlaceObject(const glm::vec3& wpos, sqlite3* db, MediaTab* media) 
         }
         break;
     }
+    case kModeSpawnPoint: {
+        ZSpawnPoint sp;
+        sp.pos    = wpos;
+        sp.radius = spawnPtRadius_;
+        sp.name   = scene_.areaName + " Spawn";
+
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO spawn_points (name, area_name, x, y, z, radius)"
+            " VALUES (?,?,?,?,?,?)",
+            -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, sp.name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 3, sp.pos.x);
+            sqlite3_bind_double(stmt, 4, sp.pos.y);
+            sqlite3_bind_double(stmt, 5, sp.pos.z);
+            sqlite3_bind_double(stmt, 6, sp.radius);
+            sqlite3_step(stmt);
+            sp.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.spawnPoints.push_back(sp);
+            selectedID_   = sp.id;
+            selectedType_ = kSelSpawnPoint;
+            spawnPtSelMob_ = -1;
+            PushUndo(kUndoCreate, kSelSpawnPoint, sp.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                "Placed spawn point #%d at (%.0f, %.0f).", sp.id, wpos.x, wpos.z);
+        }
+        break;
+    }
     case kModeScenery: {
         if (scnModelId_ == 0) {
             std::snprintf(statusMsg_, sizeof(statusMsg_), "Select a model first.");
@@ -659,6 +689,23 @@ void ZonesTab::DeleteSelected(sqlite3* db) {
     case kSelWaypoint:  table = "zone_waypoints";   break;
     case kSelNpc:       table = "npc_spawns";       break;
     case kSelEmitter:   table = "zone_emitters";    break;
+    case kSelSpawnPoint: {
+        // Cascade-delete mobs first, then the point itself.
+        char sql[128];
+        std::snprintf(sql, sizeof(sql),
+            "DELETE FROM spawn_point_mobs WHERE spawn_point_id=%d", selectedID_);
+        sqlite3_exec(db, sql, nullptr, nullptr, nullptr);
+        std::snprintf(sql, sizeof(sql),
+            "DELETE FROM spawn_points WHERE id=%d", selectedID_);
+        sqlite3_exec(db, sql, nullptr, nullptr, nullptr);
+        scene_.spawnPoints.erase(std::remove_if(scene_.spawnPoints.begin(),
+            scene_.spawnPoints.end(), [&](auto& x){ return x.id == selectedID_; }),
+            scene_.spawnPoints.end());
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+            "Deleted spawn point %d.", selectedID_);
+        selectedID_ = -1; selectedType_ = kSelNone; spawnPtSelMob_ = -1;
+        return;
+    }
     case kSelWater:     table = "zone_water";       break;
     case kSelScenery:   table = "zone_scenery";     break;
     default: return;
@@ -720,7 +767,7 @@ void ZonesTab::DrawTopBar(sqlite3* db) {
     static const char* kModeLabels[kModeCount] = {
         "Scenery","Terrain","Emitters","Water","ColBox",
         "Sound","Trigger","Waypoint","Portal","NPC",
-        "Enviro","Other"
+        "Enviro","Other","SpawnPt"
     };
     ImGui::SetNextItemWidth(120.f);
     if (ImGui::BeginCombo("##zmode", kModeLabels[zoneMode_])) {
@@ -864,6 +911,7 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
     DrawGroup("B", "ColBoxes",   scene_.colBoxes,   kSelColBox,    {0.90f,0.25f,0.25f,1.f});
     DrawGroup("W", "Waypoints",  scene_.waypoints,  kSelWaypoint,  {0.20f,0.90f,1.00f,1.f});
     DrawGroup("N", "NPCs",       scene_.npcs,       kSelNpc,       {0.30f,0.95f,0.30f,1.f});
+    DrawGroup("G", "SpawnPts",   scene_.spawnPoints,kSelSpawnPoint,{0.10f,0.90f,0.40f,1.f});
     DrawGroup("~", "Water",      scene_.water,      kSelWater,     {0.10f,0.70f,1.00f,1.f});
     DrawGroup("E", "Emitters",   scene_.emitters,   kSelEmitter,   {0.80f,1.00f,0.20f,1.f});
     DrawGroup("M", "Scenery",    scene_.scenery,    kSelScenery,   {0.80f,0.78f,0.75f,1.f});
@@ -1478,15 +1526,16 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
 
         struct AddEntry { const char* label; ZoneMode mode; };
         static const AddEntry kEntries[] = {
-            {"Portal",         kModePortal   },
-            {"Trigger",        kModeTrigger  },
-            {"Sound Zone",     kModeSoundZone},
-            {"Collision Box",  kModeColBox   },
-            {"Waypoint",       kModeWaypoint },
-            {"NPC",            kModeNPC      },
-            {"Water",          kModeWater    },
-            {"Emitter",        kModeEmitters },
-            {"Scenery",        kModeScenery  },
+            {"Portal",         kModePortal     },
+            {"Trigger",        kModeTrigger    },
+            {"Sound Zone",     kModeSoundZone  },
+            {"Collision Box",  kModeColBox     },
+            {"Waypoint",       kModeWaypoint   },
+            {"NPC",            kModeNPC        },
+            {"Water",          kModeWater      },
+            {"Emitter",        kModeEmitters   },
+            {"Scenery",        kModeScenery    },
+            {"Spawn Point",    kModeSpawnPoint },
         };
         for (auto& e : kEntries) {
             if (ImGui::MenuItem(e.label)) {
@@ -1515,7 +1564,8 @@ void ZonesTab::DrawInspector(sqlite3* db, MediaTab* media) {
         case kSelSoundZone: DrawPanelSoundZone(db,        false); return;
         case kSelColBox:    DrawPanelColBox   (db,        false); return;
         case kSelWaypoint:  DrawPanelWaypoint (db, media, false); return;
-        case kSelNpc:       DrawPanelNPC      (db, media, false); return;
+        case kSelNpc:        DrawPanelNPC       (db, media, false); return;
+        case kSelSpawnPoint: DrawPanelSpawnPoint(db, media, false); return;
         case kSelEmitter:   DrawPanelEmitters (db,        false); return;
         case kSelWater:     DrawPanelWater    (db,        false); return;
         case kSelScenery:   DrawPanelScenery  (db, media, false); return;
@@ -1534,8 +1584,9 @@ void ZonesTab::DrawInspector(sqlite3* db, MediaTab* media) {
     case kModeTrigger:   DrawPanelTrigger  (db,        true); break;
     case kModeWaypoint:  DrawPanelWaypoint (db, media, true); break;
     case kModePortal:    DrawPanelPortal   (db,        true); break;
-    case kModeNPC:       DrawPanelNPC      (db, media, true); break;
-    case kModeEnviro:    DrawPanelEnviro   (db); break;
+    case kModeNPC:        DrawPanelNPC       (db, media, true); break;
+    case kModeSpawnPoint: DrawPanelSpawnPoint(db, media, true); break;
+    case kModeEnviro:     DrawPanelEnviro   (db); break;
     case kModeOther:     DrawPanelOther    (db); break;
     default:
         ImGui::Spacing();
@@ -1584,7 +1635,8 @@ bool ZonesTab::SelectedPos(glm::vec3& out) const {
     if (tryVec(scene_.npcs,      kSelNpc))      return true;
     if (tryVec(scene_.emitters,  kSelEmitter))  return true;
     if (tryVec(scene_.water,     kSelWater))    return true;
-    if (tryVec(scene_.scenery,   kSelScenery))  return true;
+    if (tryVec(scene_.scenery,     kSelScenery))    return true;
+    if (tryVec(scene_.spawnPoints, kSelSpawnPoint)) return true;
     if (selectedType_ == kSelTrigger)
         for (auto& t : scene_.triggers) if (t.id == selectedID_) { out = {t.x, 0, t.z}; return true; }
     if (selectedType_ == kSelSoundZone)
@@ -1603,7 +1655,8 @@ void ZonesTab::SetSelectedPos(const glm::vec3& pos) {
     trySet(scene_.npcs,      kSelNpc);
     trySet(scene_.emitters,  kSelEmitter);
     trySet(scene_.water,     kSelWater);
-    trySet(scene_.scenery,   kSelScenery);
+    trySet(scene_.scenery,     kSelScenery);
+    trySet(scene_.spawnPoints, kSelSpawnPoint);
     if (selectedType_ == kSelTrigger)
         for (auto& t : scene_.triggers)
             if (t.id == selectedID_) { t.x = pos.x; t.z = pos.z; }
@@ -1627,7 +1680,8 @@ void ZonesTab::PersistSelectedPos(sqlite3* db) {
     case kSelNpc:       sql = "UPDATE npc_spawns       SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelEmitter:   sql = "UPDATE zone_emitters    SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelWater:     sql = "UPDATE zone_water       SET x=?,y=?,z=? WHERE id=?"; break;
-    case kSelScenery:   sql = "UPDATE zone_scenery     SET x=?,y=?,z=? WHERE id=?"; break;
+    case kSelScenery:    sql = "UPDATE zone_scenery  SET x=?,y=?,z=? WHERE id=?"; break;
+    case kSelSpawnPoint: sql = "UPDATE spawn_points  SET x=?,y=?,z=? WHERE id=?"; break;
     default: return;
     }
 
@@ -2795,6 +2849,169 @@ void ZonesTab::DrawPanelEnviro(sqlite3* db) {
         sqlite3_bind_int(s,15,e.weatherRain); sqlite3_bind_int(s,16,e.weatherSnow);
         sqlite3_bind_int(s,17,e.weatherFog); sqlite3_bind_int(s,18,e.weatherStorm); sqlite3_bind_int(s,19,e.weatherWind);
         sqlite3_step(s); sqlite3_finalize(s);
+    }
+}
+
+// ─── DrawPanelSpawnPoint ─────────────────────────────────────────────────────
+
+void ZonesTab::DrawPanelSpawnPoint(sqlite3* db, MediaTab* media, bool placement) {
+    if (scene_.areaName.empty()) { ImGui::TextDisabled("Load a zone first."); return; }
+
+    static const char* kAggNames[] = {"Passive","Defensive","Aggressive","Dialog-only"};
+
+    if (placement) {
+        // Placement mode: show radius config + instructions.
+        ImGui::SeparatorText("New Spawn Point");
+        ImGui::SliderFloat("Radius##sp", &spawnPtRadius_, 1.f, 50.f, "%.1f");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Right-click the viewport and choose\n"
+                           "'Spawn Point' from the menu to place.\n"
+                           "Each spawn point defines a group of mobs\n"
+                           "that respawn together within the radius.");
+        return;
+    }
+
+    // Editing mode: find the selected spawn point.
+    ZSpawnPoint* sp = nullptr;
+    for (auto& p : scene_.spawnPoints) if (p.id == selectedID_) { sp = &p; break; }
+    if (!sp) { ImGui::TextDisabled("No spawn point selected."); return; }
+
+    // ── Point fields ────────────────────────────────────────────────────────
+    ImGui::SeparatorText("Spawn Point");
+    {
+        char nameBuf[128];
+        std::strncpy(nameBuf, sp->name.c_str(), sizeof(nameBuf)-1); nameBuf[sizeof(nameBuf)-1] = 0;
+        if (ImGui::InputText("Name##sp", nameBuf, sizeof(nameBuf))) {
+            sp->name = nameBuf;
+            sqlite3_stmt* s = nullptr;
+            sqlite3_prepare_v2(db, "UPDATE spawn_points SET name=? WHERE id=?", -1, &s, nullptr);
+            sqlite3_bind_text(s, 1, sp->name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(s, 2, sp->id);
+            sqlite3_step(s); sqlite3_finalize(s);
+        }
+        if (ImGui::SliderFloat("Radius##sp", &sp->radius, 1.f, 50.f, "%.1f")) {
+            sqlite3_stmt* s = nullptr;
+            sqlite3_prepare_v2(db, "UPDATE spawn_points SET radius=? WHERE id=?", -1, &s, nullptr);
+            sqlite3_bind_double(s, 1, sp->radius);
+            sqlite3_bind_int(s, 2, sp->id);
+            sqlite3_step(s); sqlite3_finalize(s);
+        }
+    }
+    ImGui::Text("Position: (%.1f, %.1f, %.1f)", sp->pos.x, sp->pos.y, sp->pos.z);
+    ImGui::Text("Mobs: %d  |  ID: %d", (int)sp->mobs.size(), sp->id);
+
+    // ── Mob list ────────────────────────────────────────────────────────────
+    ImGui::SeparatorText("Mobs");
+    if (ImGui::Button("+ Add Mob##sp")) {
+        ZSpawnPointMob nm;
+        nm.name  = "NPC";
+        nm.race  = "Human";
+        nm.class_ = "Warrior";
+        nm.count = 1;
+        nm.aggressiveness = 2;
+
+        sqlite3_stmt* s = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO spawn_point_mobs"
+            " (spawn_point_id, actor_def_id, mob_count, name, race, class,"
+            "  level, aggressiveness, aggressive_range, attack_range, respawn_delay_ms)"
+            " VALUES (?,0,1,'NPC','Human','Warrior',1,2,8.0,2.0,30000)",
+            -1, &s, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int(s, 1, sp->id);
+            sqlite3_step(s);
+            nm.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(s);
+            sp->mobs.push_back(nm);
+            spawnPtSelMob_ = (int)sp->mobs.size() - 1;
+        }
+    }
+
+    ImGui::BeginChild("##moblist_sp", {0, 120}, true);
+    for (int mi = 0; mi < (int)sp->mobs.size(); ++mi) {
+        auto& m = sp->mobs[mi];
+        const char* defName = "(none)";
+        if (media)
+            for (auto& d : media->ActorDefs())
+                if (d.id == m.actor_def_id) { defName = d.name.c_str(); break; }
+        char lbl[128];
+        std::snprintf(lbl, sizeof(lbl), "[%d] %s x%d  lv%d  %s##msp%d",
+            m.id, m.name.c_str(), m.count, m.level, defName, mi);
+        if (ImGui::Selectable(lbl, spawnPtSelMob_ == mi))
+            spawnPtSelMob_ = mi;
+    }
+    ImGui::EndChild();
+
+    // ── Selected mob editor ─────────────────────────────────────────────────
+    if (spawnPtSelMob_ >= 0 && spawnPtSelMob_ < (int)sp->mobs.size()) {
+        auto& m = sp->mobs[spawnPtSelMob_];
+        ImGui::SeparatorText("Edit Mob");
+        bool mdirty = false;
+
+        // Actor Def picker
+        if (media) {
+            auto& defs = media->ActorDefs();
+            const char* cur = "(none)";
+            for (auto& d : defs) if (d.id == m.actor_def_id) { cur = d.name.c_str(); break; }
+            if (ImGui::BeginCombo("Actor Def##msp", cur)) {
+                if (ImGui::Selectable("(none)", m.actor_def_id == 0)) { m.actor_def_id = 0; mdirty = true; }
+                for (auto& d : defs) {
+                    bool sel = (d.id == m.actor_def_id);
+                    if (ImGui::Selectable(d.name.c_str(), sel)) { m.actor_def_id = d.id; mdirty = true; }
+                    if (sel) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        char nbuf[64]; std::strncpy(nbuf, m.name.c_str(), 63); nbuf[63] = 0;
+        if (ImGui::InputText("Name##msp", nbuf, 64)) { m.name = nbuf; mdirty = true; }
+        char rbuf[32]; std::strncpy(rbuf, m.race.c_str(), 31); rbuf[31] = 0;
+        char cbuf[32]; std::strncpy(cbuf, m.class_.c_str(), 31); cbuf[31] = 0;
+        float hw = (ImGui::GetContentRegionAvail().x - 8) * 0.5f;
+        ImGui::SetNextItemWidth(hw);
+        if (ImGui::InputText("Race##msp",  rbuf, 32)) { m.race  = rbuf; mdirty = true; }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("Class##msp", cbuf, 32)) { m.class_ = cbuf; mdirty = true; }
+        if (ImGui::InputInt("Level##msp",  &m.level))  { if (m.level < 1) m.level = 1; mdirty = true; }
+        if (ImGui::InputInt("Count##msp",  &m.count))  { if (m.count < 1) m.count = 1; mdirty = true; }
+        if (ImGui::Combo("Aggro##msp", &m.aggressiveness, kAggNames, 4)) mdirty = true;
+        if (ImGui::InputFloat("Aggro Range##msp",  &m.aggressive_range, 0.5f, 5.f, "%.1f")) mdirty = true;
+        if (ImGui::InputFloat("Attack Range##msp", &m.attack_range,     0.5f, 5.f, "%.1f")) mdirty = true;
+        if (ImGui::InputInt("Respawn (ms)##msp", &m.respawn_delay_ms))  {
+            if (m.respawn_delay_ms < 0) m.respawn_delay_ms = 0; mdirty = true;
+        }
+
+        if (mdirty) {
+            sqlite3_stmt* s = nullptr;
+            if (sqlite3_prepare_v2(db,
+                "UPDATE spawn_point_mobs SET actor_def_id=?, mob_count=?, name=?, race=?,"
+                " class=?, level=?, aggressiveness=?, aggressive_range=?, attack_range=?,"
+                " respawn_delay_ms=? WHERE id=?",
+                -1, &s, nullptr) == SQLITE_OK) {
+                sqlite3_bind_int(s,    1, m.actor_def_id);
+                sqlite3_bind_int(s,    2, m.count);
+                sqlite3_bind_text(s,   3, m.name.c_str(),   -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(s,   4, m.race.c_str(),   -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(s,   5, m.class_.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int(s,    6, m.level);
+                sqlite3_bind_int(s,    7, m.aggressiveness);
+                sqlite3_bind_double(s, 8, m.aggressive_range);
+                sqlite3_bind_double(s, 9, m.attack_range);
+                sqlite3_bind_int(s,   10, m.respawn_delay_ms);
+                sqlite3_bind_int(s,   11, m.id);
+                sqlite3_step(s); sqlite3_finalize(s);
+            }
+        }
+
+        ImGui::Spacing();
+        if (ImGui::Button("Remove Mob##msp")) {
+            char sql[64];
+            std::snprintf(sql, sizeof(sql), "DELETE FROM spawn_point_mobs WHERE id=%d", m.id);
+            sqlite3_exec(db, sql, nullptr, nullptr, nullptr);
+            sp->mobs.erase(sp->mobs.begin() + spawnPtSelMob_);
+            spawnPtSelMob_ = -1;
+        }
     }
 }
 

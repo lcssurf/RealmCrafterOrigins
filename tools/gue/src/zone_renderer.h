@@ -24,10 +24,11 @@ enum ZSelType {
     kSelSoundZone = 2,
     kSelColBox    = 3,
     kSelWaypoint  = 4,
-    kSelNpc       = 5,
-    kSelEmitter   = 6,
-    kSelWater     = 7,
-    kSelScenery   = 8,
+    kSelNpc        = 5,
+    kSelEmitter    = 6,
+    kSelWater      = 7,
+    kSelScenery    = 8,
+    kSelSpawnPoint = 9,
 };
 
 // Off-screen FBO renderer for the zone editor viewport.

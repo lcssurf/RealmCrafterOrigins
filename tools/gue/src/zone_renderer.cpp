@@ -558,6 +558,15 @@ void ZoneRenderer::DrawForwardOverlays_(const ZoneScene& scene, int selectedID,
             DrawCircleXZ({n.pos.x, n.pos.z}, n.attackRange, n.pos.y + 0.1f,
                          {1.f, 1.f, 1.f, 0.35f}, vp);
     }
+    for (auto& sp : scene.spawnPoints) {
+        bool sel = (selectedType == kSelSpawnPoint && selectedID == sp.id);
+        glm::vec4 colSphere = sel ? glm::vec4(1.f, 0.9f, 0.1f, 0.9f)
+                                  : glm::vec4(0.1f, 0.9f, 0.2f, 0.7f);
+        glm::vec4 colCircle = sel ? glm::vec4(1.f, 0.9f, 0.1f, 0.6f)
+                                  : glm::vec4(0.1f, 0.9f, 0.2f, 0.4f);
+        DrawSphere(sp.pos, 0.5f, colSphere, vp);
+        DrawCircleXZ({sp.pos.x, sp.pos.z}, sp.radius, sp.pos.y + 0.1f, colCircle, vp);
+    }
     for (auto& w : scene.waypoints) {
         bool sel = (selectedType == kSelWaypoint && selectedID == w.id);
         glm::vec4 col = sel ? glm::vec4(1.f, 0.2f, 0.2f, 0.9f)

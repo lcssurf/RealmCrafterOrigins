@@ -272,6 +272,27 @@ func (r *Registry) PatchAoEFromDB(rows []SpellAoERow) {
 	}
 }
 
+// DispatchPlayerAction fires the "player_action" scripting event, allowing
+// Lua scripts to react to player inputs forwarded from PPlayerAction.
+// actor is the player who triggered the action; state is 0=press, 1=hold_start.
+func (r *Registry) DispatchPlayerAction(actor *world.Actor, action string, state uint8) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	handlers, ok := r.events["player_action"]
+	if !ok {
+		return
+	}
+	rid := lua.LNumber(actor.RuntimeID)
+	act := lua.LString(action)
+	st := lua.LNumber(state)
+	for _, fn := range handlers {
+		if err := r.safeCall(fn, rid, act, st); err != nil {
+			log.Printf("scripting: player_action handler: %v", err)
+		}
+	}
+}
+
 // registerSpell is called from the Lua API to register a new SpellDef.
 func (r *Registry) registerSpell(def *SpellDef) error {
 	if def.ID == 0 {

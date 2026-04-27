@@ -29,6 +29,33 @@ void ZoneScene::EnsureTables(sqlite3* db) {
     Exec(db, "ALTER TABLE area_config ADD COLUMN weather_storm INTEGER NOT NULL DEFAULT 0");
     Exec(db, "ALTER TABLE area_config ADD COLUMN weather_wind  INTEGER NOT NULL DEFAULT 0");
 
+    // ── Spawn points ──────────────────────────────────────────────────────
+    Exec(db,
+        "CREATE TABLE IF NOT EXISTS spawn_points ("
+        "  id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  name      TEXT NOT NULL DEFAULT 'Spawn Point',"
+        "  area_name TEXT NOT NULL DEFAULT '',"
+        "  x         REAL NOT NULL DEFAULT 0,"
+        "  y         REAL NOT NULL DEFAULT 0,"
+        "  z         REAL NOT NULL DEFAULT 0,"
+        "  radius    REAL NOT NULL DEFAULT 5"
+        ")");
+    Exec(db,
+        "CREATE TABLE IF NOT EXISTS spawn_point_mobs ("
+        "  id               INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  spawn_point_id   INTEGER NOT NULL DEFAULT 0,"
+        "  actor_def_id     INTEGER NOT NULL DEFAULT 0,"
+        "  mob_count        INTEGER NOT NULL DEFAULT 1,"
+        "  name             TEXT NOT NULL DEFAULT 'NPC',"
+        "  race             TEXT NOT NULL DEFAULT 'Human',"
+        "  class            TEXT NOT NULL DEFAULT 'Warrior',"
+        "  level            INTEGER NOT NULL DEFAULT 1,"
+        "  aggressiveness   INTEGER NOT NULL DEFAULT 2,"
+        "  aggressive_range REAL NOT NULL DEFAULT 8.0,"
+        "  attack_range     REAL NOT NULL DEFAULT 2.0,"
+        "  respawn_delay_ms INTEGER NOT NULL DEFAULT 30000"
+        ")");
+
     // ── npc_spawns script columns ─────────────────────────────────────────
     Exec(db, "ALTER TABLE npc_spawns ADD COLUMN spawn_script TEXT NOT NULL DEFAULT ''");
     Exec(db, "ALTER TABLE npc_spawns ADD COLUMN spawn_func   TEXT NOT NULL DEFAULT ''");
@@ -427,6 +454,49 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
             s.ownable    = sqlite3_column_int(stmt, 15) != 0;
             s.locked     = sqlite3_column_int(stmt, 16) != 0;
             scenery.push_back(s);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    // ── Spawn points ──────────────────────────────────────────────────────
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, name, x, y, z, radius FROM spawn_points WHERE area_name=? ORDER BY id",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, area.c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            ZSpawnPoint sp;
+            sp.id     = sqlite3_column_int(stmt, 0);
+            sp.name   = txt(stmt, 1);
+            sp.pos.x  = (float)sqlite3_column_double(stmt, 2);
+            sp.pos.y  = (float)sqlite3_column_double(stmt, 3);
+            sp.pos.z  = (float)sqlite3_column_double(stmt, 4);
+            sp.radius = (float)sqlite3_column_double(stmt, 5);
+            spawnPoints.push_back(sp);
+        }
+        sqlite3_finalize(stmt);
+    }
+    // Load mobs for each spawn point
+    for (auto& sp : spawnPoints) {
+        if (sqlite3_prepare_v2(db,
+            "SELECT id, actor_def_id, mob_count, name, race, class,"
+            " level, aggressiveness, aggressive_range, attack_range, respawn_delay_ms"
+            " FROM spawn_point_mobs WHERE spawn_point_id=? ORDER BY id",
+            -1, &stmt, nullptr) != SQLITE_OK) continue;
+        sqlite3_bind_int(stmt, 1, sp.id);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            ZSpawnPointMob m;
+            m.id             = sqlite3_column_int(stmt, 0);
+            m.actor_def_id   = sqlite3_column_int(stmt, 1);
+            m.count          = sqlite3_column_int(stmt, 2);
+            m.name           = txt(stmt, 3);
+            m.race           = txt(stmt, 4);
+            m.class_         = txt(stmt, 5);
+            m.level          = sqlite3_column_int(stmt, 6);
+            m.aggressiveness = sqlite3_column_int(stmt, 7);
+            m.aggressive_range = (float)sqlite3_column_double(stmt, 8);
+            m.attack_range     = (float)sqlite3_column_double(stmt, 9);
+            m.respawn_delay_ms = sqlite3_column_int(stmt, 10);
+            sp.mobs.push_back(m);
         }
         sqlite3_finalize(stmt);
     }

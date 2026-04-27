@@ -69,6 +69,12 @@ public:
     void SetDebugMode(int mode) { debugMode_ = mode; }
     int  DebugMode() const { return debugMode_; }
 
+    struct FrameStats {
+        int triangles  = 0;
+        int draw_calls = 0;
+    };
+    FrameStats LastFrameStats() const { return frame_stats_; }
+
     void Begin(const glm::mat4& view,
                const glm::mat4& proj,
                const glm::vec3& cam_pos,
@@ -142,6 +148,9 @@ private:
     int blurStrength_ = 5;
 
     int debugMode_ = 0;
+
+    FrameStats frame_stats_;
+    FrameStats pending_stats_;
 
     struct VolumetricTuning {
         GLint steps        = 32; // 16 | 32 | 64

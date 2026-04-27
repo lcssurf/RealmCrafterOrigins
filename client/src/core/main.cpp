@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <chrono>
 
 // OpenGL / GLFW
 #include <glad/glad.h>
@@ -32,10 +33,13 @@
 #include "../ui/spellbar.h"
 #include "../ui/spell_effects.h"
 #include "../ui/chat_bubbles.h"
+#include "../ui/controls_ui.h"
 #include "../renderer/camera.h"
 #include "../renderer/terrain/terrain.h"
 #include "../renderer/actors/actor.h"
 #include "../renderer/particles.h"
+#include "../renderer/anim_controller.h"
+#include "../input/input_system.h"
 #include "../audio/audio.h"
 
 #include "rco/renderer/engine.h"
@@ -117,10 +121,21 @@ int main() {
         std::string action;
         std::string source_path;
         std::string clip_override;
+        int32_t     start_frame = 0;
+        int32_t     end_frame   = -1;
+        float       fps         = 30.f;
+        bool        loop        = true;
+        float       speed       = 1.f;
+        float       blend_in    = 0.15f;
+        std::string return_to;
+        uint8_t     priority    = 0;
+        struct AnimEvent { int32_t frame; std::string event_type; std::string payload; };
+        std::vector<AnimEvent> events;
     };
 
     struct WorldActorEntry {
         float x = 0, y = 0, z = 0, yaw = 0;
+        float prev_x = 0, prev_z = 0; // for velocity estimation
         std::string name;
         uint16_t level = 1;
         int32_t health = 100, health_max = 100;
@@ -132,10 +147,17 @@ int main() {
         std::vector<WorldMesh> meshes;
         std::vector<WorldAnim> anims;
 
+        // Offsets from the Actor Def — corrects orientation/ground alignment.
+        float yaw_offset = 0.f;
+        float y_offset   = 0.f;
+
         // Per-actor rendering — lazily instantiated from `meshes` on first
         // render when renderer_ready is true. nullptr = fall back to the
         // shared player_actor model.
         std::unique_ptr<rco::renderer::Actor> actor;
+
+        // Animation state machine
+        rco::anim::AnimController anim_ctrl;
 
         WorldActorEntry() = default;
         WorldActorEntry(WorldActorEntry&&) = default;
@@ -144,6 +166,15 @@ int main() {
         WorldActorEntry& operator=(const WorldActorEntry&) = delete;
     };
     std::unordered_map<uint32_t, WorldActorEntry> world_actors;
+
+    // AnimController for the local player
+    rco::anim::AnimController player_anim_ctrl;
+    player_anim_ctrl.log_enabled = true;  // diagnostic logs for player only
+    float player_yaw_offset = 0.f;
+    float player_y_offset   = 0.f;
+
+    // InputSystem — created after the connection is established
+    std::unique_ptr<rco::input::InputSystem> input_system;
 
     struct PortalEntry {
         float x, z, radius;
@@ -168,6 +199,7 @@ int main() {
     rco::ui::SpellBar        spellbar;
     rco::ui::SpellEffects    spell_fx;
     rco::ui::ChatBubbles     chat_bubbles;
+    rco::ui::ControlsUI      controls_ui;
 
     rco::renderer::ParticleSystem particles;
     rco::audio::AudioSystem       audio;
@@ -420,14 +452,61 @@ int main() {
                         }
                         player_meshes.push_back(std::move(wm));
                     }
-                    uint8_t na = r.ReadU8();
-                    for (uint8_t i = 0; i < na && r.OK(); ++i) {
+                    // NEW format: binding_count(u16) then full AnimBinding per entry
+                    uint16_t na = r.ReadU16();
+                    for (uint16_t i = 0; i < na && r.OK(); ++i) {
                         WorldAnim wa;
                         wa.action        = r.ReadString();
                         wa.source_path   = r.ReadString();
                         wa.clip_override = r.ReadString();
+                        wa.start_frame   = static_cast<int32_t>(r.ReadU32());
+                        wa.end_frame     = static_cast<int32_t>(r.ReadU32());
+                        wa.fps           = r.ReadF32();
+                        wa.loop          = (r.ReadU8() != 0);
+                        wa.speed         = r.ReadF32();
+                        wa.blend_in      = r.ReadF32();
+                        wa.return_to     = r.ReadString();
+                        wa.priority      = r.ReadU8();
+                        uint16_t ev_count = r.ReadU16();
+                        for (uint16_t ei = 0; ei < ev_count && r.OK(); ++ei) {
+                            WorldAnim::AnimEvent ev;
+                            ev.frame      = static_cast<int32_t>(r.ReadU32());
+                            ev.event_type = r.ReadString();
+                            ev.payload    = r.ReadString();
+                            wa.events.push_back(std::move(ev));
+                        }
                         player_anims.push_back(std::move(wa));
                     }
+                    player_yaw_offset = r.ReadF32();
+                    player_y_offset   = r.ReadF32();
+                }
+                // Bind player AnimController from PStartGame appearance data
+                {
+                    std::vector<rco::anim::AnimBinding> bindings;
+                    bindings.reserve(player_anims.size());
+                    for (const auto& wa : player_anims) {
+                        rco::anim::AnimBinding ab;
+                        ab.action      = wa.action;
+                        ab.source_path = wa.source_path;
+                        ab.start_frame = wa.start_frame;
+                        ab.end_frame   = wa.end_frame;
+                        ab.fps         = wa.fps;
+                        ab.loop        = wa.loop;
+                        ab.speed       = wa.speed;
+                        ab.blend_in    = wa.blend_in;
+                        ab.return_to   = wa.return_to;
+                        ab.priority    = wa.priority;
+                        for (const auto& ev : wa.events) {
+                            rco::anim::AnimEvent aev;
+                            aev.frame      = ev.frame;
+                            aev.event_type = ev.event_type;
+                            aev.payload    = ev.payload;
+                            ab.events.push_back(std::move(aev));
+                        }
+                        bindings.push_back(std::move(ab));
+                    }
+                    player_anim_ctrl.Bind(bindings);
+                    player_anim_ctrl.RequestStateByName("Idle");
                 }
                 std::fprintf(stderr,
                     "[PStartGame] rid=%u player_meshes=%u player_anims=%u\n",
@@ -435,7 +514,39 @@ int main() {
                     (unsigned)player_meshes.size(),
                     (unsigned)player_anims.size());
 
+                last_player_pos = {player.x, player.z};
                 state = rco::GameState::InGame;
+
+                // Initialize InputSystem now that we have a live connection
+                input_system = std::make_unique<rco::input::InputSystem>(
+                    [&](const uint8_t* data, size_t len) {
+                        conn.SendRaw(std::vector<uint8_t>(data, data + len));
+                    }
+                );
+                // Load default bindings (hardcoded; later loaded from DB)
+                {
+                    using T = rco::input::TriggerType;
+                    std::vector<rco::input::InputBinding> default_bindings = {
+                        {"gameplay", "W",      "", T::Axis,  "MoveForward",  +1.f, true},
+                        {"gameplay", "S",      "", T::Axis,  "MoveBack",     -1.f, true},
+                        {"gameplay", "A",      "", T::Axis,  "MoveLeft",     -1.f, true},
+                        {"gameplay", "D",      "", T::Axis,  "MoveRight",    +1.f, true},
+                        {"gameplay", "Space",  "", T::Press, "Jump",          1.f, true},
+                        {"gameplay", "Mouse1", "", T::Press, "Attack",        1.f, true},
+                        {"gameplay", "Mouse2", "", T::Hold,  "Block",         1.f, true},
+                        // OpenControls is non-remappable so the controls window can
+                        // always be opened even after a bad rebind.
+                        {"gameplay", "K",      "", T::Press, "OpenControls",  1.f, false},
+                    };
+                    input_system->LoadBindings(default_bindings);
+                    // Apply any saved per-player overrides
+                    std::string overrides_path = "users/" + player.name + "/input.json";
+                    input_system->LoadLocalOverrides(overrides_path);
+                }
+
+                // Init controls UI with the new InputSystem
+                controls_ui.Init(input_system.get());
+
                 // Seed character sheet stats
                 inventory.stat_name   = player.name;
                 inventory.stat_race   = player.race;
@@ -455,6 +566,7 @@ int main() {
                 player.areaName = area;
                 player.x = cx; player.y = cy;
                 player.z = cz; player.yaw = cyaw;
+                last_player_pos = {player.x, player.z};
                 world_actors.clear();
                 area_portals.clear();
                 world_items.clear();
@@ -496,7 +608,12 @@ int main() {
                     std::vector<IncomingAiMat> material_map;
                 };
                 struct IncomingAnim {
-                    std::string action, source_path, clip_override;
+                    std::string action, source_path, clip_override, return_to;
+                    int32_t     start_frame = 0, end_frame = -1;
+                    float       fps = 30.f, speed = 1.f, blend_in = 0.15f;
+                    uint8_t     loop = 1, priority = 0;
+                    struct Ev { int32_t frame; std::string type, payload; };
+                    std::vector<Ev> events;
                 };
                 uint8_t num_meshes = r.ReadU8();
                 std::vector<IncomingMesh> meshes;
@@ -531,16 +648,36 @@ int main() {
                     }
                     meshes.push_back(std::move(m));
                 }
-                uint8_t num_anims = r.ReadU8();
+                // NEW format: binding_count(u16) then full AnimBinding per entry
+                uint16_t binding_count = r.ReadU16();
                 std::vector<IncomingAnim> anims;
-                anims.reserve(num_anims);
-                for (uint8_t i = 0; i < num_anims && r.OK(); ++i) {
+                anims.reserve(binding_count);
+                for (uint16_t bi = 0; bi < binding_count && r.OK(); ++bi) {
                     IncomingAnim a;
                     a.action        = r.ReadString();
                     a.source_path   = r.ReadString();
                     a.clip_override = r.ReadString();
+                    a.start_frame   = static_cast<int32_t>(r.ReadU32());
+                    a.end_frame   = static_cast<int32_t>(r.ReadU32());
+                    a.fps         = r.ReadF32();
+                    a.loop        = r.ReadU8();
+                    a.speed       = r.ReadF32();
+                    a.blend_in    = r.ReadF32();
+                    a.return_to   = r.ReadString();
+                    a.priority    = r.ReadU8();
+                    uint16_t ev_count = r.ReadU16();
+                    a.events.reserve(ev_count);
+                    for (uint16_t ei = 0; ei < ev_count && r.OK(); ++ei) {
+                        IncomingAnim::Ev ev;
+                        ev.frame   = static_cast<int32_t>(r.ReadU32());
+                        ev.type    = r.ReadString();
+                        ev.payload = r.ReadString();
+                        a.events.push_back(std::move(ev));
+                    }
                     anims.push_back(std::move(a));
                 }
+                float actor_yaw_offset = r.ReadF32();
+                float actor_y_offset   = r.ReadF32();
                 if (!r.OK()) break;
 
                 // If this is the local player's own PNewActor, store the
@@ -583,17 +720,66 @@ int main() {
                     player_anims.clear();
                     player_anims.reserve(anims.size());
                     for (auto& a : anims) {
-                        player_anims.push_back({std::move(a.action),
-                                                std::move(a.source_path),
-                                                std::move(a.clip_override)});
+                        WorldAnim wa;
+                        wa.action        = a.action;
+                        wa.source_path   = a.source_path;
+                        wa.clip_override = a.clip_override;
+                        wa.start_frame   = a.start_frame;
+                        wa.end_frame     = a.end_frame;
+                        wa.fps           = a.fps;
+                        wa.loop          = (a.loop != 0);
+                        wa.speed         = a.speed;
+                        wa.blend_in      = a.blend_in;
+                        wa.return_to     = a.return_to;
+                        wa.priority      = a.priority;
+                        for (auto& ev : a.events) {
+                            WorldAnim::AnimEvent wev;
+                            wev.frame      = ev.frame;
+                            wev.event_type = ev.type;
+                            wev.payload    = ev.payload;
+                            wa.events.push_back(std::move(wev));
+                        }
+                        player_anims.push_back(std::move(wa));
                     }
+                    // Build AnimController bindings for the player
+                    {
+                        std::vector<rco::anim::AnimBinding> bindings;
+                        bindings.reserve(player_anims.size());
+                        for (const auto& wa : player_anims) {
+                            rco::anim::AnimBinding ab;
+                            ab.action      = wa.action;
+                            ab.source_path = wa.source_path;
+                            ab.start_frame = wa.start_frame;
+                            ab.end_frame   = wa.end_frame;
+                            ab.fps         = wa.fps;
+                            ab.loop        = wa.loop;
+                            ab.speed       = wa.speed;
+                            ab.blend_in    = wa.blend_in;
+                            ab.return_to   = wa.return_to;
+                            ab.priority    = wa.priority;
+                            for (const auto& ev : wa.events) {
+                                rco::anim::AnimEvent aev;
+                                aev.frame      = ev.frame;
+                                aev.event_type = ev.event_type;
+                                aev.payload    = ev.payload;
+                                ab.events.push_back(std::move(aev));
+                            }
+                            bindings.push_back(std::move(ab));
+                        }
+                        player_anim_ctrl.Bind(bindings);
+                        player_anim_ctrl.RequestStateByName("Idle");
+                    }
+                    player_yaw_offset = actor_yaw_offset;
+                    player_y_offset   = actor_y_offset;
                     // Re-init player_actor if renderer is already up.
                     if (renderer_ready && !player_meshes.empty()) {
                         const WorldMesh& body = player_meshes[0];
                         player_actor.Init("shaders",
                                           body.model_path.c_str(),
                                           &engine.materials());
-                        player_actor.scale = body.scale > 0.f ? body.scale : 1.f;
+                        player_actor.scale      = body.scale > 0.f ? body.scale : 1.f;
+                        player_actor.yaw_offset = player_yaw_offset;
+                        player_actor.y_offset   = player_y_offset;
                         if (player_actor.IsLoaded() && !body.material_map.empty()) {
                             std::unordered_map<std::string,
                                 rco::renderer::Model::MaterialPaths> by_name;
@@ -607,10 +793,28 @@ int main() {
                             player_actor.ApplyMaterialsByName(engine.materials(), by_name);
                         }
                         for (auto& wa : player_anims) {
-                            if (!wa.source_path.empty())
+                            if (!wa.source_path.empty()) {
+                                std::fprintf(stderr,
+                                    "[Player init] LoadAnim action='%s' path='%s'\n",
+                                    wa.action.c_str(), wa.source_path.c_str());
                                 player_actor.LoadAnim(wa.source_path.c_str(),
                                                       wa.action.c_str());
+                                player_anim_ctrl.SetClipDuration(
+                                    wa.action, player_actor.ClipDuration(wa.action));
+                            }
                         }
+                        for (auto& wa : player_anims) {
+                            if (!wa.clip_override.empty())
+                                player_actor.AliasClip(wa.clip_override, wa.action);
+                        }
+                        std::fprintf(stderr,
+                            "[Player init] clips_loaded=%d\n",
+                            player_actor.model().ClipCount());
+                        for (int ci = 0; ci < player_actor.model().ClipCount(); ++ci)
+                            std::fprintf(stderr,
+                                "  clip[%d] name='%s' dur=%.2fs\n",
+                                ci, player_actor.model().ClipName(ci).c_str(),
+                                player_actor.model().ClipDuration(ci));
                         engine.RebuildMaterialsBuffer();
                         camera.SetActorHeight(player_actor.ModelHeight());
                     }
@@ -619,11 +823,14 @@ int main() {
 
                 auto& e = world_actors[rid];  // in-place; avoids copy (actor is unique_ptr)
                 e.x = x; e.y = y; e.z = z; e.yaw = yaw;
+                e.prev_x = x; e.prev_z = z;
                 e.name = name; e.level = level;
                 e.health = hp; e.health_max = hpmax;
                 e.actor_type = atype;
-                e.anim_name = "Idle";
-                e.anim_t    = 0.f;
+                e.anim_name  = "Idle";
+                e.anim_t     = 0.f;
+                e.yaw_offset = actor_yaw_offset;
+                e.y_offset   = actor_y_offset;
 
                 // Store appearance; the renderer-side Actor is created lazily
                 // on first render (see render loop) because renderer_ready is
@@ -658,9 +865,54 @@ int main() {
                 e.anims.clear();
                 e.anims.reserve(anims.size());
                 for (auto& a : anims) {
-                    e.anims.push_back({std::move(a.action),
-                                       std::move(a.source_path),
-                                       std::move(a.clip_override)});
+                    WorldAnim wa;
+                    wa.action        = a.action;
+                    wa.source_path   = a.source_path;
+                    wa.clip_override = a.clip_override;
+                    wa.start_frame   = a.start_frame;
+                    wa.end_frame     = a.end_frame;
+                    wa.fps           = a.fps;
+                    wa.loop          = (a.loop != 0);
+                    wa.speed         = a.speed;
+                    wa.blend_in      = a.blend_in;
+                    wa.return_to     = a.return_to;
+                    wa.priority      = a.priority;
+                    for (auto& ev : a.events) {
+                        WorldAnim::AnimEvent wev;
+                        wev.frame      = ev.frame;
+                        wev.event_type = ev.type;
+                        wev.payload    = ev.payload;
+                        wa.events.push_back(std::move(wev));
+                    }
+                    e.anims.push_back(std::move(wa));
+                }
+                // Bind AnimController for this actor
+                {
+                    std::vector<rco::anim::AnimBinding> bindings;
+                    bindings.reserve(e.anims.size());
+                    for (const auto& wa : e.anims) {
+                        rco::anim::AnimBinding ab;
+                        ab.action      = wa.action;
+                        ab.source_path = wa.source_path;
+                        ab.start_frame = wa.start_frame;
+                        ab.end_frame   = wa.end_frame;
+                        ab.fps         = wa.fps;
+                        ab.loop        = wa.loop;
+                        ab.speed       = wa.speed;
+                        ab.blend_in    = wa.blend_in;
+                        ab.return_to   = wa.return_to;
+                        ab.priority    = wa.priority;
+                        for (const auto& ev : wa.events) {
+                            rco::anim::AnimEvent aev;
+                            aev.frame      = ev.frame;
+                            aev.event_type = ev.event_type;
+                            aev.payload    = ev.payload;
+                            ab.events.push_back(std::move(aev));
+                        }
+                        bindings.push_back(std::move(ab));
+                    }
+                    e.anim_ctrl.Bind(bindings);
+                    e.anim_ctrl.RequestStateByName("Idle");
                 }
                 // Drop any pre-existing Actor — it'll be rebuilt on next render
                 // against the (possibly new) appearance data.
@@ -801,25 +1053,36 @@ int main() {
                 if (rid == player.runtimeId) {
                     player.x = rx; player.y = ry;
                     player.z = rz; player.yaw = ryaw;
+                    last_player_pos = {rx, rz};
                     player_dead = false;
                 } else {
                     auto it = world_actors.find(rid);
                     if (it != world_actors.end()) {
                         it->second.x = rx; it->second.y = ry;
                         it->second.z = rz; it->second.yaw = ryaw;
+                        it->second.prev_x = rx; it->second.prev_z = rz;
                     }
                 }
                 break;
             }
 
             case rco::net::kPAnimateActor: {
-                uint32_t    rid  = r.ReadU32();
-                std::string name = r.ReadString();
+                uint32_t rid       = r.ReadU32();
+                uint8_t  action_id = r.ReadU8();
                 if (!r.OK()) break;
+                // Local player
+                if (rid == player.runtimeId) {
+                    player_anim_ctrl.RequestState(action_id);
+                    break;
+                }
                 auto it = world_actors.find(rid);
                 if (it != world_actors.end()) {
-                    it->second.anim_name = name;
-                    it->second.anim_t    = 0.f;
+                    it->second.anim_ctrl.RequestState(action_id);
+                    // Sync anim_name for backward compat with SubmitAs
+                    if (it->second.anim_ctrl.IsReady()) {
+                        it->second.anim_name = it->second.anim_ctrl.CurrentAction();
+                    }
+                    it->second.anim_t = 0.f;
                 }
                 break;
             }
@@ -980,6 +1243,49 @@ int main() {
                     if (r.OK()) shop.items.push_back(e);
                 }
                 if (r.OK()) { shop.open = true; shop.tab = 0; }
+                break;
+            }
+
+            case rco::net::kPSetInputContext: {
+                std::string ctx_name = r.ReadString();
+                if (!r.OK()) break;
+                if (input_system) input_system->SetContext(ctx_name);
+                break;
+            }
+
+            case rco::net::kPInputBindings: {
+                // Read preset name (unused; always apply to current input_system)
+                /*preset_name*/ r.ReadString();
+                uint16_t count = r.ReadU16();
+                if (!r.OK()) break;
+                std::vector<rco::input::InputBinding> bindings;
+                bindings.reserve(count);
+                for (uint16_t i = 0; i < count; ++i) {
+                    rco::input::InputBinding b;
+                    b.context      = r.ReadString();
+                    b.key          = r.ReadString();
+                    b.modifier     = r.ReadString();
+                    std::string tt = r.ReadString();
+                    b.action       = r.ReadString();
+                    b.axis_value   = r.ReadF32();
+                    b.remappable   = r.ReadU8() != 0;
+                    // Parse trigger_type string → enum
+                    using T = rco::input::TriggerType;
+                    if      (tt == "press")   b.trigger_type = T::Press;
+                    else if (tt == "release") b.trigger_type = T::Release;
+                    else if (tt == "hold")    b.trigger_type = T::Hold;
+                    else if (tt == "double")  b.trigger_type = T::Double;
+                    else if (tt == "axis")    b.trigger_type = T::Axis;
+                    else                      b.trigger_type = T::Press;
+                    bindings.push_back(std::move(b));
+                }
+                if (!r.OK()) break;
+                if (input_system) {
+                    input_system->LoadBindings(bindings);
+                    // Apply any local per-player overrides
+                    std::string overrides_path = "users/" + player.name + "/input.json";
+                    input_system->LoadLocalOverrides(overrides_path);
+                }
                 break;
             }
 
@@ -1155,7 +1461,9 @@ int main() {
                                       &engine.materials());
                     if (!player_meshes.empty()) {
                         const WorldMesh& body = player_meshes[0];
-                        player_actor.scale = body.scale > 0.f ? body.scale : 1.f;
+                        player_actor.scale      = body.scale > 0.f ? body.scale : 1.f;
+                        player_actor.yaw_offset = player_yaw_offset;
+                        player_actor.y_offset   = player_y_offset;
                         if (player_actor.IsLoaded() && !body.material_map.empty()) {
                             std::unordered_map<std::string,
                                 rco::renderer::Model::MaterialPaths> by_name;
@@ -1170,10 +1478,28 @@ int main() {
                         }
                     }
                     for (auto& wa : player_anims) {
-                        if (!wa.source_path.empty())
+                        if (!wa.source_path.empty()) {
+                            std::fprintf(stderr,
+                                "[Player init] LoadAnim action='%s' path='%s'\n",
+                                wa.action.c_str(), wa.source_path.c_str());
                             player_actor.LoadAnim(wa.source_path.c_str(),
                                                   wa.action.c_str());
+                            player_anim_ctrl.SetClipDuration(
+                                wa.action, player_actor.ClipDuration(wa.action));
+                        }
                     }
+                    for (auto& wa : player_anims) {
+                        if (!wa.clip_override.empty())
+                            player_actor.AliasClip(wa.clip_override, wa.action);
+                    }
+                    std::fprintf(stderr,
+                        "[Player init] clips_loaded=%d\n",
+                        player_actor.model().ClipCount());
+                    for (int ci = 0; ci < player_actor.model().ClipCount(); ++ci)
+                        std::fprintf(stderr,
+                            "  clip[%d] name='%s' dur=%.2fs\n",
+                            ci, player_actor.model().ClipName(ci).c_str(),
+                            player_actor.model().ClipDuration(ci));
                     engine.RebuildMaterialsBuffer();
                     camera.SetActorHeight(player_actor.ModelHeight());
                     particles.Init();
@@ -1379,6 +1705,8 @@ int main() {
                 proj_mat = proj;
                 glm::vec3 sun  = glm::normalize(glm::vec3(0.3f, 1.f, 0.5f));
 
+
+
                 // -- F8 cycles debug viz (0=full,1=albedo,2=normal,3=depth,4=AO,
                 // 5=shadow,6=irradiance,7=NoL,8=albedo*NoL,9=envDiffuse,10=direct).
                 {
@@ -1406,23 +1734,84 @@ int main() {
                 {
                     bool moving = glm::length(glm::vec2(player.x - last_player_pos.x,
                                                         player.z - last_player_pos.y)) > 0.02f;
-                    const std::string& cur = player_actor.CurrentAnim();
-                    if (player_dead) {
-                        if (cur != "Death") player_actor.PlayAnim("Death", false);
-                    } else if (moving) {
-                        if (cur != "Walk")  player_actor.PlayAnim("Walk",  true);
+                    float player_speed = glm::length(glm::vec2(player.x - last_player_pos.x,
+                                                               player.z - last_player_pos.y)) / dt;
+
+                    // One-shot diagnostic: log anim state on the first rendered frame
+                    {
+                        static bool s_anim_logged = false;
+                        if (!s_anim_logged) {
+                            s_anim_logged = true;
+                            std::fprintf(stderr,
+                                "[anim-debug] IsReady=%d action='%s' time=%.3f "
+                                "speed=%.2f clips=%d\n",
+                                player_anim_ctrl.IsReady() ? 1 : 0,
+                                player_anim_ctrl.IsReady()
+                                    ? player_anim_ctrl.CurrentAction().c_str() : "(none)",
+                                player_anim_ctrl.IsReady()
+                                    ? player_anim_ctrl.CurrentTime() : 0.f,
+                                player_speed,
+                                player_actor.model().ClipCount());
+                        }
+                    }
+
+                    if (player_anim_ctrl.IsReady()) {
+                        // AnimController handles Idle/Walk/Run transitions via Update()
+                        if (player_dead) {
+                            player_anim_ctrl.RequestStateByName("Death");
+                        }
+                        player_anim_ctrl.Update(dt, player_dead ? 0.f : player_speed);
                     } else {
-                        if (cur != "Idle")  player_actor.PlayAnim("Idle",  true);
+                        // Legacy fallback: drive player_actor directly and advance time
+                        const std::string& cur = player_actor.CurrentAnim();
+                        if (player_dead) {
+                            if (cur != "Death") player_actor.PlayAnim("Death", false);
+                        } else if (moving) {
+                            if (cur != "Walk")  player_actor.PlayAnim("Walk",  true);
+                        } else {
+                            if (cur != "Idle")  player_actor.PlayAnim("Idle",  true);
+                        }
+                        player_actor.Update(dt);
                     }
                     player_actor.position = {player.x, player.y, player.z};
                     player_actor.yaw      = player.yaw;
-                    player_actor.Update(dt);
-                    player_actor.Submit(*pipeline);
+                    if (player_anim_ctrl.IsReady() && player_anim_ctrl.IsBlending()) {
+                        player_actor.SubmitBlended(*pipeline,
+                            player_anim_ctrl.BlendFromAction(), player_anim_ctrl.BlendFromTime(),
+                            player_anim_ctrl.CurrentAction(),   player_anim_ctrl.CurrentTime(),
+                            player_anim_ctrl.BlendAlpha());
+                    } else {
+                        const bool lf = !player_anim_ctrl.IsReady()
+                            || (player_anim_ctrl.CurrentAction() != "Death" &&
+                                player_anim_ctrl.CurrentAction() != "Attack");
+                        const std::string& nm = player_anim_ctrl.IsReady()
+                            ? player_anim_ctrl.CurrentAction() : player_actor.CurrentAnim();
+                        const float tt = player_anim_ctrl.IsReady()
+                            ? player_anim_ctrl.CurrentTime() : player_actor.AnimTime();
+                        player_actor.SubmitAs(nm, tt, lf, *pipeline);
+                    }
                 }
 
                 // Render all other actors (NPCs + other players)
                 for (auto& [rid, e] : world_actors) {
-                    e.anim_t += dt;
+                    // Compute velocity for auto-locomotion from position delta
+                    // (we only have position updates from PStandardUpdate, so
+                    // approximate as a very small value when standing still)
+                    float dx = e.x - e.prev_x;
+                    float dz = e.z - e.prev_z;
+                    // NPC positions jump at ~10Hz; use binary moved/stopped so
+                    // AnimController auto-locomotion stays stable between updates.
+                    float actor_vel = (dx*dx + dz*dz > 0.0001f) ? 5.0f : 0.f;
+                    e.prev_x = e.x;
+                    e.prev_z = e.z;
+                    // Update AnimController and sync anim_name
+                    if (e.anim_ctrl.IsReady()) {
+                        e.anim_ctrl.Update(dt, actor_vel);
+                        e.anim_name = e.anim_ctrl.CurrentAction();
+                        e.anim_t    = e.anim_ctrl.CurrentTime();
+                    } else {
+                        e.anim_t += dt;
+                    }
 
                     // Lazy init: build the per-NPC Actor now that renderer_ready
                     // is true and we have appearance data from PNewActor.
@@ -1436,7 +1825,9 @@ int main() {
                         auto a = std::make_unique<rco::renderer::Actor>();
                         a->Init("shaders", body->model_path.c_str(),
                                 &engine.materials());
-                        a->scale = body->scale > 0.f ? body->scale : 1.f;
+                        a->scale      = body->scale > 0.f ? body->scale : 1.f;
+                        a->yaw_offset = e.yaw_offset;
+                        a->y_offset   = e.y_offset;
 
                         // Per-aiMaterial mapping FIRST — paints multi-material
                         // meshes (Substance imports etc.) where each submesh
@@ -1455,7 +1846,12 @@ int main() {
                                     am.albedo.c_str(), am.normal.c_str(), am.orm.c_str());
                                 by_name[am.ai_name] = std::move(mp);
                             }
+                            auto _t0_mat = std::chrono::steady_clock::now();
                             a->ApplyMaterialsByName(engine.materials(), by_name);
+                            auto _dt_mat = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - _t0_mat).count();
+                            std::fprintf(stderr, "[matmap-time] rid=%u took=%lldms\n",
+                                         rid, (long long)_dt_mat);
                         }
 
                         // Per-slot global override (from Body.material_id) goes
@@ -1476,16 +1872,24 @@ int main() {
 
                         for (auto& an : e.anims) {
                             if (!an.source_path.empty()) {
+                                std::fprintf(stderr,
+                                    "[Actor init] rid=%u LoadAnim action='%s' path='%s'\n",
+                                    rid, an.action.c_str(), an.source_path.c_str());
                                 a->LoadAnim(an.source_path.c_str(), an.action.c_str());
                             }
+                        }
+                        for (auto& an : e.anims) {
+                            if (!an.clip_override.empty())
+                                a->AliasClip(an.clip_override, an.action);
                         }
                         a->PlayAnim("Idle", true);
                         std::fprintf(stderr,
                             "[Actor init] rid=%u model=%s scale=%.2f "
-                            "mat=albedo:'%s' normal:'%s' orm:'%s' extra_anims=%zu\n",
+                            "mat=albedo:'%s' normal:'%s' orm:'%s' "
+                            "anim_bindings=%zu clips_loaded=%d\n",
                             rid, body->model_path.c_str(), a->scale,
                             body->albedo.c_str(), body->normal.c_str(), body->orm.c_str(),
-                            e.anims.size());
+                            e.anims.size(), a->model().ClipCount());
                         e.actor = std::move(a);
                     }
 
@@ -1495,16 +1899,55 @@ int main() {
                     // hide that and leave NPCs floating when terrain has
                     // been edited without re-broadcasting spawns.
                     glm::vec3 pos = {e.x, e.y, e.z};
-                    const bool loop_flag = (e.anim_name != "Attack" && e.anim_name != "Death");
+
+                    // Use AnimController state if available, otherwise fall back
+                    // to the legacy anim_name/anim_t fields
+                    std::string submit_anim = e.anim_name;
+                    float       submit_time = e.anim_t;
+                    bool loop_flag = true;
+                    if (e.anim_ctrl.IsReady()) {
+                        submit_anim = e.anim_ctrl.CurrentAction();
+                        submit_time = e.anim_ctrl.CurrentTime();
+                        // One-shot actions should not loop
+                        loop_flag = (submit_anim != "Attack" && submit_anim != "Death"
+                                     && submit_anim != "Jump" && submit_anim != "Cast");
+                    } else {
+                        loop_flag = (e.anim_name != "Attack" && e.anim_name != "Death");
+                    }
 
                     if (e.actor) {
                         e.actor->position = pos;
                         e.actor->yaw      = e.yaw;
-                        e.actor->SubmitAs(e.anim_name, e.anim_t, loop_flag, *pipeline);
+                        if (e.anim_ctrl.IsReady() && e.anim_ctrl.IsBlending()) {
+                            e.actor->SubmitBlended(*pipeline,
+                                e.anim_ctrl.BlendFromAction(), e.anim_ctrl.BlendFromTime(),
+                                e.anim_ctrl.CurrentAction(),   e.anim_ctrl.CurrentTime(),
+                                e.anim_ctrl.BlendAlpha());
+                        } else {
+                            const bool lf = e.anim_ctrl.IsReady()
+                                ? (e.anim_ctrl.CurrentAction() != "Attack" && e.anim_ctrl.CurrentAction() != "Death" &&
+                                   e.anim_ctrl.CurrentAction() != "Jump"   && e.anim_ctrl.CurrentAction() != "Cast")
+                                : (e.anim_name != "Attack" && e.anim_name != "Death");
+                            const std::string& nm = e.anim_ctrl.IsReady() ? e.anim_ctrl.CurrentAction() : e.anim_name;
+                            const float        tt = e.anim_ctrl.IsReady() ? e.anim_ctrl.CurrentTime()   : e.anim_t;
+                            e.actor->SubmitAs(nm, tt, lf, *pipeline);
+                        }
                     } else {
                         player_actor.position = pos;
                         player_actor.yaw      = e.yaw;
-                        player_actor.SubmitAs(e.anim_name, e.anim_t, loop_flag, *pipeline);
+                        if (player_anim_ctrl.IsReady() && player_anim_ctrl.IsBlending()) {
+                            player_actor.SubmitBlended(*pipeline,
+                                player_anim_ctrl.BlendFromAction(), player_anim_ctrl.BlendFromTime(),
+                                player_anim_ctrl.CurrentAction(),   player_anim_ctrl.CurrentTime(),
+                                player_anim_ctrl.BlendAlpha());
+                        } else {
+                            const bool lf = player_anim_ctrl.IsReady()
+                                ? (player_anim_ctrl.CurrentAction() != "Attack" && player_anim_ctrl.CurrentAction() != "Death")
+                                : true;
+                            const std::string& nm = player_anim_ctrl.IsReady() ? player_anim_ctrl.CurrentAction() : "Idle";
+                            const float        tt = player_anim_ctrl.IsReady() ? player_anim_ctrl.CurrentTime()   : 0.f;
+                            player_actor.SubmitAs(nm, tt, lf, *pipeline);
+                        }
                     }
                 }
 
@@ -1757,18 +2200,22 @@ int main() {
                 }
                 ImGui::Text("Gold: %u    Pos: %.1f, %.1f, %.1f",
                     player_gold, player.x, player.y, player.z);
-                ImGui::TextDisabled("RMB move  Q/E rotate  Scroll zoom  LMB target  I bag  C character  F pickup");
+                ImGui::TextDisabled("RMB move  Q/E rotate  Scroll zoom  LMB target  I bag  C character  F pickup  K controls");
                 ImGui::End();
 
-                // Toggle bag with I, character sheet with C
+                // Toggle bag with I, character sheet with C, controls with K
                 if (ImGui::IsKeyPressed(ImGuiKey_I) && !player_dead && !ImGui::GetIO().WantTextInput)
                     inventory.bag_visible = !inventory.bag_visible;
                 if (ImGui::IsKeyPressed(ImGuiKey_C) && !player_dead && !ImGui::GetIO().WantTextInput)
                     inventory.char_visible = !inventory.char_visible;
+                if (ImGui::IsKeyPressed(ImGuiKey_K) && !ImGui::GetIO().WantTextInput)
+                    controls_ui.Toggle();
 
-                // Close shop with Escape
-                if (ImGui::IsKeyPressed(ImGuiKey_Escape))
+                // Close shop and controls window with Escape
+                if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
                     shop.open = false;
+                    controls_ui.SetVisible(false);
+                }
 
                 // F key — pick up nearby dropped item
                 if (ImGui::IsKeyPressed(ImGuiKey_F) && !player_dead && !ImGui::GetIO().WantTextInput
@@ -1799,6 +2246,7 @@ int main() {
                 }
 
                 inventory.Render(window.Width(), window.Height());
+                controls_ui.Draw(player.name);
 
                 // Death overlay.
                 if (player_dead) {
@@ -2153,6 +2601,86 @@ int main() {
                             dl->AddText({lp.x - ts.x*0.5f, lp.y},
                                         IM_COL32(120, 200, 255, 220), lbl);
                         }
+                    }
+                }
+
+                // -- F6 performance overlay --
+                {
+                    static bool perf_open = false;
+                    if (ImGui::IsKeyPressed(ImGuiKey_F6)) perf_open = !perf_open;
+                    if (perf_open && pipeline) {
+                        static float fps_buf[60] = {};
+                        static int   fps_idx     = 0;
+                        fps_buf[fps_idx % 60]    = (dt > 0.f) ? 1.f / dt : 0.f;
+                        fps_idx++;
+                        float avg_fps = 0.f;
+                        for (float f : fps_buf) avg_fps += f;
+                        avg_fps /= 60.f;
+
+                        auto stats = pipeline->LastFrameStats();
+                        ImGui::SetNextWindowPos({10, 50}, ImGuiCond_Once);
+                        ImGui::SetNextWindowSize({230, 0}, ImGuiCond_Always);
+                        ImGui::Begin("Perf [F6]", &perf_open, ImGuiWindowFlags_AlwaysAutoResize);
+                        ImGui::Text("FPS        : %.1f  (%.2f ms)", avg_fps, dt * 1000.f);
+                        ImGui::Text("Triangles  : %d", stats.triangles);
+                        ImGui::Text("Draw calls : %d", stats.draw_calls);
+                        ImGui::End();
+                    }
+                }
+
+                // -- F7 animation debug overlay (must be inside ImGui frame) --
+                {
+                    static bool anim_debug_open = false;
+                    if (ImGui::IsKeyPressed(ImGuiKey_F7)) anim_debug_open = !anim_debug_open;
+
+                    if (anim_debug_open) {
+                        ImGui::SetNextWindowPos({320, 10}, ImGuiCond_Once);
+                        ImGui::SetNextWindowSize({420, 0}, ImGuiCond_Always);
+                        ImGui::Begin("Animation Debug [F7]", &anim_debug_open,
+                            ImGuiWindowFlags_AlwaysAutoResize);
+
+                        ImGui::SeparatorText("Player");
+                        if (player_anim_ctrl.IsReady()) {
+                            const std::string& act = player_anim_ctrl.CurrentAction();
+                            float t = player_anim_ctrl.CurrentTime();
+                            ImGui::Text("Action : %s", act.c_str());
+                            ImGui::Text("Time   : %.3f s", t);
+                            ImGui::Text("Clips  : %d", player_actor.model().ClipCount());
+                            int cidx = -1;
+                            for (int ci = 0; ci < player_actor.model().ClipCount(); ++ci)
+                                if (player_actor.model().ClipName(ci) == act) { cidx = ci; break; }
+                            float dur = (cidx >= 0) ? player_actor.model().ClipDuration(cidx) : 0.f;
+                            if (dur > 0.f)
+                                ImGui::ProgressBar(std::fmod(t, dur) / dur, {-1, 0}, act.c_str());
+                        } else {
+                            ImGui::Text("AnimController not ready (no bindings)");
+                            ImGui::Text("Legacy anim: %s  t=%.3f",
+                                player_actor.CurrentAnim().c_str(), player_actor.AnimTime());
+                        }
+                        if (ImGui::TreeNode("All clips")) {
+                            for (int ci = 0; ci < player_actor.model().ClipCount(); ++ci)
+                                ImGui::Text("[%d] %s  (%.2fs)", ci,
+                                    player_actor.model().ClipName(ci).c_str(),
+                                    player_actor.model().ClipDuration(ci));
+                            ImGui::TreePop();
+                        }
+
+                        ImGui::SeparatorText("NPCs");
+                        int shown = 0;
+                        for (auto& [rid, e] : world_actors) {
+                            if (!e.actor) continue;
+                            if (shown++ > 8) { ImGui::Text("... (+%d more)", (int)world_actors.size()-8); break; }
+                            ImGui::PushID(rid);
+                            const char* act = e.anim_ctrl.IsReady()
+                                ? e.anim_ctrl.CurrentAction().c_str()
+                                : e.anim_name.c_str();
+                            float t = e.anim_ctrl.IsReady()
+                                ? e.anim_ctrl.CurrentTime() : e.anim_t;
+                            ImGui::Text("rid=%-4u  %-16s  t=%.2f  %s",
+                                rid, e.name.c_str(), t, act);
+                            ImGui::PopID();
+                        }
+                        ImGui::End();
                     }
                 }
 

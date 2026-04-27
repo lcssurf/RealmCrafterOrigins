@@ -147,6 +147,9 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV7(ctx)
 	d.migrateV9(ctx)
 	d.migrateV10(ctx)
+	d.migrateV11(ctx)
+	d.migrateV12(ctx)
+	d.migrateV13(ctx)
 
 	return d, nil
 }
@@ -1200,6 +1203,186 @@ func (d *DB) migrateV10(ctx context.Context) {
 	}
 }
 
+// migrateV11 extends the animation + input tables with playback metadata,
+// animation events, and input mapping tables.
+//
+// Idempotent: ADD COLUMN fails silently on SQLite (column already present)
+// and uses IF NOT EXISTS on Postgres. CREATE TABLE IF NOT EXISTS is safe to
+// re-run in all cases.
+func (d *DB) migrateV11(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+
+	if d.driver == "postgres" {
+		// Extend media_anim_clips
+		exec(`ALTER TABLE media_anim_clips ADD COLUMN IF NOT EXISTS start_frame INTEGER NOT NULL DEFAULT 0`)
+		exec(`ALTER TABLE media_anim_clips ADD COLUMN IF NOT EXISTS end_frame   INTEGER NOT NULL DEFAULT -1`)
+		exec(`ALTER TABLE media_anim_clips ADD COLUMN IF NOT EXISTS fps         REAL    NOT NULL DEFAULT 30.0`)
+
+		// Extend media_actor_anims
+		exec(`ALTER TABLE media_actor_anims ADD COLUMN IF NOT EXISTS loop      INTEGER NOT NULL DEFAULT 1`)
+		exec(`ALTER TABLE media_actor_anims ADD COLUMN IF NOT EXISTS speed     REAL    NOT NULL DEFAULT 1.0`)
+		exec(`ALTER TABLE media_actor_anims ADD COLUMN IF NOT EXISTS blend_in  REAL    NOT NULL DEFAULT 0.15`)
+		exec(`ALTER TABLE media_actor_anims ADD COLUMN IF NOT EXISTS return_to TEXT    NOT NULL DEFAULT ''`)
+		exec(`ALTER TABLE media_actor_anims ADD COLUMN IF NOT EXISTS priority  INTEGER NOT NULL DEFAULT 0`)
+
+		// Animation events
+		exec(`CREATE TABLE IF NOT EXISTS media_anim_events (
+			id         SERIAL PRIMARY KEY,
+			clip_id    INTEGER     NOT NULL,
+			frame      INTEGER     NOT NULL,
+			event_type VARCHAR(32) NOT NULL DEFAULT 'sfx',
+			payload    TEXT        NOT NULL DEFAULT ''
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_anim_events_clip ON media_anim_events(clip_id)`)
+
+		// Input presets
+		exec(`CREATE TABLE IF NOT EXISTS media_input_presets (
+			id          SERIAL PRIMARY KEY,
+			name        VARCHAR(64) NOT NULL UNIQUE,
+			description TEXT        NOT NULL DEFAULT '',
+			is_default  INTEGER     NOT NULL DEFAULT 0,
+			created_at  INTEGER     NOT NULL DEFAULT 0
+		)`)
+
+		// Input maps
+		exec(`CREATE TABLE IF NOT EXISTS media_input_maps (
+			id           SERIAL PRIMARY KEY,
+			preset_id    INTEGER     NOT NULL DEFAULT 1,
+			context      TEXT        NOT NULL DEFAULT 'gameplay',
+			key          TEXT        NOT NULL DEFAULT '',
+			modifier     TEXT        NOT NULL DEFAULT '',
+			trigger_type TEXT        NOT NULL DEFAULT 'press',
+			action       TEXT        NOT NULL DEFAULT '',
+			axis_value   REAL        NOT NULL DEFAULT 1.0,
+			enabled      INTEGER     NOT NULL DEFAULT 1,
+			remappable   INTEGER     NOT NULL DEFAULT 1,
+			UNIQUE (preset_id, context, key, modifier, trigger_type)
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_input_maps ON media_input_maps(preset_id, context, enabled)`)
+
+		// Seed Default preset
+		exec(`INSERT INTO media_input_presets (id, name, description, is_default, created_at)
+		      VALUES (1, 'Default', 'Default keyboard layout', 1, 0)
+		      ON CONFLICT DO NOTHING`)
+
+		// Seed default input mappings
+		seeds := [][9]string{
+			{"1","gameplay","W","","axis","MoveForward","1.0","1","1"},
+			{"1","gameplay","S","","axis","MoveBack","-1.0","1","1"},
+			{"1","gameplay","A","","axis","MoveLeft","-1.0","1","1"},
+			{"1","gameplay","D","","axis","MoveRight","1.0","1","1"},
+			{"1","gameplay","Space","","press","Jump","1.0","1","1"},
+			{"1","gameplay","Mouse1","","press","Attack","1.0","1","1"},
+			{"1","gameplay","Mouse2","","hold","Block","1.0","1","1"},
+			{"1","gameplay","F","","press","Interact","1.0","1","0"},
+			{"1","gameplay","I","","press","OpenInventory","1.0","1","0"},
+			{"1","gameplay","C","","press","OpenCharacter","1.0","1","0"},
+			{"1","gameplay","Escape","","press","CloseUI","1.0","1","0"},
+			{"1","gameplay","1","","press","UseSpell1","1.0","1","1"},
+			{"1","gameplay","2","","press","UseSpell2","1.0","1","1"},
+			{"1","gameplay","3","","press","UseSpell3","1.0","1","1"},
+		}
+		for _, s := range seeds {
+			_, _ = d.db.ExecContext(ctx,
+				`INSERT INTO media_input_maps
+				   (preset_id, context, key, modifier, trigger_type, action, axis_value, enabled, remappable)
+				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+				 ON CONFLICT DO NOTHING`,
+				s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8])
+		}
+	} else {
+		// SQLite: ADD COLUMN fails silently if already present.
+		// Extend media_anim_clips
+		exec(`ALTER TABLE media_anim_clips ADD COLUMN start_frame INTEGER NOT NULL DEFAULT 0`)
+		exec(`ALTER TABLE media_anim_clips ADD COLUMN end_frame   INTEGER NOT NULL DEFAULT -1`)
+		exec(`ALTER TABLE media_anim_clips ADD COLUMN fps         REAL    NOT NULL DEFAULT 30.0`)
+
+		// Extend media_actor_anims
+		exec(`ALTER TABLE media_actor_anims ADD COLUMN loop      INTEGER NOT NULL DEFAULT 1`)
+		exec(`ALTER TABLE media_actor_anims ADD COLUMN speed     REAL    NOT NULL DEFAULT 1.0`)
+		exec(`ALTER TABLE media_actor_anims ADD COLUMN blend_in  REAL    NOT NULL DEFAULT 0.15`)
+		exec(`ALTER TABLE media_actor_anims ADD COLUMN return_to TEXT    NOT NULL DEFAULT ''`)
+		exec(`ALTER TABLE media_actor_anims ADD COLUMN priority  INTEGER NOT NULL DEFAULT 0`)
+
+		// Animation events
+		exec(`CREATE TABLE IF NOT EXISTS media_anim_events (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			clip_id    INTEGER NOT NULL,
+			frame      INTEGER NOT NULL,
+			event_type TEXT    NOT NULL DEFAULT 'sfx',
+			payload    TEXT    NOT NULL DEFAULT ''
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_anim_events_clip ON media_anim_events(clip_id)`)
+
+		// Input presets
+		exec(`CREATE TABLE IF NOT EXISTS media_input_presets (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT    NOT NULL UNIQUE,
+			description TEXT    NOT NULL DEFAULT '',
+			is_default  INTEGER NOT NULL DEFAULT 0,
+			created_at  INTEGER NOT NULL DEFAULT 0
+		)`)
+
+		// Input maps
+		exec(`CREATE TABLE IF NOT EXISTS media_input_maps (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			preset_id    INTEGER NOT NULL DEFAULT 1,
+			context      TEXT    NOT NULL DEFAULT 'gameplay',
+			key          TEXT    NOT NULL DEFAULT '',
+			modifier     TEXT    NOT NULL DEFAULT '',
+			trigger_type TEXT    NOT NULL DEFAULT 'press',
+			action       TEXT    NOT NULL DEFAULT '',
+			axis_value   REAL    NOT NULL DEFAULT 1.0,
+			enabled      INTEGER NOT NULL DEFAULT 1,
+			remappable   INTEGER NOT NULL DEFAULT 1,
+			UNIQUE (preset_id, context, key, modifier, trigger_type)
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_input_maps ON media_input_maps(preset_id, context, enabled)`)
+
+		// Seed Default preset
+		exec(`INSERT OR IGNORE INTO media_input_presets (id, name, description, is_default, created_at)
+		      VALUES (1, 'Default', 'Default keyboard layout', 1, 0)`)
+
+		// Seed default input mappings
+		seeds := [][8]string{
+			{"gameplay","W","","axis","MoveForward","1.0","1","1"},
+			{"gameplay","S","","axis","MoveBack","-1.0","1","1"},
+			{"gameplay","A","","axis","MoveLeft","-1.0","1","1"},
+			{"gameplay","D","","axis","MoveRight","1.0","1","1"},
+			{"gameplay","Space","","press","Jump","1.0","1","1"},
+			{"gameplay","Mouse1","","press","Attack","1.0","1","1"},
+			{"gameplay","Mouse2","","hold","Block","1.0","1","1"},
+			{"gameplay","F","","press","Interact","1.0","1","0"},
+			{"gameplay","I","","press","OpenInventory","1.0","1","0"},
+			{"gameplay","C","","press","OpenCharacter","1.0","1","0"},
+			{"gameplay","Escape","","press","CloseUI","1.0","1","0"},
+			{"gameplay","1","","press","UseSpell1","1.0","1","1"},
+			{"gameplay","2","","press","UseSpell2","1.0","1","1"},
+			{"gameplay","3","","press","UseSpell3","1.0","1","1"},
+		}
+		for _, s := range seeds {
+			_, _ = d.db.ExecContext(ctx,
+				`INSERT OR IGNORE INTO media_input_maps
+				   (preset_id, context, key, modifier, trigger_type, action, axis_value, enabled, remappable)
+				 VALUES (1,?,?,?,?,?,?,?,?)`,
+				s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7])
+		}
+	}
+}
+
+// migrateV12 — adds yaw_offset and y_offset to media_actor_defs so GUE authors
+// can correct backwards-facing or ground-sunken models without touching assets.
+func (d *DB) migrateV12(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+	if d.driver == "postgres" {
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS yaw_offset REAL NOT NULL DEFAULT 0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS y_offset   REAL NOT NULL DEFAULT 0`)
+	} else {
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN yaw_offset REAL NOT NULL DEFAULT 0`)
+		exec(`ALTER TABLE media_actor_defs ADD COLUMN y_offset   REAL NOT NULL DEFAULT 0`)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Media registry — read-only accessors used by the server to resolve an
 // NpcSpawn.ActorDefID into concrete asset paths for PNewActor.
@@ -1238,6 +1421,40 @@ type MediaAnimClip struct {
 	Name         string
 	SourcePath   string
 	ClipOverride string
+	StartFrame   int32
+	EndFrame     int32
+	FPS          float32
+}
+
+// MediaAnimEvent mirrors one row in media_anim_events.
+type MediaAnimEvent struct {
+	ID        int
+	ClipID    int
+	Frame     int32
+	EventType string
+	Payload   string
+}
+
+// InputPreset mirrors one row in media_input_presets.
+type InputPreset struct {
+	ID          int
+	Name        string
+	Description string
+	IsDefault   bool
+}
+
+// InputBinding mirrors one row in media_input_maps.
+type InputBinding struct {
+	ID          int
+	PresetID    int
+	Context     string
+	Key         string
+	Modifier    string
+	TriggerType string
+	Action      string
+	AxisValue   float32
+	Enabled     bool
+	Remappable  bool
 }
 
 // ActorDefMesh mirrors one row in media_actor_meshes.
@@ -1255,14 +1472,21 @@ type ActorDefAnim struct {
 	ActorDefID int
 	Action     string
 	ClipID     int
+	Loop       bool
+	Speed      float32
+	BlendIn    float32
+	ReturnTo   string
+	Priority   uint8
 }
 
 // ActorDef bundles an actor definition with its meshes + animation map +
 // gameplay defaults. Zone placement copies the defaults into npc_spawns.
 type ActorDef struct {
-	ID       int
-	Name     string
-	Scale    float32 // multiplies each mesh slot's model scale (1.0 = natural size)
+	ID        int
+	Name      string
+	Scale     float32 // multiplies each mesh slot's model scale (1.0 = natural size)
+	YawOffset float64 // model-space Y rotation (degrees) applied before world yaw
+	YOffset   float64 // vertical offset (world units) added to position at render time
 
 	// Gameplay defaults — applied to freshly placed npc_spawns so users
 	// don't have to retype identical fields for every copy of the same
@@ -1294,14 +1518,14 @@ func (d *DB) LoadActorDef(ctx context.Context, id int) (*ActorDef, error) {
 	out := &ActorDef{ID: id}
 	var playable, mountable, interactive int
 	err := d.db.QueryRowContext(ctx, d.q(
-		`SELECT name, scale,
+		`SELECT name, scale, yaw_offset, y_offset,
 		        default_name, default_race, default_class,
 		        default_level, default_hp, default_ep,
 		        default_aggressiveness, default_aggro_range, default_attack_range,
 		        default_respawn_ms,
 		        is_playable, is_mountable, is_interactive
 		 FROM media_actor_defs WHERE id = ?`), id).Scan(
-		&out.Name, &out.Scale,
+		&out.Name, &out.Scale, &out.YawOffset, &out.YOffset,
 		&out.DefaultName, &out.DefaultRace, &out.DefaultClass,
 		&out.DefaultLevel, &out.DefaultHP, &out.DefaultEP,
 		&out.DefaultAggressiveness, &out.DefaultAggroRange, &out.DefaultAttackRange,
@@ -1332,13 +1556,17 @@ func (d *DB) LoadActorDef(ctx context.Context, id int) (*ActorDef, error) {
 	}
 
 	arows, err := d.db.QueryContext(ctx,
-		d.q(`SELECT id, actor_def_id, action, clip_id
+		d.q(`SELECT id, actor_def_id, action, clip_id, loop, speed, blend_in, return_to, priority
 		     FROM media_actor_anims WHERE actor_def_id = ?`), id)
 	if err == nil {
 		defer arows.Close()
 		for arows.Next() {
 			var a ActorDefAnim
-			if err := arows.Scan(&a.ID, &a.ActorDefID, &a.Action, &a.ClipID); err == nil {
+			var loopInt, priInt int
+			if err := arows.Scan(&a.ID, &a.ActorDefID, &a.Action, &a.ClipID,
+				&loopInt, &a.Speed, &a.BlendIn, &a.ReturnTo, &priInt); err == nil {
+				a.Loop = loopInt != 0
+				a.Priority = uint8(priInt)
 				out.Anims = append(out.Anims, a)
 			}
 		}
@@ -1455,12 +1683,57 @@ func (d *DB) GetMediaAnimClip(ctx context.Context, id int) (*MediaAnimClip, erro
 	}
 	c := &MediaAnimClip{ID: id}
 	err := d.db.QueryRowContext(ctx,
-		d.q(`SELECT name, source_path, clip_override FROM media_anim_clips WHERE id = ?`), id,
-	).Scan(&c.Name, &c.SourcePath, &c.ClipOverride)
+		d.q(`SELECT name, source_path, clip_override, start_frame, end_frame, fps
+		     FROM media_anim_clips WHERE id = ?`), id,
+	).Scan(&c.Name, &c.SourcePath, &c.ClipOverride, &c.StartFrame, &c.EndFrame, &c.FPS)
 	if err != nil {
 		return nil, nil
 	}
 	return c, nil
+}
+
+// LoadAnimEvents returns all animation events for a clip, ordered by frame.
+func (d *DB) LoadAnimEvents(ctx context.Context, clipID int) ([]MediaAnimEvent, error) {
+	rows, err := d.db.QueryContext(ctx,
+		d.q(`SELECT id, clip_id, frame, event_type, payload
+		     FROM media_anim_events WHERE clip_id = ? ORDER BY frame`), clipID)
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadAnimEvents: %w", err)
+	}
+	defer rows.Close()
+	var out []MediaAnimEvent
+	for rows.Next() {
+		var e MediaAnimEvent
+		if err := rows.Scan(&e.ID, &e.ClipID, &e.Frame, &e.EventType, &e.Payload); err != nil {
+			return nil, fmt.Errorf("db: LoadAnimEvents scan: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// LoadInputBindings returns all input bindings for a preset, ordered by id.
+func (d *DB) LoadInputBindings(ctx context.Context, presetID int) ([]InputBinding, error) {
+	rows, err := d.db.QueryContext(ctx,
+		d.q(`SELECT id, preset_id, context, key, modifier, trigger_type, action, axis_value, enabled, remappable
+		     FROM media_input_maps WHERE preset_id = ? ORDER BY id`), presetID)
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadInputBindings: %w", err)
+	}
+	defer rows.Close()
+	var out []InputBinding
+	for rows.Next() {
+		var b InputBinding
+		var enabled, remappable int
+		if err := rows.Scan(&b.ID, &b.PresetID, &b.Context, &b.Key, &b.Modifier,
+			&b.TriggerType, &b.Action, &b.AxisValue, &enabled, &remappable); err != nil {
+			return nil, fmt.Errorf("db: LoadInputBindings scan: %w", err)
+		}
+		b.Enabled = enabled != 0
+		b.Remappable = remappable != 0
+		out = append(out, b)
+	}
+	return out, rows.Err()
 }
 
 // EnsureKnownSpells grants all spells to a new character if it has none yet.
@@ -2033,6 +2306,134 @@ func (d *DB) LoadAreaPortals(ctx context.Context) ([]*AreaPortal, error) {
 		p.X, p.Z, p.Radius = float32(x), float32(z), float32(r)
 		p.DestX, p.DestY, p.DestZ, p.DestYaw = float32(dx), float32(dy), float32(dz), float32(dyaw)
 		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// Spawn Points — authored in GUE, loaded read-only by the server at startup.
+// ---------------------------------------------------------------------------
+
+// SpawnPoint mirrors one row in spawn_points.
+type SpawnPoint struct {
+	ID       int
+	Name     string
+	AreaName string
+	X, Y, Z  float64
+	Radius   float64
+}
+
+// SpawnPointMob mirrors one row in spawn_point_mobs.
+type SpawnPointMob struct {
+	ID              int
+	SpawnPointID    int
+	ActorDefID      int
+	Count           int
+	Name            string
+	Race            string
+	Class           string
+	Level           int
+	Aggressiveness  int
+	AggressiveRange float64
+	AttackRange     float64
+	RespawnDelayMs  int64
+}
+
+// migrateV13 creates the spawn_points and spawn_point_mobs tables.
+func (d *DB) migrateV13(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+	if d.driver == "postgres" {
+		exec(`CREATE TABLE IF NOT EXISTS spawn_points (
+			id        SERIAL PRIMARY KEY,
+			name      VARCHAR(128) NOT NULL DEFAULT 'Spawn Point',
+			area_name VARCHAR(128) NOT NULL DEFAULT '',
+			x         REAL NOT NULL DEFAULT 0,
+			y         REAL NOT NULL DEFAULT 0,
+			z         REAL NOT NULL DEFAULT 0,
+			radius    REAL NOT NULL DEFAULT 5
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS spawn_point_mobs (
+			id               SERIAL PRIMARY KEY,
+			spawn_point_id   INTEGER NOT NULL DEFAULT 0,
+			actor_def_id     INTEGER NOT NULL DEFAULT 0,
+			mob_count        INTEGER NOT NULL DEFAULT 1,
+			name             VARCHAR(64) NOT NULL DEFAULT 'NPC',
+			race             VARCHAR(32) NOT NULL DEFAULT 'Human',
+			class            VARCHAR(32) NOT NULL DEFAULT 'Warrior',
+			level            INTEGER NOT NULL DEFAULT 1,
+			aggressiveness   INTEGER NOT NULL DEFAULT 2,
+			aggressive_range REAL NOT NULL DEFAULT 8.0,
+			attack_range     REAL NOT NULL DEFAULT 2.0,
+			respawn_delay_ms INTEGER NOT NULL DEFAULT 30000
+		)`)
+	} else {
+		exec(`CREATE TABLE IF NOT EXISTS spawn_points (
+			id        INTEGER PRIMARY KEY AUTOINCREMENT,
+			name      TEXT NOT NULL DEFAULT 'Spawn Point',
+			area_name TEXT NOT NULL DEFAULT '',
+			x         REAL NOT NULL DEFAULT 0,
+			y         REAL NOT NULL DEFAULT 0,
+			z         REAL NOT NULL DEFAULT 0,
+			radius    REAL NOT NULL DEFAULT 5
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS spawn_point_mobs (
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			spawn_point_id   INTEGER NOT NULL DEFAULT 0,
+			actor_def_id     INTEGER NOT NULL DEFAULT 0,
+			mob_count        INTEGER NOT NULL DEFAULT 1,
+			name             TEXT NOT NULL DEFAULT 'NPC',
+			race             TEXT NOT NULL DEFAULT 'Human',
+			class             TEXT NOT NULL DEFAULT 'Warrior',
+			level            INTEGER NOT NULL DEFAULT 1,
+			aggressiveness   INTEGER NOT NULL DEFAULT 2,
+			aggressive_range REAL NOT NULL DEFAULT 8.0,
+			attack_range     REAL NOT NULL DEFAULT 2.0,
+			respawn_delay_ms INTEGER NOT NULL DEFAULT 30000
+		)`)
+	}
+}
+
+// LoadSpawnPoints returns all spawn_points rows ordered by id.
+func (d *DB) LoadSpawnPoints(ctx context.Context) ([]*SpawnPoint, error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, name, area_name, x, y, z, radius FROM spawn_points ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadSpawnPoints: %w", err)
+	}
+	defer rows.Close()
+	var out []*SpawnPoint
+	for rows.Next() {
+		sp := &SpawnPoint{}
+		if err := rows.Scan(&sp.ID, &sp.Name, &sp.AreaName, &sp.X, &sp.Y, &sp.Z, &sp.Radius); err != nil {
+			return nil, fmt.Errorf("db: LoadSpawnPoints scan: %w", err)
+		}
+		out = append(out, sp)
+	}
+	return out, rows.Err()
+}
+
+// LoadSpawnPointMobs returns all mob entries for a given spawn point.
+func (d *DB) LoadSpawnPointMobs(ctx context.Context, spawnPointID int) ([]*SpawnPointMob, error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, spawn_point_id, actor_def_id, mob_count, name, race, class,
+		        level, aggressiveness, aggressive_range, attack_range, respawn_delay_ms
+		 FROM spawn_point_mobs WHERE spawn_point_id = ? ORDER BY id`,
+		spawnPointID)
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadSpawnPointMobs: %w", err)
+	}
+	defer rows.Close()
+	var out []*SpawnPointMob
+	for rows.Next() {
+		m := &SpawnPointMob{}
+		if err := rows.Scan(
+			&m.ID, &m.SpawnPointID, &m.ActorDefID, &m.Count,
+			&m.Name, &m.Race, &m.Class, &m.Level,
+			&m.Aggressiveness, &m.AggressiveRange, &m.AttackRange, &m.RespawnDelayMs,
+		); err != nil {
+			return nil, fmt.Errorf("db: LoadSpawnPointMobs scan: %w", err)
+		}
+		out = append(out, m)
 	}
 	return out, rows.Err()
 }

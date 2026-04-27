@@ -89,7 +89,8 @@
       "Read(//d//**)",
       "Bash(cmake -B client/build -S client -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake)",
       "Bash(cmake --build /d/Github/RealmCrafterOrigins/tools/gue/build --config Release)",
-      "Bash(cmake --build /d/Github/RealmCrafterOrigins/client/build --config Release)"
+      "Bash(cmake --build /d/Github/RealmCrafterOrigins/client/build --config Release)",
+      "Bash(cmake --build D:/Github/RealmCrafterOrigins/client/build --config Release)"
     ]
   }
 }

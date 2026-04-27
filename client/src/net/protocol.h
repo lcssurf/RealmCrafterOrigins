@@ -27,7 +27,7 @@ constexpr uint16_t kPStatUpdate       = 22;
 constexpr uint16_t kPXPUpdate         = 32;
 constexpr uint16_t kPFloatingNumber   = 48;
 constexpr uint16_t kPRepositionActor  = 49;
-constexpr uint16_t kPAnimateActor     = 30;  // payload: rid(u32)+state(u8) — 0=Idle 1=Walk 2=Attack 3=Death
+constexpr uint16_t kPAnimateActor     = 30;  // payload: rid(u32)+action_id(u8)
 constexpr uint16_t kPKickedPlayer     = 60;
 constexpr uint16_t kPLoginResult      = 100;
 constexpr uint16_t kPCharListResult   = 101;
@@ -52,6 +52,9 @@ constexpr uint16_t kPRemoveWorldItem  = 114;
 constexpr uint16_t kPOpenShop         = 115;
 constexpr uint16_t kPShopAction       = 116;
 constexpr uint16_t kPPlayableDefs     = 118; // S→C: list of actor defs available for character creation
+constexpr uint16_t kPPlayerAction    = 119; // C→S: action(str)+state(u8)+axis(f32)
+constexpr uint16_t kPSetInputContext = 120; // S→C: context(str)
+constexpr uint16_t kPInputBindings   = 121; // S→C: input bindings for active preset
 
 // ---------------------------------------------------------------------------
 // Result codes

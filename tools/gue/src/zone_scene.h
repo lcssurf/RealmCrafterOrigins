@@ -109,6 +109,28 @@ struct ZNpcSpawn {
     std::string deathScript,  deathFunc;
 };
 
+struct ZSpawnPointMob {
+    int         id               = 0;
+    int         actor_def_id     = 0;
+    int         count            = 1;
+    std::string name             = "NPC";
+    std::string race             = "Human";
+    std::string class_           = "Warrior";
+    int         level            = 1;
+    int         aggressiveness   = 2;
+    float       aggressive_range = 8.f;
+    float       attack_range     = 2.f;
+    int         respawn_delay_ms = 30000;
+};
+
+struct ZSpawnPoint {
+    int         id     = 0;
+    std::string name;
+    glm::vec3   pos    = {};
+    float       radius = 5.f;
+    std::vector<ZSpawnPointMob> mobs;
+};
+
 struct ZEnvConfig {
     std::string name;
     int   musicTrack   = 1;
@@ -145,7 +167,8 @@ struct ZoneScene {
     std::vector<ZWater>      water;
     std::vector<ZEmitter>    emitters;
     std::vector<ZWaypoint>   waypoints;
-    std::vector<ZNpcSpawn>   npcs;
+    std::vector<ZNpcSpawn>    npcs;
+    std::vector<ZSpawnPoint>  spawnPoints;
     bool dirty = false;
 
     void Clear() {
@@ -153,6 +176,7 @@ struct ZoneScene {
         scenery.clear(); portals.clear(); triggers.clear();
         soundZones.clear(); colBoxes.clear(); water.clear();
         emitters.clear(); waypoints.clear(); npcs.clear();
+        spawnPoints.clear();
         env = {};
         dirty = false;
     }

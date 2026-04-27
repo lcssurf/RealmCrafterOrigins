@@ -47,6 +47,9 @@ struct MediaAnimClip {
     std::string name;            // friendly display name, e.g. "Walk"
     std::string source_path;     // "" = embedded in the actor's model; else separate FBX/GLB
     std::string clip_override;   // override clip name inside source file ("" = use file's own)
+    int         start_frame = 0;
+    int         end_frame   = -1;  // -1 = play to end of file
+    float       fps         = 30.f;
 };
 
 // ---------------------------------------------------------------------------
@@ -87,6 +90,25 @@ struct ActorAnimMap {
     // source_path means "embedded in the actor's Body model".
     std::string source_path;
     std::string clip_override;
+
+    // Playback metadata
+    bool        loop      = true;
+    float       speed     = 1.f;
+    float       blend_in  = 0.15f;
+    std::string return_to;       // "" = no automatic return; else action name to return to
+    int         priority  = 0;   // higher wins on conflict
+};
+
+// ---------------------------------------------------------------------------
+// Animation Events (frame markers per clip)
+// ---------------------------------------------------------------------------
+
+struct MediaAnimEvent {
+    int         id         = 0;
+    int         clip_id    = 0;
+    int         frame      = 0;
+    std::string event_type = "sfx";   // "sfx", "vfx", "hitbox", "footstep", or custom
+    std::string payload;              // free JSON interpreted by the client handler
 };
 
 struct ActorDef {
@@ -95,7 +117,13 @@ struct ActorDef {
 
     // Multiplies each mesh slot's model scale at render time.
     // 1.0 = natural size, 0.5 = filhote, 2.0 = pai grandão.
-    float       scale = 1.f;
+    float       scale      = 1.f;
+
+    // Extra Y rotation (degrees) applied before world yaw at render time.
+    // Use to correct models that were exported facing the wrong direction
+    // (e.g. 180 for a model facing backwards in its FBX).
+    float       yaw_offset = 0.f;
+    float       y_offset   = 0.f;  // vertical offset (world units) to lift/sink the model
 
     // Gameplay defaults — used when the user places this actor in a zone
     // (or spawns an NPC from it). Empty strings / zero values mean "no
@@ -254,6 +282,18 @@ private:
     int  newSlotMatIdx_    = -1;
     char newAnimAction_[64] = {};
     int  newAnimClipIdx_    = -1;
+
+    // --- Animation Events editor state (for the selected clip) ---
+    std::vector<MediaAnimEvent> clip_events_;         // events for the currently selected clip
+    int                         sel_event_            = -1;
+    MediaAnimEvent              edit_event_;
+    bool                        dirty_event_          = false;
+    int                         events_loaded_for_clip_ = -1;  // clip id whose events are loaded
+
+    // Event CRUD helpers
+    void LoadEventsForClip(sqlite3* db, int clip_id);
+    void SaveAnimEvent    (sqlite3* db, MediaAnimEvent& e);
+    void DeleteAnimEvent  (sqlite3* db, int id);
 };
 
 const char* ActorSlotName(int slot);
