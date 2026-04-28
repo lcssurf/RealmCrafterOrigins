@@ -111,9 +111,6 @@ ConsolidationResult ConsolidateMeshes(Model& model, const char* path) {
                         corr   = c;
                         corr_n = glm::mat3(glm::transpose(glm::inverse(corr)));
                         apply_corr = true;
-                        std::fprintf(stderr,
-                            "[consolidate-correct] mat='%s' submesh[%d] correction_diff=%.4f\n",
-                            mat_name.c_str(), si, d);
                     }
                     break; // one pivot bone is enough — correction is space-uniform
                 }
@@ -185,79 +182,6 @@ ConsolidationResult ConsolidateMeshes(Model& model, const char* path) {
             }
         }
 
-        // Diagnostic: identity slots + which vertices (if any) reference those bones.
-        {
-            int id_count = 0, real_count = 0;
-            for (int b = 0; b < (int)sm.bone_offsets.size(); ++b)
-                (sm.bone_offsets[b] == kIdentity ? id_count : real_count)++;
-            std::fprintf(stderr,
-                "[consolidate-offsets] mat='%s' bone_offset_slots: real=%d identity=%d total=%d\n",
-                mat_name.c_str(), real_count, id_count, (int)sm.bone_offsets.size());
-
-            if (id_count > 0) {
-                // Build reverse map bone_idx -> name using Model::bone_map_ (friend access).
-                std::vector<std::string> idx_to_name(sm.bone_offsets.size());
-                for (const auto& [nm, bidx] : model.bone_map_)
-                    if (bidx < (int)idx_to_name.size()) idx_to_name[bidx] = nm;
-
-                // For each identity bone, check whether any source submesh vertex refs it.
-                for (int b = 0; b < (int)sm.bone_offsets.size(); ++b) {
-                    if (sm.bone_offsets[b] != kIdentity) continue;
-                    // Scan raw_bone_ids of all source submeshes.
-                    int worst_si = -1; float worst_w = 0.f;
-                    for (int si : idxs) {
-                        const auto& ids = model.meshes_[si].raw_bone_ids;
-                        const auto& wts = model.meshes_[si].raw_bone_weights;
-                        for (int vi = 0; vi < model.meshes_[si].raw_vertex_count; ++vi) {
-                            for (int s = 0; s < 4; ++s) {
-                                if (ids[vi*4+s] == b && wts[vi*4+s] > worst_w) {
-                                    worst_w = wts[vi*4+s]; worst_si = si;
-                                }
-                            }
-                        }
-                    }
-                    if (worst_si >= 0)
-                        std::fprintf(stderr,
-                            "[consolidate-offsets]   IDENTITY bone[%d]='%s' USED by submesh[%d] max_weight=%.4f\n",
-                            b, idx_to_name[b].c_str(), worst_si, worst_w);
-                    // else: identity bone is unused — harmless, no log needed.
-                }
-            }
-
-            // Check for conflicting bone offset matrices between submeshes.
-            // If the same bone has different offsets in different submeshes, the
-            // submeshes are in different mesh-local spaces and cannot be merged
-            // with a single shared offset — some vertices will be misplaced.
-            {
-                std::vector<std::string> idx_to_name2(sm.bone_offsets.size());
-                for (const auto& [nm, bidx] : model.bone_map_)
-                    if (bidx < (int)idx_to_name2.size()) idx_to_name2[bidx] = nm;
-
-                int conflict_count = 0;
-                for (int b = 0; b < (int)sm.bone_offsets.size(); ++b) {
-                    if (sm.bone_offsets[b] == kIdentity) continue;
-                    for (int si : idxs) {
-                        const auto& src = model.meshes_[si].bone_offsets;
-                        if (b >= (int)src.size() || src[b] == kIdentity) continue;
-                        float diff = 0.f;
-                        for (int c = 0; c < 4; ++c)
-                            for (int r = 0; r < 4; ++r)
-                                diff += std::abs(sm.bone_offsets[b][c][r] - src[b][c][r]);
-                        if (diff > 0.001f) {
-                            ++conflict_count;
-                            if (conflict_count <= 3)  // cap to avoid log flood
-                                std::fprintf(stderr,
-                                    "[offset-conflict] mat='%s' bone[%d]='%s' submesh[%d] diff=%.4f\n",
-                                    mat_name.c_str(), b, idx_to_name2[b].c_str(), si, diff);
-                        }
-                    }
-                }
-                if (conflict_count > 0)
-                    std::fprintf(stderr,
-                        "[offset-conflict] mat='%s' total_conflicts=%d\n",
-                        mat_name.c_str(), conflict_count);
-            }
-        }
 
         sm.idx_count        = (int)merged_indices.size();
         sm.raw_vertex_count = (int)vertex_offset;

@@ -162,7 +162,6 @@ void Actor::Submit(Pipeline& pipeline) {
     if (!model_ || !model_->IsLoaded()) return;
 
     const auto& meshes = model_->meshes();
-    EnsureBoneSSBOs_(meshes.size());
 
     glm::mat4 model = glm::mat4(1.0f);
     model = glm::translate(model, position + glm::vec3(0.f, y_offset, 0.f));
@@ -176,19 +175,24 @@ void Actor::Submit(Pipeline& pipeline) {
         const auto& m = meshes[mi];
         if (m.skinned) {
             model_->ComputeBones(clip_idx_, anim_t_, (int)mi, bones, kMaxBones);
-            UploadBonesToSSBO_(mi, bones, kMaxBones);
+            SkinnedInstancedEntry e{};
+            e.vao          = m.vao;
+            e.ebo          = m.ebo;
+            e.index_count  = m.idx_count;
+            e.material_idx = m.material_idx;
+            e.model        = model;
+            for (int b = 0; b < kMaxBones; ++b) e.bones[b] = bones[b];
+            pipeline.SubmitSkinnedInstanced(e);
+        } else {
+            DynamicDrawRequest req{};
+            req.vao          = m.vao;
+            req.vbo          = m.vbo;
+            req.ebo          = m.ebo;
+            req.index_count  = m.idx_count;
+            req.material_idx = m.material_idx;
+            req.model        = model;
+            pipeline.SubmitDynamic(req);
         }
-        DynamicDrawRequest req{};
-        req.vao          = m.vao;
-        req.vbo          = m.vbo;
-        req.ebo          = m.ebo;
-        req.index_count  = m.idx_count;
-        req.material_idx = m.material_idx;
-        req.model        = model;
-        req.bone_ssbo    = m.skinned ? bone_ssbos_[mi] : 0;
-        req.bone_count   = kMaxBones;
-        if (m.skinned) pipeline.SubmitSkinned(req);
-        else           pipeline.SubmitDynamic(req);
     }
 }
 
@@ -196,26 +200,30 @@ void Actor::SubmitWithMatrix(Pipeline& pipeline, const glm::mat4& model_matrix) 
     if (!model_ || !model_->IsLoaded()) return;
 
     const auto& meshes = model_->meshes();
-    EnsureBoneSSBOs_(meshes.size());
 
     glm::mat4 bones[kMaxBones];
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
         const auto& m = meshes[mi];
         if (m.skinned) {
             model_->ComputeBones(clip_idx_, anim_t_, (int)mi, bones, kMaxBones);
-            UploadBonesToSSBO_(mi, bones, kMaxBones);
+            SkinnedInstancedEntry e{};
+            e.vao          = m.vao;
+            e.ebo          = m.ebo;
+            e.index_count  = m.idx_count;
+            e.material_idx = m.material_idx;
+            e.model        = model_matrix;
+            for (int b = 0; b < kMaxBones; ++b) e.bones[b] = bones[b];
+            pipeline.SubmitSkinnedInstanced(e);
+        } else {
+            DynamicDrawRequest req{};
+            req.vao          = m.vao;
+            req.vbo          = m.vbo;
+            req.ebo          = m.ebo;
+            req.index_count  = m.idx_count;
+            req.material_idx = m.material_idx;
+            req.model        = model_matrix;
+            pipeline.SubmitDynamic(req);
         }
-        DynamicDrawRequest req{};
-        req.vao          = m.vao;
-        req.vbo          = m.vbo;
-        req.ebo          = m.ebo;
-        req.index_count  = m.idx_count;
-        req.material_idx = m.material_idx;
-        req.model        = model_matrix;
-        req.bone_ssbo    = m.skinned ? bone_ssbos_[mi] : 0;
-        req.bone_count   = kMaxBones;
-        if (m.skinned) pipeline.SubmitSkinned(req);
-        else           pipeline.SubmitDynamic(req);
     }
 }
 
@@ -224,7 +232,6 @@ void Actor::SubmitAs(const std::string& anim_name, float anim_t, bool loop,
     if (!model_ || !model_->IsLoaded()) return;
 
     const auto& meshes = model_->meshes();
-    EnsureBoneSSBOs_(meshes.size());
 
     // Resolve target clip once
     int cidx = -1;
@@ -252,19 +259,24 @@ void Actor::SubmitAs(const std::string& anim_name, float anim_t, bool loop,
         const auto& m = meshes[mi];
         if (m.skinned) {
             model_->ComputeBones(cidx, t, (int)mi, bones, kMaxBones);
-            UploadBonesToSSBO_(mi, bones, kMaxBones);
+            SkinnedInstancedEntry e{};
+            e.vao          = m.vao;
+            e.ebo          = m.ebo;
+            e.index_count  = m.idx_count;
+            e.material_idx = m.material_idx;
+            e.model        = model;
+            for (int b = 0; b < kMaxBones; ++b) e.bones[b] = bones[b];
+            pipeline.SubmitSkinnedInstanced(e);
+        } else {
+            DynamicDrawRequest req{};
+            req.vao          = m.vao;
+            req.vbo          = m.vbo;
+            req.ebo          = m.ebo;
+            req.index_count  = m.idx_count;
+            req.material_idx = m.material_idx;
+            req.model        = model;
+            pipeline.SubmitDynamic(req);
         }
-        DynamicDrawRequest req{};
-        req.vao          = m.vao;
-        req.vbo          = m.vbo;
-        req.ebo          = m.ebo;
-        req.index_count  = m.idx_count;
-        req.material_idx = m.material_idx;
-        req.model        = model;
-        req.bone_ssbo    = m.skinned ? bone_ssbos_[mi] : 0;
-        req.bone_count   = kMaxBones;
-        if (m.skinned) pipeline.SubmitSkinned(req);
-        else           pipeline.SubmitDynamic(req);
     }
 }
 

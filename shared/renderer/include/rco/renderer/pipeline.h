@@ -32,6 +32,19 @@ struct DynamicDrawRequest {
     int    bone_count = 0;
 };
 
+// One CPU-side entry per skinned actor instance submitted via Actor::Submit().
+// The pipeline groups entries by (vao, ebo) and issues one
+// glDrawElementsInstanced per group, collapsing N draw calls into 1.
+// bones[64] must match kMaxBones in model.h.
+struct SkinnedInstancedEntry {
+    GLuint    vao;
+    GLuint    ebo;
+    GLsizei   index_count;
+    int       material_idx;
+    glm::mat4 model;
+    glm::mat4 bones[64];
+};
+
 struct TerrainChunkSubmission {
     GLuint    vao         = 0;
     GLuint    vbo         = 0;
@@ -83,6 +96,7 @@ public:
     void SubmitStaticScene();
     void SubmitDynamic(const DynamicDrawRequest& req);
     void SubmitSkinned(const DynamicDrawRequest& req);
+    void SubmitSkinnedInstanced(const SkinnedInstancedEntry& e);
     void SubmitTerrainChunk(const TerrainChunkSubmission& chunk);
 
     void AddPointLight(const glm::vec3& pos, const glm::vec3& color, float radius);
@@ -140,6 +154,7 @@ private:
 
     std::vector<DynamicDrawRequest>     dynamicDraws_;
     std::vector<DynamicDrawRequest>     skinnedDraws_;
+    std::vector<SkinnedInstancedEntry>  skinnedInstancedEntries_;
     std::vector<TerrainChunkSubmission> terrainChunks_;
 
     GLuint filteredShadowTex_ = 0;

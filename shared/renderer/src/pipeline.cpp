@@ -37,6 +37,7 @@ void Pipeline::Begin(const glm::mat4& view, const glm::mat4& proj,
     localLights_.clear();
     dynamicDraws_.clear();
     skinnedDraws_.clear();
+    skinnedInstancedEntries_.clear();
     terrainChunks_.clear();
     pending_stats_ = {};
 }
@@ -53,6 +54,7 @@ void Pipeline::AddPointLight(const glm::vec3& pos, const glm::vec3& color, float
 
 void Pipeline::SubmitDynamic(const DynamicDrawRequest& r) { dynamicDraws_.push_back(r); }
 void Pipeline::SubmitSkinned(const DynamicDrawRequest& r) { skinnedDraws_.push_back(r); }
+void Pipeline::SubmitSkinnedInstanced(const SkinnedInstancedEntry& e) { skinnedInstancedEntries_.push_back(e); }
 void Pipeline::SubmitTerrainChunk(const TerrainChunkSubmission& c) { terrainChunks_.push_back(c); }
 
 void Pipeline::SubmitStaticScene() {
@@ -229,6 +231,62 @@ void Pipeline::gBufferPass_() {
             glBindVertexArray(r.vao);
             glDrawElements(GL_TRIANGLES, r.index_count, GL_UNSIGNED_INT, nullptr);
             pending_stats_.triangles += r.index_count / 3;
+            pending_stats_.draw_calls++;
+        }
+        glBindVertexArray(engine_->vao_);
+    }
+
+    // Instanced skinned draws — groups entries by (vao, ebo), builds one large
+    // bone SSBO per group, and calls glDrawElementsInstanced once per group.
+    // Result: O(unique submesh types) draw calls instead of O(visible actors).
+    if (!skinnedInstancedEntries_.empty() && engine_->materialsBuffer_) {
+        auto& sh = Shader::shaders["gBufferSkinnedInstanced"];
+        sh->Bind();
+        sh->SetMat4("u_viewProj", viewProj_);
+        engine_->materialsBuffer_->BindBase(GL_SHADER_STORAGE_BUFFER, 1);
+
+        // Accumulate per-batch data. With only a handful of unique (vao,ebo)
+        // pairs (one per submesh type per model), linear search is fastest.
+        struct InstancedBatch {
+            GLuint  vao, ebo;
+            GLsizei idx_count;
+            int     material_idx;
+            std::vector<ObjectUniforms> obj_unis;
+            std::vector<glm::mat4>      all_bones; // [inst0_bone0..63 | inst1_bone0..63 | ...]
+        };
+        std::vector<InstancedBatch> batches;
+        batches.reserve(16);
+
+        for (const auto& e : skinnedInstancedEntries_) {
+            if (!e.vao) continue;
+            InstancedBatch* b = nullptr;
+            for (auto& x : batches) {
+                if (x.vao == e.vao && x.ebo == e.ebo) { b = &x; break; }
+            }
+            if (!b) {
+                batches.push_back({e.vao, e.ebo, e.index_count, e.material_idx, {}, {}});
+                b = &batches.back();
+            }
+            b->obj_unis.push_back(ObjectUniforms{e.model, static_cast<uint32_t>(e.material_idx)});
+            b->all_bones.insert(b->all_bones.end(), e.bones, e.bones + 64);
+        }
+
+        for (const auto& b : batches) {
+            const GLsizei N = static_cast<GLsizei>(b.obj_unis.size());
+
+            // Binding 0: per-instance model matrices (indexed by gl_InstanceID)
+            StaticBuffer obj_buf(b.obj_unis.data(),
+                                 b.obj_unis.size() * sizeof(ObjectUniforms), 0);
+            obj_buf.BindBase(GL_SHADER_STORAGE_BUFFER, 0);
+
+            // Binding 2: all bone matrices packed [inst0_bone0..63 | inst1_bone0..63 | ...]
+            StaticBuffer bone_buf(b.all_bones.data(),
+                                  b.all_bones.size() * sizeof(glm::mat4), 0);
+            bone_buf.BindBase(GL_SHADER_STORAGE_BUFFER, 2);
+
+            glBindVertexArray(b.vao);
+            glDrawElementsInstanced(GL_TRIANGLES, b.idx_count, GL_UNSIGNED_INT, nullptr, N);
+            pending_stats_.triangles += (b.idx_count / 3) * N;
             pending_stats_.draw_calls++;
         }
         glBindVertexArray(engine_->vao_);

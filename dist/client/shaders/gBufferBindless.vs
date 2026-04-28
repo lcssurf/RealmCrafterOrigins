@@ -37,7 +37,12 @@ layout (location = 0) out VS_OUT
 
 void main()
 {
+// Per-instance model: gl_InstanceID for batched instanced draws, gl_DrawID otherwise.
+#ifdef HAS_INSTANCED_SKINNING
+  ObjectUniforms obj = objects[gl_InstanceID];
+#else
   ObjectUniforms obj = objects[gl_DrawID];
+#endif
   vMaterialIndex = obj.materialIndex;
   vTexCoord = aTexCoord;
 
@@ -46,10 +51,20 @@ void main()
   vec3 tangent = aTangent;
 
 #ifdef HAS_SKINNING
+  #ifdef HAS_INSTANCED_SKINNING
+  // bones[] is packed as N×64 blocks: [inst0_bone0..63 | inst1_bone0..63 | ...]
+  // The constant 64 must match kMaxBones in model.h.
+  const int kMaxBones = 64;
+  mat4 skin = bones[gl_InstanceID * kMaxBones + aBoneIDs.x] * aBoneWeights.x
+            + bones[gl_InstanceID * kMaxBones + aBoneIDs.y] * aBoneWeights.y
+            + bones[gl_InstanceID * kMaxBones + aBoneIDs.z] * aBoneWeights.z
+            + bones[gl_InstanceID * kMaxBones + aBoneIDs.w] * aBoneWeights.w;
+  #else
   mat4 skin = bones[aBoneIDs.x] * aBoneWeights.x
             + bones[aBoneIDs.y] * aBoneWeights.y
             + bones[aBoneIDs.z] * aBoneWeights.z
             + bones[aBoneIDs.w] * aBoneWeights.w;
+  #endif
   pos     = vec3(skin * vec4(aPos,     1.0));
   normal  = mat3(skin) * aNormal;
   tangent = mat3(skin) * aTangent;

@@ -18,6 +18,10 @@ void CompileAllShaders() {
         {"gBufferBindless.vs", GL_VERTEX_SHADER,   "#define HAS_SKINNING\n"},
         {"gBufferBindless.fs", GL_FRAGMENT_SHADER, ""}
     }));
+    Shader::shaders["gBufferSkinnedInstanced"].emplace(Shader({
+        {"gBufferBindless.vs", GL_VERTEX_SHADER,   "#define HAS_SKINNING\n#define HAS_INSTANCED_SKINNING\n"},
+        {"gBufferBindless.fs", GL_FRAGMENT_SHADER, ""}
+    }));
     Shader::shaders["fstexture"].emplace(Shader({
         {"fullscreen_tri.vs", GL_VERTEX_SHADER},
         {"texture.fs",        GL_FRAGMENT_SHADER}
