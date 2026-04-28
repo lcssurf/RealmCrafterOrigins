@@ -109,6 +109,8 @@ private:
     GLuint                    prog_      = 0;
     GLuint                    defaultNormal_    = 0;  // flat (128,128,255)
     GLuint                    defaultRoughness_ = 0;  // grey (180)
+    GLuint                    defaultAO_        = 0;  // white (255) — no occlusion
+    GLuint                    defaultHeight_    = 0;  // white (255) — flat height-blend
 
     void InitShader();
     void InitChunks();

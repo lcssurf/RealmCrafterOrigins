@@ -4,10 +4,133 @@
 #include <imgui.h>
 #include <cstring>
 #include <cstdio>
+#include <cctype>
 #include <algorithm>
+#include <functional>
 #include <filesystem>
 
 namespace gue {
+
+// ---------------------------------------------------------------------------
+// Folder-list helper — arbitrary nesting via "A/B/C" name convention.
+// Items must be pre-sorted alphabetically (SQL ORDER BY name guarantees this).
+// When filter is non-empty, falls back to a flat filtered list.
+// Returns true if the selection changed this frame.
+// ---------------------------------------------------------------------------
+static std::vector<std::string> SplitPath(const std::string& s) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (true) {
+        size_t slash = s.find('/', start);
+        if (slash == std::string::npos) { out.push_back(s.substr(start)); break; }
+        out.push_back(s.substr(start, slash - start));
+        start = slash + 1;
+    }
+    return out;
+}
+
+template<typename T>
+static bool DrawFolderList(
+    const std::vector<T>& items,
+    int& sel,
+    const char* filter,
+    const char* child_id,
+    float width,
+    std::function<void(int)> on_select)
+{
+    auto toLower = [](std::string s) {
+        for (char& c : s) c = (char)std::tolower((unsigned char)c); return s;
+    };
+
+    bool changed = false;
+    ImGui::BeginChild(child_id, {width, 0}, true);
+    const bool filtering = filter && filter[0] != '\0';
+
+    if (filtering) {
+        const std::string filt_lo = toLower(std::string(filter));
+        for (int i = 0; i < (int)items.size(); ++i) {
+            if (toLower(items[i].name).find(filt_lo) == std::string::npos) continue;
+            char label[256];
+            std::snprintf(label, sizeof(label), "%s##%s%d", items[i].name.c_str(), child_id, i);
+            if (ImGui::Selectable(label, sel == i)) {
+                sel = i; on_select(i); changed = true;
+            }
+        }
+    } else {
+        // Pre-compute the selected item's folder path so we can auto-open ancestors.
+        std::string sel_folder;
+        if (sel >= 0 && sel < (int)items.size()) {
+            size_t slash = items[sel].name.rfind('/');
+            if (slash != std::string::npos)
+                sel_folder = items[sel].name.substr(0, slash);
+        }
+
+        // Stack-based traversal: cur_path tracks open folder segments; is_open
+        // tracks whether each ImGui::TreeNode is currently expanded.
+        std::vector<std::string> cur_path;
+        std::vector<bool>        is_open;
+
+        for (int i = 0; i < (int)items.size(); ++i) {
+            auto segs = SplitPath(items[i].name);
+            // All but the last segment form the folder path; last is the item label.
+            std::vector<std::string> item_folder(segs.begin(), segs.end() - 1);
+            const std::string& item_base = segs.back();
+
+            // Find how many leading segments are shared with the current stack.
+            int common = 0;
+            while (common < (int)cur_path.size() && common < (int)item_folder.size()
+                   && cur_path[common] == item_folder[common])
+                ++common;
+
+            // Pop nodes that are no longer on the current path.
+            for (int d = (int)cur_path.size() - 1; d >= common; --d)
+                if (is_open[d]) ImGui::TreePop();
+            cur_path.resize(common);
+            is_open.resize(common);
+
+            // Push new folder nodes.
+            for (int d = common; d < (int)item_folder.size(); ++d) {
+                // Build the full path up to this depth for the ImGui ID.
+                std::string full_path;
+                for (int k = 0; k <= d; ++k) {
+                    if (k) full_path += '/';
+                    full_path += item_folder[k];
+                }
+                // Auto-open if this folder is an ancestor of the selected item.
+                bool is_anc = !sel_folder.empty() &&
+                    (sel_folder == full_path ||
+                     (sel_folder.size() > full_path.size() &&
+                      sel_folder[full_path.size()] == '/' &&
+                      sel_folder.substr(0, full_path.size()) == full_path));
+                char node_id[256];
+                std::snprintf(node_id, sizeof(node_id), "%s##f_%s_%s",
+                              item_folder[d].c_str(), child_id, full_path.c_str());
+                ImGui::SetNextItemOpen(is_anc, ImGuiCond_Once);
+                bool open = ImGui::TreeNodeEx(node_id, ImGuiTreeNodeFlags_SpanFullWidth);
+                cur_path.push_back(item_folder[d]);
+                is_open.push_back(open);
+            }
+
+            // Render the item only when all ancestor folders are open.
+            bool all_open = true;
+            for (bool o : is_open) if (!o) { all_open = false; break; }
+            if (all_open) {
+                char label[256];
+                std::snprintf(label, sizeof(label), "%s##%s%d", item_base.c_str(), child_id, i);
+                if (ImGui::Selectable(label, sel == i)) {
+                    sel = i; on_select(i); changed = true;
+                }
+            }
+        }
+
+        // Close any folders still on the stack.
+        for (int d = (int)cur_path.size() - 1; d >= 0; --d)
+            if (is_open[d]) ImGui::TreePop();
+    }
+
+    ImGui::EndChild();
+    return changed;
+}
 
 // ---------------------------------------------------------------------------
 // Slot names
@@ -1027,18 +1150,11 @@ void MediaTab::DrawModels(sqlite3* db) {
     ImGui::TextDisabled("%s", statusMsg_);
     ImGui::Separator();
 
-    ImGui::BeginChild("##mdl_list", {240, 0}, true);
-    for (int i = 0; i < (int)models_.size(); ++i) {
-        char label[256];
-        std::snprintf(label, sizeof(label), "%s##ml%d", models_[i].name.c_str(), i);
-        if (ImGui::Selectable(label, selModel_ == i)) {
-            selModel_   = i;
-            editModel_  = models_[i];
-            dirtyModel_ = false;
-            newModel_   = false;
-        }
-    }
-    ImGui::EndChild();
+    ImGui::SetNextItemWidth(240);
+    ImGui::InputText("##mdl_filter", filterModel_, sizeof(filterModel_));
+    ImGui::SameLine(); ImGui::TextDisabled("filter");
+    DrawFolderList(models_, selModel_, filterModel_, "##mdl_list", 240,
+        [&](int i) { editModel_ = models_[i]; dirtyModel_ = false; newModel_ = false; });
     ImGui::SameLine();
 
     // Middle column: properties (fixed width).
@@ -1385,18 +1501,11 @@ void MediaTab::DrawMaterials(sqlite3* db) {
         ImGui::EndPopup();
     }
 
-    ImGui::BeginChild("##mat_list", {260, 0}, true);
-    for (int i = 0; i < (int)materials_.size(); ++i) {
-        char label[256];
-        std::snprintf(label, sizeof(label), "%s##mml%d", materials_[i].name.c_str(), i);
-        if (ImGui::Selectable(label, selMat_ == i)) {
-            selMat_   = i;
-            editMat_  = materials_[i];
-            dirtyMat_ = false;
-            newMat_   = false;
-        }
-    }
-    ImGui::EndChild();
+    ImGui::SetNextItemWidth(260);
+    ImGui::InputText("##mat_filter", filterMat_, sizeof(filterMat_));
+    ImGui::SameLine(); ImGui::TextDisabled("filter");
+    DrawFolderList(materials_, selMat_, filterMat_, "##mat_list", 260,
+        [&](int i) { editMat_ = materials_[i]; dirtyMat_ = false; newMat_ = false; });
     ImGui::SameLine();
 
     ImGui::BeginChild("##mat_edit", {0, 0}, true);
@@ -1472,18 +1581,12 @@ void MediaTab::DrawAnimClips(sqlite3* db) {
     ImGui::TextDisabled("%s", statusMsg_);
     ImGui::Separator();
 
-    ImGui::BeginChild("##clip_list", {260, 0}, true);
-    for (int i = 0; i < (int)clips_.size(); ++i) {
-        char label[256];
-        std::snprintf(label, sizeof(label), "%s##cl%d", clips_[i].name.c_str(), i);
-        if (ImGui::Selectable(label, selClip_ == i)) {
-            selClip_   = i;
-            editClip_  = clips_[i];
-            dirtyClip_ = false;
-            newClip_   = false;
-        }
-    }
-    ImGui::EndChild();
+    ImGui::SetNextItemWidth(260);
+    ImGui::InputText("##clip_filter", filterClip_, sizeof(filterClip_));
+    ImGui::SameLine(); ImGui::TextDisabled("filter");
+    DrawFolderList(clips_, selClip_, filterClip_, "##clip_list", 260,
+        [&](int i) { editClip_ = clips_[i]; dirtyClip_ = false; newClip_ = false;
+                     events_loaded_for_clip_ = -1; });
     ImGui::SameLine();
 
     ImGui::BeginChild("##clip_edit", {0, 0}, true);
@@ -1627,19 +1730,11 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
     ImGui::TextDisabled("%s", statusMsg_);
     ImGui::Separator();
 
-    ImGui::BeginChild("##ad_list", {220, 0}, true);
-    for (int i = 0; i < (int)actor_defs_.size(); ++i) {
-        char label[256];
-        std::snprintf(label, sizeof(label), "%s##adl%d",
-                      actor_defs_[i].name.c_str(), i);
-        if (ImGui::Selectable(label, selActorDef_ == i)) {
-            selActorDef_   = i;
-            editActorDef_  = actor_defs_[i];
-            dirtyActorDef_ = false;
-            newActorDef_   = false;
-        }
-    }
-    ImGui::EndChild();
+    ImGui::SetNextItemWidth(220);
+    ImGui::InputText("##ad_filter", filterActorDef_, sizeof(filterActorDef_));
+    ImGui::SameLine(); ImGui::TextDisabled("filter");
+    DrawFolderList(actor_defs_, selActorDef_, filterActorDef_, "##ad_list", 220,
+        [&](int i) { editActorDef_ = actor_defs_[i]; dirtyActorDef_ = false; newActorDef_ = false; });
     ImGui::SameLine();
 
     float ad_total_w   = ImGui::GetContentRegionAvail().x;

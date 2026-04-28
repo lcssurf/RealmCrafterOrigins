@@ -13,7 +13,7 @@
 //           Substance Painter (_BaseColor, _Normal, _Roughness)
 //           Simple (albedo.png, normal.png, roughness.png)
 // ---------------------------------------------------------------------------
-enum class TexRole { Albedo, Normal, Roughness, AO, ORM, Unknown };
+enum class TexRole { Albedo, Normal, Roughness, AO, ORM, Height, Unknown };
 
 inline TexRole GuessRole(const std::string& stem) {
     std::string s = stem;
@@ -47,6 +47,12 @@ inline TexRole GuessRole(const std::string& stem) {
         s.find("ao_")      != std::string::npos ||
         s.find("ambient")  != std::string::npos ||
         s.find("occlusion")!= std::string::npos) return TexRole::AO;
+
+    // Height / displacement
+    if (s.find("height")  != std::string::npos ||
+        s.find("disp")    != std::string::npos ||
+        s.find("_h_")     != std::string::npos ||
+        s.find("bump")    != std::string::npos) return TexRole::Height;
 
     return TexRole::Unknown;
 }
@@ -97,10 +103,12 @@ struct Material {
     GLuint albedo    = 0; // sRGB
     GLuint normal    = 0; // linear — flat (128,128,255) when missing
     GLuint roughness = 0; // linear — grey (180) when missing → ~0.7 rough
+    GLuint ao        = 0; // linear — white (255) when missing → no occlusion
+    GLuint height    = 0; // linear — white (255) when missing → flat height-blend
 
     void Unload() {
         auto del = [](GLuint& t){ if (t) { glDeleteTextures(1, &t); t = 0; } };
-        del(albedo); del(normal); del(roughness);
+        del(albedo); del(normal); del(roughness); del(ao); del(height);
     }
 };
 
@@ -110,7 +118,9 @@ struct Material {
 // ---------------------------------------------------------------------------
 inline std::vector<Material> ScanMaterials(const std::string& dir,
                                             GLuint defaultNormal,
-                                            GLuint defaultRoughness)
+                                            GLuint defaultRoughness,
+                                            GLuint defaultAO     = 0,
+                                            GLuint defaultHeight  = 0)
 {
     namespace fs = std::filesystem;
     fs::path root(dir);
@@ -131,6 +141,8 @@ inline std::vector<Material> ScanMaterials(const std::string& dir,
         m.name      = sub.path().filename().string();
         m.normal    = defaultNormal;
         m.roughness = defaultRoughness;
+        m.ao        = defaultAO;
+        m.height    = defaultHeight;
 
         for (auto& f : fs::directory_iterator(sub.path())) {
             if (!f.is_regular_file() || !isImg(f.path())) continue;
@@ -148,9 +160,16 @@ inline std::vector<Material> ScanMaterials(const std::string& dir,
                     m.roughness = LoadTex(f.path().string(), false);
                 break;
             case TexRole::ORM:
-                // ORM: use as roughness (shader reads G channel)
                 if (m.roughness == defaultRoughness)
                     m.roughness = LoadTex(f.path().string(), false);
+                break;
+            case TexRole::AO:
+                if (m.ao == defaultAO)
+                    m.ao = LoadTex(f.path().string(), false);
+                break;
+            case TexRole::Height:
+                if (m.height == defaultHeight)
+                    m.height = LoadTex(f.path().string(), false);
                 break;
             default: break;
             }

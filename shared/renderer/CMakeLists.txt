@@ -56,6 +56,9 @@ add_library(rco_renderer STATIC
     # Model cache (weak_ptr-based, path-keyed)
     src/model_cache.cpp
 
+    # Mesh consolidation (groups submeshes by material; default OFF)
+    src/mesh_consolidate.cpp
+
     # STB single-translation-unit implementation
     src/stb_image_impl.cpp
 )

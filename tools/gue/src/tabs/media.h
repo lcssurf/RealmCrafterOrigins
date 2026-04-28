@@ -230,6 +230,7 @@ private:
     bool       dirtyModel_ = false;
     bool       newModel_   = false;
     MediaModel pendingModel_;
+    char       filterModel_[128] = {};
 
     // --- Materials sub-tab state ---
     int           selMat_  = -1;
@@ -237,6 +238,7 @@ private:
     bool          dirtyMat_ = false;
     bool          newMat_   = false;
     MediaMaterial pendingMat_;
+    char          filterMat_[128] = {};
 
     // --- Bulk texture folder import (Materials tab) ---
     bool                        showImportDlg_ = false;
@@ -251,9 +253,11 @@ private:
     bool          dirtyClip_ = false;
     bool          newClip_   = false;
     MediaAnimClip pendingClip_;
+    char          filterClip_[128] = {};
 
     // --- Actor Defs sub-tab state ---
     int      selActorDef_   = -1;
+    char     filterActorDef_[128] = {};
     // Track the last (model, material) pair applied to preview_ so we don't
     // re-upload textures from disk every frame.
     int      preview_last_model_id_    = -1;

@@ -1,5 +1,6 @@
 #include "rco/renderer/model.h"
 #include "rco/renderer/material.h"
+#include "rco/renderer/mesh_consolidate.h"
 
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
@@ -849,27 +850,8 @@ bool Model::Load(const char* path, MaterialManager* mm) {
         }
     }
 
-    // === [3a] Mesh consolidation analysis (detection + log only, no merging) ===
-    {
-        std::unordered_map<std::string, std::vector<int>> mat_groups;
-        for (int i = 0; i < (int)meshes_.size(); ++i) {
-            mat_groups[meshes_[i].material_name].push_back(i);
-        }
-        std::fprintf(stderr,
-            "[consolidate-detect] '%s' total_submeshes=%d unique_materials=%d\n",
-            path, (int)meshes_.size(), (int)mat_groups.size());
-        for (const auto& [mat_name, indices] : mat_groups) {
-            size_t total_verts = 0;
-            size_t total_indices = 0;
-            for (int si : indices) {
-                total_verts += meshes_[si].raw_verts.size() / 11;
-                total_indices += meshes_[si].raw_indices.size();
-            }
-            std::fprintf(stderr,
-                "[consolidate-detect]   mat='%s' submeshes=%d total_verts=%zu total_indices=%zu\n",
-                mat_name.c_str(), (int)indices.size(), total_verts, total_indices);
-        }
-    }
+    // === [3b] Mesh consolidation (see shared/renderer/src/mesh_consolidate.cpp) ===
+    ConsolidateMeshes(*this, path);
 
     // Free temporary CPU geometry copies.
     for (auto& m : meshes_) {

@@ -118,6 +118,8 @@ void EditableTerrain::InitShader() {
 void EditableTerrain::EnsureDefaultTextures() {
     if (!defaultNormal_)    defaultNormal_    = MakeSolidTex(128, 128, 255);
     if (!defaultRoughness_) defaultRoughness_ = MakeSolidTex(180, 180, 180);
+    if (!defaultAO_)        defaultAO_        = MakeSolidTex(255, 255, 255); // full AO = no occlusion
+    if (!defaultHeight_)    defaultHeight_    = MakeSolidTex(255, 255, 255); // flat → splatmap drives blend
 }
 
 // ─── Chunked mesh ────────────────────────────────────────────────────────────
@@ -232,13 +234,14 @@ void EditableTerrain::DestroyChunks() {
 }
 
 void EditableTerrain::DestroyMaterials() {
-    // defaultNormal_ / defaultRoughness_ are shared across every material —
-    // they're owned by EditableTerrain (not by any single Material). Null
-    // them out before Unload so Material::Unload doesn't glDeleteTextures
-    // them on first pass, leaving zombie IDs that error on the next draw.
+    // Shared defaults are owned by EditableTerrain, not by individual Material
+    // entries. Null them out before Unload so glDeleteTextures doesn't fire
+    // on the shared objects, leaving zombie IDs for subsequent draws.
     for (Material& m : materials_) {
         if (m.normal    == defaultNormal_)    m.normal    = 0;
         if (m.roughness == defaultRoughness_) m.roughness = 0;
+        if (m.ao        == defaultAO_)        m.ao        = 0;
+        if (m.height    == defaultHeight_)    m.height    = 0;
         m.Unload();
     }
     materials_.clear();
@@ -271,33 +274,34 @@ void EditableTerrain::ReloadMaterials() {
         if ((int)materials_.size() >= kMaxMats) break;
 
         std::string dir = "../client/data/terrain/materials/" + name;
-        auto scanned = ScanMaterials(dir, defaultNormal_, defaultRoughness_);
+        auto scanned = ScanMaterials(dir, defaultNormal_, defaultRoughness_,
+                                     defaultAO_, defaultHeight_);
         if (!scanned.empty()) {
             Material m = scanned.front();
             // Drop every extra entry ScanMaterials may have produced
-            // (subfolder + root-level flat textures). Same shared-default
-            // caveat as DestroyMaterials: Unload would glDelete the
-            // engine's defaultNormal_ / defaultRoughness_ out from under
-            // the surviving `m` if they reference the same GLuints.
+            // (subfolder + root-level flat textures). Null out shared defaults
+            // before Unload so we don't glDeleteTextures the shared objects.
             for (size_t i = 1; i < scanned.size(); ++i) {
                 Material& s = scanned[i];
                 if (s.normal    == defaultNormal_)    s.normal    = 0;
                 if (s.roughness == defaultRoughness_) s.roughness = 0;
+                if (s.ao        == defaultAO_)        s.ao        = 0;
+                if (s.height    == defaultHeight_)    s.height    = 0;
                 s.Unload();
             }
             m.name = name;
             materials_.push_back(std::move(m));
         } else {
-            // Placeholder — grey square so it's still visible in the viewport
             Material m;
             m.name      = name;
             m.albedo    = MakeSolidTex(130, 130, 130);
             m.normal    = defaultNormal_;
             m.roughness = defaultRoughness_;
+            m.ao        = defaultAO_;
+            m.height    = defaultHeight_;
             materials_.push_back(std::move(m));
         }
     }
-    // Ensure we always have at least one placeholder entry so rendering works.
     if (materials_.empty()) {
         EnsureDefaultTextures();
         Material m;
@@ -305,6 +309,8 @@ void EditableTerrain::ReloadMaterials() {
         m.albedo    = MakeSolidTex(110, 130, 90);
         m.normal    = defaultNormal_;
         m.roughness = defaultRoughness_;
+        m.ao        = defaultAO_;
+        m.height    = defaultHeight_;
         materials_.push_back(std::move(m));
     }
 }
@@ -486,6 +492,8 @@ void EditableTerrain::SubmitToPipeline(rco::renderer::Pipeline& pipeline) {
             base.mat_albedo[i]    = materials_[i].albedo;
             base.mat_normal[i]    = materials_[i].normal;
             base.mat_roughness[i] = materials_[i].roughness;
+            base.mat_ao[i]        = materials_[i].ao;
+            base.mat_height[i]    = materials_[i].height;
         }
     }
 
@@ -509,6 +517,8 @@ EditableTerrain::~EditableTerrain() {
     if (prog_) glDeleteProgram(prog_);
     if (defaultNormal_)    glDeleteTextures(1, &defaultNormal_);
     if (defaultRoughness_) glDeleteTextures(1, &defaultRoughness_);
+    if (defaultAO_)        glDeleteTextures(1, &defaultAO_);
+    if (defaultHeight_)    glDeleteTextures(1, &defaultHeight_);
 }
 
 } // namespace gue
