@@ -1792,6 +1792,32 @@ int main() {
                     }
                 }
 
+                // ── Frustum culling setup (Gribb-Hartmann) ──────────────────────────
+                // Extract 6 planes from proj*view. GLM is col-major: row r =
+                // (m[0][r], m[1][r], m[2][r], m[3][r]).
+                // Each plane stored as (normal n, distance d): dot(n,P)+d >= 0 → inside.
+                struct FrustumPlane { glm::vec3 n; float d; };
+                FrustumPlane fc_planes[6];
+                {
+                    const glm::mat4 vp = proj * view;
+                    auto row = [&](int r) {
+                        return glm::vec4(vp[0][r], vp[1][r], vp[2][r], vp[3][r]);
+                    };
+                    auto make_plane = [](glm::vec4 p) -> FrustumPlane {
+                        float len = glm::length(glm::vec3(p));
+                        if (len > 1e-5f) p /= len;
+                        return { glm::vec3(p), p.w };
+                    };
+                    glm::vec4 r0=row(0), r1=row(1), r2=row(2), r3=row(3);
+                    fc_planes[0] = make_plane(r3 + r0); // left
+                    fc_planes[1] = make_plane(r3 - r0); // right
+                    fc_planes[2] = make_plane(r3 + r1); // bottom
+                    fc_planes[3] = make_plane(r3 - r1); // top
+                    fc_planes[4] = make_plane(r3 + r2); // near
+                    fc_planes[5] = make_plane(r3 - r2); // far
+                }
+                int fc_vis = 0, fc_culled = 0;
+
                 // Render all other actors (NPCs + other players)
                 for (auto& [rid, e] : world_actors) {
                     // Compute velocity for auto-locomotion from position delta
@@ -1900,6 +1926,20 @@ int main() {
                     // been edited without re-broadcasting spawns.
                     glm::vec3 pos = {e.x, e.y, e.z};
 
+                    // ── Frustum cull — AABB 2×2×2 centered at (x, y+1, z) ───────────
+                    // p-vertex test: r = |n.x|*hx + |n.y|*hy + |n.z|*hz (hx=hy=hz=1)
+                    {
+                        const glm::vec3 center = pos + glm::vec3(0.f, 1.f, 0.f);
+                        bool inside = true;
+                        for (const auto& p : fc_planes) {
+                            float dist = glm::dot(p.n, center) + p.d
+                                       + std::abs(p.n.x) + std::abs(p.n.y) + std::abs(p.n.z);
+                            if (dist < 0.f) { inside = false; break; }
+                        }
+                        if (!inside) { ++fc_culled; continue; }
+                    }
+                    ++fc_vis;
+
                     // Use AnimController state if available, otherwise fall back
                     // to the legacy anim_name/anim_t fields
                     std::string submit_anim = e.anim_name;
@@ -1948,6 +1988,18 @@ int main() {
                             const float        tt = player_anim_ctrl.IsReady() ? player_anim_ctrl.CurrentTime()   : 0.f;
                             player_actor.SubmitAs(nm, tt, lf, *pipeline);
                         }
+                    }
+                }
+
+                // Frustum culling stats — throttled to ~1 Hz
+                {
+                    static float s_perf_acc = 0.f;
+                    s_perf_acc += static_cast<float>(dt);
+                    if (s_perf_acc >= 1.f) {
+                        s_perf_acc = 0.f;
+                        std::fprintf(stderr,
+                            "[perf] actors_vis=%d actors_culled=%d actors_tot=%d\n",
+                            fc_vis, fc_culled, fc_vis + fc_culled);
                     }
                 }
 
