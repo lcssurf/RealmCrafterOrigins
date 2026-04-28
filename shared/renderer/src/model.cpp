@@ -680,8 +680,29 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
         sm.bone_offsets[bidx] = off;
     }
 
-    sm.raw_verts   = std::move(verts);
-    sm.raw_indices = std::move(indices);
+    sm.raw_verts        = std::move(verts);
+    sm.raw_indices      = std::move(indices);
+    sm.raw_vertex_count = (int)mesh->mNumVertices;
+
+    // Preserve bone data for consolidation. For non-skinned submeshes bids_out
+    // and bwts_out are already zeroed (assigned at the top of this function),
+    // so the loop is uniform regardless of has_bones.
+    {
+        const unsigned nv = mesh->mNumVertices;
+        sm.raw_bone_ids.resize(nv * 4);
+        sm.raw_bone_weights.resize(nv * 4);
+        for (unsigned i = 0; i < nv; ++i) {
+            sm.raw_bone_ids    [i*4+0] = bids_out[i].x;
+            sm.raw_bone_ids    [i*4+1] = bids_out[i].y;
+            sm.raw_bone_ids    [i*4+2] = bids_out[i].z;
+            sm.raw_bone_ids    [i*4+3] = bids_out[i].w;
+            sm.raw_bone_weights[i*4+0] = bwts_out[i].x;
+            sm.raw_bone_weights[i*4+1] = bwts_out[i].y;
+            sm.raw_bone_weights[i*4+2] = bwts_out[i].z;
+            sm.raw_bone_weights[i*4+3] = bwts_out[i].w;
+        }
+    }
+
     return sm;
 }
 
@@ -855,8 +876,11 @@ bool Model::Load(const char* path, MaterialManager* mm) {
 
     // Free temporary CPU geometry copies.
     for (auto& m : meshes_) {
-        m.raw_verts   = {};
-        m.raw_indices = {};
+        m.raw_verts        = {};
+        m.raw_indices      = {};
+        m.raw_bone_ids     = {};
+        m.raw_bone_weights = {};
+        m.raw_vertex_count = 0;
     }
 
     return true;

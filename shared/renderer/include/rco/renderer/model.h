@@ -53,9 +53,12 @@ struct SubMesh {
     std::vector<glm::mat4> bone_offsets;
 
     // Temporary CPU copies kept alive until the end of Model::Load() so that
-    // consolidation analysis can inspect raw geometry. Cleared before Load returns.
-    std::vector<float>    raw_verts;    // 11 floats per vertex
+    // consolidation can inspect and merge raw geometry. Cleared before Load returns.
+    std::vector<float>    raw_verts;        // 11 floats per vertex (pos3|norm3|uv2|tan3)
     std::vector<unsigned> raw_indices;
+    std::vector<int>      raw_bone_ids;     // 4 per vertex (global bone indices)
+    std::vector<float>    raw_bone_weights; // 4 per vertex (normalised)
+    int                   raw_vertex_count = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -96,6 +99,10 @@ struct BoneInfo {
 // ---------------------------------------------------------------------------
 
 class MaterialManager;
+
+// Forward declarations for ConsolidateMeshes friend access.
+struct ConsolidationResult;
+ConsolidationResult ConsolidateMeshes(class Model& model, const char* path);
 
 class Model {
 public:
@@ -206,6 +213,8 @@ private:
     GLuint  LoadTex(const aiScene* scene, const std::string& path, bool srgb) const;
     void    GeneratePlaceholder();
     static void FreeMesh(SubMesh& m);
+
+    friend ConsolidationResult ConsolidateMeshes(Model& model, const char* path);
 };
 
 } // namespace rco::renderer

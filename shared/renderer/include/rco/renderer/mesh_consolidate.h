@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef RCO_MESH_CONSOLIDATE
-#define RCO_MESH_CONSOLIDATE 0  // OFF by default — set to 1 only after step 3c
+#define RCO_MESH_CONSOLIDATE 1  // OFF by default — set to 1 only after step 3c
 #endif
 
 namespace rco { namespace renderer {
