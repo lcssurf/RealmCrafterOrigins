@@ -51,6 +51,11 @@ struct SubMesh {
     // one globally would render 43 of 44 parts in wrong positions.
     // Sized to bones_.size() after Load finishes; unused slots are identity.
     std::vector<glm::mat4> bone_offsets;
+
+    // Temporary CPU copies kept alive until the end of Model::Load() so that
+    // consolidation analysis can inspect raw geometry. Cleared before Load returns.
+    std::vector<float>    raw_verts;    // 11 floats per vertex
+    std::vector<unsigned> raw_indices;
 };
 
 // ---------------------------------------------------------------------------

@@ -678,6 +678,9 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
             sm.bone_offsets.resize(bidx + 1, glm::mat4(1.f));
         sm.bone_offsets[bidx] = off;
     }
+
+    sm.raw_verts   = std::move(verts);
+    sm.raw_indices = std::move(indices);
     return sm;
 }
 
@@ -844,6 +847,34 @@ bool Model::Load(const char* path, MaterialManager* mm) {
             m.material_idx = mm->RegisterFromHandles(
                 key, m.tex_albedo, m.tex_normal, m.tex_orm);
         }
+    }
+
+    // === [3a] Mesh consolidation analysis (detection + log only, no merging) ===
+    {
+        std::unordered_map<std::string, std::vector<int>> mat_groups;
+        for (int i = 0; i < (int)meshes_.size(); ++i) {
+            mat_groups[meshes_[i].material_name].push_back(i);
+        }
+        std::fprintf(stderr,
+            "[consolidate-detect] '%s' total_submeshes=%d unique_materials=%d\n",
+            path, (int)meshes_.size(), (int)mat_groups.size());
+        for (const auto& [mat_name, indices] : mat_groups) {
+            size_t total_verts = 0;
+            size_t total_indices = 0;
+            for (int si : indices) {
+                total_verts += meshes_[si].raw_verts.size() / 11;
+                total_indices += meshes_[si].raw_indices.size();
+            }
+            std::fprintf(stderr,
+                "[consolidate-detect]   mat='%s' submeshes=%d total_verts=%zu total_indices=%zu\n",
+                mat_name.c_str(), (int)indices.size(), total_verts, total_indices);
+        }
+    }
+
+    // Free temporary CPU geometry copies.
+    for (auto& m : meshes_) {
+        m.raw_verts   = {};
+        m.raw_indices = {};
     }
 
     return true;
