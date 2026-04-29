@@ -583,6 +583,8 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
         if (mat->GetTexture(AI_MATKEY_METALLIC_TEXTURE, &texPath) == AI_SUCCESS ||
             mat->GetTexture(aiTextureType_METALNESS, 0, &texPath) == AI_SUCCESS)
             sm.tex_orm = LoadTex(scene, texPath.C_Str(), false);
+        if (mat->GetTexture(aiTextureType_OPACITY, 0, &texPath) == AI_SUCCESS)
+            sm.tex_opacity = LoadTex(scene, texPath.C_Str(), false);
         aiColor4D c;
         if (mat->Get(AI_MATKEY_BASE_COLOR, c) == AI_SUCCESS ||
             mat->Get(AI_MATKEY_COLOR_DIFFUSE, c) == AI_SUCCESS)
@@ -833,7 +835,7 @@ bool Model::Load(const char* path, MaterialManager* mm) {
             char key[512];
             std::snprintf(key, sizeof(key), "%s#%zu", path, i);
             m.material_idx = mm->RegisterFromHandles(
-                key, m.tex_albedo, m.tex_normal, m.tex_orm);
+                key, m.tex_albedo, m.tex_normal, m.tex_orm, m.tex_opacity);
         }
     }
 

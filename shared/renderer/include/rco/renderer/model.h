@@ -26,9 +26,10 @@ struct SubMesh {
     int    idx_count = 0;
     bool   skinned   = false;
 
-    GLuint tex_albedo = 0;
-    GLuint tex_normal = 0;
-    GLuint tex_orm    = 0;
+    GLuint tex_albedo   = 0;
+    GLuint tex_normal   = 0;
+    GLuint tex_orm      = 0;
+    GLuint tex_opacity  = 0;
 
     glm::vec3 albedo_factor    = {0.72f, 0.68f, 0.60f};
     float     roughness_factor = 0.5f;

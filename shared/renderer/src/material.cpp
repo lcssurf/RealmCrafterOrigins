@@ -16,6 +16,7 @@ MaterialManager::~MaterialManager() {
         delete p.second.metalnessTex;
         delete p.second.normalTex;
         delete p.second.ambientOcclusionTex;
+        delete p.second.opacityTex;
     }
 }
 
@@ -85,23 +86,21 @@ Material& MaterialManager::MakeMaterial(std::string name,
 int MaterialManager::RegisterFromHandles(const std::string& name,
                                           unsigned int albedo,
                                           unsigned int normal,
-                                          unsigned int orm) {
-    uint64_t aH   = MakeResidentHandle_(albedo);
-    uint64_t nH   = MakeResidentHandle_(normal);
-    uint64_t ormH = MakeResidentHandle_(orm);
+                                          unsigned int orm,
+                                          unsigned int opacity) {
+    uint64_t aH      = MakeResidentHandle_(albedo);
+    uint64_t nH      = MakeResidentHandle_(normal);
+    uint64_t ormH    = MakeResidentHandle_(orm);
+    uint64_t opacH   = MakeResidentHandle_(opacity);
 
-    // If the name was already registered, REFRESH its handles in place.
-    // This happens when a model is reloaded, when the user swaps materials
-    // in the mapping UI, or when the same aiMaterial name shows up across
-    // reloads. Returning the stale entry would point submeshes at textures
-    // that have since been destroyed — next draw = crash.
     if (auto it = nameToIndex_.find(name); it != nameToIndex_.end()) {
         int idx = it->second;
         Material& m = materials[name];
         m.albedoHandle    = aH;
         m.normalHandle    = nH;
-        m.roughnessHandle = ormH;   // glTF ORM — shader reads .g/.b/.r
+        m.roughnessHandle = ormH;
         m.metalnessHandle = ormH;
+        m.opacityHandle   = opacH;
         return idx;
     }
 
@@ -110,6 +109,7 @@ int MaterialManager::RegisterFromHandles(const std::string& name,
     m.normalHandle    = nH;
     m.roughnessHandle = ormH;
     m.metalnessHandle = ormH;
+    m.opacityHandle   = opacH;
 
     materials.insert({ name, m });
     return appendName_(name);
@@ -138,6 +138,7 @@ std::vector<BindlessMaterial> MaterialManager::GetLinearBindless() const {
             .metalnessHandle        = m.metalnessHandle,
             .normalHandle           = m.normalHandle,
             .ambientOcclusionHandle = m.ambientOcclusionHandle,
+            .opacityHandle          = m.opacityHandle,
         });
     }
     return out;

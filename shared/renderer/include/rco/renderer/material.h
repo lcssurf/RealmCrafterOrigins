@@ -18,21 +18,24 @@ struct Material {
     Texture2D* metalnessTex        {};
     Texture2D* normalTex           {};
     Texture2D* ambientOcclusionTex {};
+    Texture2D* opacityTex          {};
 
     uint64_t albedoHandle           {};
     uint64_t roughnessHandle        {};
     uint64_t metalnessHandle        {};
     uint64_t normalHandle           {};
     uint64_t ambientOcclusionHandle {};
+    uint64_t opacityHandle          {};
 };
 
-// GPU-side layout — exactly 5× uint64_t per entry (matches gBufferBindless.fs).
+// GPU-side layout — exactly 6× uint64_t per entry (matches gBufferBindless.fs).
 struct BindlessMaterial {
     uint64_t albedoHandle           {};
     uint64_t roughnessHandle        {};
     uint64_t metalnessHandle        {};
     uint64_t normalHandle           {};
     uint64_t ambientOcclusionHandle {};
+    uint64_t opacityHandle          {};
 };
 
 class MaterialManager {
@@ -66,8 +69,9 @@ public:
     // same name has already been registered, returns its existing index.
     int RegisterFromHandles(const std::string& name,
                             unsigned int albedo,
-                            unsigned int normal = 0,
-                            unsigned int orm    = 0);
+                            unsigned int normal   = 0,
+                            unsigned int orm      = 0,
+                            unsigned int opacity  = 0);
 
     // Name → index (-1 if unknown).
     int IndexOf(const std::string& name) const;

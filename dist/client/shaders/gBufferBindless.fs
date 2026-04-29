@@ -9,6 +9,7 @@ struct Material
   uvec2 metalnessHandle;
   uvec2 normalHandle;
   uvec2 ambientOcclusionHandle;
+  uvec2 opacityHandle;
 };
 
 layout (location = 3) uniform bool u_materialOverride;
@@ -69,11 +70,14 @@ void main()
   {
     color = texture(sampler2D(material.albedoHandle), vTexCoord).rgba;
   }
-  // Deferred pipeline renders every mesh as opaque — we ignore the texture's
-  // alpha channel because it often carries meaningless data in glTF OPAQUE
-  // materials and would otherwise discard most of the mesh. Alpha-mask
-  // cutout (glTF alphaMode=MASK) would need an explicit per-material flag;
-  // not wired up yet.
+  // Opacity cutout: dedicated opacity map takes priority, else albedo alpha.
+  const bool hasOpacity = (material.opacityHandle.x != 0 || material.opacityHandle.y != 0);
+  if (hasOpacity) {
+      if (texture(sampler2D(material.opacityHandle), vTexCoord).r < 0.1) discard;
+  } else if (color.a < 0.1) {
+      discard;
+  }
+
   gAlbedo.rgb = color.rgb;
   gAlbedo.a = 1.0; // unused
   gRMA.rgba = vec4(1.0, 0.0, 1.0, 1.0); // sane defaults, gRMA.a is unused
