@@ -15,7 +15,6 @@
 #include <algorithm>
 #include <memory>
 #include <unordered_map>
-#include <unordered_set>
 #include <chrono>
 
 namespace rco::renderer {
@@ -54,7 +53,6 @@ static GLuint LoadTexCached(const std::string& path, bool srgb) {
     std::string key = path + (srgb ? "|srgb" : "|lin");
     auto it = g_tex_cache.find(key);
     if (it != g_tex_cache.end()) {
-        std::fprintf(stderr, "[tex-cache] HIT  '%s'\n", path.c_str());
         return it->second;
     }
     std::fprintf(stderr, "[tex-cache] MISS '%s'\n", path.c_str());
@@ -416,18 +414,6 @@ void Model::ComputeBones(int clip_idx, float time_sec, int mesh_idx,
     float t = 0.f;
     if (clip) {
         t = clip->duration_sec > 0.f ? std::fmod(time_sec, clip->duration_sec) : 0.f;
-
-        // TESTE B: log channel->bone_idx mapping once per clip name
-        static std::unordered_set<std::string> s_chan_map_printed;
-        if (!s_chan_map_printed.count(clip->name)) {
-            s_chan_map_printed.insert(clip->name);
-            for (const auto& ch : clip->channels) {
-                auto nit = node_map_.find(ch.name);
-                int bidx = (nit != node_map_.end()) ? anim_nodes_[nit->second].bone_idx : -1;
-                std::fprintf(stderr, "[chan-map] clip='%s' chan='%s' -> bone_idx=%d\n",
-                             clip->name.c_str(), ch.name.c_str(), bidx);
-            }
-        }
     }
 
     std::vector<glm::mat4> global(anim_nodes_.size(), glm::mat4(1.f));
@@ -468,26 +454,6 @@ void Model::ComputeBones(int clip_idx, float time_sec, int mesh_idx,
         }
     }
 
-    // TESTE 1: log final bone matrix translation once per clip for key bones
-    if (clip) {
-        static std::unordered_set<std::string> s_final_mat_printed;
-        if (!s_final_mat_printed.count(clip->name)) {
-            s_final_mat_printed.insert(clip->name);
-            static const char* kLogBones[] = {
-                "mixamorig:Hips", "mixamorig:LeftUpLeg", "mixamorig:Spine"
-            };
-            for (const char* bname : kLogBones) {
-                auto nit = node_map_.find(bname);
-                if (nit == node_map_.end()) continue;
-                int bidx = anim_nodes_[nit->second].bone_idx;
-                if (bidx < 0 || bidx >= max_out) continue;
-                const glm::mat4& fm = out_mats[bidx];
-                std::fprintf(stderr,
-                    "[final-mat] clip='%s' bone='%s' final_pos=(%.4f,%.4f,%.4f)\n",
-                    clip->name.c_str(), bname, fm[3][0], fm[3][1], fm[3][2]);
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -890,16 +856,10 @@ bool Model::Load(const char* path, MaterialManager* mm) {
 // AppendAnimationsFrom — load clips from a separate file, with FBX parse cache
 // ---------------------------------------------------------------------------
 int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
-    std::fprintf(stderr, "[anim-load-entry] path='%s' name='%s'\n",
-                 path, name_override ? name_override : "");
-
     if (name_override && name_override[0] != '\0') {
         for (int i = 0; i < (int)clips_.size(); ++i) {
-            if (clips_[i].name == name_override) {
-                std::fprintf(stderr, "[anim-load-early-exit] '%s' already present as clip[%d]\n",
-                             name_override, i);
+            if (clips_[i].name == name_override)
                 return i;
-            }
         }
     }
 
@@ -910,7 +870,6 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
     {
         auto it = g_anim_file_cache.find(path);
         if (it != g_anim_file_cache.end()) {
-            std::fprintf(stderr, "[anim-cache] HIT  '%s'\n", path);
             fcache = it->second;
         } else {
             std::fprintf(stderr, "[anim-cache] MISS '%s' — parsing FBX\n", path);
@@ -1052,8 +1011,7 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
     {
         auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t0).count();
-        std::fprintf(stderr, "[anim-load-time] path='%s' name='%s' took=%lldms\n",
-                     path, name_override ? name_override : "", (long long)dt);
+        (void)dt;
     }
     return first;
 }

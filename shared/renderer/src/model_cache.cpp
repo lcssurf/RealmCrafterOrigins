@@ -9,10 +9,8 @@ static std::unordered_map<std::string, std::weak_ptr<Model>> s_cache;
 std::shared_ptr<Model> ModelCacheGet(const std::string& path, MaterialManager* mm) {
     auto it = s_cache.find(path);
     if (it != s_cache.end()) {
-        if (auto sp = it->second.lock()) {
-            std::fprintf(stderr, "[model-cache] HIT '%s'\n", path.c_str());
+        if (auto sp = it->second.lock())
             return sp;
-        }
     }
     auto m = std::make_shared<Model>();
     m->Load(path.c_str(), mm);

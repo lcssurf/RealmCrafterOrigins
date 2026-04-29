@@ -169,7 +169,7 @@ int main() {
 
     // AnimController for the local player
     rco::anim::AnimController player_anim_ctrl;
-    player_anim_ctrl.log_enabled = true;  // diagnostic logs for player only
+    player_anim_ctrl.log_enabled = false;
     float player_yaw_offset = 0.f;
     float player_y_offset   = 0.f;
 
@@ -682,10 +682,6 @@ int main() {
 
                 // If this is the local player's own PNewActor, store the
                 // appearance data for use when initializing player_actor.
-                std::fprintf(stderr,
-                    "[PNewActor] rid=%u (player.runtimeId=%u) meshes=%u anims=%u\n",
-                    rid, player.runtimeId,
-                    (unsigned)meshes.size(), (unsigned)anims.size());
                 if (rid == player.runtimeId) {
                     std::fprintf(stderr,
                         "[PNewActor-self] intercepted rid=%u meshes=%u — storing player appearance\n",
@@ -794,9 +790,6 @@ int main() {
                         }
                         for (auto& wa : player_anims) {
                             if (!wa.source_path.empty()) {
-                                std::fprintf(stderr,
-                                    "[Player init] LoadAnim action='%s' path='%s'\n",
-                                    wa.action.c_str(), wa.source_path.c_str());
                                 player_actor.LoadAnim(wa.source_path.c_str(),
                                                       wa.action.c_str());
                                 player_anim_ctrl.SetClipDuration(
@@ -807,14 +800,6 @@ int main() {
                             if (!wa.clip_override.empty())
                                 player_actor.AliasClip(wa.clip_override, wa.action);
                         }
-                        std::fprintf(stderr,
-                            "[Player init] clips_loaded=%d\n",
-                            player_actor.model().ClipCount());
-                        for (int ci = 0; ci < player_actor.model().ClipCount(); ++ci)
-                            std::fprintf(stderr,
-                                "  clip[%d] name='%s' dur=%.2fs\n",
-                                ci, player_actor.model().ClipName(ci).c_str(),
-                                player_actor.model().ClipDuration(ci));
                         engine.RebuildMaterialsBuffer();
                         camera.SetActorHeight(player_actor.ModelHeight());
                     }
@@ -918,11 +903,6 @@ int main() {
                 // against the (possibly new) appearance data.
                 e.actor.reset();
 
-                std::fprintf(stderr,
-                    "[PNewActor] rid=%u name=%s pos=(%.1f,%.1f,%.1f) "
-                    "meshes=%u anims=%u\n",
-                    rid, e.name.c_str(), x, y, z,
-                    (unsigned)e.meshes.size(), (unsigned)e.anims.size());
                 break;
             }
 
@@ -1479,9 +1459,6 @@ int main() {
                     }
                     for (auto& wa : player_anims) {
                         if (!wa.source_path.empty()) {
-                            std::fprintf(stderr,
-                                "[Player init] LoadAnim action='%s' path='%s'\n",
-                                wa.action.c_str(), wa.source_path.c_str());
                             player_actor.LoadAnim(wa.source_path.c_str(),
                                                   wa.action.c_str());
                             player_anim_ctrl.SetClipDuration(
@@ -1492,14 +1469,6 @@ int main() {
                         if (!wa.clip_override.empty())
                             player_actor.AliasClip(wa.clip_override, wa.action);
                     }
-                    std::fprintf(stderr,
-                        "[Player init] clips_loaded=%d\n",
-                        player_actor.model().ClipCount());
-                    for (int ci = 0; ci < player_actor.model().ClipCount(); ++ci)
-                        std::fprintf(stderr,
-                            "  clip[%d] name='%s' dur=%.2fs\n",
-                            ci, player_actor.model().ClipName(ci).c_str(),
-                            player_actor.model().ClipDuration(ci));
                     engine.RebuildMaterialsBuffer();
                     camera.SetActorHeight(player_actor.ModelHeight());
                     particles.Init();
@@ -1817,6 +1786,7 @@ int main() {
                     fc_planes[5] = make_plane(r3 - r2); // far
                 }
                 int fc_vis = 0, fc_culled = 0;
+                std::unordered_map<std::string, int> fc_model_counts;
 
                 // Render all other actors (NPCs + other players)
                 for (auto& [rid, e] : world_actors) {
@@ -1866,18 +1836,9 @@ int main() {
                                 mp.albedo = am.albedo;
                                 mp.normal = am.normal;
                                 mp.orm    = am.orm;
-                                std::fprintf(stderr,
-                                    "[matmap] rid=%u ai='%s' albedo='%s' normal='%s' orm='%s'\n",
-                                    rid, am.ai_name.c_str(),
-                                    am.albedo.c_str(), am.normal.c_str(), am.orm.c_str());
                                 by_name[am.ai_name] = std::move(mp);
                             }
-                            auto _t0_mat = std::chrono::steady_clock::now();
                             a->ApplyMaterialsByName(engine.materials(), by_name);
-                            auto _dt_mat = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - _t0_mat).count();
-                            std::fprintf(stderr, "[matmap-time] rid=%u took=%lldms\n",
-                                         rid, (long long)_dt_mat);
                         }
 
                         // Per-slot global override (from Body.material_id) goes
@@ -1897,12 +1858,8 @@ int main() {
                         engine.RebuildMaterialsBuffer();
 
                         for (auto& an : e.anims) {
-                            if (!an.source_path.empty()) {
-                                std::fprintf(stderr,
-                                    "[Actor init] rid=%u LoadAnim action='%s' path='%s'\n",
-                                    rid, an.action.c_str(), an.source_path.c_str());
+                            if (!an.source_path.empty())
                                 a->LoadAnim(an.source_path.c_str(), an.action.c_str());
-                            }
                         }
                         for (auto& an : e.anims) {
                             if (!an.clip_override.empty())
@@ -1926,6 +1883,17 @@ int main() {
                     // been edited without re-broadcasting spawns.
                     glm::vec3 pos = {e.x, e.y, e.z};
 
+                    // ── Distance cull — skip actors beyond max render distance ────────
+                    static constexpr float kActorDrawDist = 150.f;
+                    {
+                        float dx = e.x - player.x;
+                        float dz = e.z - player.z;
+                        if (dx*dx + dz*dz > kActorDrawDist * kActorDrawDist) {
+                            ++fc_culled;
+                            continue;
+                        }
+                    }
+
                     // ── Frustum cull — AABB 2×2×2 centered at (x, y+1, z) ───────────
                     // p-vertex test: r = |n.x|*hx + |n.y|*hy + |n.z|*hz (hx=hy=hz=1)
                     {
@@ -1939,6 +1907,9 @@ int main() {
                         if (!inside) { ++fc_culled; continue; }
                     }
                     ++fc_vis;
+                    // Track per-model visible counts for perf diagnostics
+                    if (e.actor && !e.meshes.empty())
+                        ++fc_model_counts[e.meshes.front().model_path];
 
                     // Use AnimController state if available, otherwise fall back
                     // to the legacy anim_name/anim_t fields
@@ -2000,6 +1971,13 @@ int main() {
                         std::fprintf(stderr,
                             "[perf] actors_vis=%d actors_culled=%d actors_tot=%d\n",
                             fc_vis, fc_culled, fc_vis + fc_culled);
+                        for (const auto& [path, count] : fc_model_counts) {
+                            // Extract just the filename for brevity
+                            auto slash = path.find_last_of("/\\");
+                            std::string fname = (slash == std::string::npos) ? path : path.substr(slash + 1);
+                            std::fprintf(stderr, "[perf]   model='%s' instances=%d\n",
+                                         fname.c_str(), count);
+                        }
                     }
                 }
 

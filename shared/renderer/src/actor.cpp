@@ -42,10 +42,6 @@ static glm::mat4 ComposeTRS(const glm::vec3& t, const glm::quat& r, const glm::v
 void Actor::Init(const char* /*shader_dir*/, const char* model_path,
                  MaterialManager* mm) {
     model_ = ModelCacheGet(model_path, mm);
-    std::fprintf(stderr,
-        "[actor] Init done: model='%s' loaded=%d has_anims=%d clips=%d\n",
-        model_path, model_->IsLoaded() ? 1 : 0,
-        model_->HasAnimations() ? 1 : 0, model_->ClipCount());
 
     if (model_->HasAnimations())
         PlayAnim("Idle", true);
