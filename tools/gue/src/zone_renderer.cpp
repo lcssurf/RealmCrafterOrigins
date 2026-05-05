@@ -56,10 +56,12 @@ ZoneRenderer::~ZoneRenderer() {
     // Actors destroy their models + bone SSBOs in their own destructors.
     sceneryActors_.clear();
     npcActors_.clear();
-    if (primProg_)    glDeleteProgram(primProg_);
+    if (primProg_)         glDeleteProgram(primProg_);
+    if (colVisColorProg_)  glDeleteProgram(colVisColorProg_);
     if (sphereVAO_)   { glDeleteVertexArrays(1, &sphereVAO_); glDeleteBuffers(1, &sphereVBO_); glDeleteBuffers(1, &sphereEBO_); }
     if (boxVAO_)      { glDeleteVertexArrays(1, &boxVAO_);    glDeleteBuffers(1, &boxVBO_);    glDeleteBuffers(1, &boxEBO_);    }
     if (lineVAO_)     { glDeleteVertexArrays(1, &lineVAO_);   glDeleteBuffers(1, &lineVBO_);   }
+    if (colVisBatchVAO_) { glDeleteVertexArrays(1, &colVisBatchVAO_); glDeleteBuffers(1, &colVisBatchVBO_); }
     // EditableTerrain cleans itself up via its destructor.
 }
 
@@ -112,11 +114,37 @@ void main() {
 }
 )glsl";
 
+// Per-vertex colour shader — used for the batched colVis geometry.
+// Vertex layout: vec3 pos + vec4 col (7 floats, stride 28 bytes).
+static const char* kColVisVS = R"glsl(
+#version 460 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec4 aCol;
+layout(location = 0) uniform mat4 u_VP;
+out vec4 vCol;
+void main() {
+    gl_Position = u_VP * vec4(aPos, 1.0);
+    vCol = aCol;
+}
+)glsl";
+
+static const char* kColVisFS = R"glsl(
+#version 460 core
+in  vec4 vCol;
+out vec4 fragColor;
+void main() { fragColor = vCol; }
+)glsl";
+
 bool ZoneRenderer::InitPrimShader() {
     GLuint vs = CompileShader(GL_VERTEX_SHADER,   kPrimVS);
     GLuint fs = CompileShader(GL_FRAGMENT_SHADER, kPrimFS);
     primProg_ = LinkProg(vs, fs);
-    return primProg_ != 0;
+
+    GLuint cvs = CompileShader(GL_VERTEX_SHADER,   kColVisVS);
+    GLuint cfs = CompileShader(GL_FRAGMENT_SHADER, kColVisFS);
+    colVisColorProg_ = LinkProg(cvs, cfs);
+
+    return primProg_ != 0 && colVisColorProg_ != 0;
 }
 
 // ─── Scene actor cache ───────────────────────────────────────────────────────
@@ -317,6 +345,21 @@ void ZoneRenderer::BuildPrimitiveVAOs() {
     glEnableVertexArrayAttrib(lineVAO_, 0);
     glVertexArrayAttribFormat(lineVAO_, 0, 3, GL_FLOAT, GL_FALSE, 0);
     glVertexArrayAttribBinding(lineVAO_, 0, 0);
+
+    // ColVis batch — per-vertex colour, dynamic (rebuilt when scene changes)
+    // Stride: 7 × 4 = 28 bytes  [pos.xyz | col.rgba]
+    glCreateVertexArrays(1, &colVisBatchVAO_);
+    glCreateBuffers(1, &colVisBatchVBO_);
+    glNamedBufferData(colVisBatchVBO_, 0, nullptr, GL_DYNAMIC_DRAW);
+    glVertexArrayVertexBuffer(colVisBatchVAO_, 0, colVisBatchVBO_, 0, 28);
+    // attrib 0 = pos (offset 0)
+    glEnableVertexArrayAttrib(colVisBatchVAO_, 0);
+    glVertexArrayAttribFormat(colVisBatchVAO_, 0, 3, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(colVisBatchVAO_, 0, 0);
+    // attrib 1 = colour (offset 12)
+    glEnableVertexArrayAttrib(colVisBatchVAO_, 1);
+    glVertexArrayAttribFormat(colVisBatchVAO_, 1, 4, GL_FLOAT, GL_FALSE, 12);
+    glVertexArrayAttribBinding(colVisBatchVAO_, 1, 0);
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -373,6 +416,15 @@ void ZoneRenderer::DrawLine(const glm::vec3& a, const glm::vec3& b,
     glUniform4fv(2, 1, glm::value_ptr(col));
     glBindVertexArray(lineVAO_);
     glDrawArrays(GL_LINES, 0, 2);
+}
+
+void ZoneRenderer::UploadColVisBatch(const ColVisData& vis) {
+    colVisBatchVtxN_ = (int)vis.verts.size();
+    if (colVisBatchVtxN_ == 0) return;
+    glNamedBufferData(colVisBatchVBO_,
+                      colVisBatchVtxN_ * (GLsizeiptr)sizeof(ColVisData::Vtx),
+                      vis.verts.data(),
+                      GL_DYNAMIC_DRAW);
 }
 
 void ZoneRenderer::DrawCircleXZ(const glm::vec2& xz, float r, float y,
@@ -458,7 +510,7 @@ void ZoneRenderer::RenderFramePBR_(const ZoneCamera& cam, const ZoneScene& scene
     fullPipeline_->SetSun(-glm::normalize(glm::vec3(0.5f, 1.0f, 0.3f)),
                           glm::vec3(1.0f, 0.96f, 0.85f));
 
-    terrain_.SubmitToPipeline(*fullPipeline_);
+    terrain_.SubmitToPipeline(*fullPipeline_, cam.pos);
 
     // Scenery — one Actor per ZScenery id (see sceneryActors_). Each carries
     // its own bone SSBOs, material mapping, etc. — the same class Media uses.
@@ -531,6 +583,20 @@ void ZoneRenderer::DrawForwardOverlays_(const ZoneScene& scene, int selectedID,
         glm::vec4 col = sel ? glm::vec4(1.f, 0.2f, 0.2f, 0.8f)
                             : glm::vec4(0.8f, 0.1f, 0.1f, 0.4f);
         DrawBox(c.pos, c.scale, col, vp);
+    }
+    for (auto& s : scene.colSpheres) {
+        bool sel = (selectedType == kSelColSphere && selectedID == s.id);
+        glm::vec4 col = sel ? glm::vec4(1.f, 0.2f, 0.2f, 0.8f)
+                            : glm::vec4(1.0f, 0.4f, 0.0f, 0.45f);
+        DrawSphere(s.pos, s.radius, col, vp);
+    }
+    // Per-scenery collision shapes — one batched draw call for all shapes.
+    if (colVisBatchVtxN_ > 0 && colVisColorProg_) {
+        glUseProgram(colVisColorProg_);
+        glUniformMatrix4fv(0, 1, GL_FALSE, glm::value_ptr(vp));
+        glBindVertexArray(colVisBatchVAO_);
+        glDrawArrays(GL_LINES, 0, colVisBatchVtxN_);
+        glUseProgram(primProg_);  // restore for subsequent draw calls
     }
     for (auto& w : scene.water) {
         bool sel = (selectedType == kSelWater && selectedID == w.id);

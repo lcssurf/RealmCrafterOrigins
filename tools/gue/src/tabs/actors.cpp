@@ -20,26 +20,39 @@ static const char* kAggTypes[] = {
 void ActorsTab::EnsureTable(sqlite3* db) {
     const char* sql =
         "CREATE TABLE IF NOT EXISTS npc_spawns ("
-        "  id               INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "  name             TEXT    NOT NULL DEFAULT 'NPC',"
-        "  race             TEXT    NOT NULL DEFAULT 'Human',"
-        "  class            TEXT    NOT NULL DEFAULT 'Warrior',"
-        "  level            INTEGER NOT NULL DEFAULT 1,"
-        "  area_name        TEXT    NOT NULL DEFAULT 'Starter Zone',"
-        "  x                REAL    NOT NULL DEFAULT 0,"
-        "  y                REAL    NOT NULL DEFAULT 0,"
-        "  z                REAL    NOT NULL DEFAULT 0,"
-        "  yaw              REAL    NOT NULL DEFAULT 0,"
-        "  aggressiveness   INTEGER NOT NULL DEFAULT 0,"
-        "  aggressive_range REAL    NOT NULL DEFAULT 8.0,"
-        "  attack_range     REAL    NOT NULL DEFAULT 2.0,"
-        "  respawn_delay_ms INTEGER NOT NULL DEFAULT 30000,"
-        "  actor_def_id     INTEGER NOT NULL DEFAULT 0"
+        "  id                INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  name              TEXT    NOT NULL DEFAULT 'NPC',"
+        "  race              TEXT    NOT NULL DEFAULT 'Human',"
+        "  class             TEXT    NOT NULL DEFAULT 'Warrior',"
+        "  level             INTEGER NOT NULL DEFAULT 1,"
+        "  area_name         TEXT    NOT NULL DEFAULT 'Starter Zone',"
+        "  x                 REAL    NOT NULL DEFAULT 0,"
+        "  y                 REAL    NOT NULL DEFAULT 0,"
+        "  z                 REAL    NOT NULL DEFAULT 0,"
+        "  yaw               REAL    NOT NULL DEFAULT 0,"
+        "  aggressiveness    INTEGER NOT NULL DEFAULT 0,"
+        "  aggressive_range  REAL    NOT NULL DEFAULT 8.0,"
+        "  attack_range      REAL    NOT NULL DEFAULT 2.0,"
+        "  respawn_delay_ms  INTEGER NOT NULL DEFAULT 30000,"
+        "  actor_def_id      INTEGER NOT NULL DEFAULT 0,"
+        "  start_waypoint_id INTEGER NOT NULL DEFAULT 0"
         ")";
     sqlite3_exec(db, sql, nullptr, nullptr, nullptr);
-    // Backfill column for pre-existing DBs.
+    // Backfill columns for pre-existing DBs.
     sqlite3_exec(db,
         "ALTER TABLE npc_spawns ADD COLUMN actor_def_id INTEGER NOT NULL DEFAULT 0",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "ALTER TABLE npc_spawns ADD COLUMN start_waypoint_id INTEGER NOT NULL DEFAULT 0",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "ALTER TABLE npc_spawns ADD COLUMN wander_radius REAL NOT NULL DEFAULT 0",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "ALTER TABLE npc_spawns ADD COLUMN wander_pause_min_ms INTEGER NOT NULL DEFAULT 2000",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "ALTER TABLE npc_spawns ADD COLUMN wander_pause_max_ms INTEGER NOT NULL DEFAULT 5000",
         nullptr, nullptr, nullptr);
 }
 
@@ -58,10 +71,24 @@ void ActorsTab::Fetch(sqlite3* db) {
         "ALTER TABLE npc_spawns ADD COLUMN attack_range REAL NOT NULL DEFAULT 2.0",
         nullptr, nullptr, nullptr);
 
+    sqlite3_exec(db,
+        "ALTER TABLE npc_spawns ADD COLUMN start_waypoint_id INTEGER NOT NULL DEFAULT 0",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "ALTER TABLE npc_spawns ADD COLUMN wander_radius REAL NOT NULL DEFAULT 0",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "ALTER TABLE npc_spawns ADD COLUMN wander_pause_min_ms INTEGER NOT NULL DEFAULT 2000",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "ALTER TABLE npc_spawns ADD COLUMN wander_pause_max_ms INTEGER NOT NULL DEFAULT 5000",
+        nullptr, nullptr, nullptr);
+
     const char* sql =
         "SELECT id, name, race, class, level, area_name, x, y, z, yaw,"
         "       aggressiveness, aggressive_range, attack_range, respawn_delay_ms,"
-        "       actor_def_id"
+        "       actor_def_id, start_waypoint_id,"
+        "       wander_radius, wander_pause_min_ms, wander_pause_max_ms"
         " FROM npc_spawns ORDER BY area_name, id";
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -84,8 +111,12 @@ void ActorsTab::Fetch(sqlite3* db) {
         n.aggressiveness   = sqlite3_column_int(stmt, 10);
         n.aggressive_range = static_cast<float>(sqlite3_column_double(stmt, 11));
         n.attack_range     = static_cast<float>(sqlite3_column_double(stmt, 12));
-        n.respawn_delay_ms = sqlite3_column_int(stmt, 13);
-        n.actor_def_id     = sqlite3_column_int(stmt, 14);
+        n.respawn_delay_ms  = sqlite3_column_int(stmt, 13);
+        n.actor_def_id      = sqlite3_column_int(stmt, 14);
+        n.start_waypoint_id = sqlite3_column_int(stmt, 15);
+        n.wander_radius     = static_cast<float>(sqlite3_column_double(stmt, 16));
+        n.wander_pause_min  = sqlite3_column_int(stmt, 17);
+        n.wander_pause_max  = sqlite3_column_int(stmt, 18);
         spawns_.push_back(n);
     }
     sqlite3_finalize(stmt);
@@ -101,24 +132,30 @@ bool ActorsTab::Save(sqlite3* db, NpcSpawn& n) {
         const char* sql =
             "INSERT INTO npc_spawns"
             " (name,race,class,level,area_name,x,y,z,yaw,"
-            "  aggressiveness,aggressive_range,attack_range,respawn_delay_ms,actor_def_id)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+            "  aggressiveness,aggressive_range,attack_range,respawn_delay_ms,"
+            "  actor_def_id,start_waypoint_id,"
+            "  wander_radius,wander_pause_min_ms,wander_pause_max_ms)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) goto err;
-        sqlite3_bind_text(stmt,  1, n.name.c_str(),      -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt,  2, n.race.c_str(),      -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt,  3, n.class_.c_str(),    -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt,   4, n.level);
-        sqlite3_bind_text(stmt,  5, n.area_name.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_double(stmt, 6, n.x);
-        sqlite3_bind_double(stmt, 7, n.y);
-        sqlite3_bind_double(stmt, 8, n.z);
-        sqlite3_bind_double(stmt, 9, n.yaw);
-        sqlite3_bind_int(stmt,  10, n.aggressiveness);
-        sqlite3_bind_double(stmt,11, n.aggressive_range);
-        sqlite3_bind_double(stmt,12, n.attack_range);
-        sqlite3_bind_int(stmt,  13, n.respawn_delay_ms);
-        sqlite3_bind_int(stmt,  14, n.actor_def_id);
+        sqlite3_bind_text(stmt,   1, n.name.c_str(),      -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt,   2, n.race.c_str(),      -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt,   3, n.class_.c_str(),    -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt,    4, n.level);
+        sqlite3_bind_text(stmt,   5, n.area_name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(stmt,  6, n.x);
+        sqlite3_bind_double(stmt,  7, n.y);
+        sqlite3_bind_double(stmt,  8, n.z);
+        sqlite3_bind_double(stmt,  9, n.yaw);
+        sqlite3_bind_int(stmt,   10, n.aggressiveness);
+        sqlite3_bind_double(stmt, 11, n.aggressive_range);
+        sqlite3_bind_double(stmt, 12, n.attack_range);
+        sqlite3_bind_int(stmt,   13, n.respawn_delay_ms);
+        sqlite3_bind_int(stmt,   14, n.actor_def_id);
+        sqlite3_bind_int(stmt,   15, n.start_waypoint_id);
+        sqlite3_bind_double(stmt, 16, n.wander_radius);
+        sqlite3_bind_int(stmt,   17, n.wander_pause_min);
+        sqlite3_bind_int(stmt,   18, n.wander_pause_max);
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE) goto err;
         n.id = (int)sqlite3_last_insert_rowid(db);
@@ -128,25 +165,30 @@ bool ActorsTab::Save(sqlite3* db, NpcSpawn& n) {
             " name=?, race=?, class=?, level=?, area_name=?,"
             " x=?, y=?, z=?, yaw=?,"
             " aggressiveness=?, aggressive_range=?, attack_range=?, respawn_delay_ms=?,"
-            " actor_def_id=?"
+            " actor_def_id=?, start_waypoint_id=?,"
+            " wander_radius=?, wander_pause_min_ms=?, wander_pause_max_ms=?"
             " WHERE id=?";
         rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) goto err;
-        sqlite3_bind_text(stmt,  1, n.name.c_str(),      -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt,  2, n.race.c_str(),      -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt,  3, n.class_.c_str(),    -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt,   4, n.level);
-        sqlite3_bind_text(stmt,  5, n.area_name.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_double(stmt, 6, n.x);
-        sqlite3_bind_double(stmt, 7, n.y);
-        sqlite3_bind_double(stmt, 8, n.z);
-        sqlite3_bind_double(stmt, 9, n.yaw);
-        sqlite3_bind_int(stmt,  10, n.aggressiveness);
-        sqlite3_bind_double(stmt,11, n.aggressive_range);
-        sqlite3_bind_double(stmt,12, n.attack_range);
-        sqlite3_bind_int(stmt,  13, n.respawn_delay_ms);
-        sqlite3_bind_int(stmt,  14, n.actor_def_id);
-        sqlite3_bind_int(stmt,  15, n.id);
+        sqlite3_bind_text(stmt,   1, n.name.c_str(),      -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt,   2, n.race.c_str(),      -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt,   3, n.class_.c_str(),    -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt,    4, n.level);
+        sqlite3_bind_text(stmt,   5, n.area_name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(stmt,  6, n.x);
+        sqlite3_bind_double(stmt,  7, n.y);
+        sqlite3_bind_double(stmt,  8, n.z);
+        sqlite3_bind_double(stmt,  9, n.yaw);
+        sqlite3_bind_int(stmt,   10, n.aggressiveness);
+        sqlite3_bind_double(stmt, 11, n.aggressive_range);
+        sqlite3_bind_double(stmt, 12, n.attack_range);
+        sqlite3_bind_int(stmt,   13, n.respawn_delay_ms);
+        sqlite3_bind_int(stmt,   14, n.actor_def_id);
+        sqlite3_bind_int(stmt,   15, n.start_waypoint_id);
+        sqlite3_bind_double(stmt, 16, n.wander_radius);
+        sqlite3_bind_int(stmt,   17, n.wander_pause_min);
+        sqlite3_bind_int(stmt,   18, n.wander_pause_max);
+        sqlite3_bind_int(stmt,   19, n.id);
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE) goto err;
     }
@@ -272,6 +314,29 @@ static bool DrawFields(NpcSpawn& n, MediaTab* media) {
     if (ImGui::InputInt("Respawn Delay (ms)", &n.respawn_delay_ms)) changed = true;
     if (n.respawn_delay_ms < 0) n.respawn_delay_ms = 0;
     ImGui::TextDisabled("0 = permanent death. 30000 = 30 sec.");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Movement");
+
+    if (ImGui::InputInt("Start Waypoint ID", &n.start_waypoint_id)) changed = true;
+    if (n.start_waypoint_id < 0) n.start_waypoint_id = 0;
+    ImGui::TextDisabled("Waypoint patrol: 0 = off. ID from Areas tab.");
+
+    ImGui::Spacing();
+    if (ImGui::InputFloat("Wander Radius", &n.wander_radius, 1.f, 5.f, "%.1f")) changed = true;
+    if (n.wander_radius < 0.f) n.wander_radius = 0.f;
+    ImGui::TextDisabled("Random walk: 0 = off. Max distance from spawn.");
+
+    if (n.wander_radius > 0.f) {
+        float hw = (ImGui::GetContentRegionAvail().x - 8.f) * 0.5f;
+        ImGui::SetNextItemWidth(hw);
+        if (ImGui::InputInt("Pause Min (ms)##w", &n.wander_pause_min)) changed = true;
+        if (n.wander_pause_min < 0) n.wander_pause_min = 0;
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputInt("Pause Max (ms)##w", &n.wander_pause_max)) changed = true;
+        if (n.wander_pause_max < n.wander_pause_min) n.wander_pause_max = n.wander_pause_min;
+    }
 
     return changed;
 }

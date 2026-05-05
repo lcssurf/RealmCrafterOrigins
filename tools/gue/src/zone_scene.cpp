@@ -1,5 +1,8 @@
 #include "zone_scene.h"
+#include <rco/renderer/col_bake.h>
 #include <cstdio>
+#include <algorithm>
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace gue {
 
@@ -101,6 +104,17 @@ void ZoneScene::EnsureTables(sqlite3* db) {
         "  scale_x  REAL    NOT NULL DEFAULT 5,"
         "  scale_y  REAL    NOT NULL DEFAULT 2,"
         "  scale_z  REAL    NOT NULL DEFAULT 5"
+        ")");
+
+    // ── Collision spheres ─────────────────────────────────────────────────
+    Exec(db,
+        "CREATE TABLE IF NOT EXISTS zone_colspheres ("
+        "  id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  area_name TEXT    NOT NULL DEFAULT '',"
+        "  x         REAL    NOT NULL DEFAULT 0,"
+        "  y         REAL    NOT NULL DEFAULT 0,"
+        "  z         REAL    NOT NULL DEFAULT 0,"
+        "  radius    REAL    NOT NULL DEFAULT 3"
         ")");
 
     // ── Waypoints ─────────────────────────────────────────────────────────
@@ -316,6 +330,23 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
         sqlite3_finalize(stmt);
     }
 
+    // ── Collision spheres ─────────────────────────────────────────────────
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, x, y, z, radius FROM zone_colspheres WHERE area_name=? ORDER BY id",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, area.c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            ZColSphere s;
+            s.id     = sqlite3_column_int(stmt, 0);
+            s.pos.x  = (float)sqlite3_column_double(stmt, 1);
+            s.pos.y  = (float)sqlite3_column_double(stmt, 2);
+            s.pos.z  = (float)sqlite3_column_double(stmt, 3);
+            s.radius = (float)sqlite3_column_double(stmt, 4);
+            colSpheres.push_back(s);
+        }
+        sqlite3_finalize(stmt);
+    }
+
     // ── Waypoints ─────────────────────────────────────────────────────────
     if (sqlite3_prepare_v2(db,
         "SELECT id, x, y, z, next_a, next_b, pause_sec,"
@@ -508,6 +539,285 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
 void ZoneScene::SaveToDB(sqlite3* db) {
     (void)db;  // phases fill this in
     dirty = false;
+}
+
+// ─── SaveColData ──────────────────────────────────────────────────────────────
+// Binary format (coldata.bin):
+//   u32 magic = 0x444C4F43 ('COLD')
+//   u32 version = 2
+//   u32 num_boxes    — each: f32 cx,cy,cz, hx,hy,hz
+//   u32 num_spheres  — each: f32 cx,cy,cz, r
+//   u32 num_tris     — each: 9 f32 (v0.xyz, v1.xyz, v2.xyz) — world-space
+
+void ZoneScene::SaveColData(sqlite3* db, const std::string& area) const {
+    char path[512];
+    std::snprintf(path, sizeof(path),
+        "../client/data/areas/%s/coldata.bin", area.c_str());
+
+    FILE* f = std::fopen(path, "wb");
+    if (!f) return;
+
+    auto w32 = [&](uint32_t v) { std::fwrite(&v, 4, 1, f); };
+    auto wf  = [&](float    v) { std::fwrite(&v, 4, 1, f); };
+
+    struct FlatBox    { float cx,cy,cz, hx,hy,hz; };
+    struct FlatSphere { float cx,cy,cz, r; };
+    struct FlatTri    { float ax,ay,az, bx,by,bz, cx_,cy_,cz_; };
+    std::vector<FlatBox>    boxes;
+    std::vector<FlatSphere> spheres;
+    std::vector<FlatTri>    tris;
+
+    // Standalone ColBoxes
+    for (auto& b : colBoxes)
+        boxes.push_back({b.pos.x, b.pos.y, b.pos.z,
+                         b.scale.x*0.5f, b.scale.y*0.5f, b.scale.z*0.5f});
+
+    // Standalone ColSpheres
+    for (auto& s : colSpheres)
+        spheres.push_back({s.pos.x, s.pos.y, s.pos.z, s.radius});
+
+    // Scenery objects with collision != None (0):
+    // look up their media_model_shapes, transform by instance TRS.
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT type, offset_x, offset_y, offset_z, size_x, size_y, size_z"
+        " FROM media_model_shapes WHERE model_id=? ORDER BY id",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+
+        sqlite3_stmt* pathStmt = nullptr;
+        sqlite3_prepare_v2(db,
+            "SELECT file_path FROM media_models WHERE id=?",
+            -1, &pathStmt, nullptr);
+
+        for (auto& sc : scenery) {
+            if (sc.collision == 0) continue;
+            sqlite3_bind_int(stmt, 1, sc.modelId);
+
+            // Full TRS matrix (pitch=X, yaw=Y, roll=Z in degrees)
+            glm::mat4 T   = glm::translate(glm::mat4(1.f), sc.pos);
+            glm::mat4 Ry  = glm::rotate(glm::mat4(1.f), glm::radians(sc.rot.y), glm::vec3(0,1,0));
+            glm::mat4 Rx  = glm::rotate(glm::mat4(1.f), glm::radians(sc.rot.x), glm::vec3(1,0,0));
+            glm::mat4 Rz  = glm::rotate(glm::mat4(1.f), glm::radians(sc.rot.z), glm::vec3(0,0,1));
+            glm::mat4 S   = glm::scale(glm::mat4(1.f), sc.scale);
+            glm::mat4 trs = T * Ry * Rx * Rz * S;
+
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                int   type = sqlite3_column_int(stmt, 0);
+                float ox   = (float)sqlite3_column_double(stmt, 1);
+                float oy   = (float)sqlite3_column_double(stmt, 2);
+                float oz   = (float)sqlite3_column_double(stmt, 3);
+                float sx   = (float)sqlite3_column_double(stmt, 4);
+                float sy   = (float)sqlite3_column_double(stmt, 5);
+                float sz   = (float)sqlite3_column_double(stmt, 6);
+
+                if (type == 0) { // Box — scale only (AABB stays axis-aligned)
+                    float cx = sc.pos.x + ox * sc.scale.x;
+                    float cy = sc.pos.y + oy * sc.scale.y;
+                    float cz = sc.pos.z + oz * sc.scale.z;
+                    boxes.push_back({cx, cy, cz,
+                                     sx*0.5f*sc.scale.x,
+                                     sy*0.5f*sc.scale.y,
+                                     sz*0.5f*sc.scale.z});
+                } else if (type == 1) { // Sphere
+                    float cx = sc.pos.x + ox * sc.scale.x;
+                    float cy = sc.pos.y + oy * sc.scale.y;
+                    float cz = sc.pos.z + oz * sc.scale.z;
+                    float maxScale = std::max({sc.scale.x, sc.scale.y, sc.scale.z});
+                    spheres.push_back({cx, cy, cz, sx * maxScale});
+                } else { // Mesh — extract triangles and apply full TRS
+                    if (pathStmt) {
+                        sqlite3_bind_int(pathStmt, 1, sc.modelId);
+                        if (sqlite3_step(pathStmt) == SQLITE_ROW) {
+                            const char* rel = (const char*)sqlite3_column_text(pathStmt, 0);
+                            if (rel && rel[0]) {
+                                char fullPath[512];
+                                std::snprintf(fullPath, sizeof(fullPath), "../client/%s", rel);
+                                std::vector<std::array<glm::vec3, 3>> meshTris;
+                                rco::renderer::ExtractMeshTriangles(fullPath, meshTris);
+                                for (auto& tri : meshTris) {
+                                    glm::vec3 a = glm::vec3(trs * glm::vec4(tri[0], 1.f));
+                                    glm::vec3 b = glm::vec3(trs * glm::vec4(tri[1], 1.f));
+                                    glm::vec3 c = glm::vec3(trs * glm::vec4(tri[2], 1.f));
+                                    tris.push_back({a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z});
+                                }
+                            }
+                        }
+                        sqlite3_reset(pathStmt);
+                    }
+                }
+            }
+            sqlite3_reset(stmt);
+        }
+        if (pathStmt) sqlite3_finalize(pathStmt);
+        sqlite3_finalize(stmt);
+    }
+
+    w32(0x444C4F43u); // 'COLD'
+    w32(2);           // version
+
+    w32((uint32_t)boxes.size());
+    for (auto& b : boxes) { wf(b.cx); wf(b.cy); wf(b.cz); wf(b.hx); wf(b.hy); wf(b.hz); }
+
+    w32((uint32_t)spheres.size());
+    for (auto& s : spheres) { wf(s.cx); wf(s.cy); wf(s.cz); wf(s.r); }
+
+    w32((uint32_t)tris.size());
+    for (auto& t : tris) {
+        wf(t.ax); wf(t.ay); wf(t.az);
+        wf(t.bx); wf(t.by); wf(t.bz);
+        wf(t.cx_); wf(t.cy_); wf(t.cz_);
+    }
+
+    std::fclose(f);
+}
+
+// ─── RebuildColVis ────────────────────────────────────────────────────────────
+
+namespace {
+
+// Box wireframe edges (12 edges × 2 vertices).
+// kBoxCorners matches the unit cube from -0.5 to 0.5 used in the VAO.
+static const int kBoxEdges[12][2] = {
+    {0,1},{1,2},{2,3},{3,0}, // front face
+    {4,5},{5,6},{6,7},{7,4}, // back face
+    {0,4},{1,5},{2,6},{3,7}, // connecting
+};
+
+void AppendBox(ColVisData& vis, const glm::vec3& center, const glm::vec3& scale,
+               float r, float g, float b, float a)
+{
+    // 8 corners: combine ±0.5 × scale + center
+    glm::vec3 corners[8];
+    for (int i = 0; i < 8; ++i)
+        corners[i] = center + glm::vec3(
+            scale.x * ((i & 1) ? 0.5f : -0.5f),
+            scale.y * ((i & 2) ? 0.5f : -0.5f),
+            scale.z * ((i & 4) ? 0.5f : -0.5f));
+    for (auto& e : kBoxEdges) {
+        vis.verts.push_back({corners[e[0]].x, corners[e[0]].y, corners[e[0]].z, r,g,b,a});
+        vis.verts.push_back({corners[e[1]].x, corners[e[1]].y, corners[e[1]].z, r,g,b,a});
+    }
+}
+
+void AppendSphere(ColVisData& vis, const glm::vec3& center, float radius,
+                  float r, float g, float b, float a)
+{
+    constexpr int kSegs = 24;
+    constexpr float kStep = 2.f * 3.14159265f / kSegs;
+    // XZ circle
+    for (int i = 0; i < kSegs; ++i) {
+        float a0 = i * kStep, a1 = (i + 1) * kStep;
+        float x0 = center.x + radius * std::cos(a0), z0 = center.z + radius * std::sin(a0);
+        float x1 = center.x + radius * std::cos(a1), z1 = center.z + radius * std::sin(a1);
+        vis.verts.push_back({x0, center.y, z0, r,g,b,a});
+        vis.verts.push_back({x1, center.y, z1, r,g,b,a});
+    }
+    // XY circle
+    for (int i = 0; i < kSegs; ++i) {
+        float a0 = i * kStep, a1 = (i + 1) * kStep;
+        float x0 = center.x + radius * std::cos(a0), y0 = center.y + radius * std::sin(a0);
+        float x1 = center.x + radius * std::cos(a1), y1 = center.y + radius * std::sin(a1);
+        vis.verts.push_back({x0, y0, center.z, r,g,b,a});
+        vis.verts.push_back({x1, y1, center.z, r,g,b,a});
+    }
+}
+
+void AppendTris(ColVisData& vis,
+                const std::vector<std::array<glm::vec3, 3>>& localTris,
+                const glm::mat4& trs,
+                float r, float g, float b, float a)
+{
+    for (auto& tri : localTris) {
+        glm::vec3 v0 = glm::vec3(trs * glm::vec4(tri[0], 1.f));
+        glm::vec3 v1 = glm::vec3(trs * glm::vec4(tri[1], 1.f));
+        glm::vec3 v2 = glm::vec3(trs * glm::vec4(tri[2], 1.f));
+        vis.verts.push_back({v0.x, v0.y, v0.z, r,g,b,a});
+        vis.verts.push_back({v1.x, v1.y, v1.z, r,g,b,a});
+        vis.verts.push_back({v1.x, v1.y, v1.z, r,g,b,a});
+        vis.verts.push_back({v2.x, v2.y, v2.z, r,g,b,a});
+        vis.verts.push_back({v2.x, v2.y, v2.z, r,g,b,a});
+        vis.verts.push_back({v0.x, v0.y, v0.z, r,g,b,a});
+    }
+}
+
+} // anonymous namespace
+
+void ZoneScene::RebuildColVis(sqlite3* db, MeshTriCache& meshCache) {
+    colVis      = {};
+    colVisDirty = false;
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT type, offset_x, offset_y, offset_z, size_x, size_y, size_z"
+        " FROM media_model_shapes WHERE model_id=? ORDER BY id",
+        -1, &stmt, nullptr) != SQLITE_OK) return;
+
+    sqlite3_stmt* pathStmt = nullptr;
+    sqlite3_prepare_v2(db,
+        "SELECT file_path FROM media_models WHERE id=?",
+        -1, &pathStmt, nullptr);
+
+    for (auto& sc : scenery) {
+        if (sc.collision == 0) continue;
+        sqlite3_bind_int(stmt, 1, sc.modelId);
+
+        glm::mat4 T   = glm::translate(glm::mat4(1.f), sc.pos);
+        glm::mat4 Ry  = glm::rotate(glm::mat4(1.f), glm::radians(sc.rot.y), glm::vec3(0,1,0));
+        glm::mat4 Rx  = glm::rotate(glm::mat4(1.f), glm::radians(sc.rot.x), glm::vec3(1,0,0));
+        glm::mat4 Rz  = glm::rotate(glm::mat4(1.f), glm::radians(sc.rot.z), glm::vec3(0,0,1));
+        glm::mat4 S   = glm::scale(glm::mat4(1.f), sc.scale);
+        glm::mat4 trs = T * Ry * Rx * Rz * S;
+
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            int   type = sqlite3_column_int(stmt, 0);
+            float ox   = (float)sqlite3_column_double(stmt, 1);
+            float oy   = (float)sqlite3_column_double(stmt, 2);
+            float oz   = (float)sqlite3_column_double(stmt, 3);
+            float sx   = (float)sqlite3_column_double(stmt, 4);
+            float sy   = (float)sqlite3_column_double(stmt, 5);
+            float sz   = (float)sqlite3_column_double(stmt, 6);
+
+            if (type == 0) { // Box
+                glm::vec3 center = {sc.pos.x + ox * sc.scale.x,
+                                    sc.pos.y + oy * sc.scale.y,
+                                    sc.pos.z + oz * sc.scale.z};
+                AppendBox(colVis, center,
+                          {sx * sc.scale.x, sy * sc.scale.y, sz * sc.scale.z},
+                          1.f, 0.25f, 0.25f, 0.8f);
+            } else if (type == 1) { // Sphere
+                glm::vec3 center = {sc.pos.x + ox * sc.scale.x,
+                                    sc.pos.y + oy * sc.scale.y,
+                                    sc.pos.z + oz * sc.scale.z};
+                float maxScale = std::max({sc.scale.x, sc.scale.y, sc.scale.z});
+                AppendSphere(colVis, center, sx * maxScale,
+                             1.f, 0.55f, 0.1f, 0.8f);
+            } else { // Mesh
+                auto it = meshCache.find(sc.modelId);
+                if (it == meshCache.end()) {
+                    if (pathStmt) {
+                        sqlite3_bind_int(pathStmt, 1, sc.modelId);
+                        if (sqlite3_step(pathStmt) == SQLITE_ROW) {
+                            const char* rel = (const char*)sqlite3_column_text(pathStmt, 0);
+                            if (rel && rel[0]) {
+                                char fp[512];
+                                std::snprintf(fp, sizeof(fp), "../client/%s", rel);
+                                std::vector<std::array<glm::vec3, 3>> localTris;
+                                rco::renderer::ExtractMeshTriangles(fp, localTris);
+                                meshCache[sc.modelId] = std::move(localTris);
+                            }
+                        }
+                        sqlite3_reset(pathStmt);
+                        it = meshCache.find(sc.modelId);
+                    }
+                }
+                if (it != meshCache.end())
+                    AppendTris(colVis, it->second, trs, 1.f, 0.45f, 0.f, 0.8f);
+            }
+        }
+        sqlite3_reset(stmt);
+    }
+    if (pathStmt) sqlite3_finalize(pathStmt);
+    sqlite3_finalize(stmt);
 }
 
 } // namespace gue

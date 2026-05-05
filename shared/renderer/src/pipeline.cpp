@@ -312,13 +312,20 @@ void Pipeline::terrainPass_() {
 
     auto& sh = Shader::shaders["terrainGBuffer"];
     sh->Bind();
-    sh->SetMat4("u_viewProj", viewProj_);
+    sh->SetMat4 ("u_viewProj",      viewProj_);
+    sh->SetVec3 ("u_cameraPos",     camPos_);
+    sh->SetFloat("u_lodBlendRange", 1.0f);  // morph across full LOD band
 
     for (const auto& c : terrainChunks_) {
-        sh->SetMat4 ("u_model",         c.model);
-        sh->SetFloat("u_tiling",        c.tiling);
+        sh->SetVec4 ("u_tilings",       c.tilings);
         sh->SetVec2 ("u_terrainOrigin", c.terrain_origin.x, c.terrain_origin.y);
         sh->SetVec2 ("u_terrainSize",   c.terrain_size.x,   c.terrain_size.y);
+        sh->SetFloat("u_cellSize",      c.cell_size);
+        sh->SetFloat("u_lodLevel",      c.lod_level);
+
+        // Slot 22: heightmap (R32F) — read by vertex shader for height + normals
+        glBindTextureUnit(22, c.heightmap_tex);
+        sh->SetInt("u_heightmap", 22);
 
         glBindTextureUnit(0, c.splatmap);
         sh->SetInt("u_splatmap", 0);
@@ -338,6 +345,15 @@ void Pipeline::terrainPass_() {
         sh->SetInt("u_mat2_roughness", 13); sh->SetInt("u_mat2_ao", 14); sh->SetInt("u_mat2_height", 15);
         sh->SetInt("u_mat3_albedo", 16); sh->SetInt("u_mat3_normal", 17);
         sh->SetInt("u_mat3_roughness", 18); sh->SetInt("u_mat3_ao", 19); sh->SetInt("u_mat3_height", 20);
+
+        // Slot 21: macro variation (grayscale, covers full terrain)
+        glBindTextureUnit(21, c.macro_variation);
+        sh->SetInt  ("u_macroVariation", 21);
+        sh->SetFloat("u_macroStrength",          c.macro_strength);
+        sh->SetFloat("u_mat0_normal_strength",   c.mat_normal_strength[0]);
+        sh->SetFloat("u_mat1_normal_strength",   c.mat_normal_strength[1]);
+        sh->SetFloat("u_mat2_normal_strength",   c.mat_normal_strength[2]);
+        sh->SetFloat("u_mat3_normal_strength",   c.mat_normal_strength[3]);
 
         glBindVertexArray(c.vao);
         glDrawElements(GL_TRIANGLES, c.index_count, GL_UNSIGNED_INT, nullptr);

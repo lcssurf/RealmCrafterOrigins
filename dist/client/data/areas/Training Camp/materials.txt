@@ -1,0 +1,4 @@
+8 8 assets/textures/textures/forrest_ground_01_Albedo.jpg assets/textures/forrest_ground_01/forrest_ground_01_nor_dx_1k.png assets/textures/textures/forrest_ground_01_ORM.png 2.5
+9 2 assets/textures/textures/forest_leaves_02_Albedo.jpg - assets/textures/textures/forest_leaves_02_ORM.png 2.5
+0 8 - - - 2.5
+0 8 - - - 2.5

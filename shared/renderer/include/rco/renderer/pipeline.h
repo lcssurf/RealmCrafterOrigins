@@ -61,9 +61,15 @@ struct TerrainChunkSubmission {
     GLuint    mat_ao[4]        = {0,0,0,0};
     GLuint    mat_height[4]    = {0,0,0,0};
 
-    float     tiling         = 4.0f;
+    glm::vec4 tilings               = glm::vec4(4.0f);           // per-layer tiling (xyzw = layers 0-3)
+    GLuint    macro_variation        = 0;                         // grayscale texture covering full terrain
+    float     macro_strength         = 0.0f;
+    float     mat_normal_strength[4] = {2.5f, 2.5f, 2.5f, 2.5f}; // per-material normal intensity
     glm::vec2 terrain_origin = glm::vec2(0.0f);
     glm::vec2 terrain_size   = glm::vec2(1.0f);
+    GLuint    heightmap_tex  = 0;               // R32F heightmap — read by vertex shader
+    float     cell_size      = 2.0f;
+    float     lod_level      = 0.0f;           // fractional LOD (0=full, 1=half, 2=quarter …)
 };
 
 class Pipeline {

@@ -150,6 +150,10 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV11(ctx)
 	d.migrateV12(ctx)
 	d.migrateV13(ctx)
+	d.migrateV14(ctx)
+	d.migrateV15(ctx)
+	d.migrateV16(ctx)
+	d.migrateV17(ctx)
 
 	return d, nil
 }
@@ -883,18 +887,43 @@ func (d *DB) LoadSpells(ctx context.Context) ([]SpellRow, error) {
 
 // NpcSpawn mirrors one row in npc_spawns.
 type NpcSpawn struct {
-	ID              int
-	Name            string
-	Race            string
-	Class           string
-	Level           int
-	AreaName        string
-	X, Y, Z, Yaw   float32
-	Aggressiveness  int
-	AggressiveRange float32
-	AttackRange     float32
-	RespawnDelayMs  int64
-	ActorDefID      int // FK → media_actor_defs.id (0 = unset)
+	ID               int
+	Name             string
+	Race             string
+	Class            string
+	Level            int
+	AreaName         string
+	X, Y, Z, Yaw    float32
+	Aggressiveness   int
+	AggressiveRange  float32
+	AttackRange      float32
+	RespawnDelayMs   int64
+	ActorDefID       int // FK → media_actor_defs.id (0 = unset)
+	StartWaypointID  int // FK → area_waypoints.id (0 = no patrol)
+	WanderRadius     float32
+	WanderPauseMinMs int
+	WanderPauseMaxMs int
+}
+
+// WorldObject is one placed static model instance in a zone.
+// ModelPath is the resolved file_path from media_models (relative to dist/client/).
+type WorldObject struct {
+	ID        int
+	AreaName  string
+	ModelPath string
+	Scale     float32
+	X, Y, Z   float32
+	Yaw       float32
+}
+
+// Waypoint mirrors one row in area_waypoints.
+type Waypoint struct {
+	ID       int
+	AreaName string
+	X, Y, Z  float32
+	NextA    int // ID of next waypoint (0 = end of path)
+	NextB    int // ID of alternate branch (0 = no branch)
+	PauseMs  int // ms to pause at this node before moving on
 }
 
 // migrateV5 adds AoE columns to spell_templates.
@@ -1002,7 +1031,8 @@ func (d *DB) LoadNPCSpawns(ctx context.Context) ([]*NpcSpawn, error) {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, name, race, class, level, area_name, x, y, z, yaw,
 		        aggressiveness, aggressive_range, attack_range, respawn_delay_ms,
-		        actor_def_id
+		        actor_def_id, start_waypoint_id,
+		        wander_radius, wander_pause_min_ms, wander_pause_max_ms
 		 FROM npc_spawns ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: LoadNPCSpawns: %w", err)
@@ -1015,7 +1045,8 @@ func (d *DB) LoadNPCSpawns(ctx context.Context) ([]*NpcSpawn, error) {
 			&s.ID, &s.Name, &s.Race, &s.Class, &s.Level, &s.AreaName,
 			&s.X, &s.Y, &s.Z, &s.Yaw,
 			&s.Aggressiveness, &s.AggressiveRange, &s.AttackRange, &s.RespawnDelayMs,
-			&s.ActorDefID,
+			&s.ActorDefID, &s.StartWaypointID,
+			&s.WanderRadius, &s.WanderPauseMinMs, &s.WanderPauseMaxMs,
 		); err != nil {
 			return nil, fmt.Errorf("db: LoadNPCSpawns scan: %w", err)
 		}
@@ -1129,6 +1160,14 @@ func (d *DB) migrateV7(ctx context.Context) {
 		exec(`ALTER TABLE media_models ADD COLUMN IF NOT EXISTS material_map TEXT NOT NULL DEFAULT ''`)
 	} else {
 		exec(`ALTER TABLE media_models ADD COLUMN material_map TEXT NOT NULL DEFAULT ''`)
+	}
+
+	// Normal map intensity per terrain material — compensates for whiteout triplanar
+	// blend softening on top-facing surfaces. 2.5 matches the shader's previous global default.
+	if d.driver == "postgres" {
+		exec(`ALTER TABLE media_materials ADD COLUMN IF NOT EXISTS normal_strength REAL NOT NULL DEFAULT 2.5`)
+	} else {
+		exec(`ALTER TABLE media_materials ADD COLUMN normal_strength REAL NOT NULL DEFAULT 2.5`)
 	}
 
 	// migrateV8 — extend media_actor_defs with gameplay defaults so an actor
@@ -2098,6 +2137,9 @@ type AreaConfig struct {
 	WeatherFog   uint8
 	WeatherStorm uint8
 	WeatherWind  uint8
+
+	// Skybox — filename relative to assets/ibl/ (e.g. "forest.hdr"). Empty = use default.hdr.
+	SkyboxHdr string
 }
 
 // AreaTrigger is a script-trigger volume in an area (XZ cylinder).
@@ -2161,6 +2203,7 @@ func (d *DB) LoadAreaConfigs(ctx context.Context) ([]*AreaConfig, error) {
 		`ALTER TABLE area_config ADD COLUMN weather_fog   INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE area_config ADD COLUMN weather_storm INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE area_config ADD COLUMN weather_wind  INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE area_config ADD COLUMN skybox_hdr    TEXT    NOT NULL DEFAULT ''`,
 	}
 	for _, m := range migs {
 		d.db.ExecContext(ctx, d.q(m))
@@ -2172,7 +2215,8 @@ func (d *DB) LoadAreaConfigs(ctx context.Context) ([]*AreaConfig, error) {
 		       fog_near, fog_far, fog_r, fog_g, fog_b,
 		       ambient_r, ambient_g, ambient_b,
 		       gravity, entry_script, exit_script,
-		       weather_rain, weather_snow, weather_fog, weather_storm, weather_wind
+		       weather_rain, weather_snow, weather_fog, weather_storm, weather_wind,
+		       skybox_hdr
 		FROM area_config ORDER BY name`))
 	if err != nil {
 		return nil, err
@@ -2194,6 +2238,7 @@ func (d *DB) LoadAreaConfigs(ctx context.Context) ([]*AreaConfig, error) {
 			&ambR, &ambG, &ambB,
 			&c.Gravity, &c.EntryScript, &c.ExitScript,
 			&wRain, &wSnow, &wFog, &wStr, &wWind,
+			&c.SkyboxHdr,
 		)
 		c.MusicTrack = uint8(track)
 		c.IsOutdoor = outdoor != 0
@@ -2410,6 +2455,192 @@ func (d *DB) LoadSpawnPoints(ctx context.Context) ([]*SpawnPoint, error) {
 		out = append(out, sp)
 	}
 	return out, rows.Err()
+}
+
+// migrateV14 creates area_waypoints and adds start_waypoint_id to npc_spawns.
+func (d *DB) migrateV14(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+	if d.driver == "postgres" {
+		exec(`CREATE TABLE IF NOT EXISTS area_waypoints (
+			id        SERIAL PRIMARY KEY,
+			area_name VARCHAR(128) NOT NULL DEFAULT '',
+			x         REAL NOT NULL DEFAULT 0,
+			y         REAL NOT NULL DEFAULT 0,
+			z         REAL NOT NULL DEFAULT 0,
+			next_a    INTEGER NOT NULL DEFAULT 0,
+			next_b    INTEGER NOT NULL DEFAULT 0,
+			pause_ms  INTEGER NOT NULL DEFAULT 0
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_waypoints_area ON area_waypoints(area_name)`)
+		exec(`ALTER TABLE npc_spawns ADD COLUMN IF NOT EXISTS start_waypoint_id INTEGER NOT NULL DEFAULT 0`)
+	} else {
+		exec(`CREATE TABLE IF NOT EXISTS area_waypoints (
+			id        INTEGER PRIMARY KEY AUTOINCREMENT,
+			area_name TEXT NOT NULL DEFAULT '',
+			x         REAL NOT NULL DEFAULT 0,
+			y         REAL NOT NULL DEFAULT 0,
+			z         REAL NOT NULL DEFAULT 0,
+			next_a    INTEGER NOT NULL DEFAULT 0,
+			next_b    INTEGER NOT NULL DEFAULT 0,
+			pause_ms  INTEGER NOT NULL DEFAULT 0
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_waypoints_area ON area_waypoints(area_name)`)
+		exec(`ALTER TABLE npc_spawns ADD COLUMN start_waypoint_id INTEGER NOT NULL DEFAULT 0`)
+	}
+}
+
+// LoadWaypoints returns all rows from area_waypoints keyed by waypoint ID.
+func (d *DB) LoadWaypoints(ctx context.Context) (map[int]*Waypoint, error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, area_name, x, y, z, next_a, next_b, pause_ms FROM area_waypoints ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadWaypoints: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int]*Waypoint)
+	for rows.Next() {
+		w := &Waypoint{}
+		if err := rows.Scan(&w.ID, &w.AreaName, &w.X, &w.Y, &w.Z,
+			&w.NextA, &w.NextB, &w.PauseMs); err != nil {
+			return nil, fmt.Errorf("db: LoadWaypoints scan: %w", err)
+		}
+		out[w.ID] = w
+	}
+	return out, rows.Err()
+}
+
+// migrateV16 creates media_model_shapes for per-model collision primitives.
+func (d *DB) migrateV16(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+	if d.driver == "postgres" {
+		exec(`CREATE TABLE IF NOT EXISTS media_model_shapes (
+			id       SERIAL PRIMARY KEY,
+			model_id INTEGER NOT NULL DEFAULT 0,
+			type     SMALLINT NOT NULL DEFAULT 0,
+			offset_x REAL NOT NULL DEFAULT 0,
+			offset_y REAL NOT NULL DEFAULT 0,
+			offset_z REAL NOT NULL DEFAULT 0,
+			size_x   REAL NOT NULL DEFAULT 1,
+			size_y   REAL NOT NULL DEFAULT 1,
+			size_z   REAL NOT NULL DEFAULT 1
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_model_shapes ON media_model_shapes(model_id)`)
+	} else {
+		exec(`CREATE TABLE IF NOT EXISTS media_model_shapes (
+			id       INTEGER PRIMARY KEY AUTOINCREMENT,
+			model_id INTEGER NOT NULL DEFAULT 0,
+			type     INTEGER NOT NULL DEFAULT 0,
+			offset_x REAL NOT NULL DEFAULT 0,
+			offset_y REAL NOT NULL DEFAULT 0,
+			offset_z REAL NOT NULL DEFAULT 0,
+			size_x   REAL NOT NULL DEFAULT 1,
+			size_y   REAL NOT NULL DEFAULT 1,
+			size_z   REAL NOT NULL DEFAULT 1
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_model_shapes ON media_model_shapes(model_id)`)
+	}
+}
+
+// MediaModelShape mirrors one row in media_model_shapes.
+// Type: 0 = box (size_x/y/z = full W/H/D), 1 = sphere (size_x = radius).
+type MediaModelShape struct {
+	ID                    int
+	ModelID               int
+	Type                  int
+	OffsetX, OffsetY, OffsetZ float32
+	SizeX, SizeY, SizeZ   float32
+}
+
+// LoadModelShapes returns all collision shapes for the given model ID.
+func (d *DB) LoadModelShapes(ctx context.Context, modelID int) ([]MediaModelShape, error) {
+	rows, err := d.db.QueryContext(ctx,
+		d.q(`SELECT id, model_id, type, offset_x, offset_y, offset_z, size_x, size_y, size_z
+		     FROM media_model_shapes WHERE model_id = ? ORDER BY id`), modelID)
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadModelShapes: %w", err)
+	}
+	defer rows.Close()
+	var out []MediaModelShape
+	for rows.Next() {
+		var s MediaModelShape
+		if err := rows.Scan(&s.ID, &s.ModelID, &s.Type,
+			&s.OffsetX, &s.OffsetY, &s.OffsetZ,
+			&s.SizeX, &s.SizeY, &s.SizeZ); err != nil {
+			return nil, fmt.Errorf("db: LoadModelShapes scan: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// migrateV17 creates the world_objects table for placed static model instances.
+func (d *DB) migrateV17(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+	if d.driver == "postgres" {
+		exec(`CREATE TABLE IF NOT EXISTS world_objects (
+			id        SERIAL PRIMARY KEY,
+			area_name VARCHAR(128) NOT NULL DEFAULT '',
+			model_id  INTEGER NOT NULL DEFAULT 0,
+			x         REAL NOT NULL DEFAULT 0,
+			y         REAL NOT NULL DEFAULT 0,
+			z         REAL NOT NULL DEFAULT 0,
+			yaw       REAL NOT NULL DEFAULT 0,
+			scale     REAL NOT NULL DEFAULT 1
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_world_objects_area ON world_objects(area_name)`)
+	} else {
+		exec(`CREATE TABLE IF NOT EXISTS world_objects (
+			id        INTEGER PRIMARY KEY AUTOINCREMENT,
+			area_name TEXT NOT NULL DEFAULT '',
+			model_id  INTEGER NOT NULL DEFAULT 0,
+			x         REAL NOT NULL DEFAULT 0,
+			y         REAL NOT NULL DEFAULT 0,
+			z         REAL NOT NULL DEFAULT 0,
+			yaw       REAL NOT NULL DEFAULT 0,
+			scale     REAL NOT NULL DEFAULT 1
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_world_objects_area ON world_objects(area_name)`)
+	}
+}
+
+// LoadWorldObjects returns all placed static world objects from zone_scenery with resolved model paths.
+func (d *DB) LoadWorldObjects(ctx context.Context) ([]*WorldObject, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(
+		`SELECT zs.id, zs.area_name, COALESCE(mm.file_path,''), zs.sx, zs.x, zs.y, zs.z, zs.yaw
+		 FROM zone_scenery zs
+		 LEFT JOIN media_models mm ON mm.id = zs.model_id
+		 ORDER BY zs.area_name, zs.id`))
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadWorldObjects: %w", err)
+	}
+	defer rows.Close()
+	var out []*WorldObject
+	for rows.Next() {
+		w := &WorldObject{}
+		var scale, x, y, z, yaw float64
+		if err := rows.Scan(&w.ID, &w.AreaName, &w.ModelPath,
+			&scale, &x, &y, &z, &yaw); err != nil {
+			return nil, fmt.Errorf("db: LoadWorldObjects scan: %w", err)
+		}
+		w.Scale = float32(scale)
+		w.X, w.Y, w.Z, w.Yaw = float32(x), float32(y), float32(z), float32(yaw)
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// migrateV15 adds random wander fields to npc_spawns.
+func (d *DB) migrateV15(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+	if d.driver == "postgres" {
+		exec(`ALTER TABLE npc_spawns ADD COLUMN IF NOT EXISTS wander_radius       REAL    NOT NULL DEFAULT 0`)
+		exec(`ALTER TABLE npc_spawns ADD COLUMN IF NOT EXISTS wander_pause_min_ms INTEGER NOT NULL DEFAULT 2000`)
+		exec(`ALTER TABLE npc_spawns ADD COLUMN IF NOT EXISTS wander_pause_max_ms INTEGER NOT NULL DEFAULT 5000`)
+	} else {
+		exec(`ALTER TABLE npc_spawns ADD COLUMN wander_radius       REAL    NOT NULL DEFAULT 0`)
+		exec(`ALTER TABLE npc_spawns ADD COLUMN wander_pause_min_ms INTEGER NOT NULL DEFAULT 2000`)
+		exec(`ALTER TABLE npc_spawns ADD COLUMN wander_pause_max_ms INTEGER NOT NULL DEFAULT 5000`)
+	}
 }
 
 // LoadSpawnPointMobs returns all mob entries for a given spawn point.

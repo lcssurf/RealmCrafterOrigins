@@ -237,3 +237,24 @@ func NewActorPayload(a *Actor) []byte {
 	p.f32(a.Appearance.YOffset)
 	return p
 }
+
+// WorldObjectsPayload encodes a slice of static world objects for PWorldObjects.
+// Format: count(u16) + for each: model_path(str)+scale(f32)+x(f32)+y(f32)+z(f32)+yaw(f32)
+func WorldObjectsPayload(objects []WorldObject) []byte {
+	var p pb
+	n := len(objects)
+	if n > 0xFFFF {
+		n = 0xFFFF
+	}
+	p.u16(uint16(n))
+	for i := 0; i < n; i++ {
+		o := &objects[i]
+		p.str(o.ModelPath)
+		p.f32(o.Scale)
+		p.f32(o.X)
+		p.f32(o.Y)
+		p.f32(o.Z)
+		p.f32(o.Yaw)
+	}
+	return []byte(p)
+}

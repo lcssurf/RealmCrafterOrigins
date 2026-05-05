@@ -315,6 +315,29 @@ void MediaTab::EnsureTables(sqlite3* db) {
     };
     for (const char* s : adefColumns)
         sqlite3_exec(db, s, nullptr, nullptr, nullptr);
+
+    // Collision shapes table (migrateV16-equivalent for the GUE).
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS media_model_shapes ("
+        "  id       INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  model_id INTEGER NOT NULL DEFAULT 0,"
+        "  type     INTEGER NOT NULL DEFAULT 0,"
+        "  offset_x REAL NOT NULL DEFAULT 0,"
+        "  offset_y REAL NOT NULL DEFAULT 0,"
+        "  offset_z REAL NOT NULL DEFAULT 0,"
+        "  size_x   REAL NOT NULL DEFAULT 1,"
+        "  size_y   REAL NOT NULL DEFAULT 1,"
+        "  size_z   REAL NOT NULL DEFAULT 1"
+        ")",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "CREATE INDEX IF NOT EXISTS idx_model_shapes ON media_model_shapes(model_id)",
+        nullptr, nullptr, nullptr);
+
+    // Normal map intensity per terrain material (no-op when column already exists).
+    sqlite3_exec(db,
+        "ALTER TABLE media_materials ADD COLUMN normal_strength REAL NOT NULL DEFAULT 2.5",
+        nullptr, nullptr, nullptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -355,21 +378,22 @@ void MediaTab::FetchAll(sqlite3* db) {
     // Materials
     if (sqlite3_prepare_v2(db,
         "SELECT id, name, albedo_path, normal_path, orm_path,"
-        "       albedo_r, albedo_g, albedo_b, roughness, metallic"
+        "       albedo_r, albedo_g, albedo_b, roughness, metallic, normal_strength"
         " FROM media_materials ORDER BY name",
         -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             MediaMaterial m;
-            m.id          = sqlite3_column_int(stmt, 0);
-            m.name        = colText(stmt, 1);
-            m.albedo_path = colText(stmt, 2);
-            m.normal_path = colText(stmt, 3);
-            m.orm_path    = colText(stmt, 4);
-            m.albedo_r    = (float)sqlite3_column_double(stmt, 5);
-            m.albedo_g    = (float)sqlite3_column_double(stmt, 6);
-            m.albedo_b    = (float)sqlite3_column_double(stmt, 7);
-            m.roughness   = (float)sqlite3_column_double(stmt, 8);
-            m.metallic    = (float)sqlite3_column_double(stmt, 9);
+            m.id              = sqlite3_column_int(stmt, 0);
+            m.name            = colText(stmt, 1);
+            m.albedo_path     = colText(stmt, 2);
+            m.normal_path     = colText(stmt, 3);
+            m.orm_path        = colText(stmt, 4);
+            m.albedo_r        = (float)sqlite3_column_double(stmt, 5);
+            m.albedo_g        = (float)sqlite3_column_double(stmt, 6);
+            m.albedo_b        = (float)sqlite3_column_double(stmt, 7);
+            m.roughness       = (float)sqlite3_column_double(stmt, 8);
+            m.metallic        = (float)sqlite3_column_double(stmt, 9);
+            m.normal_strength = (float)sqlite3_column_double(stmt, 10);
             materials_.push_back(std::move(m));
         }
         sqlite3_finalize(stmt);
@@ -539,6 +563,88 @@ void MediaTab::DeleteModel(sqlite3* db, int id) {
 }
 
 // ---------------------------------------------------------------------------
+// CRUD — Collision Shapes
+// ---------------------------------------------------------------------------
+
+void MediaTab::LoadShapesForModel(sqlite3* db, int model_id) {
+    model_shapes_.clear();
+    sel_shape_       = -1;
+    shapes_model_id_ = model_id;
+    dirty_shape_     = false;
+    new_shape_       = false;
+
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db,
+        "SELECT id, model_id, type, offset_x, offset_y, offset_z, size_x, size_y, size_z"
+        " FROM media_model_shapes WHERE model_id=? ORDER BY id",
+        -1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, model_id);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        ModelShape s;
+        s.id       = sqlite3_column_int   (stmt, 0);
+        s.model_id = sqlite3_column_int   (stmt, 1);
+        s.type     = sqlite3_column_int   (stmt, 2);
+        s.offset_x = (float)sqlite3_column_double(stmt, 3);
+        s.offset_y = (float)sqlite3_column_double(stmt, 4);
+        s.offset_z = (float)sqlite3_column_double(stmt, 5);
+        s.size_x   = (float)sqlite3_column_double(stmt, 6);
+        s.size_y   = (float)sqlite3_column_double(stmt, 7);
+        s.size_z   = (float)sqlite3_column_double(stmt, 8);
+        model_shapes_.push_back(s);
+    }
+    sqlite3_finalize(stmt);
+}
+
+void MediaTab::SaveModelShape(sqlite3* db, ModelShape& s) {
+    sqlite3_stmt* stmt = nullptr;
+    int rc;
+    if (s.id == 0) {
+        rc = sqlite3_prepare_v2(db,
+            "INSERT INTO media_model_shapes"
+            " (model_id, type, offset_x, offset_y, offset_z, size_x, size_y, size_z)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            -1, &stmt, nullptr);
+    } else {
+        rc = sqlite3_prepare_v2(db,
+            "UPDATE media_model_shapes SET"
+            " model_id=?, type=?, offset_x=?, offset_y=?, offset_z=?, size_x=?, size_y=?, size_z=?"
+            " WHERE id=?",
+            -1, &stmt, nullptr);
+    }
+    if (rc != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Save shape error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    sqlite3_bind_int   (stmt, 1, s.model_id);
+    sqlite3_bind_int   (stmt, 2, s.type);
+    sqlite3_bind_double(stmt, 3, s.offset_x);
+    sqlite3_bind_double(stmt, 4, s.offset_y);
+    sqlite3_bind_double(stmt, 5, s.offset_z);
+    sqlite3_bind_double(stmt, 6, s.size_x);
+    sqlite3_bind_double(stmt, 7, s.size_y);
+    sqlite3_bind_double(stmt, 8, s.size_z);
+    if (s.id != 0) sqlite3_bind_int(stmt, 9, s.id);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Save shape error: %s", sqlite3_errmsg(db));
+    } else {
+        if (s.id == 0) s.id = (int)sqlite3_last_insert_rowid(db);
+        LoadShapesForModel(db, s.model_id);
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Saved shape id=%d.", s.id);
+    }
+    sqlite3_finalize(stmt);
+}
+
+void MediaTab::DeleteModelShape(sqlite3* db, int id) {
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db, "DELETE FROM media_model_shapes WHERE id=?", -1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    LoadShapesForModel(db, shapes_model_id_);
+}
+
+// ---------------------------------------------------------------------------
 // CRUD — Materials
 // ---------------------------------------------------------------------------
 
@@ -549,13 +655,13 @@ void MediaTab::SaveMaterial(sqlite3* db, MediaMaterial& m) {
         rc = sqlite3_prepare_v2(db,
             "INSERT INTO media_materials"
             " (name, albedo_path, normal_path, orm_path,"
-            "  albedo_r, albedo_g, albedo_b, roughness, metallic)"
-            " VALUES (?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr);
+            "  albedo_r, albedo_g, albedo_b, roughness, metallic, normal_strength)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
             "UPDATE media_materials SET"
             " name=?, albedo_path=?, normal_path=?, orm_path=?,"
-            " albedo_r=?, albedo_g=?, albedo_b=?, roughness=?, metallic=?"
+            " albedo_r=?, albedo_g=?, albedo_b=?, roughness=?, metallic=?, normal_strength=?"
             " WHERE id=?", -1, &stmt, nullptr);
     }
     if (rc != SQLITE_OK) {
@@ -563,16 +669,17 @@ void MediaTab::SaveMaterial(sqlite3* db, MediaMaterial& m) {
                       "Save material error: %s", sqlite3_errmsg(db));
         return;
     }
-    sqlite3_bind_text  (stmt, 1, m.name.c_str(),        -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text  (stmt, 2, m.albedo_path.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text  (stmt, 3, m.normal_path.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text  (stmt, 4, m.orm_path.c_str(),    -1, SQLITE_TRANSIENT);
-    sqlite3_bind_double(stmt, 5, m.albedo_r);
-    sqlite3_bind_double(stmt, 6, m.albedo_g);
-    sqlite3_bind_double(stmt, 7, m.albedo_b);
-    sqlite3_bind_double(stmt, 8, m.roughness);
-    sqlite3_bind_double(stmt, 9, m.metallic);
-    if (m.id != 0) sqlite3_bind_int(stmt, 10, m.id);
+    sqlite3_bind_text  (stmt,  1, m.name.c_str(),        -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text  (stmt,  2, m.albedo_path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text  (stmt,  3, m.normal_path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text  (stmt,  4, m.orm_path.c_str(),    -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt,  5, m.albedo_r);
+    sqlite3_bind_double(stmt,  6, m.albedo_g);
+    sqlite3_bind_double(stmt,  7, m.albedo_b);
+    sqlite3_bind_double(stmt,  8, m.roughness);
+    sqlite3_bind_double(stmt,  9, m.metallic);
+    sqlite3_bind_double(stmt, 10, m.normal_strength);
+    if (m.id != 0) sqlite3_bind_int(stmt, 11, m.id);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         std::snprintf(statusMsg_, sizeof(statusMsg_),
@@ -1212,6 +1319,97 @@ void MediaTab::DrawModels(sqlite3* db) {
         ImGui::PushStyleColor(ImGuiCol_Button, {0.65f, 0.1f, 0.1f, 1.f});
         if (ImGui::Button("Delete")) DeleteModel(db, editModel_.id);
         ImGui::PopStyleColor();
+
+        // ── Collision Shapes ─────────────────────────────────────────────
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextColored({1.f, 0.85f, 0.4f, 1.f}, "Collision Shapes");
+        ImGui::TextDisabled("Box: W/H/D = full extents. Sphere: Radius = size_x.");
+
+        if (shapes_model_id_ != editModel_.id)
+            LoadShapesForModel(db, editModel_.id);
+
+        for (int i = 0; i < (int)model_shapes_.size(); ++i) {
+            const auto& s = model_shapes_[i];
+            char label[64];
+            std::snprintf(label, sizeof(label), "[%d] %s##sh%d",
+                          s.id,
+                          s.type == 0 ? "Box" : s.type == 1 ? "Sphere" : "Mesh", i);
+            if (ImGui::Selectable(label, sel_shape_ == i)) {
+                sel_shape_   = i;
+                edit_shape_  = model_shapes_[i];
+                dirty_shape_ = false;
+                new_shape_   = false;
+            }
+        }
+
+        if (ImGui::Button("+ Add Shape")) {
+            new_shape_          = true;
+            sel_shape_          = -1;
+            pending_shape_      = {};
+            pending_shape_.model_id = editModel_.id;
+            dirty_shape_        = false;
+        }
+
+        if (new_shape_) {
+            ImGui::Separator();
+            ImGui::TextColored({0.4f, 1.f, 0.4f, 1.f}, "New Shape");
+            static const char* kTypes[] = { "Box", "Sphere", "Mesh" };
+            ImGui::Combo("Type##ns", &pending_shape_.type, kTypes, 3);
+            if (pending_shape_.type == 0) {
+                ImGui::InputFloat3("Offset XYZ##ns", &pending_shape_.offset_x);
+                ImGui::InputFloat3("Size W/H/D##ns", &pending_shape_.size_x);
+            } else if (pending_shape_.type == 1) {
+                ImGui::InputFloat3("Offset XYZ##ns", &pending_shape_.offset_x);
+                ImGui::InputFloat("Radius##ns", &pending_shape_.size_x, 0.05f, 0.5f, "%.3f");
+            } else {
+                ImGui::TextDisabled("Uses the full model geometry.");
+            }
+            ImGui::Spacing();
+            if (ImGui::Button("Create##ns")) {
+                SaveModelShape(db, pending_shape_);
+                new_shape_ = false;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel##ns")) new_shape_ = false;
+        } else if (sel_shape_ >= 0 && sel_shape_ < (int)model_shapes_.size()) {
+            ImGui::Separator();
+            static const char* kTypes[] = { "Box", "Sphere", "Mesh" };
+            if (ImGui::Combo("Type##es", &edit_shape_.type, kTypes, 3))
+                dirty_shape_ = true;
+            if (edit_shape_.type == 0) {
+                if (ImGui::InputFloat3("Offset XYZ##es", &edit_shape_.offset_x))
+                    dirty_shape_ = true;
+                if (ImGui::InputFloat3("Size W/H/D##es", &edit_shape_.size_x))
+                    dirty_shape_ = true;
+            } else if (edit_shape_.type == 1) {
+                if (ImGui::InputFloat3("Offset XYZ##es", &edit_shape_.offset_x))
+                    dirty_shape_ = true;
+                if (ImGui::InputFloat("Radius##es", &edit_shape_.size_x, 0.05f, 0.5f, "%.3f"))
+                    dirty_shape_ = true;
+            } else {
+                ImGui::TextDisabled("Uses the full model geometry.");
+            }
+            ImGui::Spacing();
+            ImGui::BeginDisabled(!dirty_shape_);
+            if (ImGui::Button("Save##es")) {
+                SaveModelShape(db, edit_shape_);
+                dirty_shape_ = false;
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button("Revert##es")) {
+                edit_shape_  = model_shapes_[sel_shape_];
+                dirty_shape_ = false;
+            }
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, {0.65f, 0.1f, 0.1f, 1.f});
+            if (ImGui::Button("Delete##es")) {
+                DeleteModelShape(db, edit_shape_.id);
+                sel_shape_ = -1;
+            }
+            ImGui::PopStyleColor();
+        }
     } else {
         ImGui::TextDisabled("Select a model, or click \"New Model\".");
     }
@@ -1368,6 +1566,15 @@ static bool DrawMaterialFields(MediaMaterial& m) {
     }
     if (ImGui::SliderFloat("Roughness", &m.roughness, 0.f, 1.f)) changed = true;
     if (ImGui::SliderFloat("Metallic",  &m.metallic,  0.f, 1.f)) changed = true;
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Terrain");
+    if (ImGui::SliderFloat("Normal Strength", &m.normal_strength, 0.f, 6.f, "%.2f")) changed = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Intensity of the normal map when this material is used on terrain.\n"
+            "1.0 = physically correct. 2-3 = recommended for most assets.\n"
+            "Higher values exaggerate bump detail; 0 = flat surface.");
 
     ImGui::TextDisabled("ORM = Occlusion(R) / Roughness(G) / Metallic(B) packed texture.");
     return changed;
@@ -2270,6 +2477,63 @@ void MediaTab::ImportFilesBatch(sqlite3* db) {
                   nModels, nTextures, nSkipped);
 }
 
+void MediaTab::ImportFolderTree(sqlite3* db) {
+    std::string srcFolder = gue::PickFolder("Select folder to import");
+    if (srcFolder.empty()) return;
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    fs::path src = fs::canonical(srcFolder, ec);
+    if (ec) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Folder import failed: invalid path.");
+        return;
+    }
+
+    std::string folderName = src.filename().string();
+    if (folderName.empty()) folderName = "imported";
+
+    // Destination root: dist/tools/../client/assets/models/<folderName>/
+    fs::path assetsModels = fs::current_path() / ".." / "client" / "assets" / "models" / folderName;
+
+    int nModels = 0, nCopied = 0, nSkipped = 0;
+
+    for (auto& entry : fs::recursive_directory_iterator(src, ec)) {
+        if (ec || !entry.is_regular_file()) { ec.clear(); continue; }
+
+        fs::path filePath = entry.path();
+        std::string ext   = LowerExt(filePath);
+
+        fs::path rel = fs::relative(filePath, src, ec);
+        if (ec) { ec.clear(); ++nSkipped; continue; }
+
+        fs::path dst = assetsModels / rel;
+        fs::create_directories(dst.parent_path(), ec);
+        ec.clear();
+        fs::copy_file(filePath, dst, fs::copy_options::overwrite_existing, ec);
+        if (ec) { ec.clear(); ++nSkipped; continue; }
+        ++nCopied;
+
+        const char* kind = ClassifyAsset(ext);
+        if (kind && std::strcmp(kind, "model") == 0) {
+            // DB path is relative to assets/: models/<folderName>/<rel>
+            std::string dbPath = "assets/models/" + folderName + "/" + rel.generic_string();
+            MediaModel m;
+            m.name      = filePath.stem().string();
+            m.file_path = dbPath;
+            m.scale     = 1.f;
+            SaveModel(db, m);
+            ++nModels;
+        }
+    }
+
+    ++media_revision_;
+    needFetch_ = true;
+    std::snprintf(statusMsg_, sizeof(statusMsg_),
+                  "Imported '%s': %d model(s) registered, %d file(s) copied, %d skipped.",
+                  folderName.c_str(), nModels, nCopied, nSkipped);
+}
+
 void MediaTab::Draw(sqlite3* db) {
     if (needFetch_) {
         // Before refetch, remember which actor def is currently being edited
@@ -2302,10 +2566,12 @@ void MediaTab::Draw(sqlite3* db) {
     ImGui::PushStyleColor(ImGuiCol_Button,        {0.20f, 0.50f, 0.20f, 1.f});
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.25f, 0.60f, 0.25f, 1.f});
     if (ImGui::Button("Import files...")) ImportFilesBatch(db);
+    ImGui::SameLine();
+    if (ImGui::Button("Import folder...")) ImportFolderTree(db);
     ImGui::PopStyleColor(2);
     ImGui::SameLine();
     ImGui::TextDisabled(
-        "pick N files → auto-classified: glb/fbx/obj → models, png/jpg/tga → textures");
+        "files: pick N files individually | folder: copy whole tree into assets/models/<name>/");
     ImGui::Separator();
 
     if (ImGui::BeginTabBar("##media_subtabs")) {

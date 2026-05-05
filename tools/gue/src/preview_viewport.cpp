@@ -30,6 +30,38 @@ void PreviewViewport::Clear() {
     anim_t_ = 0.f;
 }
 
+void PreviewViewport::FitCameraToModel() {
+    const auto& mdl = actor_.model();
+    if (!mdl.IsLoaded()) return;
+
+    glm::vec3 bmin = mdl.BoundsMin();
+    glm::vec3 bmax = mdl.BoundsMax();
+
+    // Guard against degenerate / empty AABB (placeholder box or no verts).
+    if (bmin.x > bmax.x) {
+        bmin = glm::vec3(-0.5f, 0.f, -0.5f);
+        bmax = glm::vec3( 0.5f, 1.f,  0.5f);
+    }
+
+    glm::vec3 center = (bmin + bmax) * 0.5f;
+    float     radius = glm::length(bmax - bmin) * 0.5f;
+    if (radius < 0.01f) radius = 0.5f;
+
+    // Distance to fit the bounding sphere within the 55° vertical FOV.
+    // sin of half-FOV ≈ 0.454 → dist = radius / 0.454 * 1.15 (slight padding).
+    const float half_fov_sin = 0.454f;
+    float dist = (radius / half_fov_sin) * 1.15f;
+
+    cam_target_   = center;
+    cam_dist_     = dist;
+    cam_yaw_      = 0.f;
+    cam_pitch_    = -15.f;
+    cam_near_     = std::max(0.01f,  radius * 0.01f);
+    cam_far_      = std::max(200.f,  radius * 10.f);
+    cam_dist_min_ = std::max(0.01f,  radius * 0.05f);
+    cam_dist_max_ = std::max(50.f,   radius * 20.f);
+}
+
 bool PreviewViewport::LoadModel(const std::string& path) {
     if (path == current_path_) return true;
 
@@ -49,6 +81,7 @@ bool PreviewViewport::LoadModel(const std::string& path) {
     if (actor_.CurrentAnim().empty() && actor_.model().ClipCount() > 0)
         actor_.PlayAnim(actor_.model().ClipName(0), true);
 
+    FitCameraToModel();
     return actor_.IsLoaded();
 }
 
@@ -115,7 +148,7 @@ void PreviewViewport::RenderToEngineFrame_(int w, int h, float dt) {
     glm::vec3 eye  = cam_target_ + offset;
     glm::mat4 view = glm::lookAt(eye, cam_target_, glm::vec3(0, 1, 0));
     glm::mat4 proj = glm::perspective(glm::radians(55.0f),
-                                      (float)engW / (float)engH, 0.05f, 200.0f);
+                                      (float)engW / (float)engH, cam_near_, cam_far_);
 
     pipeline_->Begin(view, proj, eye, dt);
     pipeline_->SetSun(glm::vec3(-0.4f, -1.0f, -0.3f), glm::vec3(1.0f, 0.95f, 0.80f));
@@ -165,7 +198,7 @@ void PreviewViewport::DrawImGui() {
         float scroll = ImGui::GetIO().MouseWheel;
         if (scroll != 0.f) {
             cam_dist_ *= std::pow(0.9f, scroll);
-            cam_dist_ = std::clamp(cam_dist_, 0.2f, 50.f);
+            cam_dist_ = std::clamp(cam_dist_, cam_dist_min_, cam_dist_max_);
         }
     }
 
@@ -205,11 +238,7 @@ void PreviewViewport::DrawImGui() {
         }
         ImGui::SameLine();
     }
-    if (ImGui::Button("Reset cam")) {
-        cam_yaw_   = 0.f;
-        cam_pitch_ = -15.f;
-        cam_dist_  = 2.5f;
-    }
+    if (ImGui::Button("Reset cam")) FitCameraToModel();
 }
 
 } // namespace gue

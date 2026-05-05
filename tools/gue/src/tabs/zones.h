@@ -29,7 +29,18 @@ enum ZoneMode {
     kModeEnviro     = 10,
     kModeOther      = 11,
     kModeSpawnPoint = 12,
-    kModeCount      = 13,
+    kModeColSphere  = 13,
+    kModeCount      = 14,
+};
+
+// ── Lightweight cache entry for the terrain material picker ─────────────────
+struct TerrainMediaMat {
+    int         id              = 0;
+    std::string name;
+    std::string albedo_path;   // relative to dist/ root
+    std::string normal_path;
+    std::string orm_path;
+    float       normal_strength = 2.5f;
 };
 
 // ── Gizmo / transform mode ───────────────────────────────────────────────────
@@ -64,6 +75,7 @@ private:
     void DrawPanelTrigger  (sqlite3*, bool placement);
     void DrawPanelSoundZone(sqlite3*, bool placement);
     void DrawPanelColBox   (sqlite3*, bool placement);
+    void DrawPanelColSphere(sqlite3*, bool placement);
     void DrawPanelWaypoint (sqlite3*, MediaTab*, bool placement);
     void DrawPanelNPC      (sqlite3*, MediaTab*, bool placement);
     void DrawPanelScenery  (sqlite3*, MediaTab*, bool placement);
@@ -117,6 +129,8 @@ private:
     void LoadZone(sqlite3*, MediaTab*, const std::string& name);
     void SaveZone(sqlite3*);
     void EnsureScriptList();
+    // Load media_materials rows into terrainMats_ for the terrain layer picker.
+    void LoadTerrainMats(sqlite3* db);
 
     // ── Layout constants ──────────────────────────────────────────────────────
     static constexpr float kSidebarW   = 185.f;
@@ -185,6 +199,8 @@ private:
     float sndRadius_       = 15.f;
     // ColBox
     float cbScaleX_ = 5.f, cbScaleY_ = 2.f, cbScaleZ_ = 5.f;
+    // ColSphere
+    float csRadius_ = 3.f;
     // NPC
     int   npcActorDefId_       = 0;
     int   npcLastActorDefId_   = -1;  // detects change → auto-fill defaults
@@ -213,11 +229,32 @@ private:
     bool  scnAlignGround_ = false;
     // Terrain brush state
     int   brushMode_      = 0;     // 0=Raise 1=Lower 2=Smooth 3=Flatten 4=Paint
+    int   brushFalloff_   = 0;     // 0=Smooth 1=Gaussian 2=Linear 3=Spherical
     float brushRadius_    = 10.f;
     float brushStrength_  = 1.0f;
     float brushFlattenH_  = 10.f;
     int   brushMaterial_  = 0;     // 0..3 — splatmap channel when painting
     bool  brushActive_    = false; // true while LMB is held in terrain mode
+
+    // Brush cursor (terrain mode) — updated every frame via hover raycast
+    glm::vec3 brushHitPos_     = {};
+    bool      brushHoverValid_ = false;
+
+    // Auto-paint slope state
+    int   slopeFlatLayer_ = 0;
+    int   slopeRockLayer_ = 2;
+    float slopeMinDeg_    = 20.f;
+    float slopeMaxDeg_    = 40.f;
+
+    // Terrain undo/redo — one snapshot captured per brush stroke (not per frame)
+    struct TerrainSnapshot {
+        std::vector<float>   heights;
+        std::vector<uint8_t> splat;
+    };
+    static constexpr int kMaxTerrainUndo = 30;
+    std::vector<TerrainSnapshot> terrainUndo_;
+    std::vector<TerrainSnapshot> terrainRedo_;
+    bool terrainStrokeActive_ = false;
 
     // Emitters
     int   emtConfigIdx_   = 0;
@@ -229,8 +266,15 @@ private:
     float spawnPtRadius_      = 5.f;
     int   spawnPtSelMob_      = -1;   // index into selected spawn point's mobs
 
-    std::vector<std::string> scriptList_;
-    bool scriptListLoaded_ = false;
+    std::vector<std::string>  scriptList_;
+    bool                      scriptListLoaded_ = false;
+
+    // Terrain material picker — populated from media_materials
+    std::vector<TerrainMediaMat> terrainMats_;
+    bool                         terrainMatsLoaded_ = false;
+
+    // Mesh triangle cache for collision vis — model-local tris, keyed by model_id.
+    MeshTriCache meshTriCache_;
 };
 
 } // namespace gue

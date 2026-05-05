@@ -57,6 +57,7 @@ const (
 	PPlayerAction     uint16 = 119 // C→S: action(str)+state(u8)+axis_value(f32)
 	PSetInputContext  uint16 = 120 // S→C: context(str)
 	PInputBindings    uint16 = 121 // S→C: sends input bindings for the active preset
+	PWorldObjects     uint16 = 122 // S→C: static world object instances for the current area
 )
 
 // EmitterType values for PCreateEmitter.

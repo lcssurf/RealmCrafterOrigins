@@ -187,6 +187,7 @@ int main() {
     // -----------------------------------------------------------------------
     rco::renderer::Camera  camera;
     rco::renderer::Terrain terrain;
+    rco::renderer::ColData col_data;
     rco::renderer::Actor   player_actor;
     bool renderer_ready = false;
 
@@ -221,6 +222,20 @@ int main() {
         uint8_t     item_type;
     };
     std::vector<WorldItemEntry> world_items;
+
+    // Static world objects (received via PWorldObjects on area enter)
+    struct WorldObjectEntry {
+        std::string model_path;
+        float scale = 1.f;
+        float x = 0.f, y = 0.f, z = 0.f, yaw = 0.f;
+        std::unique_ptr<rco::renderer::Actor> actor;
+        WorldObjectEntry() = default;
+        WorldObjectEntry(WorldObjectEntry&&) = default;
+        WorldObjectEntry& operator=(WorldObjectEntry&&) = default;
+        WorldObjectEntry(const WorldObjectEntry&) = delete;
+        WorldObjectEntry& operator=(const WorldObjectEntry&) = delete;
+    };
+    std::vector<WorldObjectEntry> world_static_objects;
 
     // Shop UI
     struct ShopEntry {
@@ -568,6 +583,7 @@ int main() {
                 player.z = cz; player.yaw = cyaw;
                 last_player_pos = {player.x, player.z};
                 world_actors.clear();
+                world_static_objects.clear();
                 area_portals.clear();
                 world_items.clear();
                 shop.open = false;
@@ -576,8 +592,9 @@ int main() {
                 spell_fx.Clear();
                 chat_bubbles.Clear();
                 dialog.open = false;
-                // Reload editor-painted terrain for the new area (no-op if not found)
+                // Reload editor-painted terrain + collision volumes for the new area
                 if (renderer_ready) terrain.LoadFromEditor(area);
+                col_data = rco::renderer::LoadColData(area);
                 // Server will send PNewActor + PKnownSpells packets for the new area.
                 break;
             }
@@ -1131,6 +1148,32 @@ int main() {
                 break;
             }
 
+            case rco::net::kPWorldObjects: {
+                world_static_objects.clear();
+                uint16_t obj_count = r.ReadU16();
+                world_static_objects.reserve(obj_count);
+                for (uint16_t oi = 0; oi < obj_count && r.OK(); ++oi) {
+                    WorldObjectEntry e;
+                    e.model_path = r.ReadString();
+                    e.scale      = r.ReadF32();
+                    e.x          = r.ReadF32();
+                    e.y          = r.ReadF32();
+                    e.z          = r.ReadF32();
+                    e.yaw        = r.ReadF32();
+                    if (!r.OK() || e.model_path.empty()) break;
+                    if (renderer_ready) {
+                        e.actor = std::make_unique<rco::renderer::Actor>();
+                        e.actor->Init("shaders", e.model_path.c_str(), &engine.materials());
+                        e.actor->position = {e.x, e.y, e.z};
+                        e.actor->yaw      = e.yaw;
+                        e.actor->scale    = e.scale;
+                    }
+                    world_static_objects.push_back(std::move(e));
+                }
+                if (renderer_ready) engine.RebuildMaterialsBuffer();
+                break;
+            }
+
             case rco::net::kPXPUpdate: {
                 uint16_t lvl     = r.ReadU16();
                 uint32_t xp      = r.ReadU32();
@@ -1272,6 +1315,16 @@ int main() {
             case rco::net::kPPing: {
                 rco::net::Writer w;
                 conn.SendPacket(rco::net::kPPong, w);
+                break;
+            }
+
+            case rco::net::kPAreaConfig: {
+                std::string skybox_hdr = r.ReadString();
+                if (!r.OK() || !renderer_ready) break;
+                const std::string path = skybox_hdr.empty()
+                    ? "assets/ibl/default.hdr"
+                    : "assets/ibl/" + skybox_hdr;
+                engine.LoadEnvironment(path);
                 break;
             }
 
@@ -1473,7 +1526,19 @@ int main() {
                     camera.SetActorHeight(player_actor.ModelHeight());
                     particles.Init();
                     renderer_ready = true;
+                    // Init any world objects received before the renderer was ready.
+                    for (auto& obj : world_static_objects) {
+                        if (!obj.actor && !obj.model_path.empty()) {
+                            obj.actor = std::make_unique<rco::renderer::Actor>();
+                            obj.actor->Init("shaders", obj.model_path.c_str(), &engine.materials());
+                            obj.actor->position = {obj.x, obj.y, obj.z};
+                            obj.actor->yaw      = obj.yaw;
+                            obj.actor->scale    = obj.scale;
+                        }
+                    }
+                    if (!world_static_objects.empty()) engine.RebuildMaterialsBuffer();
                     terrain.LoadFromEditor(player.areaName);
+                    col_data = rco::renderer::LoadColData(player.areaName);
                     player.y = terrain.SampleHeight(player.x, player.z);
                     camera.SnapTarget({player.x, player.y, player.z});
                 } else {
@@ -1629,6 +1694,12 @@ int main() {
                     }
                 }
 
+                // Resolve player position against collision volumes (boxes + spheres).
+                if (col_data.loaded) {
+                    col_data.Resolve(player.x, player.z, player.y, player.z);
+                    player.y = terrain.SampleHeight(player.x, player.z);
+                }
+
                 // Cancel movement on death.
                 if (player_dead) { has_move_target = false; pending_interact = 0; }
 
@@ -1697,7 +1768,7 @@ int main() {
                 // --- New pipeline: begin frame, submit all scene geometry, end writes to framebuffer 0 ---
                 pipeline->Begin(view, proj, camera.Position(), static_cast<float>(dt));
                 pipeline->SetSun(-sun, glm::vec3(1.0f, 0.95f, 0.80f));
-                terrain.Submit(*pipeline);
+                terrain.Submit(*pipeline, camera.Position());
 
                 // Render local player
                 {
@@ -1959,6 +2030,13 @@ int main() {
                             const float        tt = player_anim_ctrl.IsReady() ? player_anim_ctrl.CurrentTime()   : 0.f;
                             player_actor.SubmitAs(nm, tt, lf, *pipeline);
                         }
+                    }
+                }
+
+                // Static world objects
+                for (auto& obj : world_static_objects) {
+                    if (obj.actor && obj.actor->IsLoaded()) {
+                        obj.actor->Submit(*pipeline);
                     }
                 }
 

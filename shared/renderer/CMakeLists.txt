@@ -59,6 +59,9 @@ add_library(rco_renderer STATIC
     # Mesh consolidation (groups submeshes by material; default OFF)
     src/mesh_consolidate.cpp
 
+    # Collision baking — extract triangles from mesh files (no OpenGL)
+    src/col_bake.cpp
+
     # STB single-translation-unit implementation
     src/stb_image_impl.cpp
 )

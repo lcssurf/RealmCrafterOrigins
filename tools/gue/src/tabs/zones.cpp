@@ -5,6 +5,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <algorithm>
 #include <filesystem>
 
@@ -71,9 +72,58 @@ void ZonesTab::FetchAreaList(sqlite3* db) {
     needFetchAreas_ = false;
 }
 
+void ZonesTab::LoadTerrainMats(sqlite3* db) {
+    terrainMats_.clear();
+    if (!db) { terrainMatsLoaded_ = true; return; }
+    sqlite3_stmt* s = nullptr;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT id, name, albedo_path, normal_path, orm_path, normal_strength "
+        "FROM media_materials ORDER BY name",
+        -1, &s, nullptr);
+    if (rc != SQLITE_OK) { terrainMatsLoaded_ = true; return; }
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        TerrainMediaMat m;
+        m.id = sqlite3_column_int(s, 0);
+        auto text = [&](int col) -> std::string {
+            auto p = sqlite3_column_text(s, col);
+            return p ? (const char*)p : "";
+        };
+        m.name            = text(1);
+        m.albedo_path     = text(2);
+        m.normal_path     = text(3);
+        m.orm_path        = text(4);
+        m.normal_strength = (float)sqlite3_column_double(s, 5);
+        terrainMats_.push_back(std::move(m));
+    }
+    sqlite3_finalize(s);
+    terrainMatsLoaded_ = true;
+}
+
 void ZonesTab::LoadZone(sqlite3* db, MediaTab* media, const std::string& name) {
     scene_.LoadFromDB(db, name);
     renderer_.LoadTerrain(name);
+
+    // Apply terrain material IDs saved in materials.txt via DB lookup
+    LoadTerrainMats(db);
+    auto& ter = renderer_.terrain();
+    for (int i = 0; i < EditableTerrain::kMaxMats; ++i) {
+        int id = ter.materialId(i);
+        if (id <= 0) continue;
+        for (auto& tm : terrainMats_) {
+            if (tm.id != id) continue;
+            TerrainMatSpec spec;
+            spec.media_id        = tm.id;
+            spec.name            = tm.name;
+            spec.albedo_path     = tm.albedo_path;
+            spec.normal_path     = tm.normal_path;
+            spec.roughness_path  = tm.orm_path;
+            spec.tiling          = ter.tilings[i];
+            spec.normal_strength = tm.normal_strength;
+            ter.SetMaterialSlot(i, spec);
+            break;
+        }
+    }
+
     // Centre of a 512×512 heightmap at cell_size=2 → 1024×1024 world units.
     cam_.pos   = {512.f, 120.f, 300.f};
     cam_.yaw   = 0.f;
@@ -91,7 +141,14 @@ void ZonesTab::LoadZone(sqlite3* db, MediaTab* media, const std::string& name) {
 
 void ZonesTab::SaveZone(sqlite3* db) {
     scene_.SaveToDB(db);
-    std::snprintf(statusMsg_, sizeof(statusMsg_), "Saved zone: %s", scene_.areaName.c_str());
+    scene_.SaveColData(db, scene_.areaName);
+    bool terrainOk = true;
+    if (renderer_.terrain().Loaded())
+        terrainOk = renderer_.terrain().SaveArea();
+    if (terrainOk)
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Saved zone: %s", scene_.areaName.c_str());
+    else
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Saved zone (terrain write failed): %s", scene_.areaName.c_str());
 }
 
 // ─── Raycast ──────────────────────────────────────────────────────────────────
@@ -229,6 +286,28 @@ void ZonesTab::PlaceObject(const glm::vec3& wpos, sqlite3* db, MediaTab* media) 
             selectedID_ = c.id; selectedType_ = kSelColBox;
             PushUndo(kUndoCreate, kSelColBox, c.id);
             std::snprintf(statusMsg_, sizeof(statusMsg_), "Placed collision box.");
+        }
+        break;
+    }
+    case kModeColSphere: {
+        ZColSphere s;
+        s.pos    = wpos;
+        s.radius = csRadius_;
+
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO zone_colspheres (area_name, x, y, z, radius)"
+            " VALUES (?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 2, s.pos.x); sqlite3_bind_double(stmt, 3, s.pos.y); sqlite3_bind_double(stmt, 4, s.pos.z);
+            sqlite3_bind_double(stmt, 5, s.radius);
+            sqlite3_step(stmt);
+            s.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.colSpheres.push_back(s);
+            selectedID_ = s.id; selectedType_ = kSelColSphere;
+            PushUndo(kUndoCreate, kSelColSphere, s.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Placed collision sphere.");
         }
         break;
     }
@@ -450,6 +529,7 @@ void ZonesTab::Undo(sqlite3* db) {
         case kSelTrigger:   table = "area_triggers";    break;
         case kSelSoundZone: table = "area_sound_zones"; break;
         case kSelColBox:    table = "zone_colboxes";    break;
+        case kSelColSphere: table = "zone_colspheres";  break;
         case kSelWaypoint:  table = "zone_waypoints";   break;
         case kSelNpc:       table = "npc_spawns";       break;
         case kSelEmitter:   table = "zone_emitters";    break;
@@ -472,7 +552,8 @@ void ZonesTab::Undo(sqlite3* db) {
         case kSelPortal:    rem(scene_.portals);    break;
         case kSelTrigger:   rem(scene_.triggers);   break;
         case kSelSoundZone: rem(scene_.soundZones); break;
-        case kSelColBox:    rem(scene_.colBoxes);   break;
+        case kSelColBox:    rem(scene_.colBoxes);    break;
+        case kSelColSphere: rem(scene_.colSpheres); break;
         case kSelWaypoint:  rem(scene_.waypoints);  break;
         case kSelNpc:       rem(scene_.npcs);       break;
         case kSelEmitter:   rem(scene_.emitters);   break;
@@ -515,6 +596,7 @@ void ZonesTab::Undo(sqlite3* db) {
             break;
         }
         case kSelColBox:    restorePos(scene_.colBoxes,   "zone_colboxes");    break;
+        case kSelColSphere: restorePos(scene_.colSpheres, "zone_colspheres");  break;
         case kSelWaypoint:  restorePos(scene_.waypoints,  "zone_waypoints");   break;
         case kSelNpc:       restorePos(scene_.npcs,       "npc_spawns");       break;
         case kSelEmitter:   restorePos(scene_.emitters,   "zone_emitters");    break;
@@ -686,6 +768,7 @@ void ZonesTab::DeleteSelected(sqlite3* db) {
     case kSelTrigger:   table = "area_triggers";    break;
     case kSelSoundZone: table = "area_sound_zones"; break;
     case kSelColBox:    table = "zone_colboxes";    break;
+    case kSelColSphere: table = "zone_colspheres";  break;
     case kSelWaypoint:  table = "zone_waypoints";   break;
     case kSelNpc:       table = "npc_spawns";       break;
     case kSelEmitter:   table = "zone_emitters";    break;
@@ -727,7 +810,8 @@ void ZonesTab::DeleteSelected(sqlite3* db) {
     case kSelPortal:    del(scene_.portals);    break;
     case kSelTrigger:   del(scene_.triggers);   break;
     case kSelSoundZone: del(scene_.soundZones); break;
-    case kSelColBox:    del(scene_.colBoxes);   break;
+    case kSelColBox:    del(scene_.colBoxes);    break;
+    case kSelColSphere: del(scene_.colSpheres); break;
     case kSelWaypoint:  del(scene_.waypoints);  break;
     case kSelNpc:       del(scene_.npcs);       break;
     case kSelEmitter:   del(scene_.emitters);   break;
@@ -909,6 +993,7 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
     DrawGroup("T", "Triggers",   scene_.triggers,   kSelTrigger,   {1.00f,0.55f,0.10f,1.f});
     DrawGroup("S", "Sound",      scene_.soundZones, kSelSoundZone, {1.00f,1.00f,0.30f,1.f});
     DrawGroup("B", "ColBoxes",   scene_.colBoxes,   kSelColBox,    {0.90f,0.25f,0.25f,1.f});
+    DrawGroup("O", "ColSpheres", scene_.colSpheres, kSelColSphere, {1.00f,0.45f,0.00f,1.f});
     DrawGroup("W", "Waypoints",  scene_.waypoints,  kSelWaypoint,  {0.20f,0.90f,1.00f,1.f});
     DrawGroup("N", "NPCs",       scene_.npcs,       kSelNpc,       {0.30f,0.95f,0.30f,1.f});
     DrawGroup("G", "SpawnPts",   scene_.spawnPoints,kSelSpawnPoint,{0.10f,0.90f,0.40f,1.f});
@@ -1002,6 +1087,10 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
     vpSize_ = vp;
 
     renderer_.Resize((int)vp.x, (int)vp.y);
+    if (scene_.colVisDirty) {
+        scene_.RebuildColVis(db, meshTriCache_);
+        renderer_.UploadColVisBatch(scene_.colVis);
+    }
     renderer_.RenderFrame(cam_, scene_, selectedID_, selectedType_, dt);
 
     // Render the FBO as an ImGui Image.  This is the primary widget — ImGui
@@ -1009,6 +1098,80 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
     ImGui::Image(renderer_.GetTexture(), vp, {0.f, 1.f}, {1.f, 0.f});
     vpOrigin_  = ImGui::GetItemRectMin();   // screen-space top-left of the image
     vpHovered_ = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+
+    // ── Terrain brush cursor: hover raycast + circle overlay ─────────────
+    if (zoneMode_ == kModeTerrain && renderer_.terrain().Loaded()) {
+        float aspect = vpSize_.x / std::max(vpSize_.y, 1.f);
+        ImVec2 mp = ImGui::GetMousePos();
+        float vpX = mp.x - vpOrigin_.x;
+        float vpY = mp.y - vpOrigin_.y;
+        if (vpHovered_ && vpX >= 0.f && vpY >= 0.f && vpX < vpSize_.x && vpY < vpSize_.y) {
+            float ndcX =  (vpX / vpSize_.x) * 2.f - 1.f;
+            float ndcY = -((vpY / vpSize_.y) * 2.f - 1.f);
+            glm::vec3 ray = cam_.NDCRay(ndcX, ndcY, aspect);
+            glm::vec3 hit;
+            if (renderer_.terrain().Raycast(cam_.pos, ray, hit)) {
+                brushHitPos_     = hit;
+                brushHoverValid_ = true;
+            } else {
+                brushHoverValid_ = false;
+            }
+        } else {
+            brushHoverValid_ = false;
+        }
+
+        // Draw 3D cursor circle as ImGui overlay on top of the viewport image
+        if (brushHoverValid_) {
+            glm::mat4 vpMat = cam_.Proj(aspect) * cam_.View();
+            ImDrawList* dl  = ImGui::GetWindowDrawList();
+
+            // Project a world-space ring onto screen space
+            static constexpr int kSeg = 48;
+            static constexpr float kPi2 = 6.28318530f;
+            ImVec2 pts[kSeg + 1];
+            int ptCount = 0;
+            for (int i = 0; i <= kSeg; ++i) {
+                float a = (float)i / kSeg * kPi2;
+                glm::vec4 wp = {
+                    brushHitPos_.x + std::cos(a) * brushRadius_,
+                    brushHitPos_.y + 0.25f,   // slight lift to avoid z-fighting
+                    brushHitPos_.z + std::sin(a) * brushRadius_,
+                    1.0f
+                };
+                glm::vec4 clip = vpMat * wp;
+                if (clip.w <= 0.0001f) continue;
+                clip /= clip.w;
+                if (clip.x < -1.5f || clip.x > 1.5f || clip.y < -1.5f || clip.y > 1.5f) continue;
+                float sx = vpOrigin_.x + (clip.x * 0.5f + 0.5f) * vpSize_.x;
+                float sy = vpOrigin_.y + (-clip.y * 0.5f + 0.5f) * vpSize_.y;
+                pts[ptCount++] = {sx, sy};
+            }
+            if (ptCount > 2) {
+                // Dark outline for contrast, then coloured ring
+                dl->AddPolyline(pts, ptCount, IM_COL32(0, 0, 0, 140), ImDrawFlags_None, 3.5f);
+                ImU32 ringCol = (brushMode_ == 4)
+                    ? IM_COL32(255, 215, 50, 230)   // yellow for paint
+                    : IM_COL32(255, 255, 255, 230);  // white for sculpt
+                dl->AddPolyline(pts, ptCount, ringCol, ImDrawFlags_None, 1.5f);
+            }
+
+            // Centre cross-hair
+            glm::vec4 cen4 = vpMat * glm::vec4(brushHitPos_, 1.f);
+            if (cen4.w > 0.f) {
+                cen4 /= cen4.w;
+                float cx = vpOrigin_.x + (cen4.x * 0.5f + 0.5f) * vpSize_.x;
+                float cy = vpOrigin_.y + (-cen4.y * 0.5f + 0.5f) * vpSize_.y;
+                float cs = 4.f;
+                dl->AddLine({cx - cs, cy}, {cx + cs, cy}, IM_COL32(0,0,0,140), 2.5f);
+                dl->AddLine({cx, cy - cs}, {cx, cy + cs}, IM_COL32(0,0,0,140), 2.5f);
+                ImU32 dotCol = (brushMode_ == 4) ? IM_COL32(255,215,50,230) : IM_COL32(255,255,255,230);
+                dl->AddLine({cx - cs, cy}, {cx + cs, cy}, dotCol, 1.5f);
+                dl->AddLine({cx, cy - cs}, {cx, cy + cs}, dotCol, 1.5f);
+            }
+        }
+    } else {
+        brushHoverValid_ = false;
+    }
 
     // ── Camera controls — RC 1.26 style ─────────────────────────────────
     //
@@ -1088,12 +1251,22 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             cam_.pos += u * (io.MouseDelta.y * kPanScale);
         }
 
-        // Scroll (no Ctrl) → dolly zoom along the view direction. Step
-        // scales with speed so it feels consistent from ground-level to
-        // flyover altitudes; Shift amplifies it.
+        // Scroll (no Ctrl) → dolly zoom, UNLESS we are in terrain mode without
+        // mouselook — there scroll adjusts brush radius (Shift = strength).
+        bool terrainScrollOverride = (zoneMode_ == kModeTerrain && !mouseLook_ && vpHovered_);
         if (io.MouseWheel != 0.f && !ctrlDown) {
-            const float kZoomStep = 0.1f * cam_.speed;
-            cam_.pos += cam_.Forward() * (io.MouseWheel * kZoomStep);
+            if (terrainScrollOverride) {
+                bool shiftDown = ImGui::IsKeyDown(ImGuiKey_LeftShift)
+                              || ImGui::IsKeyDown(ImGuiKey_RightShift);
+                if (shiftDown) {
+                    brushStrength_ = std::clamp(brushStrength_ + io.MouseWheel * 0.1f, 0.05f, 3.f);
+                } else {
+                    brushRadius_ = std::clamp(brushRadius_ + io.MouseWheel * 2.f, 1.f, 80.f);
+                }
+            } else {
+                const float kZoomStep = 0.1f * cam_.speed;
+                cam_.pos += cam_.Forward() * (io.MouseWheel * kZoomStep);
+            }
         }
 
         // Restore base speed so the boost never persists across frames.
@@ -1162,6 +1335,11 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             float tt = rayAABB(orig, dir, c.pos - half, c.pos + half);
             if (tt > 0.f && tt < bestT) { bestT = tt; bestID = c.id; bestType = kSelColBox; }
         }
+        // Test colspheres
+        for (auto& s : scene_.colSpheres) {
+            float tt = raySphere(orig, dir, s.pos, s.radius);
+            if (tt > 0.f && tt < bestT) { bestT = tt; bestID = s.id; bestType = kSelColSphere; }
+        }
         // Test waypoints
         for (auto& w : scene_.waypoints) {
             float tt = raySphere(orig, dir, w.pos, 0.8f);
@@ -1225,6 +1403,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                 case kSelTrigger:   zoneMode_ = kModeTrigger;   break;
                 case kSelSoundZone: zoneMode_ = kModeSoundZone; break;
                 case kSelColBox:    zoneMode_ = kModeColBox;    break;
+                case kSelColSphere: zoneMode_ = kModeColSphere; break;
                 case kSelWaypoint:  zoneMode_ = kModeWaypoint;  break;
                 case kSelNpc:       zoneMode_ = kModeNPC;       break;
                 case kSelEmitter:   zoneMode_ = kModeEmitters;  break;
@@ -1241,6 +1420,18 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
     // ── Terrain brush (LMB-drag in Terrain mode) ─────────────────────────
     if (zoneMode_ == kModeTerrain && !mouseLook_ && renderer_.terrain().Loaded()) {
         if (vpHovered_ && ImGui::IsMouseDown(0)) {
+            // Capture one snapshot at the start of each brush stroke
+            if (!terrainStrokeActive_) {
+                terrainStrokeActive_ = true;
+                TerrainSnapshot snap;
+                snap.heights = renderer_.terrain().heightmap().heights;
+                snap.splat   = renderer_.terrain().splatmap().data;
+                if ((int)terrainUndo_.size() >= kMaxTerrainUndo)
+                    terrainUndo_.erase(terrainUndo_.begin());
+                terrainUndo_.push_back(std::move(snap));
+                terrainRedo_.clear();
+            }
+
             ImVec2 mp  = ImGui::GetMousePos();
             float  vpX = mp.x - vpOrigin_.x;
             float  vpY = mp.y - vpOrigin_.y;
@@ -1253,16 +1444,21 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             if (renderer_.terrain().Raycast(origin, dir, hit)) {
                 if (brushMode_ == 4) {
                     renderer_.terrain().Paint(hit.x, hit.z, brushRadius_,
-                                              brushStrength_, dt, brushMaterial_);
+                                              brushStrength_, dt, brushMaterial_,
+                                              (BrushFalloff)brushFalloff_);
                 } else {
-                    BrushMode bm = (BrushMode)brushMode_;
+                    // UI index 5 = Noise → BrushMode::Noise (enum value 4)
+                    BrushMode bm = (brushMode_ == 5) ? BrushMode::Noise
+                                                      : (BrushMode)brushMode_;
                     renderer_.terrain().ApplyBrush(hit.x, hit.z, brushRadius_,
                                                    brushStrength_, dt, bm,
-                                                   brushFlattenH_);
+                                                   brushFlattenH_,
+                                                   (BrushFalloff)brushFalloff_);
                 }
                 brushActive_ = true;
             }
         } else if (ImGui::IsMouseReleased(0)) {
+            terrainStrokeActive_ = false;
             brushActive_ = false;
         }
         // Radius shortcuts
@@ -1276,9 +1472,40 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
     if (vpHovered_ && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
         DeleteSelected(db);
 
-    // Ctrl+Z — undo
-    if (vpHovered_ && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false))
-        Undo(db);
+    // Ctrl+Z — undo (terrain undo when in terrain mode, scene undo otherwise)
+    if (vpHovered_ && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+        if (zoneMode_ == kModeTerrain && !terrainUndo_.empty()) {
+            TerrainSnapshot cur;
+            cur.heights = renderer_.terrain().heightmap().heights;
+            cur.splat   = renderer_.terrain().splatmap().data;
+            terrainRedo_.push_back(std::move(cur));
+            auto& prev = terrainUndo_.back();
+            renderer_.terrain().heightmap().heights = prev.heights;
+            renderer_.terrain().heightmap().InitGPU();
+            renderer_.terrain().splatmap().data  = prev.splat;
+            renderer_.terrain().splatmap().dirty = true;
+            terrainUndo_.pop_back();
+        } else {
+            Undo(db);
+        }
+    }
+    // Ctrl+Y — redo (terrain only)
+    if (vpHovered_ && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+        if (zoneMode_ == kModeTerrain && !terrainRedo_.empty()) {
+            TerrainSnapshot cur;
+            cur.heights = renderer_.terrain().heightmap().heights;
+            cur.splat   = renderer_.terrain().splatmap().data;
+            if ((int)terrainUndo_.size() >= kMaxTerrainUndo)
+                terrainUndo_.erase(terrainUndo_.begin());
+            terrainUndo_.push_back(std::move(cur));
+            auto& next = terrainRedo_.back();
+            renderer_.terrain().heightmap().heights = next.heights;
+            renderer_.terrain().heightmap().InitGPU();
+            renderer_.terrain().splatmap().data  = next.splat;
+            renderer_.terrain().splatmap().dirty = true;
+            terrainRedo_.pop_back();
+        }
+    }
 
     // Ctrl+D — duplicate
     if (vpHovered_ && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false))
@@ -1300,6 +1527,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         case kSelTrigger:   cycle(scene_.triggers,   kSelTrigger);   break;
         case kSelSoundZone: cycle(scene_.soundZones, kSelSoundZone); break;
         case kSelColBox:    cycle(scene_.colBoxes,   kSelColBox);    break;
+    case kSelColSphere: cycle(scene_.colSpheres, kSelColSphere); break;
         case kSelWaypoint:  cycle(scene_.waypoints,  kSelWaypoint);  break;
         case kSelNpc:       cycle(scene_.npcs,       kSelNpc);       break;
         case kSelEmitter:   cycle(scene_.emitters,   kSelEmitter);   break;
@@ -1326,8 +1554,9 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         unsigned allowRot   = 0, allowScale = 0;
         if (selectedType_ == kSelScenery) { allowRot = 0b111; allowScale = 0b111; }
         else if (selectedType_ == kSelNpc)     { allowRot = 0b010; }
-        else if (selectedType_ == kSelColBox)  { allowScale = 0b111; }
-        else if (selectedType_ == kSelWater)   { allowScale = 0b101; }
+        else if (selectedType_ == kSelColBox)    { allowScale = 0b111; }
+        else if (selectedType_ == kSelColSphere) { allowScale = 0b001; }   // uniform — X drives radius
+        else if (selectedType_ == kSelWater)     { allowScale = 0b101; }
 
         // Tell the renderer to draw the active gizmo inside its forward pass
         // (so it lands on the same FBO as the rest of the scene).
@@ -1529,7 +1758,8 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             {"Portal",         kModePortal     },
             {"Trigger",        kModeTrigger    },
             {"Sound Zone",     kModeSoundZone  },
-            {"Collision Box",  kModeColBox     },
+            {"Collision Box",    kModeColBox     },
+            {"Collision Sphere", kModeColSphere  },
             {"Waypoint",       kModeWaypoint   },
             {"NPC",            kModeNPC        },
             {"Water",          kModeWater      },
@@ -1563,6 +1793,7 @@ void ZonesTab::DrawInspector(sqlite3* db, MediaTab* media) {
         case kSelTrigger:   DrawPanelTrigger  (db,        false); return;
         case kSelSoundZone: DrawPanelSoundZone(db,        false); return;
         case kSelColBox:    DrawPanelColBox   (db,        false); return;
+        case kSelColSphere: DrawPanelColSphere(db,        false); return;
         case kSelWaypoint:  DrawPanelWaypoint (db, media, false); return;
         case kSelNpc:        DrawPanelNPC       (db, media, false); return;
         case kSelSpawnPoint: DrawPanelSpawnPoint(db, media, false); return;
@@ -1580,6 +1811,7 @@ void ZonesTab::DrawInspector(sqlite3* db, MediaTab* media) {
     case kModeEmitters:  DrawPanelEmitters (db,        true); break;
     case kModeWater:     DrawPanelWater    (db,        true); break;
     case kModeColBox:    DrawPanelColBox   (db,        true); break;
+    case kModeColSphere: DrawPanelColSphere(db,        true); break;
     case kModeSoundZone: DrawPanelSoundZone(db,        true); break;
     case kModeTrigger:   DrawPanelTrigger  (db,        true); break;
     case kModeWaypoint:  DrawPanelWaypoint (db, media, true); break;
@@ -1608,9 +1840,9 @@ void ZonesTab::DrawStatusBar() {
     ImGui::SameLine(0, 16.f);
     if (selectedID_ >= 0) {
         static const char* kSelNames[] = {
-            "Portal","Trigger","Sound","ColBox","Waypoint","NPC","Emitter","Water","Scenery"
+            "Portal","Trigger","Sound","ColBox","Waypoint","NPC","Emitter","Water","Scenery","SpawnPt","ColSphere"
         };
-        int si = std::clamp(selectedType_, 0, 8);
+        int si = std::clamp(selectedType_, 0, 10);
         ImGui::TextColored({0.4f, 0.8f, 1.f, 0.8f},
                            "Selected: %s #%d", kSelNames[si], selectedID_);
     } else {
@@ -1630,7 +1862,8 @@ bool ZonesTab::SelectedPos(glm::vec3& out) const {
         return false;
     };
     if (tryVec(scene_.portals,   kSelPortal))   return true;
-    if (tryVec(scene_.colBoxes,  kSelColBox))   return true;
+    if (tryVec(scene_.colBoxes,   kSelColBox))    return true;
+    if (tryVec(scene_.colSpheres, kSelColSphere)) return true;
     if (tryVec(scene_.waypoints, kSelWaypoint)) return true;
     if (tryVec(scene_.npcs,      kSelNpc))      return true;
     if (tryVec(scene_.emitters,  kSelEmitter))  return true;
@@ -1650,7 +1883,8 @@ void ZonesTab::SetSelectedPos(const glm::vec3& pos) {
         for (auto& o : vec) if (o.id == selectedID_) o.pos = pos;
     };
     trySet(scene_.portals,   kSelPortal);
-    trySet(scene_.colBoxes,  kSelColBox);
+    trySet(scene_.colBoxes,   kSelColBox);
+    trySet(scene_.colSpheres, kSelColSphere);
     trySet(scene_.waypoints, kSelWaypoint);
     trySet(scene_.npcs,      kSelNpc);
     trySet(scene_.emitters,  kSelEmitter);
@@ -1676,6 +1910,7 @@ void ZonesTab::PersistSelectedPos(sqlite3* db) {
     case kSelTrigger:   sql = "UPDATE area_triggers    SET x=?,z=?     WHERE id=?"; three = false; break;
     case kSelSoundZone: sql = "UPDATE area_sound_zones SET x=?,z=?     WHERE id=?"; three = false; break;
     case kSelColBox:    sql = "UPDATE zone_colboxes    SET x=?,y=?,z=? WHERE id=?"; break;
+    case kSelColSphere: sql = "UPDATE zone_colspheres  SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelWaypoint:  sql = "UPDATE zone_waypoints   SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelNpc:       sql = "UPDATE npc_spawns       SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelEmitter:   sql = "UPDATE zone_emitters    SET x=?,y=?,z=? WHERE id=?"; break;
@@ -1761,6 +1996,10 @@ bool ZonesTab::SelectedScale(glm::vec3& out) const {
         for (auto& s : scene_.scenery) if (s.id == selectedID_) { out = s.scale; return true; }
     } else if (selectedType_ == kSelColBox) {
         for (auto& c : scene_.colBoxes) if (c.id == selectedID_) { out = c.scale; return true; }
+    } else if (selectedType_ == kSelColSphere) {
+        for (auto& s : scene_.colSpheres) if (s.id == selectedID_) {
+            out = glm::vec3(s.radius); return true;
+        }
     } else if (selectedType_ == kSelWater) {
         for (auto& w : scene_.water) if (w.id == selectedID_) {
             out = glm::vec3(w.scale.x, 1.f, w.scale.y); return true;
@@ -1774,6 +2013,8 @@ void ZonesTab::SetSelectedScale(const glm::vec3& s) {
         for (auto& o : scene_.scenery) if (o.id == selectedID_) { o.scale = s; return; }
     } else if (selectedType_ == kSelColBox) {
         for (auto& c : scene_.colBoxes) if (c.id == selectedID_) { c.scale = s; return; }
+    } else if (selectedType_ == kSelColSphere) {
+        for (auto& cs : scene_.colSpheres) if (cs.id == selectedID_) { cs.radius = s.x; return; }
     } else if (selectedType_ == kSelWater) {
         for (auto& w : scene_.water) if (w.id == selectedID_) {
             w.scale.x = s.x; w.scale.y = s.z; return;
@@ -1806,6 +2047,18 @@ void ZonesTab::PersistSelectedScale(sqlite3* db) {
                 sqlite3_bind_double(st, 2, c.scale.y);
                 sqlite3_bind_double(st, 3, c.scale.z);
                 sqlite3_bind_int   (st, 4, c.id);
+                sqlite3_step(st); sqlite3_finalize(st);
+            }
+            return;
+        }
+    } else if (selectedType_ == kSelColSphere) {
+        for (auto& cs : scene_.colSpheres) if (cs.id == selectedID_) {
+            sqlite3_stmt* st = nullptr;
+            if (sqlite3_prepare_v2(db,
+                "UPDATE zone_colspheres SET radius=? WHERE id=?",
+                -1, &st, nullptr) == SQLITE_OK) {
+                sqlite3_bind_double(st, 1, cs.radius);
+                sqlite3_bind_int   (st, 2, cs.id);
                 sqlite3_step(st); sqlite3_finalize(st);
             }
             return;
@@ -2051,6 +2304,45 @@ void ZonesTab::DrawPanelColBox(sqlite3* db, bool placement) {
     ImGui::Spacing();
     ImGui::PushStyleColor(ImGuiCol_Button,{0.65f,0.1f,0.1f,1.f});
     if (ImGui::Button("Delete colbox")) DeleteSelected(db);
+    ImGui::PopStyleColor();
+}
+
+void ZonesTab::DrawPanelColSphere(sqlite3* db, bool placement) {
+    if (placement || selectedType_ != kSelColSphere) {
+        ImGui::TextColored({1.0f,0.45f,0.0f,1.f}, "Collision sphere");
+        ImGui::Separator();
+        ImGui::InputFloat("Radius##csp", &csRadius_, 0.25f, 1.f, "%.2f");
+        if (csRadius_ < 0.25f) csRadius_ = 0.25f;
+        ImGui::TextDisabled("RMB in viewport to place.");
+        return;
+    }
+
+    auto it = std::find_if(scene_.colSpheres.begin(), scene_.colSpheres.end(),
+                           [&](auto& s){ return s.id == selectedID_; });
+    if (it == scene_.colSpheres.end()) return;
+    ZColSphere& s = *it;
+
+    ImGui::TextColored({1.0f,0.45f,0.0f,1.f}, "ColSphere [id=%d]", s.id);
+    ImGui::Separator();
+    bool changed = false;
+    if (ImGui::InputFloat("X##cso", &s.pos.x, 0,0,"%.2f")) changed = true;
+    if (ImGui::InputFloat("Y##cso", &s.pos.y, 0,0,"%.2f")) changed = true;
+    if (ImGui::InputFloat("Z##cso", &s.pos.z, 0,0,"%.2f")) changed = true;
+    ImGui::Separator();
+    if (ImGui::InputFloat("Radius##cso", &s.radius, 0.25f,1.f,"%.2f")) changed = true;
+    if (s.radius < 0.25f) s.radius = 0.25f;
+    if (changed) {
+        sqlite3_stmt* st = nullptr;
+        sqlite3_prepare_v2(db,
+            "UPDATE zone_colspheres SET x=?,y=?,z=?,radius=? WHERE id=?",
+            -1, &st, nullptr);
+        sqlite3_bind_double(st,1,s.pos.x); sqlite3_bind_double(st,2,s.pos.y); sqlite3_bind_double(st,3,s.pos.z);
+        sqlite3_bind_double(st,4,s.radius); sqlite3_bind_int(st,5,s.id);
+        sqlite3_step(st); sqlite3_finalize(st);
+    }
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Button,{0.65f,0.1f,0.1f,1.f});
+    if (ImGui::Button("Delete colsphere")) DeleteSelected(db);
     ImGui::PopStyleColor();
 }
 
@@ -2398,6 +2690,7 @@ void ZonesTab::DrawPanelNPC(sqlite3* db, MediaTab* media, bool placement) {
 
 void ZonesTab::SyncSceneryCache(MediaTab* media) {
     if (!media) return;
+    scene_.colVisDirty = true;
 
     // Resolve a MediaModel's material_map into Model::MaterialPaths keyed by
     // aiMaterial name, pulling texture paths from media_materials.
@@ -2589,84 +2882,288 @@ void ZonesTab::DrawPanelScenery(sqlite3* db, MediaTab* media, bool placement) {
 
 // ─── Terrain mode panel ──────────────────────────────────────────────────────
 
-void ZonesTab::DrawPanelTerrain(sqlite3*, bool) {
-    ImGui::TextColored({0.55f, 0.8f, 0.40f, 1.f}, "Terrain");
-    ImGui::Separator();
+void ZonesTab::DrawPanelTerrain(sqlite3* db, bool) {
     if (scene_.areaName.empty()) {
+        ImGui::TextColored({0.55f, 0.8f, 0.40f, 1.f}, "Terrain");
+        ImGui::Separator();
         ImGui::TextDisabled("Load a zone first.");
         return;
     }
 
     auto& terrain = renderer_.terrain();
 
-    // ── Brush mode radio ──────────────────────────────────────────────────
-    static const char* kBrushLabels[] = {"Raise", "Lower", "Smooth", "Flatten", "Paint"};
-    ImGui::TextUnformatted("Brush");
-    for (int i = 0; i < 5; ++i) {
-        if (i > 0 && (i % 3) != 0) ImGui::SameLine();
-        bool active = (brushMode_ == i);
-        if (active) ImGui::PushStyleColor(ImGuiCol_Button, {0.22f, 0.52f, 0.88f, 1.f});
-        if (ImGui::Button(kBrushLabels[i], {60.f, 0.f})) brushMode_ = i;
-        if (active) ImGui::PopStyleColor();
+    // ── Brush mode ────────────────────────────────────────────────────────
+    ImGui::TextColored({0.55f, 0.85f, 0.40f, 1.f}, "Brush Mode");
+    ImGui::Separator();
+
+    struct BrushDef { const char* label; const char* hint; };
+    static const BrushDef kModes[] = {
+        {"+ Raise",   "Sculpt terrain upward"},
+        {"- Lower",   "Sculpt terrain downward"},
+        {"~ Smooth",  "Smooth rough surfaces"},
+        {"= Flatten", "Flatten to a target height"},
+        {"# Paint",   "Paint material layers"},
+        {"* Noise",   "Apply random value-noise displacement"},
+    };
+
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {3.f, 3.f});
+    for (int i = 0; i < 6; ++i) {
+        bool sel = (brushMode_ == i);
+        if (sel) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        {0.20f, 0.50f, 0.85f, 1.f});
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.28f, 0.60f, 1.00f, 1.f});
+        }
+        ImGui::PushID(i);
+        if (ImGui::Button(kModes[i].label, {-1.f, 24.f})) brushMode_ = i;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kModes[i].hint);
+        ImGui::PopID();
+        if (sel) ImGui::PopStyleColor(2);
+    }
+    ImGui::PopStyleVar();
+
+    // ── Radius / strength ─────────────────────────────────────────────────
+    ImGui::Spacing();
+    ImGui::SeparatorText("Brush Settings");
+
+    ImGui::SetNextItemWidth(-1.f);
+    ImGui::SliderFloat("##rad", &brushRadius_, 1.f, 80.f, "Radius  %.1f m");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Scroll wheel to resize\nShift+Scroll for strength\n[ ] keys also work");
+
+    ImGui::SetNextItemWidth(-1.f);
+    ImGui::SliderFloat("##str", &brushStrength_, 0.05f, 3.f, "Strength  %.2f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Shift + Scroll to adjust");
+
+    ImGui::SetNextItemWidth(-1.f);
+    ImGui::Combo("Falloff##tf", &brushFalloff_, "Smooth\0Gaussian\0Linear\0Spherical\0");
+
+    if (brushMode_ == 3) {
+        ImGui::Spacing();
+        float avail = ImGui::GetContentRegionAvail().x;
+        ImGui::SetNextItemWidth(avail - (brushHoverValid_ ? 68.f : 0.f));
+        ImGui::InputFloat("##flatH", &brushFlattenH_, 1.f, 10.f, "Target Y  %.1f m");
+        if (brushHoverValid_) {
+            ImGui::SameLine(0, 4.f);
+            if (ImGui::Button("Sample", {-1.f, 0.f}))
+                brushFlattenH_ = brushHitPos_.y;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Copy cursor elevation (%.2f m)", brushHitPos_.y);
+        }
     }
 
-    ImGui::Spacing();
-    ImGui::SliderFloat("Radius##tb",   &brushRadius_,   1.f, 80.f,  "%.1f");
-    ImGui::SliderFloat("Strength##tb", &brushStrength_, 0.05f, 3.f, "%.2f");
-    if (brushMode_ == 3) // Flatten
-        ImGui::InputFloat("Target Y##tb", &brushFlattenH_, 1.f, 10.f, "%.1f");
-
-    // ── Material picker (paint mode) ─────────────────────────────────────
+    // ── Paint material picker ─────────────────────────────────────────────
     if (brushMode_ == 4) {
         ImGui::Spacing();
-        ImGui::TextUnformatted("Paint material");
+        ImGui::SeparatorText("Material Layer");
+
+        // Per-channel accent colours (R G B A)
+        static const ImVec4 kChanCol[] = {
+            {0.75f, 0.28f, 0.22f, 0.90f},
+            {0.22f, 0.62f, 0.28f, 0.90f},
+            {0.22f, 0.42f, 0.78f, 0.90f},
+            {0.72f, 0.65f, 0.12f, 0.90f},
+        };
+        static const ImVec4 kChanHov[] = {
+            {0.90f, 0.40f, 0.35f, 1.00f},
+            {0.32f, 0.80f, 0.38f, 1.00f},
+            {0.32f, 0.55f, 1.00f, 1.00f},
+            {0.90f, 0.82f, 0.22f, 1.00f},
+        };
         const auto& mats = terrain.materials();
-        for (int i = 0; i < (int)mats.size() && i < 4; ++i) {
-            bool active = (brushMaterial_ == i);
-            if (active) ImGui::PushStyleColor(ImGuiCol_Button, {0.22f, 0.52f, 0.88f, 1.f});
-            if (ImGui::Button(mats[i].name.c_str(), {-1.f, 0.f})) brushMaterial_ = i;
-            if (active) ImGui::PopStyleColor();
-        }
-        if ((int)mats.size() < 4) {
-            ImGui::TextDisabled("(Configure more materials below)");
-        }
-    }
-
-    // ── Material configuration ───────────────────────────────────────────
-    ImGui::Spacing(); ImGui::Separator();
-    if (ImGui::CollapsingHeader("Materials")) {
-        auto names = terrain.materialNames();
-        names.resize(4);
-        bool changed = false;
+        float btnW = (ImGui::GetContentRegionAvail().x - 4.f) * 0.5f;
         for (int i = 0; i < 4; ++i) {
-            char buf[64]; std::strncpy(buf, names[i].c_str(), 63);
-            buf[63] = 0;
-            char label[16]; std::snprintf(label, 16, "Layer %d", i);
-            ImGui::SetNextItemWidth(-1.f);
-            if (ImGui::InputText(label, buf, 64)) {
-                names[i] = buf;
-                changed = true;
-            }
+            bool  has  = (i < (int)mats.size() && !mats[i].name.empty());
+            bool  sel  = (brushMaterial_ == i && has);
+            const char* label = has ? mats[i].name.c_str() : "(empty)";
+
+            if (i & 1) ImGui::SameLine(0, 4.f);
+
+            ImVec4 bg  = has ? kChanCol[i] : ImVec4(0.18f, 0.18f, 0.18f, 0.55f);
+            ImVec4 hov = has ? kChanHov[i] : ImVec4(0.28f, 0.28f, 0.28f, 0.75f);
+            ImVec4 act = sel ? hov : bg;
+            ImGui::PushStyleColor(ImGuiCol_Button,        act);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hov);
+            if (sel) ImGui::PushStyleColor(ImGuiCol_Text, {1.f, 1.f, 1.f, 1.f});
+            ImGui::PushID(100 + i);
+            if (ImGui::Button(label, {btnW, 30.f}) && has) brushMaterial_ = i;
+            ImGui::PopID();
+            if (sel) ImGui::PopStyleColor();
+            ImGui::PopStyleColor(2);
         }
-        if (changed) {
-            // Trim trailing empties so SetMaterialNames doesn't load empty dirs.
-            while (!names.empty() && names.back().empty()) names.pop_back();
-            terrain.SetMaterialNames(names);
-        }
-        float t = terrain.tiling;
-        if (ImGui::SliderFloat("Tiling##tb", &t, 1.f, 64.f, "%.0f"))
-            terrain.tiling = t;
-        ImGui::TextDisabled("Materials load from:\ndist/client/data/terrain/materials/<name>/");
+        if ((int)mats.size() < 1)
+            ImGui::TextDisabled("Configure materials below.");
     }
 
-    ImGui::Spacing(); ImGui::Separator();
-    if (ImGui::Button("Save terrain", {-1.f, 0.f})) {
+    // ── Auto-paint by slope ───────────────────────────────────────────────
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("Auto-paint Slope")) {
+        static const char* kLayerNames[] = {"Layer 0", "Layer 1", "Layer 2", "Layer 3"};
+
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::Combo("Flat layer##asl", &slopeFlatLayer_, kLayerNames, 4);
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::Combo("Rock layer##asl", &slopeRockLayer_, kLayerNames, 4);
+
+        ImGui::Spacing();
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::SliderFloat("##slopeMin", &slopeMinDeg_, 0.f, 89.f, "Flat below  %.0f deg");
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::SliderFloat("##slopeMax", &slopeMaxDeg_, 0.f, 89.f, "Rock above  %.0f deg");
+        if (slopeMaxDeg_ <= slopeMinDeg_) slopeMaxDeg_ = slopeMinDeg_ + 1.f;
+
+        ImGui::Spacing();
+        if (ImGui::Button("Apply##asl", {-1.f, 0.f}) && terrain.Loaded()) {
+            // Capture undo snapshot before the full-terrain operation
+            TerrainSnapshot snap;
+            snap.heights = terrain.heightmap().heights;
+            snap.splat   = terrain.splatmap().data;
+            if ((int)terrainUndo_.size() >= kMaxTerrainUndo)
+                terrainUndo_.erase(terrainUndo_.begin());
+            terrainUndo_.push_back(std::move(snap));
+            terrainRedo_.clear();
+
+            terrain.AutoPaintBySlope(slopeFlatLayer_, slopeRockLayer_,
+                                     slopeMinDeg_, slopeMaxDeg_);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Paints the entire terrain based on slope angle.\nCtrl+Z to undo.");
+    }
+
+    // ── Material layer configuration (DB-backed) ──────────────────────────
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("Materials", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Lazy-load material list from DB
+        if (!terrainMatsLoaded_) LoadTerrainMats(db);
+
+        // Refresh button — re-queries media_materials (useful after adding new ones)
+        if (ImGui::SmallButton("Refresh##mats")) {
+            terrainMatsLoaded_ = false;
+            LoadTerrainMats(db);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%d materials in DB)", (int)terrainMats_.size());
+
+        ImGui::Spacing();
+
+        static const char* kSlotNames[] = {"Layer 0  (R)", "Layer 1  (G)", "Layer 2  (B)", "Layer 3  (A)"};
+        static const ImVec4 kSlotAccent[] = {
+            {0.75f, 0.28f, 0.22f, 1.f},
+            {0.22f, 0.62f, 0.28f, 1.f},
+            {0.22f, 0.42f, 0.78f, 1.f},
+            {0.72f, 0.65f, 0.12f, 1.f},
+        };
+
+        for (int i = 0; i < EditableTerrain::kMaxMats; ++i) {
+            int curId = terrain.materialId(i);
+
+            // Find current selection index in terrainMats_
+            int curIdx = -1;
+            for (int j = 0; j < (int)terrainMats_.size(); ++j)
+                if (terrainMats_[j].id == curId) { curIdx = j; break; }
+
+            const char* preview = curIdx >= 0 ? terrainMats_[curIdx].name.c_str() : "(none)";
+
+            // Coloured label
+            ImGui::PushStyleColor(ImGuiCol_Text, kSlotAccent[i]);
+            ImGui::TextUnformatted(kSlotNames[i]);
+            ImGui::PopStyleColor();
+            ImGui::SameLine(80.f);
+
+            ImGui::SetNextItemWidth(-1.f);
+            ImGui::PushID(200 + i);
+            if (ImGui::BeginCombo("##matslot", preview)) {
+                // "(none)" clears the slot back to fallback colour
+                if (ImGui::Selectable("(none)", curIdx < 0)) {
+                    terrain.ClearMaterialSlot(i);
+                }
+                if (curIdx < 0) ImGui::SetItemDefaultFocus();
+
+                for (int j = 0; j < (int)terrainMats_.size(); ++j) {
+                    bool sel = (j == curIdx);
+                    if (ImGui::Selectable(terrainMats_[j].name.c_str(), sel)) {
+                        const auto& tm = terrainMats_[j];
+                        TerrainMatSpec spec;
+                        spec.media_id        = tm.id;
+                        spec.name            = tm.name;
+                        spec.albedo_path     = tm.albedo_path;
+                        spec.normal_path     = tm.normal_path;
+                        spec.roughness_path  = tm.orm_path;
+                        spec.tiling          = terrain.tilings[i];
+                        spec.normal_strength = tm.normal_strength;
+                        terrain.SetMaterialSlot(i, spec);
+                    }
+                    if (sel) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::PopID();
+        }
+
+        ImGui::Spacing();
+        ImGui::TextDisabled("Tiling per layer:");
+        static const char* kTilingLabels[] = {"L0", "L1", "L2", "L3"};
+        static const ImVec4 kTilingAccent[] = {
+            {0.75f, 0.28f, 0.22f, 1.f},
+            {0.22f, 0.62f, 0.28f, 1.f},
+            {0.22f, 0.42f, 0.78f, 1.f},
+            {0.72f, 0.65f, 0.12f, 1.f},
+        };
+        for (int i = 0; i < EditableTerrain::kMaxMats; ++i) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kTilingAccent[i]);
+            ImGui::TextUnformatted(kTilingLabels[i]);
+            ImGui::PopStyleColor();
+            ImGui::SameLine(30.f);
+            ImGui::PushID(500 + i);
+            ImGui::SetNextItemWidth(-1.f);
+            ImGui::SliderFloat("##til", &terrain.tilings[i], 1.f, 64.f, "%.0f");
+            ImGui::PopID();
+        }
+
+        if (terrainMats_.empty()) {
+            ImGui::Spacing();
+            ImGui::TextColored({1.f, 0.7f, 0.2f, 1.f},
+                "No materials in DB yet.");
+            ImGui::TextDisabled("Add materials in the Media tab.");
+        }
+
+        ImGui::Spacing();
+        ImGui::TextDisabled("Macro variation:");
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::SliderFloat("##macro_str", &terrain.macroStrength, 0.f, 1.f, "Strength %.2f");
+        if (ImGui::SmallButton("Generate Macro")) {
+            terrain.GenerateMacro();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Save Macro")) {
+            bool ok = terrain.SaveMacro();
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                ok ? "Macro texture saved." : "Failed to save macro.");
+        }
+    }
+
+    // ── Save ──────────────────────────────────────────────────────────────
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_Button,        {0.18f, 0.45f, 0.18f, 1.f});
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.24f, 0.60f, 0.24f, 1.f});
+    if (ImGui::Button("  Save Terrain  ", {-1.f, 0.f})) {
         bool ok = terrain.SaveArea();
         std::snprintf(statusMsg_, sizeof(statusMsg_),
             ok ? "Saved heightmap + splatmap." : "Failed to save terrain.");
     }
-    ImGui::TextDisabled("LMB-drag on the terrain\nto apply the brush.");
-    ImGui::TextDisabled("[ ] / brush smaller/bigger");
+    ImGui::PopStyleColor(2);
+
+    // ── Cursor info ───────────────────────────────────────────────────────
+    ImGui::Spacing();
+    if (brushHoverValid_) {
+        ImGui::TextDisabled("%.0f, %.2f, %.0f  (h=%.2f m)",
+            brushHitPos_.x, brushHitPos_.y, brushHitPos_.z, brushHitPos_.y);
+    } else {
+        ImGui::TextDisabled("LMB-drag to sculpt/paint");
+    }
+    ImGui::TextDisabled("Scroll = radius   Shift+Scroll = strength");
+    ImGui::TextDisabled("[ ] also resize brush");
 }
 
 // ─── Emitters panel (Phase 9) ─────────────────────────────────────────────────
@@ -3056,6 +3553,7 @@ void ZonesTab::Draw(sqlite3* db, MediaTab* media) {
         const int rev = media->MediaRevision();
         if (rev != last_media_revision_) {
             SyncSceneryCache(media);
+            terrainMatsLoaded_ = false;   // media_materials may have changed
             last_media_revision_ = rev;
         }
     }

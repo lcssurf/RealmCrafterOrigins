@@ -156,10 +156,14 @@ func main() {
 		area := gameWorld.GetOrCreateArea(s.AreaName)
 		npc := gameWorld.SpawnNPC(area, s.Name, s.Race, s.Class, s.Level,
 			s.X, s.Y, s.Z, s.Yaw)
-		npc.Aggressiveness  = s.Aggressiveness
-		npc.AggressiveRange = s.AggressiveRange
-		npc.AttackRange     = s.AttackRange
-		npc.RespawnDelay    = s.RespawnDelayMs
+		npc.Aggressiveness    = s.Aggressiveness
+		npc.AggressiveRange   = s.AggressiveRange
+		npc.AttackRange       = s.AttackRange
+		npc.RespawnDelay      = s.RespawnDelayMs
+		npc.StartWaypointID   = s.StartWaypointID
+		npc.WanderRadius      = s.WanderRadius
+		npc.WanderPauseMinMs  = s.WanderPauseMinMs
+		npc.WanderPauseMaxMs  = s.WanderPauseMaxMs
 
 		// Resolve actor_def_id → full Appearance (meshes + anim bindings).
 		if s.ActorDefID > 0 {
@@ -169,6 +173,46 @@ func main() {
 		}
 	}
 	log.Printf("main: spawned %d NPCs from database", len(npcSpawns))
+
+	// Load waypoints and distribute them to their respective areas.
+	dbWaypoints, err := database.LoadWaypoints(ctx)
+	if err != nil {
+		log.Printf("main: load waypoints: %v", err)
+	} else {
+		for _, dw := range dbWaypoints {
+			area := gameWorld.GetOrCreateArea(dw.AreaName)
+			wp := &world.Waypoint{
+				ID: dw.ID, X: dw.X, Y: dw.Y, Z: dw.Z,
+				NextA: dw.NextA, NextB: dw.NextB, PauseMs: dw.PauseMs,
+			}
+			area.Mu.Lock()
+			area.Waypoints[dw.ID] = wp
+			area.Mu.Unlock()
+		}
+		log.Printf("main: loaded %d waypoints", len(dbWaypoints))
+	}
+
+	// Load world objects and distribute to areas.
+	worldObjs, err := database.LoadWorldObjects(ctx)
+	if err != nil {
+		log.Printf("main: load world_objects: %v", err)
+	} else {
+		for _, wo := range worldObjs {
+			if wo.ModelPath == "" {
+				continue
+			}
+			area := gameWorld.GetOrCreateArea(wo.AreaName)
+			area.Mu.Lock()
+			area.Objects = append(area.Objects, world.WorldObject{
+				ModelPath: wo.ModelPath,
+				Scale:     wo.Scale,
+				X: wo.X, Y: wo.Y, Z: wo.Z,
+				Yaw: wo.Yaw,
+			})
+			area.Mu.Unlock()
+		}
+		log.Printf("main: loaded %d world objects", len(worldObjs))
+	}
 
 	// Spawn NPCs from spawn points (scatter within radius).
 	spawnPoints, err := database.LoadSpawnPoints(ctx)
@@ -213,10 +257,13 @@ func main() {
 		log.Printf("main: load area_config: %v", err)
 	}
 	areaMusicMap := make(map[string]uint8)
+	areaConfigMap := make(map[string]*db.AreaConfig)
 	for _, c := range areaCfgs {
 		areaMusicMap[c.Name] = c.MusicTrack
+		areaConfigMap[c.Name] = c
 	}
 	rconet.SetAreaMusicMap(areaMusicMap)
+	rconet.SetAreaConfigMap(areaConfigMap)
 	log.Printf("main: loaded %d area configs", len(areaCfgs))
 
 	// Load portals from DB; fall back to hardcoded defaults if table is empty.

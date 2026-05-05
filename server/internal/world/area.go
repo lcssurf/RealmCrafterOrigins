@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"math"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -11,6 +12,24 @@ import (
 type deadNPC struct {
 	actor  *Actor
 	DeadAt int64 // unix ms
+}
+
+// Waypoint is one node in an NPC patrol graph. NextA/NextB are IDs of
+// successor waypoints (0 = end); if both are set one is chosen at random.
+type Waypoint struct {
+	ID       int
+	X, Y, Z  float32
+	NextA    int // ID of next waypoint (0 = end of path)
+	NextB    int // ID of alternate branch (0 = no branch)
+	PauseMs  int // ms to pause at this node
+}
+
+// WorldObject is a placed static model instance in a zone.
+type WorldObject struct {
+	ModelPath string
+	Scale     float32
+	X, Y, Z   float32
+	Yaw       float32
 }
 
 // Trigger is a script-activated zone volume (XZ cylinder).
@@ -27,10 +46,12 @@ type Trigger struct {
 
 // Area represents a game zone.
 type Area struct {
-	Name    string
-	actors  map[uint32]*Actor
-	Mu      sync.RWMutex
-	Portals []Portal
+	Name      string
+	actors    map[uint32]*Actor
+	Mu        sync.RWMutex
+	Portals   []Portal
+	Waypoints map[int]*Waypoint
+	Objects   []WorldObject
 
 	// Environment config (loaded from area_config at startup)
 	PvPEnabled  bool
@@ -88,6 +109,7 @@ func NewArea(name string) *Area {
 		Name:         name,
 		actors:       make(map[uint32]*Actor),
 		droppedItems: make(map[uint32]*DroppedItem),
+		Waypoints:    make(map[int]*Waypoint),
 	}
 }
 
@@ -270,19 +292,53 @@ func moveNPCToward(npc, target *Actor) {
 	npc.Yaw = yaw
 }
 
-// leashNPC resets an NPC to its spawn point and clears its AI state.
+// leashNPC resets an NPC to its spawn point and resumes the appropriate idle
+// mode (patrol, wander, or stationary).
 func leashNPC(npc *Actor, a *Area) {
 	npc.Mu.Lock()
 	npc.X = npc.SpawnX
 	npc.Y = npc.SpawnY
 	npc.Z = npc.SpawnZ
 	npc.Yaw = npc.SpawnYaw
-	npc.AITarget = nil
-	npc.AIMode = AIWait
+	postChaseMode(npc)
 	npc.Mu.Unlock()
 	broadcastNPCPosition(a, npc)
 	BroadcastAnimate(a, npc, "Idle")
 }
+
+// pickWanderTarget selects a new random XZ destination within the NPC's wander
+// radius of its spawn point. Must be called before entering AIWander.
+func pickWanderTarget(npc *Actor) {
+	angle := rand.Float64() * 2 * math.Pi
+	r := rand.Float64() * float64(npc.WanderRadius)
+	npc.WanderTargetX = npc.SpawnX + float32(r*math.Cos(angle))
+	npc.WanderTargetZ = npc.SpawnZ + float32(r*math.Sin(angle))
+}
+
+// startWander picks a fresh wander destination and sets AIWander mode.
+// Must be called with npc.Mu held.
+func startWander(npc *Actor) {
+	pickWanderTarget(npc)
+	npc.AIMode = AIWander
+}
+
+// postChaseMode returns the AI mode to enter after a chase ends (or leash fires).
+// Priority: patrol > wander > idle. Must be called with npc.Mu held.
+func postChaseMode(npc *Actor) {
+	npc.AITarget = nil
+	if npc.StartWaypointID > 0 {
+		npc.CurrentWaypointID = npc.StartWaypointID
+		npc.AIMode = AIPatrol
+	} else if npc.WanderRadius > 0 {
+		startWander(npc)
+	} else {
+		npc.AIMode = AIWait
+	}
+}
+
+// endChase clears the NPC's chase target and transitions back to patrol, wander,
+// or idle. Must be called with npc.Mu held.
+func endChase(npc *Actor) { postChaseMode(npc) }
 
 // tickAI runs one AI update step for all NPCs in the area.
 func (a *Area) tickAI() {
@@ -325,14 +381,173 @@ func (a *Area) tickAI() {
 
 		switch mode {
 		case AIWait:
+			npc.Mu.Lock()
+			if npc.StartWaypointID > 0 {
+				npc.CurrentWaypointID = npc.StartWaypointID
+				npc.AIMode = AIPatrol
+			} else if npc.WanderRadius > 0 {
+				startWander(npc)
+			}
+			npc.Mu.Unlock()
 			if npc.Aggressiveness == 2 {
 				a.lookForTarget(npc, players)
+			}
+
+		case AIWander:
+			if npc.Aggressiveness == 2 {
+				a.lookForTarget(npc, players)
+				npc.Mu.Lock()
+				mode = npc.AIMode
+				npc.Mu.Unlock()
+				if mode == AIChase {
+					continue
+				}
+			}
+			dx := npc.WanderTargetX - npc.X
+			dz := npc.WanderTargetZ - npc.Z
+			if dx*dx+dz*dz < 0.25 { // arrived
+				npc.X = npc.WanderTargetX
+				npc.Z = npc.WanderTargetZ
+				broadcastNPCPosition(a, npc)
+				BroadcastAnimate(a, npc, "Idle")
+				npc.Mu.Lock()
+				pauseMs := npc.WanderPauseMinMs
+				if npc.WanderPauseMaxMs > npc.WanderPauseMinMs {
+					pauseMs += rand.Intn(npc.WanderPauseMaxMs - npc.WanderPauseMinMs + 1)
+				}
+				if pauseMs > 0 {
+					npc.AIMode = AIWanderPause
+					npc.WaypointPauseUntil = now + int64(pauseMs)
+				} else {
+					pickWanderTarget(npc)
+				}
+				npc.Mu.Unlock()
+			} else {
+				dist := float32(math.Sqrt(float64(dx*dx + dz*dz)))
+				step := float32(npcMoveSpeed * aiTickSec)
+				if step > dist {
+					step = dist
+				}
+				npc.X += (dx / dist) * step
+				npc.Z += (dz / dist) * step
+				yaw := float32(math.Atan2(float64(dx), float64(dz)) * 180.0 / math.Pi)
+				if yaw < 0 {
+					yaw += 360
+				}
+				npc.Yaw = yaw
+				broadcastNPCPosition(a, npc)
+				BroadcastAnimate(a, npc, "Walk")
+			}
+
+		case AIWanderPause:
+			if npc.Aggressiveness == 2 {
+				a.lookForTarget(npc, players)
+				npc.Mu.Lock()
+				mode = npc.AIMode
+				npc.Mu.Unlock()
+				if mode == AIChase {
+					continue
+				}
+			}
+			if now >= npc.WaypointPauseUntil {
+				npc.Mu.Lock()
+				pickWanderTarget(npc)
+				npc.AIMode = AIWander
+				npc.Mu.Unlock()
+			}
+
+		case AIPatrol:
+			// Aggressive NPCs interrupt patrol when a player enters range.
+			if npc.Aggressiveness == 2 {
+				a.lookForTarget(npc, players)
+				npc.Mu.Lock()
+				mode = npc.AIMode
+				npc.Mu.Unlock()
+				if mode == AIChase {
+					continue
+				}
+			}
+			wp, ok := a.Waypoints[npc.CurrentWaypointID]
+			if !ok {
+				npc.Mu.Lock()
+				npc.AIMode = AIWait
+				npc.Mu.Unlock()
+				continue
+			}
+			dx := wp.X - npc.X
+			dz := wp.Z - npc.Z
+			if dx*dx+dz*dz < 0.25 { // arrived (within 0.5 units)
+				npc.X = wp.X
+				npc.Z = wp.Z
+				broadcastNPCPosition(a, npc)
+				nextID := wp.NextA
+				if wp.NextB > 0 && rand.Intn(2) == 0 {
+					nextID = wp.NextB
+				}
+				npc.Mu.Lock()
+				if wp.PauseMs > 0 {
+					npc.AIMode = AIPatrolPause
+					npc.WaypointPauseUntil = now + int64(wp.PauseMs)
+					// CurrentWaypointID stays so we can re-read NextA/NextB after pause.
+				} else if nextID > 0 {
+					npc.CurrentWaypointID = nextID
+				} else {
+					npc.AIMode = AIWait
+				}
+				npc.Mu.Unlock()
+				BroadcastAnimate(a, npc, "Idle")
+			} else {
+				dx2 := wp.X - npc.X
+				dz2 := wp.Z - npc.Z
+				dist := float32(math.Sqrt(float64(dx2*dx2 + dz2*dz2)))
+				step := float32(npcMoveSpeed * aiTickSec)
+				if step > dist {
+					step = dist
+				}
+				npc.X += (dx2 / dist) * step
+				npc.Z += (dz2 / dist) * step
+				yaw := float32(math.Atan2(float64(dx2), float64(dz2)) * 180.0 / math.Pi)
+				if yaw < 0 {
+					yaw += 360
+				}
+				npc.Yaw = yaw
+				broadcastNPCPosition(a, npc)
+				BroadcastAnimate(a, npc, "Walk")
+			}
+
+		case AIPatrolPause:
+			if npc.Aggressiveness == 2 {
+				a.lookForTarget(npc, players)
+				npc.Mu.Lock()
+				mode = npc.AIMode
+				npc.Mu.Unlock()
+				if mode == AIChase {
+					continue
+				}
+			}
+			if now >= npc.WaypointPauseUntil {
+				wp, ok := a.Waypoints[npc.CurrentWaypointID]
+				nextID := 0
+				if ok {
+					nextID = wp.NextA
+					if wp.NextB > 0 && rand.Intn(2) == 0 {
+						nextID = wp.NextB
+					}
+				}
+				npc.Mu.Lock()
+				if nextID > 0 {
+					npc.CurrentWaypointID = nextID
+					npc.AIMode = AIPatrol
+				} else {
+					npc.AIMode = AIWait
+				}
+				npc.Mu.Unlock()
 			}
 
 		case AIChase:
 			if target == nil {
 				npc.Mu.Lock()
-				npc.AIMode = AIWait
+				endChase(npc)
 				npc.Mu.Unlock()
 				BroadcastAnimate(a, npc, "Idle")
 				continue
@@ -341,8 +556,7 @@ func (a *Area) tickAI() {
 			// Drop target if it left the area or is already dead.
 			if _, ok := a.GetActor(target.RuntimeID); !ok {
 				npc.Mu.Lock()
-				npc.AITarget = nil
-				npc.AIMode = AIWait
+				endChase(npc)
 				npc.Mu.Unlock()
 				BroadcastAnimate(a, npc, "Idle")
 				continue
@@ -352,8 +566,7 @@ func (a *Area) tickAI() {
 			target.Mu.Unlock()
 			if targetHP <= 0 {
 				npc.Mu.Lock()
-				npc.AITarget = nil
-				npc.AIMode = AIWait
+				endChase(npc)
 				npc.Mu.Unlock()
 				BroadcastAnimate(a, npc, "Idle")
 				continue
@@ -378,8 +591,7 @@ func (a *Area) tickAI() {
 					if died && !target.IsNPC {
 						// Player died — clear NPC target, don't add to kill queue.
 						npc.Mu.Lock()
-						npc.AITarget = nil
-						npc.AIMode = AIWait
+						endChase(npc)
 						npc.Mu.Unlock()
 						BroadcastAnimate(a, npc, "Idle")
 					}
@@ -530,12 +742,11 @@ func (a *Area) respawnNPC(npc *Actor) {
 	npc.Mu.Lock()
 	npc.Health = npc.HealthMax
 	npc.DeadAt = 0
-	npc.AIMode = AIWait
-	npc.AITarget = nil
 	npc.X = npc.SpawnX
 	npc.Y = npc.SpawnY
 	npc.Z = npc.SpawnZ
 	npc.Yaw = npc.SpawnYaw
+	postChaseMode(npc)
 	npc.Mu.Unlock()
 
 	a.AddActor(npc)

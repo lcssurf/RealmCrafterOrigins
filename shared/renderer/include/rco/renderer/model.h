@@ -124,6 +124,10 @@ public:
     // Multiply by Actor::scale to get the world-space height.
     float MaxY() const { return aabb_max_y_; }
 
+    // Full axis-aligned bounding box in bind-pose model space.
+    glm::vec3 BoundsMin() const { return aabb_min_; }
+    glm::vec3 BoundsMax() const { return aabb_max_; }
+
     // Unique aiMaterial names referenced by this model's submeshes, in the
     // order they first appear. Useful for building UI that lets the user
     // map each file-internal material to a user-created media_material.
@@ -188,6 +192,8 @@ private:
     std::vector<SubMesh>       meshes_;
     std::string                directory_;
     float                      aabb_max_y_ = 0.f;
+    glm::vec3                  aabb_min_   = glm::vec3( 1e30f);
+    glm::vec3                  aabb_max_   = glm::vec3(-1e30f);
 
     std::vector<AnimNode>      anim_nodes_;
     std::map<std::string,int>  node_map_;

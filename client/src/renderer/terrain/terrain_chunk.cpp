@@ -1,6 +1,5 @@
 #include "renderer/terrain/terrain_chunk.h"
 #include <glm/glm.hpp>
-#include <algorithm>
 
 namespace rco::renderer {
 
@@ -10,16 +9,9 @@ TerrainChunk::~TerrainChunk() {
     if (ebo_) glDeleteBuffers(1, &ebo_);
 }
 
-float TerrainChunk::SampleH(int x, int z) const {
-    x = std::clamp(x, 0, kSize - 1);
-    z = std::clamp(z, 0, kSize - 1);
-    return heights_[z * kSize + x];
-}
-
 void TerrainChunk::Init(float wx, float wz, float cs) {
     origin_    = {wx, 0.f, wz};
     cell_size_ = cs;
-    heights_.assign(kSize * kSize, 0.f);
 
     indices_.clear();
     for (int z = 0; z < kSize - 1; ++z)
@@ -42,48 +34,27 @@ void TerrainChunk::Init(float wx, float wz, float cs) {
         indices_.size() * sizeof(uint32_t), indices_.data(), GL_STATIC_DRAW);
     glBindVertexArray(0);
 
-    dirty_ = true;
-    Upload();
-}
-
-void TerrainChunk::SetHeights(const std::vector<float>& h) {
-    if (static_cast<int>(h.size()) != kSize * kSize) return;
-    heights_ = h;
-    dirty_   = true;
     Upload();
 }
 
 void TerrainChunk::Upload() {
-    if (!dirty_ || !vao_) return;
-    dirty_ = false;
-
     vertices_.clear();
-    vertices_.reserve(kSize * kSize * 6);
+    vertices_.reserve(kSize * kSize * 2);
 
     for (int z = 0; z < kSize; ++z) {
         for (int x = 0; x < kSize; ++x) {
-            float h  = SampleH(x, z);
-            float wx = origin_.x + x * cell_size_;
-            float wz = origin_.z + z * cell_size_;
-
-            float hr = SampleH(x + 1, z);
-            float hl = SampleH(x - 1, z);
-            float hu = SampleH(x, z + 1);
-            float hd = SampleH(x, z - 1);
-            glm::vec3 n = glm::normalize(glm::vec3(hl - hr, 2.f * cell_size_, hd - hu));
-
-            vertices_.insert(vertices_.end(), {wx, h, wz, n.x, n.y, n.z});
+            vertices_.push_back(origin_.x + x * cell_size_);  // world X
+            vertices_.push_back(origin_.z + z * cell_size_);  // world Z
         }
     }
 
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER,
-        vertices_.size() * sizeof(float), vertices_.data(), GL_DYNAMIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 24, reinterpret_cast<void*>(0));
+        vertices_.size() * sizeof(float), vertices_.data(), GL_STATIC_DRAW);
+    // a_xz: vec2 world-space XZ
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, nullptr);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 24, reinterpret_cast<void*>(12));
-    glEnableVertexAttribArray(1);
     glBindVertexArray(0);
 }
 

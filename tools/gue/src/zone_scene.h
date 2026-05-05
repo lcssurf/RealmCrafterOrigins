@@ -2,6 +2,8 @@
 #include <glm/glm.hpp>
 #include <string>
 #include <vector>
+#include <array>
+#include <unordered_map>
 #include <sqlite3.h>
 
 namespace gue {
@@ -55,6 +57,12 @@ struct ZColBox {
     int       id    = 0;
     glm::vec3 pos   = {};
     glm::vec3 scale = {5,2,5};
+};
+
+struct ZColSphere {
+    int       id     = 0;
+    glm::vec3 pos    = {};
+    float     radius = 3.f;
 };
 
 struct ZWater {
@@ -154,6 +162,21 @@ struct ZEnvConfig {
     int   weatherWind  = 0;
 };
 
+// ─── Collision shape visualisation (per-scenery, from media_model_shapes) ────
+// Rebuilt by ZoneScene::RebuildColVis() and consumed by ZoneRenderer.
+// All shapes are flattened into GL_LINES vertex data (3 floats per vertex,
+// sequential pairs). Uploaded to a single GPU VBO; one draw call per frame.
+
+struct ColVisData {
+    // Interleaved: [pos.xyz  col.rgba] per vertex — GL_LINES pairs.
+    // col is stored as 4 floats so boxes/spheres/tris can have distinct colours.
+    struct Vtx { float x,y,z, r,g,b,a; };
+    std::vector<Vtx> verts;  // always even count (pairs)
+};
+
+// Cache of extracted mesh triangles keyed by model_id (model-local space).
+using MeshTriCache = std::unordered_map<int, std::vector<std::array<glm::vec3, 3>>>;
+
 // ─── Full zone scene ─────────────────────────────────────────────────────────
 
 struct ZoneScene {
@@ -164,6 +187,7 @@ struct ZoneScene {
     std::vector<ZTrigger>    triggers;
     std::vector<ZSoundZone>  soundZones;
     std::vector<ZColBox>     colBoxes;
+    std::vector<ZColSphere>  colSpheres;
     std::vector<ZWater>      water;
     std::vector<ZEmitter>    emitters;
     std::vector<ZWaypoint>   waypoints;
@@ -171,14 +195,21 @@ struct ZoneScene {
     std::vector<ZSpawnPoint>  spawnPoints;
     bool dirty = false;
 
+    // Pre-computed visualisation of per-scenery collision shapes.
+    // Rebuilt on demand by RebuildColVis(); set colVisDirty=true to trigger.
+    ColVisData colVis;
+    bool       colVisDirty = true;
+
     void Clear() {
         areaName.clear();
         scenery.clear(); portals.clear(); triggers.clear();
-        soundZones.clear(); colBoxes.clear(); water.clear();
+        soundZones.clear(); colBoxes.clear(); colSpheres.clear(); water.clear();
         emitters.clear(); waypoints.clear(); npcs.clear();
         spawnPoints.clear();
         env = {};
         dirty = false;
+        colVis = {};
+        colVisDirty = true;
     }
 
     // Loads every object type for the given area from SQLite.
@@ -187,6 +218,14 @@ struct ZoneScene {
 
     // Persists dirty state for all object types.
     void SaveToDB(sqlite3* db);
+
+    // Writes dist/client/data/areas/<area>/coldata.bin — read by the client on area load.
+    // Queries media_model_shapes for each Scenery with collision != None.
+    void SaveColData(sqlite3* db, const std::string& area) const;
+
+    // Rebuild per-scenery collision shape overlays for the viewport.
+    // meshCache is keyed by model_id; triangles are extracted once and reused.
+    void RebuildColVis(sqlite3* db, MeshTriCache& meshCache);
 
     // Schema migrations — run once per EnsureTables call (safe to call repeatedly).
     static void EnsureTables(sqlite3* db);

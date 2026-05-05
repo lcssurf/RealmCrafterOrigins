@@ -29,6 +29,7 @@ enum ZSelType {
     kSelWater      = 7,
     kSelScenery    = 8,
     kSelSpawnPoint = 9,
+    kSelColSphere  = 10,
 };
 
 // Off-screen FBO renderer for the zone editor viewport.
@@ -135,6 +136,10 @@ public:
     // through the per-model material_map configured in Media.
     void SyncNpcModels(const std::unordered_map<int, ModelBind>& npcBinds);
 
+    // Upload all colVis line geometry to the GPU batch VBO.
+    // Call once after ZoneScene::RebuildColVis(); must happen on the GL thread.
+    void UploadColVisBatch(const ColVisData& vis);
+
     // Phase 2 — primitive objects (sphere, box, cylinder, lines).
     // DrawSphere / DrawBox / DrawLine are called from RenderFrame internally.
 
@@ -165,6 +170,13 @@ private:
     GLuint boxVAO_    = 0, boxVBO_    = 0, boxEBO_    = 0;
     int    boxIdx_    = 0;
     GLuint lineVAO_   = 0, lineVBO_   = 0;
+
+    // Batched colVis rendering — all collision shape outlines in one draw call.
+    // Vertex layout: float[7] = {x, y, z, r, g, b, a}
+    GLuint colVisBatchVAO_  = 0;
+    GLuint colVisBatchVBO_  = 0;
+    GLuint colVisColorProg_ = 0;  // variant of primProg_ that reads colour from attrib
+    int    colVisBatchVtxN_ = 0;
 
     // ── Terrain (editable, chunked, splatmap-blended) ─────────────────────
     EditableTerrain terrain_;

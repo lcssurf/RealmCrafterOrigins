@@ -452,6 +452,9 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	// Send portal positions so the client can render markers.
 	c.sendPortals(area)
 
+	// Send static world objects for this area.
+	c.sendWorldObjects(area)
+
 	// Send any dropped items already in the area.
 	c.sendWorldItems(area)
 
@@ -463,6 +466,9 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 
 	// Start area music.
 	c.sendMusic(musicForArea(actor.AreaName), 128)
+
+	// Send area environment config (skybox, etc.).
+	c.sendAreaConfig(actor.AreaName)
 
 	// Send input bindings from the default preset.
 	c.sendInputBindings(ctx)
@@ -588,6 +594,16 @@ func (c *ClientConn) sendPortals(area *world.Area) {
 	c.actor.Send(buildFramedPacket(protocol.PPortalInfo, w.Bytes()))
 }
 
+func (c *ClientConn) sendWorldObjects(area *world.Area) {
+	area.Mu.RLock()
+	objects := area.Objects
+	area.Mu.RUnlock()
+	if len(objects) == 0 {
+		return
+	}
+	c.actor.Send(buildFramedPacket(protocol.PWorldObjects, world.WorldObjectsPayload(objects)))
+}
+
 func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) error {
 	// Cooldown: 3 s between portal uses.
 	c.actor.Mu.Lock()
@@ -634,8 +650,9 @@ func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) er
 	// Tell everyone in the new area about the arriving player.
 	newArea.Broadcast(buildFramedPacket(protocol.PNewActor, world.NewActorPayload(c.actor)), c.actor.RuntimeID)
 
-	// Send portal positions and dropped items in the new area.
+	// Send portal positions, world objects, and dropped items in the new area.
 	c.sendPortals(newArea)
+	c.sendWorldObjects(newArea)
 	c.sendWorldItems(newArea)
 
 	// Resend known spells — the client clears its spellbar on PChangeArea,
@@ -646,6 +663,7 @@ func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) er
 	c.sendSound(protocol.SoundPortal, 220)
 	c.broadcastEmitter(newArea, protocol.EmitterPortal, portal.DestX, portal.DestY, portal.DestZ, 2000)
 	c.sendMusic(musicForArea(portal.TargetArea), 128)
+	c.sendAreaConfig(portal.TargetArea)
 
 	log.Printf("client: %s portal → %s (%.0f,%.0f,%.0f)",
 		c.actor.Name, portal.TargetArea, portal.DestX, portal.DestY, portal.DestZ)
@@ -1500,6 +1518,25 @@ var areaMusicMap map[string]uint8
 
 // SetAreaMusicMap replaces the runtime music lookup table (called once from main).
 func SetAreaMusicMap(m map[string]uint8) { areaMusicMap = m }
+
+// areaConfigMap holds the full AreaConfig per area name (populated once from main).
+var areaConfigMap map[string]*db.AreaConfig
+
+// SetAreaConfigMap replaces the runtime area-config lookup (called once from main).
+func SetAreaConfigMap(m map[string]*db.AreaConfig) { areaConfigMap = m }
+
+// sendAreaConfig sends PAreaConfig to this client with the skybox HDR for the area.
+func (c *ClientConn) sendAreaConfig(areaName string) {
+	hdr := ""
+	if areaConfigMap != nil {
+		if cfg, ok := areaConfigMap[areaName]; ok {
+			hdr = cfg.SkyboxHdr
+		}
+	}
+	var w Writer
+	w.WriteString(hdr)
+	_ = c.sendPacket(protocol.PAreaConfig, w.Bytes())
+}
 
 // musicForArea returns the PMusic track ID for a given area name.
 // Prefers the DB-driven map; falls back to built-in defaults.

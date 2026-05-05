@@ -70,12 +70,13 @@ void main()
   {
     color = texture(sampler2D(material.albedoHandle), vTexCoord).rgba;
   }
-  // Opacity cutout: dedicated opacity map takes priority, else albedo alpha.
+  // Opacity cutout: only when an explicit opacity map is registered.
+  // Albedo alpha is NOT used for cutout — many solid meshes (buildings, props, NPCs)
+  // have near-zero alpha in parts of their albedo texture due to premultiplied-alpha
+  // export or UV seam padding, which must not create visible holes.
   const bool hasOpacity = (material.opacityHandle.x != 0 || material.opacityHandle.y != 0);
   if (hasOpacity) {
       if (texture(sampler2D(material.opacityHandle), vTexCoord).r < 0.1) discard;
-  } else if (color.a < 0.1) {
-      discard;
   }
 
   gAlbedo.rgb = color.rgb;

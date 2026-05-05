@@ -2,8 +2,8 @@
 
 #include "rco/renderer/pipeline.h"
 
+#include <stb_image_write.h>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
 #include <cstdio>
 #include <cmath>
 #include <algorithm>
@@ -13,106 +13,6 @@
 
 namespace gue {
 
-// ─── Shader ──────────────────────────────────────────────────────────────────
-//
-// Simple splatmap-blended terrain shader for the editor viewport.
-// Samples up to 4 albedo textures + the splatmap and mixes them by weight.
-
-static const char* kTerrainVS = R"glsl(
-#version 460 core
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec3 aNormal;
-layout(location = 2) in vec2 aUV;
-
-layout(location = 0) uniform mat4 u_VP;
-
-layout(location = 0) out vec3 vWorldPos;
-layout(location = 1) out vec3 vNormal;
-layout(location = 2) out vec2 vUV;
-
-void main() {
-    vWorldPos = aPos;
-    vNormal   = aNormal;
-    vUV       = aUV;
-    gl_Position = u_VP * vec4(aPos, 1.0);
-}
-)glsl";
-
-static const char* kTerrainFS = R"glsl(
-#version 460 core
-layout(location = 0) in  vec3 vWorldPos;
-layout(location = 1) in  vec3 vNormal;
-layout(location = 2) in  vec2 vUV;
-layout(location = 0) out vec4 fragColor;
-
-layout(location = 1) uniform vec3  u_SunDir;      // world-space, normalised
-layout(location = 2) uniform float u_Tiling;      // UV divisor
-layout(location = 3) uniform vec4  u_TerrainSize; // xy=size, zw unused
-layout(location = 4) uniform int   u_MatCount;    // 1..4
-
-layout(binding = 0) uniform sampler2D u_Splat;
-layout(binding = 1) uniform sampler2D u_Mat0;
-layout(binding = 2) uniform sampler2D u_Mat1;
-layout(binding = 3) uniform sampler2D u_Mat2;
-layout(binding = 4) uniform sampler2D u_Mat3;
-
-void main() {
-    // Splatmap: sample by normalised world XZ
-    vec2 splatUV = vWorldPos.xz / u_TerrainSize.xy;
-    vec4 w       = texture(u_Splat, splatUV);
-
-    // Renormalise weights so they always sum to 1
-    float sum = max(w.r + w.g + w.b + w.a, 1e-5);
-    w /= sum;
-
-    // Tiled material UVs
-    vec2 tuv = vUV / u_Tiling;
-
-    vec3 col = texture(u_Mat0, tuv).rgb * w.r;
-    if (u_MatCount >= 2) col += texture(u_Mat1, tuv).rgb * w.g;
-    if (u_MatCount >= 3) col += texture(u_Mat2, tuv).rgb * w.b;
-    if (u_MatCount >= 4) col += texture(u_Mat3, tuv).rgb * w.a;
-
-    // Simple diffuse lighting
-    float NdotL   = clamp(dot(normalize(vNormal), u_SunDir), 0.0, 1.0);
-    float ambient = 0.35;
-    col *= ambient + (1.0 - ambient) * NdotL;
-
-    fragColor = vec4(col, 1.0);
-}
-)glsl";
-
-static GLuint CompileOne(GLenum t, const char* src) {
-    GLuint s = glCreateShader(t);
-    glShaderSource(s, 1, &src, nullptr);
-    glCompileShader(s);
-    GLint ok = 0;
-    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        char log[512];
-        glGetShaderInfoLog(s, 512, nullptr, log);
-        std::fprintf(stderr, "[EditableTerrain] shader compile: %s\n", log);
-    }
-    return s;
-}
-
-void EditableTerrain::InitShader() {
-    if (prog_) return;
-    GLuint vs = CompileOne(GL_VERTEX_SHADER,   kTerrainVS);
-    GLuint fs = CompileOne(GL_FRAGMENT_SHADER, kTerrainFS);
-    prog_ = glCreateProgram();
-    glAttachShader(prog_, vs); glAttachShader(prog_, fs);
-    glLinkProgram(prog_);
-    GLint ok = 0;
-    glGetProgramiv(prog_, GL_LINK_STATUS, &ok);
-    if (!ok) {
-        char log[512];
-        glGetProgramInfoLog(prog_, 512, nullptr, log);
-        std::fprintf(stderr, "[EditableTerrain] shader link: %s\n", log);
-    }
-    glDeleteShader(vs); glDeleteShader(fs);
-}
-
 // ─── Default placeholder textures ────────────────────────────────────────────
 
 void EditableTerrain::EnsureDefaultTextures() {
@@ -120,6 +20,7 @@ void EditableTerrain::EnsureDefaultTextures() {
     if (!defaultRoughness_) defaultRoughness_ = MakeSolidTex(180, 180, 180);
     if (!defaultAO_)        defaultAO_        = MakeSolidTex(255, 255, 255); // full AO = no occlusion
     if (!defaultHeight_)    defaultHeight_    = MakeSolidTex(255, 255, 255); // flat → splatmap drives blend
+    if (!defaultMacro_)     defaultMacro_     = MakeSolidTex(128, 128, 128); // 0.5 gray = no overlay change
 }
 
 // ─── Chunked mesh ────────────────────────────────────────────────────────────
@@ -149,9 +50,9 @@ void EditableTerrain::InitChunks() {
     glNamedBufferData(ebo_, (GLsizeiptr)(idx.size() * 4), idx.data(), GL_STATIC_DRAW);
 
     chunks_.resize(cxCount_ * czCount_);
-    // Layout matches terrainGBuffer.vs — so the same VAO works with both the
-    // GUE's simple shader and the client's pipeline: pos3 + n3 + uv2 + tan3.
-    static constexpr int kFloats = 11;
+    // VBO layout: a_xz only (vec2 world XZ). Height + normals computed in VS
+    // from the heightmap GPU texture — no normals/tangents/UVs in VBO.
+    static constexpr int kFloats = 2;
     static constexpr int kStride = kFloats * sizeof(float);
 
     for (int z = 0; z < czCount_; z++) {
@@ -163,22 +64,13 @@ void EditableTerrain::InitChunks() {
             glCreateBuffers(1, &c.vbo);
             glNamedBufferData(c.vbo,
                 (GLsizeiptr)(kVerts * kVerts * kFloats * sizeof(float)),
-                nullptr, GL_DYNAMIC_DRAW);
+                nullptr, GL_STATIC_DRAW);
 
             glVertexArrayVertexBuffer(c.vao, 0, c.vbo, 0, kStride);
             glVertexArrayElementBuffer(c.vao, ebo_);
             glEnableVertexArrayAttrib(c.vao, 0);
-            glVertexArrayAttribFormat(c.vao, 0, 3, GL_FLOAT, GL_FALSE, 0);
+            glVertexArrayAttribFormat(c.vao, 0, 2, GL_FLOAT, GL_FALSE, 0);
             glVertexArrayAttribBinding(c.vao, 0, 0);
-            glEnableVertexArrayAttrib(c.vao, 1);
-            glVertexArrayAttribFormat(c.vao, 1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float));
-            glVertexArrayAttribBinding(c.vao, 1, 0);
-            glEnableVertexArrayAttrib(c.vao, 2);
-            glVertexArrayAttribFormat(c.vao, 2, 2, GL_FLOAT, GL_FALSE, 6 * sizeof(float));
-            glVertexArrayAttribBinding(c.vao, 2, 0);
-            glEnableVertexArrayAttrib(c.vao, 3);
-            glVertexArrayAttribFormat(c.vao, 3, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float));
-            glVertexArrayAttribBinding(c.vao, 3, 0);
         }
     }
 }
@@ -189,31 +81,12 @@ void EditableTerrain::BuildChunk(Chunk& c) {
     const float cs    = heightmap_.cell_size;
 
     std::vector<float> verts;
-    verts.reserve(kVerts * kVerts * 11);
+    verts.reserve(kVerts * kVerts * 2);
 
     for (int z = 0; z < kVerts; z++) {
         for (int x = 0; x < kVerts; x++) {
-            int   gx = baseX + x;
-            int   gz = baseZ + z;
-            float h  = heightmap_.Get(gx, gz);
-
-            float hl = heightmap_.Get(gx - 1, gz);
-            float hr = heightmap_.Get(gx + 1, gz);
-            float hd = heightmap_.Get(gx, gz - 1);
-            float hu = heightmap_.Get(gx, gz + 1);
-            glm::vec3 n = glm::normalize(glm::vec3(hl - hr, 2.f * cs, hd - hu));
-
-            float u = gx * cs;
-            float v = gz * cs;
-
-            // pos
-            verts.push_back(gx * cs); verts.push_back(h);   verts.push_back(gz * cs);
-            // normal
-            verts.push_back(n.x);     verts.push_back(n.y); verts.push_back(n.z);
-            // uv (world-scaled — shader divides by u_Tiling)
-            verts.push_back(u);       verts.push_back(v);
-            // tangent (flat — triplanar shader ignores it anyway)
-            verts.push_back(1.f);     verts.push_back(0.f); verts.push_back(0.f);
+            verts.push_back((baseX + x) * cs);  // world X
+            verts.push_back((baseZ + z) * cs);  // world Z
         }
     }
 
@@ -252,14 +125,12 @@ void EditableTerrain::MarkDirtyAll() {
 }
 
 void EditableTerrain::MarkDirtyRegion(float wx, float wz, float radius) {
-    float chunkWorld = kCells * heightmap_.cell_size;
-    int x0 = std::max(0,           (int)std::floor((wx - radius) / chunkWorld));
-    int z0 = std::max(0,           (int)std::floor((wz - radius) / chunkWorld));
-    int x1 = std::min(cxCount_-1,  (int)std::floor((wx + radius) / chunkWorld));
-    int z1 = std::min(czCount_-1,  (int)std::floor((wz + radius) / chunkWorld));
-    for (int z = z0; z <= z1; z++)
-        for (int x = x0; x <= x1; x++)
-            chunks_[z * cxCount_ + x].dirty = true;
+    float cs = heightmap_.cell_size;
+    int x0 = std::max(0,              (int)std::floor((wx - radius) / cs) - 1);
+    int z0 = std::max(0,              (int)std::floor((wz - radius) / cs) - 1);
+    int x1 = std::min(heightmap_.W - 1, (int)std::ceil( (wx + radius) / cs) + 1);
+    int z1 = std::min(heightmap_.H - 1, (int)std::ceil( (wz + radius) / cs) + 1);
+    heightmap_.UploadRegion(x0, z0, x1, z1);
 }
 
 // ─── Material scanning ───────────────────────────────────────────────────────
@@ -292,9 +163,18 @@ void EditableTerrain::ReloadMaterials() {
             m.name = name;
             materials_.push_back(std::move(m));
         } else {
+            // Distinct debug colors per slot so painting is visible even when
+            // no real texture files exist. Matches splatmap channels R/G/B/A.
+            static const uint8_t kSlotRGB[4][3] = {
+                {110, 155,  70},   // 0 R — grassy green
+                {148, 116,  78},   // 1 G — dirt brown
+                {130, 135, 148},   // 2 B — rocky grey-blue
+                {195, 180, 120},   // 3 A — sandy
+            };
+            int si = (int)materials_.size() % 4;
             Material m;
             m.name      = name;
-            m.albedo    = MakeSolidTex(130, 130, 130);
+            m.albedo    = MakeSolidTex(kSlotRGB[si][0], kSlotRGB[si][1], kSlotRGB[si][2]);
             m.normal    = defaultNormal_;
             m.roughness = defaultRoughness_;
             m.ao        = defaultAO_;
@@ -304,14 +184,22 @@ void EditableTerrain::ReloadMaterials() {
     }
     if (materials_.empty()) {
         EnsureDefaultTextures();
-        Material m;
-        m.name      = "default";
-        m.albedo    = MakeSolidTex(110, 130, 90);
-        m.normal    = defaultNormal_;
-        m.roughness = defaultRoughness_;
-        m.ao        = defaultAO_;
-        m.height    = defaultHeight_;
-        materials_.push_back(std::move(m));
+        static const uint8_t kSlotRGB[4][3] = {
+            {110, 155,  70},
+            {148, 116,  78},
+            {130, 135, 148},
+            {195, 180, 120},
+        };
+        for (int si = 0; si < 1; ++si) {   // seed at least one
+            Material m;
+            m.name      = "default";
+            m.albedo    = MakeSolidTex(kSlotRGB[si][0], kSlotRGB[si][1], kSlotRGB[si][2]);
+            m.normal    = defaultNormal_;
+            m.roughness = defaultRoughness_;
+            m.ao        = defaultAO_;
+            m.height    = defaultHeight_;
+            materials_.push_back(std::move(m));
+        }
     }
 }
 
@@ -322,6 +210,85 @@ void EditableTerrain::SetMaterialNames(const std::vector<std::string>& names) {
         materialNames_.push_back(n);
     }
     ReloadMaterials();
+}
+
+void EditableTerrain::SetMaterialSlot(int slot, const TerrainMatSpec& spec) {
+    if (slot < 0 || slot >= kMaxMats) return;
+    EnsureDefaultTextures();
+
+    static const uint8_t kSlotRGB[4][3] = {
+        {110, 155,  70}, {148, 116,  78}, {130, 135, 148}, {195, 180, 120}
+    };
+
+    // Grow the vector to cover this slot with placeholder colours
+    while ((int)materials_.size() <= slot) {
+        int si = (int)materials_.size() % 4;
+        Material ph;
+        ph.albedo    = MakeSolidTex(kSlotRGB[si][0], kSlotRGB[si][1], kSlotRGB[si][2]);
+        ph.normal    = defaultNormal_;
+        ph.roughness = defaultRoughness_;
+        ph.ao        = defaultAO_;
+        ph.height    = defaultHeight_;
+        materials_.push_back(std::move(ph));
+    }
+
+    // Free old textures — null shared defaults first to avoid double-delete
+    Material& m = materials_[slot];
+    if (m.normal    == defaultNormal_)    m.normal    = 0;
+    if (m.roughness == defaultRoughness_) m.roughness = 0;
+    if (m.ao        == defaultAO_)        m.ao        = 0;
+    if (m.height    == defaultHeight_)    m.height    = 0;
+    m.Unload();
+
+    matIds_[slot]              = spec.media_id;
+    matAlbedoPaths_[slot]      = spec.albedo_path;
+    matNormalPaths_[slot]      = spec.normal_path;
+    matOrmPaths_[slot]         = spec.roughness_path;
+    matNormalStrengths_[slot]  = spec.normal_strength;
+    tilings[slot]              = spec.tiling;
+    m.name                     = spec.name;
+
+    // Paths relative to dist/ root; GUE lives in dist/tools/, so prefix ../client/
+    auto tryLoad = [](const std::string& relPath, bool srgb) -> GLuint {
+        if (relPath.empty()) return 0;
+        return LoadTex("../client/" + relPath, srgb);
+    };
+
+    m.albedo = !spec.albedo_path.empty()
+        ? tryLoad(spec.albedo_path, true)
+        : MakeSolidTex(kSlotRGB[slot % 4][0], kSlotRGB[slot % 4][1], kSlotRGB[slot % 4][2]);
+
+    m.normal    = spec.normal_path.empty()    ? defaultNormal_    : tryLoad(spec.normal_path,    false);
+    m.roughness = spec.roughness_path.empty() ? defaultRoughness_ : tryLoad(spec.roughness_path, false);
+    m.ao        = defaultAO_;
+    m.height    = defaultHeight_;
+}
+
+void EditableTerrain::ClearMaterialSlot(int slot) {
+    if (slot < 0 || slot >= kMaxMats) return;
+    EnsureDefaultTextures();
+    static const uint8_t kSlotRGB[4][3] = {
+        {110, 155,  70}, {148, 116,  78}, {130, 135, 148}, {195, 180, 120}
+    };
+    if (slot < (int)materials_.size()) {
+        Material& m = materials_[slot];
+        if (m.normal    == defaultNormal_)    m.normal    = 0;
+        if (m.roughness == defaultRoughness_) m.roughness = 0;
+        if (m.ao        == defaultAO_)        m.ao        = 0;
+        if (m.height    == defaultHeight_)    m.height    = 0;
+        m.Unload();
+        m.name      = "";
+        m.albedo    = MakeSolidTex(kSlotRGB[slot % 4][0], kSlotRGB[slot % 4][1], kSlotRGB[slot % 4][2]);
+        m.normal    = defaultNormal_;
+        m.roughness = defaultRoughness_;
+        m.ao        = defaultAO_;
+        m.height    = defaultHeight_;
+    }
+    matIds_[slot] = 0;
+    matAlbedoPaths_[slot].clear();
+    matNormalPaths_[slot].clear();
+    matOrmPaths_[slot].clear();
+    matNormalStrengths_[slot] = 2.5f;
 }
 
 // ─── Area I/O ────────────────────────────────────────────────────────────────
@@ -348,32 +315,96 @@ bool EditableTerrain::LoadArea(const std::string& areaName) {
         splatmap_.Resize(heightmap_.W, heightmap_.H);
     }
 
-    // Materials list — each line "name tiling". If missing, use a reasonable
-    // default set of three materials (red/green/blue channels of splatmap).
+    // Materials list — new format: "id tiling" (int id); old format: "name tiling" (folder name).
+    // Auto-detected per token: if the first non-whitespace char is a digit, treat as ID.
     materialNames_.clear();
-    float tilingSum = 0.f; int tilingCount = 0;
+    matIds_.fill(0);
+    tilings.fill(8.f);
+    matAlbedoPaths_.fill({});
+    matNormalPaths_.fill({});
+    matOrmPaths_.fill({});
+    matNormalStrengths_.fill(2.5f);
+    bool hasIds = false;
     std::ifstream mt(mtPath);
     if (mt) {
         std::string line;
-        while (std::getline(mt, line)) {
+        int lineIdx = 0;
+        while (std::getline(mt, line) && lineIdx < kMaxMats) {
             std::istringstream is(line);
-            std::string name; float t = 4.f;
-            is >> name >> t;
-            if (!name.empty() && (int)materialNames_.size() < kMaxMats) {
-                materialNames_.push_back(name);
-                tilingSum += t; ++tilingCount;
+            std::string token; float t = 8.f;
+            if (!(is >> token)) continue;
+            is >> t;
+            if (token.empty()) continue;
+            bool looksInt = std::isdigit((unsigned char)token[0]) || token[0] == '-';
+            if (looksInt) {
+                try { matIds_[lineIdx] = std::stoi(token); hasIds = true; } catch (...) {}
+                // Extended format: id tiling albedo normal orm normal_strength
+                std::string alb, nrm, orm, ns;
+                if ((is >> alb) && alb != "-") matAlbedoPaths_[lineIdx] = alb;
+                if ((is >> nrm) && nrm != "-") matNormalPaths_[lineIdx]  = nrm;
+                if ((is >> orm) && orm != "-") matOrmPaths_[lineIdx]      = orm;
+                if (is >> ns) {
+                    try { matNormalStrengths_[lineIdx] = std::stof(ns); } catch (...) {}
+                }
+            } else {
+                materialNames_.push_back(token);
+            }
+            tilings[lineIdx] = t;
+            ++lineIdx;
+        }
+    }
+    if (!hasIds && materialNames_.empty())
+        materialNames_ = {"grass", "dirt", "rock"};
+
+    // Load macro variation if it exists
+    {
+        std::string macroPath = base + "macro.png";
+        if (std::filesystem::exists(macroPath)) {
+            int mw, mh, mch;
+            stbi_set_flip_vertically_on_load(false);
+            unsigned char* px = stbi_load(macroPath.c_str(), &mw, &mh, &mch, 1);
+            if (px) {
+                EnsureDefaultTextures();
+                if (macroTex_) glDeleteTextures(1, &macroTex_);
+                glGenTextures(1, &macroTex_);
+                glBindTexture(GL_TEXTURE_2D, macroTex_);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, mw, mh, 0, GL_RED, GL_UNSIGNED_BYTE, px);
+                glGenerateMipmap(GL_TEXTURE_2D);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                macroStrength = 0.3f;
+                stbi_image_free(px);
             }
         }
     }
-    if (materialNames_.empty()) {
-        materialNames_ = {"grass", "dirt", "rock"};
-    }
-    tiling = (tilingCount > 0) ? (tilingSum / tilingCount) : 8.f;
 
-    InitShader();
+    heightmap_.InitGPU();
     InitChunks();
     MarkDirtyAll();
-    ReloadMaterials();
+
+    if (!hasIds) {
+        // Old format: resolve folder names to textures now
+        ReloadMaterials();
+    } else {
+        // New format: seed fallback colours for each slot; ZonesTab::LoadZone
+        // will call SetMaterialSlot() per slot once it resolves IDs from the DB.
+        EnsureDefaultTextures();
+        DestroyMaterials();
+        static const uint8_t kSlotRGB[4][3] = {
+            {110, 155,  70}, {148, 116,  78}, {130, 135, 148}, {195, 180, 120}
+        };
+        for (int si = 0; si < kMaxMats; ++si) {
+            Material m;
+            m.albedo    = MakeSolidTex(kSlotRGB[si][0], kSlotRGB[si][1], kSlotRGB[si][2]);
+            m.normal    = defaultNormal_;
+            m.roughness = defaultRoughness_;
+            m.ao        = defaultAO_;
+            m.height    = defaultHeight_;
+            materials_.push_back(std::move(m));
+        }
+    }
     return true;
 }
 
@@ -390,8 +421,27 @@ bool EditableTerrain::SaveArea() const {
 
     std::ofstream mt(base + "materials.txt");
     if (mt) {
-        for (const std::string& name : materialNames_)
-            mt << name << ' ' << tiling << '\n';
+        bool allZero = std::all_of(matIds_.begin(), matIds_.end(), [](int i){ return i == 0; });
+        if (allZero && !materialNames_.empty()) {
+            // Preserve old-format zones that have folder names but no DB ids yet
+            for (int i = 0; i < (int)materialNames_.size(); ++i)
+                mt << materialNames_[i] << ' ' << tilings[i] << '\n';
+        } else {
+            // Extended format: "id tiling albedo_path normal_path orm_path"
+            // Paths are relative to dist/ root — client CWD is dist/client/ so they resolve directly.
+            auto dash = [](const std::string& s) -> const std::string& {
+                static const std::string d = "-";
+                return s.empty() ? d : s;
+            };
+            for (int i = 0; i < kMaxMats; ++i) {
+                mt << matIds_[i] << ' ' << tilings[i]
+                   << ' ' << dash(matAlbedoPaths_[i])
+                   << ' ' << dash(matNormalPaths_[i])
+                   << ' ' << dash(matOrmPaths_[i])
+                   << ' ' << matNormalStrengths_[i]
+                   << '\n';
+            }
+        }
     } else {
         ok = false;
     }
@@ -404,33 +454,6 @@ void EditableTerrain::Update() {
     for (Chunk& c : chunks_)
         if (c.dirty) BuildChunk(c);
     splatmap_.Upload();
-}
-
-void EditableTerrain::RenderFrame(const glm::mat4& vp, const glm::vec3& sunDir) {
-    if (chunks_.empty() || !prog_) return;
-    Update();
-
-    glUseProgram(prog_);
-    glUniformMatrix4fv(0, 1, GL_FALSE, glm::value_ptr(vp));
-    glUniform3fv      (1, 1, glm::value_ptr(sunDir));
-    glUniform1f       (2, tiling);
-    glUniform4f       (3, WorldW(), WorldH(), 0.f, 0.f);
-
-    int matCount = std::min((int)materials_.size(), kMaxMats);
-    glUniform1i(4, matCount);
-
-    // Bind splatmap + material textures to fixed slots
-    glBindTextureUnit(0, splatmap_.tex);
-    for (int i = 0; i < kMaxMats; ++i) {
-        GLuint t = (i < matCount) ? materials_[i].albedo : 0;
-        glBindTextureUnit(1 + i, t);
-    }
-
-    for (const Chunk& c : chunks_) {
-        glBindVertexArray(c.vao);
-        glDrawElements(GL_TRIANGLES, idxCount_, GL_UNSIGNED_INT, nullptr);
-    }
-    glBindVertexArray(0);
 }
 
 // ─── Raycast (terrain-editor algorithm) ──────────────────────────────────────
@@ -464,30 +487,55 @@ bool EditableTerrain::Raycast(const glm::vec3& origin, const glm::vec3& dir,
 // ─── Brushes ─────────────────────────────────────────────────────────────────
 
 void EditableTerrain::ApplyBrush(float wx, float wz, float radius, float strength,
-                                 float dt, BrushMode mode, float flattenH) {
-    ::ApplyBrush(heightmap_, wx, wz, radius, strength, dt, mode, flattenH);
+                                 float dt, BrushMode mode, float flattenH,
+                                 BrushFalloff falloff) {
+    ::ApplyBrush(heightmap_, wx, wz, radius, strength, dt, mode, flattenH, falloff);
     MarkDirtyRegion(wx, wz, radius);
 }
 
 void EditableTerrain::Paint(float wx, float wz, float radius, float strength,
-                            float dt, int matIdx) {
+                            float dt, int matIdx, BrushFalloff falloff) {
     if (matIdx < 0 || matIdx >= kMaxMats) return;
     ::PaintSplatmap(splatmap_, wx, wz, radius, strength, dt, matIdx,
-                    WorldW(), WorldH());
+                    WorldW(), WorldH(), falloff);
+}
+
+void EditableTerrain::AutoPaintBySlope(int flat, int rock, float mn, float mx) {
+    if (flat < 0 || flat >= kMaxMats || rock < 0 || rock >= kMaxMats || flat == rock) return;
+    float cs = heightmap_.cell_size;
+    for (int z = 0; z < splatmap_.H; z++) {
+        for (int x = 0; x < splatmap_.W; x++) {
+            float dhdx = (heightmap_.Get(x+1,z) - heightmap_.Get(x-1,z)) / (2.f * cs);
+            float dhdz = (heightmap_.Get(x,z+1) - heightmap_.Get(x,z-1)) / (2.f * cs);
+            float slope = glm::degrees(std::atan(std::sqrt(dhdx*dhdx + dhdz*dhdz)));
+            float t = glm::smoothstep(mn, mx, slope);
+            splatmap_.SetWeight(x, z, flat, 1.f - t);
+            splatmap_.SetWeight(x, z, rock, t);
+            for (int i = 0; i < 4; i++)
+                if (i != flat && i != rock) splatmap_.SetWeight(x, z, i, 0.f);
+        }
+    }
+    splatmap_.dirty = true;
 }
 
 // ─── Pipeline submission (PBR render path) ──────────────────────────────────
 
-void EditableTerrain::SubmitToPipeline(rco::renderer::Pipeline& pipeline) {
+void EditableTerrain::SubmitToPipeline(rco::renderer::Pipeline& pipeline,
+                                        const glm::vec3& cam_pos) {
     if (chunks_.empty()) return;
     Update();   // rebuild dirty chunks + upload splatmap
 
     rco::renderer::TerrainChunkSubmission base{};
-    base.splatmap       = splatmap_.tex;
-    base.tiling         = tiling;
-    base.terrain_origin = glm::vec2(0.f);
-    base.terrain_size   = glm::vec2(WorldW(), WorldH());
+    base.splatmap        = splatmap_.tex;
+    base.tilings          = glm::vec4(tilings[0], tilings[1], tilings[2], tilings[3]);
+    base.macro_variation  = macroTex_ ? macroTex_ : defaultMacro_;
+    base.macro_strength   = macroStrength;
+    base.terrain_origin   = glm::vec2(0.f);
+    base.terrain_size     = glm::vec2(WorldW(), WorldH());
+    base.heightmap_tex    = heightmap_.tex;
+    base.cell_size        = heightmap_.cell_size;
     for (int i = 0; i < kMaxMats; ++i) {
+        base.mat_normal_strength[i] = matNormalStrengths_[i];
         if (i < (int)materials_.size()) {
             base.mat_albedo[i]    = materials_[i].albedo;
             base.mat_normal[i]    = materials_[i].normal;
@@ -497,6 +545,8 @@ void EditableTerrain::SubmitToPipeline(rco::renderer::Pipeline& pipeline) {
         }
     }
 
+    constexpr float kLodBase = 128.f;
+
     for (const Chunk& c : chunks_) {
         rco::renderer::TerrainChunkSubmission s = base;
         s.vao         = c.vao;
@@ -504,8 +554,83 @@ void EditableTerrain::SubmitToPipeline(rco::renderer::Pipeline& pipeline) {
         s.ebo         = ebo_;
         s.index_count = idxCount_;
         s.model       = glm::mat4(1.f);
+
+        float cx   = (c.cx * kCells + kCells * 0.5f) * heightmap_.cell_size;
+        float cz   = (c.cz * kCells + kCells * 0.5f) * heightmap_.cell_size;
+        float dist = glm::length(glm::vec2(cx - cam_pos.x, cz - cam_pos.z));
+        s.lod_level = glm::clamp(std::log2(std::max(dist / kLodBase, 1.f)), 0.f, 3.f);
+
         pipeline.SubmitTerrainChunk(s);
     }
+}
+
+// ─── Macro variation ─────────────────────────────────────────────────────────
+
+void EditableTerrain::GenerateMacro(int seed) {
+    EnsureDefaultTextures();
+    constexpr int MW = 512, MH = 512;
+    std::vector<uint8_t> pixels(MW * MH);
+
+    // Multi-octave value noise, mostly low-frequency (large patches)
+    auto hash = [](int x, int z, int s) -> float {
+        unsigned v = (unsigned)(x * 1619 + z * 31337 + s * 6971);
+        v = (v ^ (v >> 16)) * 0x45d9f3bu;
+        v = (v ^ (v >> 16)) * 0x45d9f3bu;
+        return (float)(v & 0xFFFFu) / 65535.f;
+    };
+    auto valueNoise = [&](float x, float z, float freq, int s) {
+        x *= freq; z *= freq;
+        int   ix = (int)std::floor(x), iz = (int)std::floor(z);
+        float fx = x - ix, fz = z - iz;
+        float ux = fx*fx*(3-2*fx), uz = fz*fz*(3-2*fz);
+        return glm::mix(glm::mix(hash(ix,   iz,   s), hash(ix+1, iz,   s), ux),
+                        glm::mix(hash(ix,   iz+1, s), hash(ix+1, iz+1, s), ux), uz);
+    };
+
+    for (int z = 0; z < MH; z++) {
+        for (int x = 0; x < MW; x++) {
+            float nx = (float)x / MW, nz = (float)z / MH;
+            float v = valueNoise(nx, nz, 3.f,  seed + 0) * 0.50f
+                    + valueNoise(nx, nz, 7.f,  seed + 1) * 0.30f
+                    + valueNoise(nx, nz, 15.f, seed + 2) * 0.20f;
+            // Remap: centre at 0.5, ±0.3 variation
+            v = 0.5f + (v - 0.5f) * 0.6f;
+            pixels[z * MW + x] = (uint8_t)std::clamp((int)(v * 255.f + 0.5f), 0, 255);
+        }
+    }
+
+    if (!macroTex_) glGenTextures(1, &macroTex_);
+    glBindTexture(GL_TEXTURE_2D, macroTex_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, MW, MH, 0, GL_RED, GL_UNSIGNED_BYTE, pixels.data());
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    macroStrength = 0.3f;
+}
+
+bool EditableTerrain::SaveMacro() const {
+    if (areaName_.empty() || !macroTex_) return false;
+
+    std::string base = "../client/data/areas/" + areaName_ + "/";
+    std::error_code ec;
+    std::filesystem::create_directories(base, ec);
+
+    // Read back from GPU
+    glBindTexture(GL_TEXTURE_2D, macroTex_);
+    GLint mw = 0, mh = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,  &mw);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &mh);
+    if (mw <= 0 || mh <= 0) return false;
+
+    std::vector<uint8_t> pixels(mw * mh);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RED, GL_UNSIGNED_BYTE, pixels.data());
+
+    std::string outPath = base + "macro.png";
+    // stbi_write_png expects RGB/RGBA; for single-channel pass comp=1
+    return stbi_write_png(outPath.c_str(), mw, mh, 1, pixels.data(), mw) != 0;
 }
 
 // ─── Destructor ──────────────────────────────────────────────────────────────
@@ -514,11 +639,13 @@ EditableTerrain::~EditableTerrain() {
     DestroyChunks();
     DestroyMaterials();
     splatmap_.Destroy();
-    if (prog_) glDeleteProgram(prog_);
+    heightmap_.DestroyGPU();
     if (defaultNormal_)    glDeleteTextures(1, &defaultNormal_);
     if (defaultRoughness_) glDeleteTextures(1, &defaultRoughness_);
     if (defaultAO_)        glDeleteTextures(1, &defaultAO_);
     if (defaultHeight_)    glDeleteTextures(1, &defaultHeight_);
+    if (defaultMacro_)     glDeleteTextures(1, &defaultMacro_);
+    if (macroTex_)         glDeleteTextures(1, &macroTex_);
 }
 
 } // namespace gue

@@ -212,6 +212,7 @@ void Model::FreeMesh(SubMesh& m) {
     del(m.tex_albedo);
     del(m.tex_normal);
     del(m.tex_orm);
+    del(m.tex_opacity);
     m = {};
 }
 
@@ -225,6 +226,8 @@ void Model::Destroy() {
     clips_.clear();
     skinned_    = false;
     aabb_max_y_ = 0.f;
+    aabb_min_   = glm::vec3( 1e30f);
+    aabb_max_   = glm::vec3(-1e30f);
     for (GLuint t : owned_textures_) {
         if (t) glDeleteTextures(1, &t);
     }
@@ -488,6 +491,8 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
     for (unsigned i = 0; i < mesh->mNumVertices; ++i) {
         glm::vec3 pos = xformPos(mesh->mVertices[i]);
         if (pos.y > aabb_max_y_) aabb_max_y_ = pos.y;
+        aabb_min_ = glm::min(aabb_min_, pos);
+        aabb_max_ = glm::max(aabb_max_, pos);
         verts.push_back(pos.x); verts.push_back(pos.y); verts.push_back(pos.z);
         if (mesh->HasNormals()) {
             glm::vec3 n = xformDir(mesh->mNormals[i]);

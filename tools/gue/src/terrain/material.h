@@ -156,9 +156,6 @@ inline std::vector<Material> ScanMaterials(const std::string& dir,
                     m.normal = LoadTex(f.path().string(), false);
                 break;
             case TexRole::Roughness:
-                if (m.roughness == defaultRoughness)
-                    m.roughness = LoadTex(f.path().string(), false);
-                break;
             case TexRole::ORM:
                 if (m.roughness == defaultRoughness)
                     m.roughness = LoadTex(f.path().string(), false);
@@ -178,18 +175,51 @@ inline std::vector<Material> ScanMaterials(const std::string& dir,
         if (m.albedo) out.push_back(std::move(m));
     }
 
-    // --- Root-level images: flat files = albedo-only materials ---
-    for (auto& f : fs::directory_iterator(root)) {
-        if (!f.is_regular_file() || !isImg(f.path())) continue;
-        Material m;
-        m.name      = f.path().stem().string();
-        m.normal    = defaultNormal;
-        m.roughness = defaultRoughness;
-        m.albedo    = LoadTex(f.path().string(), true);
-        if (m.albedo) out.push_back(std::move(m));
-    }
-
+    // Sort subfolder-derived materials by name before inserting the flat entry.
     std::sort(out.begin(), out.end(),
               [](const Material& a, const Material& b){ return a.name < b.name; });
+
+    // --- Root-level images: aggregate ALL flat files into ONE material ---
+    // Handles the common "flat" layout where albedo/normal/roughness sit
+    // directly inside the material folder rather than in a sub-folder.
+    // Inserted at front so it wins over any subfolder variants when present.
+    {
+        Material flat;
+        flat.name      = root.filename().string();
+        flat.normal    = defaultNormal;
+        flat.roughness = defaultRoughness;
+        flat.ao        = defaultAO;
+        flat.height    = defaultHeight;
+        for (auto& f : fs::directory_iterator(root)) {
+            if (!f.is_regular_file() || !isImg(f.path())) continue;
+            TexRole role = GuessRole(f.path().stem().string());
+            switch (role) {
+            case TexRole::Albedo:
+                if (!flat.albedo)
+                    flat.albedo = LoadTex(f.path().string(), true);
+                break;
+            case TexRole::Normal:
+                if (flat.normal == defaultNormal)
+                    flat.normal = LoadTex(f.path().string(), false);
+                break;
+            case TexRole::Roughness:
+            case TexRole::ORM:
+                if (flat.roughness == defaultRoughness)
+                    flat.roughness = LoadTex(f.path().string(), false);
+                break;
+            case TexRole::AO:
+                if (flat.ao == defaultAO)
+                    flat.ao = LoadTex(f.path().string(), false);
+                break;
+            case TexRole::Height:
+                if (flat.height == defaultHeight)
+                    flat.height = LoadTex(f.path().string(), false);
+                break;
+            default: break;
+            }
+        }
+        if (flat.albedo) out.insert(out.begin(), std::move(flat));
+    }
+
     return out;
 }

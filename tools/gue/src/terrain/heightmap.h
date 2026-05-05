@@ -3,12 +3,14 @@
 #include <string>
 #include <algorithm>
 #include <glm/glm.hpp>
+#include <glad/glad.h>
 
 class Heightmap {
 public:
     int   W = 0, H = 0;
     float cell_size = 2.f;
     std::vector<float> heights;
+    GLuint tex = 0;   // R32F GPU texture W×H, 0 = not uploaded
 
     void Resize(int w, int h, float cs = 2.f) {
         W = w; H = h; cell_size = cs;
@@ -42,6 +44,12 @@ public:
 
     float WorldW() const { return W * cell_size; }
     float WorldH() const { return H * cell_size; }
+
+    // Upload the full CPU data to tex (creates texture if needed).
+    void InitGPU();
+    // Re-upload only the changed cell rectangle [x0,x1]×[z0,z1] (inclusive).
+    void UploadRegion(int x0, int z0, int x1, int z1);
+    void DestroyGPU();
 
     bool Save(const std::string& path) const;
     bool Load(const std::string& path);

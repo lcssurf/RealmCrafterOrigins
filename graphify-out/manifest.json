@@ -1,0 +1,570 @@
+{
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\audio\\audio.cpp": {
+    "mtime": 1776724356.5852754,
+    "hash": "523a9956c1d5e815e54e9c8d83ddf002"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\audio\\audio.h": {
+    "mtime": 1776724340.0297327,
+    "hash": "b1480aa62da8aae561eeb05343cf4ac2"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\core\\main.cpp": {
+    "mtime": 1777767673.0049684,
+    "hash": "633831505971d9748f026e578328e3f6"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\core\\paths.cpp": {
+    "mtime": 1776781928.6464684,
+    "hash": "fa98cabd4906e5b0c713afa04614e305"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\core\\paths.h": {
+    "mtime": 1776781691.9369278,
+    "hash": "5d9dfea420283e4b91873f42220b9d9b"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\core\\window.cpp": {
+    "mtime": 1777093286.9309144,
+    "hash": "cadcc60ffa87526fd8a51405de37a69f"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\core\\window.h": {
+    "mtime": 1776688353.7969947,
+    "hash": "4930afaf8ca66889dc3f2a9c1f6a314e"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\input\\input_system.cpp": {
+    "mtime": 1777156515.3166022,
+    "hash": "0998d69c2a5f748bce04db6f151241e5"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\input\\input_system.h": {
+    "mtime": 1777156491.4520524,
+    "hash": "cfee1638c0a62c7360a651db08e04e11"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\net\\codec.h": {
+    "mtime": 1776688290.541739,
+    "hash": "c3995ffcc0e7c080e7e9f6698ab06da7"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\net\\connection.cpp": {
+    "mtime": 1776691137.0452876,
+    "hash": "00c47c8066f114c79de440010acb1f34"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\net\\connection.h": {
+    "mtime": 1776688305.695075,
+    "hash": "467be6ec08b2bcf494a26d19693932b8"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\net\\protocol.h": {
+    "mtime": 1777767658.3937507,
+    "hash": "213cfcf758cd264976cc3748b3711759"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\renderer\\anim_controller.cpp": {
+    "mtime": 1777334176.9676385,
+    "hash": "0f8018d1d67b877676c44cea1f9eb270"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\renderer\\anim_controller.h": {
+    "mtime": 1777334176.968639,
+    "hash": "d34678b666ee4ae4db613cbb0a37bc6f"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\renderer\\camera.cpp": {
+    "mtime": 1777131801.635369,
+    "hash": "07c423db6ffe1f9afd2362f781edf81d"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\renderer\\camera.h": {
+    "mtime": 1777131789.1519468,
+    "hash": "862d06799c52279beb554585f4339dbf"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\renderer\\particles.cpp": {
+    "mtime": 1776914950.9360874,
+    "hash": "198ffabf713e8644a55dfaa7f6cd2d7f"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\renderer\\particles.h": {
+    "mtime": 1776914932.0208752,
+    "hash": "7579522dfc4e194deac67c6ed16f76bb"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\renderer\\actors\\actor.h": {
+    "mtime": 1777036233.3343692,
+    "hash": "451134966fe613e83713000df983e1d9"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\renderer\\terrain\\terrain.cpp": {
+    "mtime": 1777763088.9758923,
+    "hash": "0d4ede14fac1ad9699706cb7d22ccee7"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\renderer\\terrain\\terrain.h": {
+    "mtime": 1777763074.8785539,
+    "hash": "07f8fc70445f3bbf5f64fbb900362561"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\renderer\\terrain\\terrain_chunk.cpp": {
+    "mtime": 1777758042.1632545,
+    "hash": "d7e5530c874f805245d1cd303b1bf08a"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\renderer\\terrain\\terrain_chunk.h": {
+    "mtime": 1777758031.544201,
+    "hash": "ba1668a1f8c45a5886ccba0e5a6d2b22"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\char_select.cpp": {
+    "mtime": 1777124360.9516635,
+    "hash": "32efbef97ac1f42d198ad0958bcae818"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\char_select.h": {
+    "mtime": 1777124340.691089,
+    "hash": "3e9a5f5804004836edae4a012681a110"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\chat.cpp": {
+    "mtime": 1776700692.1079397,
+    "hash": "6d4f29e766ee7e79a099d95465043abb"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\chat.h": {
+    "mtime": 1776700675.8250172,
+    "hash": "111d7dcc3f7f3a5c8fb2725baa11cff9"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\chat_bubbles.cpp": {
+    "mtime": 1776711440.4481032,
+    "hash": "232df86227cb44ddabecf7695b3bc089"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\chat_bubbles.h": {
+    "mtime": 1776711426.519456,
+    "hash": "338aa779ecde82692885db2f3d0e7a41"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\controls_ui.cpp": {
+    "mtime": 1777156551.1436713,
+    "hash": "0f1f1a552acfa99aba15aceef49a1929"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\controls_ui.h": {
+    "mtime": 1777156522.5709999,
+    "hash": "e90b07ec276baddab89d4cddc0d4ea91"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\floating_numbers.cpp": {
+    "mtime": 1776704155.5398357,
+    "hash": "8a1c5f4fd82c0e6d1a91cb637179cb50"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\floating_numbers.h": {
+    "mtime": 1776704144.3466947,
+    "hash": "0ec8a6491f69f231adcd1d7919b96fa3"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\game_state.h": {
+    "mtime": 1777124322.9218183,
+    "hash": "2a8f64cfcb35b761040413fa3c4fe7bd"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\inventory.cpp": {
+    "mtime": 1776733308.2838051,
+    "hash": "cab01b2f883d858755377e2deee69043"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\inventory.h": {
+    "mtime": 1776733188.8182673,
+    "hash": "ff4025ff8cf325f9fbfbddb30b972778"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\login_screen.cpp": {
+    "mtime": 1776706855.460699,
+    "hash": "a25dce6dd9a23dcc76e366659883d102"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\login_screen.h": {
+    "mtime": 1776688388.1290965,
+    "hash": "bfc678fd97d153b54a885df7bf6bc826"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\spellbar.cpp": {
+    "mtime": 1776770728.55593,
+    "hash": "1dbe873ca0eeb52cf3ca4e93b2883c25"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\spellbar.h": {
+    "mtime": 1776770696.458398,
+    "hash": "34dae303101c184e27b0bbb743f5b0d9"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\spell_effects.cpp": {
+    "mtime": 1776710300.3907993,
+    "hash": "343b87698db6def521f5bec99fa0ab6a"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\spell_effects.h": {
+    "mtime": 1776710268.2817328,
+    "hash": "c229ace2bda18b2824b956d01ac6565f"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\ui_texture.cpp": {
+    "mtime": 1776814120.0367265,
+    "hash": "1c79249c0ff9eb81ce08b25f70132917"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\ui_texture.h": {
+    "mtime": 1776739914.4847825,
+    "hash": "e3536a7a0c7df43b30e69cd10ac6e07b"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\cmd\\server\\main.go": {
+    "mtime": 1777767648.572607,
+    "hash": "506f5c4a3b5bda6665afd88130df8e92"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\accounts\\service.go": {
+    "mtime": 1776687647.6870239,
+    "hash": "cb5926e8af3470f1f5f260616a7c9d3b"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\admin\\admin.go": {
+    "mtime": 1776725409.0175338,
+    "hash": "e4a37f795825ce1ba7592523043fb17d"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\db\\db.go": {
+    "mtime": 1777767617.9501684,
+    "hash": "edbc9b4ab3399f28e4edf72b138e4d2f"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\db\\schema.sql": {
+    "mtime": 1776688388.346869,
+    "hash": "cce2d66f978ed532f4bdd81b3f2027e6"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\net\\appearance.go": {
+    "mtime": 1777252774.1400928,
+    "hash": "d30b23cacbc0386348e063a5827a97ba"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\net\\client.go": {
+    "mtime": 1777767643.1604042,
+    "hash": "18014406f87c14d5e807960972fbacd4"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\net\\codec.go": {
+    "mtime": 1776687896.564177,
+    "hash": "d759b82886c31acd5c528476c0b61cc3"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\net\\server.go": {
+    "mtime": 1776709206.7270992,
+    "hash": "73edc44588c74ac82401226398bb42e4"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\protocol\\packets.go": {
+    "mtime": 1777474626.7643435,
+    "hash": "016cc988b9b507b0f3290b8347c66341"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\scripting\\api.go": {
+    "mtime": 1777155745.1657681,
+    "hash": "9e2d5c3566827423bf849cfabda7d191"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\scripting\\registry.go": {
+    "mtime": 1777155750.9628904,
+    "hash": "c8fc6f854c1fb9476fe6185d9e1f2d8c"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\world\\actor.go": {
+    "mtime": 1777470932.6561556,
+    "hash": "f81352068abbf1241cc189166ee339af"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\world\\area.go": {
+    "mtime": 1777474701.3768609,
+    "hash": "37a1c7a0b12f9897e212d1ea1b2b18aa"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\world\\combat.go": {
+    "mtime": 1777155645.467917,
+    "hash": "03e6a5c0c2824c18e56e64b7942be0bd"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\world\\drops.go": {
+    "mtime": 1776721660.0607185,
+    "hash": "d0eb28fed84bd565fbb4c828b8b6afff"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\world\\frame.go": {
+    "mtime": 1777474727.7245593,
+    "hash": "09cb7c00bae9d1c5dadd2d56023fcaf2"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\world\\portal.go": {
+    "mtime": 1776707477.6681242,
+    "hash": "ea3f1c4eee871d46e6c5403c4c9e7961"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\world\\progression.go": {
+    "mtime": 1776706441.234717,
+    "hash": "0f9671ad366ba88e3b9126d663b7fb5f"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\world\\shop.go": {
+    "mtime": 1776721977.6445024,
+    "hash": "6f2aa59dbc2b1bd0e3e2b5ed4fc3ab25"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\world\\spell.go": {
+    "mtime": 1776726874.9245565,
+    "hash": "8efd21b1b2e7033a9b01e58d8134bd06"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\world\\world.go": {
+    "mtime": 1776729266.0503395,
+    "hash": "370c8622bdd23996169bca52206e0a11"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\asset_path.h": {
+    "mtime": 1777037749.145352,
+    "hash": "f25f1dba0114892bbb70fa8d93f7338b"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\file_import.cpp": {
+    "mtime": 1777045132.7850318,
+    "hash": "eeca8c23618147ffb0444665a3e3202b"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\file_import.h": {
+    "mtime": 1777045110.0091126,
+    "hash": "8dc05a0182b3bb65c0004d4962f700cf"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\main.cpp": {
+    "mtime": 1777256923.5685172,
+    "hash": "9050ece6432088785dd1a6f0317aeeb7"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\preview_viewport.cpp": {
+    "mtime": 1777678045.6560476,
+    "hash": "29dd68c1c901e3b36b09f378c863285f"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\preview_viewport.h": {
+    "mtime": 1777678036.0345714,
+    "hash": "9976c345654787efaa9bf0ca08dd6a9d"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\stb_image_write_impl.cpp": {
+    "mtime": 1776999245.6622424,
+    "hash": "aad84e0df010b866c80763ed304b3915"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\texture_importer.cpp": {
+    "mtime": 1776999325.1032088,
+    "hash": "1fc6c2e5dc29000a2c781b79f41a6477"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\texture_importer.h": {
+    "mtime": 1776999264.7099679,
+    "hash": "0b5af217ff56adda5f18ac7b2bffbfcb"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\zone_camera.h": {
+    "mtime": 1776943162.586851,
+    "hash": "dc310f7eac3e4709f9a9a5ededbc911c"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\zone_renderer.cpp": {
+    "mtime": 1777763123.1420393,
+    "hash": "8a7c4f014151c8695a775ceae5b609c2"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\zone_renderer.h": {
+    "mtime": 1777256765.665229,
+    "hash": "a7491e21d4bc9e40000cd70add6cd0a8"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\zone_scene.cpp": {
+    "mtime": 1777256813.4032533,
+    "hash": "82ed34a1135b91f70321be26b87ce30c"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\zone_scene.h": {
+    "mtime": 1777256753.5709326,
+    "hash": "77b7b1ffa8199410b9fbc126e3100e05"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\actors.cpp": {
+    "mtime": 1777471090.253345,
+    "hash": "cb5cfba3dcfb021d35d54e30b1166d3e"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\actors.h": {
+    "mtime": 1777471020.1003253,
+    "hash": "28f45aa0f232744a8061db1396234f5e"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\areas.cpp": {
+    "mtime": 1777771010.62152,
+    "hash": "e6daa7a3e0da2b0344ada18ab21fc733"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\areas.h": {
+    "mtime": 1777767678.776262,
+    "hash": "4a053f852fdbec9af0de2b859798fc01"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\input_maps.cpp": {
+    "mtime": 1777156032.716039,
+    "hash": "1fda38cda4fb17b1b262d4a5db3ba31a"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\input_maps.h": {
+    "mtime": 1777155924.2928157,
+    "hash": "aa60e240793472cee5a72949fc2aab24"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\items.cpp": {
+    "mtime": 1776726175.2177377,
+    "hash": "bee53dada32fc4e3f80637956dd6a9b2"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\items.h": {
+    "mtime": 1776726142.965389,
+    "hash": "4fe2d3baa7c2c697f3691b9b4e5fe02a"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\media.cpp": {
+    "mtime": 1777677026.8100848,
+    "hash": "37bbe2c9968b3fc18ac2448b09270120"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\media.h": {
+    "mtime": 1777677008.495226,
+    "hash": "a6d5f25952f34ef8e9ff3a1952b30016"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\spawn_points.cpp": {
+    "mtime": 1777256131.249724,
+    "hash": "778b242753602f31605c7a35efe96b55"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\spawn_points.h": {
+    "mtime": 1777256075.9505527,
+    "hash": "a4604807124064c04ade36e28920a5e1"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\spells.cpp": {
+    "mtime": 1776727239.3595636,
+    "hash": "5e91ff85034fc3c9891d57c5ea120103"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\spells.h": {
+    "mtime": 1776727019.9021792,
+    "hash": "25c37a6e6afddb0331795d27bb948d6a"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\zones.cpp": {
+    "mtime": 1777762243.7232132,
+    "hash": "ab24ff3cb6db5d70494ee558a4a941db"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\tabs\\zones.h": {
+    "mtime": 1777762215.349942,
+    "hash": "128b5d427e5c26ca42b7a1390d690e47"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\terrain\\brush.h": {
+    "mtime": 1777762182.036453,
+    "hash": "6ac37d7f2407b528a2769a220b0271b9"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\terrain\\editable_terrain.cpp": {
+    "mtime": 1777771686.6525662,
+    "hash": "693ac07aeb0f9a9d5303c08cddecffbf"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\terrain\\editable_terrain.h": {
+    "mtime": 1777763099.4219098,
+    "hash": "ab42c432c53711dddb4a28407b3372f1"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\terrain\\heightmap.cpp": {
+    "mtime": 1777757991.4628334,
+    "hash": "d7edfc9df8313552000486260402df02"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\terrain\\heightmap.h": {
+    "mtime": 1777757978.0972393,
+    "hash": "73d9406621ce647addaa6b3bb015eaa7"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\terrain\\material.h": {
+    "mtime": 1777678709.649161,
+    "hash": "0c96f1d94f8e705adce13f1aa49be53d"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\src\\terrain\\splatmap.h": {
+    "mtime": 1777764288.9404647,
+    "hash": "3310cde87df2c461457c5a6864c70049"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\glad\\glad.h": {
+    "mtime": 1776908525.2368863,
+    "hash": "ec184a65c70807273f7399caaee32955"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\KHR\\khrplatform.h": {
+    "mtime": 1776908631.2377527,
+    "hash": "d03191518ac2cfc3c10d22df034b154a"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\actor.h": {
+    "mtime": 1777241168.1049294,
+    "hash": "29fb929ba408c7eb99efa281e1226036"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\buffers.h": {
+    "mtime": 1776908173.8012502,
+    "hash": "41a23ce59fa80354fe120744a184ee5d"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\engine.h": {
+    "mtime": 1777091438.4909983,
+    "hash": "8d61f5a5268cdaec1d222eab41932b3f"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\helpers.h": {
+    "mtime": 1776910152.283997,
+    "hash": "4a7395aadc61ef6b663968ab2da4e34b"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\indirect.h": {
+    "mtime": 1776908125.144166,
+    "hash": "b239ed3d34ac745b3ff6f6bd257164e8"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\light.h": {
+    "mtime": 1776908130.7888744,
+    "hash": "1a4932d48098a4b3d4a81ba6a2117611"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\material.h": {
+    "mtime": 1777429043.2712758,
+    "hash": "44aef6819b2f01390927cf7f28b38a48"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\mesh.h": {
+    "mtime": 1776908238.2971416,
+    "hash": "1b7bbeb987b0f976a4b850a6c219edd3"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\mesh_consolidate.h": {
+    "mtime": 1777381440.3224475,
+    "hash": "3ed6b5b6768c178445bcbd943118273c"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\model.h": {
+    "mtime": 1777677717.532293,
+    "hash": "6fe3774243f04ce883274c7eb630e089"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\model_cache.h": {
+    "mtime": 1777213611.467322,
+    "hash": "e701ae46617c7088d36ee9b6a13201af"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\object.h": {
+    "mtime": 1776908250.4171984,
+    "hash": "fcf661fd3bd818ef358b3eddbcbf5b41"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\pipeline.h": {
+    "mtime": 1777763041.7694254,
+    "hash": "61270a74b0d7e582e0bbb09e3a188f86"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\shader.h": {
+    "mtime": 1776908707.3166857,
+    "hash": "884c508ac4cf596b36b0ee86c744776b"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\texture.h": {
+    "mtime": 1776908199.351698,
+    "hash": "06e61bdba6f89ea91e7186b1bdd46af3"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\include\\rco\\renderer\\utilities.h": {
+    "mtime": 1776908120.8753355,
+    "hash": "69d26a05660575dcb0f7ed464c068d18"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\actor.cpp": {
+    "mtime": 1777425342.5877585,
+    "hash": "5efc916ee1605d4a8d08ecfae3f7cfe4"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\buffers.cpp": {
+    "mtime": 1776908192.3502138,
+    "hash": "92ec7e403312529440ec20510907eca4"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\compile_shaders.cpp": {
+    "mtime": 1777387332.6797466,
+    "hash": "6bc9087f2af331cdf53d188476a4a7e7"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\engine.cpp": {
+    "mtime": 1777092150.0402827,
+    "hash": "fe2ec205be46ac598752f268a8d491b4"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\glad.c": {
+    "mtime": 1776908525.2698438,
+    "hash": "2dde2b1b1ccce337213258cdd74e308f"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\helpers.cpp": {
+    "mtime": 1776910170.3455887,
+    "hash": "fb3c4212623e6819d3d02017c2f99b73"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\light.cpp": {
+    "mtime": 1776908138.181839,
+    "hash": "5e6c2271f1b4fbb2d9bef0b1429c9d9f"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\material.cpp": {
+    "mtime": 1777429062.2754366,
+    "hash": "5ab08645783ef1fef101eb3d0648637a"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\mesh.cpp": {
+    "mtime": 1776908244.3153975,
+    "hash": "e7debb29b6d50b3bd33d2198b6b5e231"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\mesh_consolidate.cpp": {
+    "mtime": 1777386803.8987398,
+    "hash": "1116e0d7b77d0a130aedb70d5fc4ba01"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\model.cpp": {
+    "mtime": 1777677731.6897554,
+    "hash": "fff45d69cde5c2b678ae53b2ebb3262c"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\model_cache.cpp": {
+    "mtime": 1777425346.13986,
+    "hash": "911feb201bbafb1ff09ceb80fef39688"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\pipeline.cpp": {
+    "mtime": 1777763053.1031342,
+    "hash": "8f798f376b8bc7672e172d41f5094627"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\shader.cpp": {
+    "mtime": 1776908735.6543312,
+    "hash": "e39c4ea0ac15cbfb8af185d6774ed21d"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\stb_image_impl.cpp": {
+    "mtime": 1776814107.143597,
+    "hash": "78dafe3599fc010799c950468a0ca83d"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\src\\texture.cpp": {
+    "mtime": 1776908211.6583393,
+    "hash": "291cb1a8df73a431a7a7406cd5ffdcab"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\CMakeLists.txt": {
+    "mtime": 1776908652.941869,
+    "hash": "d1abb5c358fdc00ece882f2e596abb6a"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\CMakeLists.txt": {
+    "mtime": 1776977020.6261108,
+    "hash": "627ee38032e7b3c65585734e2f72449e"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\tools\\gue\\CMakeLists.txt": {
+    "mtime": 1776908668.5278015,
+    "hash": "93649f79467fdd9568b15f511c78bfda"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\shared\\renderer\\CMakeLists.txt": {
+    "mtime": 1777377180.5235488,
+    "hash": "f30a995e0ba46963d5ac173d13ed066a"
+  }
+}

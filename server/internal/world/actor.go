@@ -8,8 +8,12 @@ import (
 const sendChSize = 64
 
 const (
-	AIWait  = 0
-	AIChase = 3
+	AIWait         = 0
+	AIPatrol       = 1
+	AIWander       = 2
+	AIChase        = 3
+	AIPatrolPause  = 4
+	AIWanderPause  = 5
 )
 
 // Actor represents any entity in the game world — player or NPC.
@@ -57,6 +61,18 @@ type Actor struct {
 	SpawnX, SpawnY, SpawnZ, SpawnYaw float32
 	SpawnAreaName                    string
 	RespawnDelay                     int64 // ms; 0 = permanent death
+
+	// Waypoint patrol — NPCs only, set once at spawn time.
+	StartWaypointID    int   // first waypoint in the route (0 = no patrol)
+	CurrentWaypointID  int   // waypoint the NPC is currently heading toward
+	WaypointPauseUntil int64 // unix ms when current pause ends
+
+	// Random wander — NPCs only, set once at spawn time.
+	WanderRadius     float32 // max distance from spawn for random roaming (0 = no wander)
+	WanderPauseMinMs int     // minimum pause at each wander stop (ms)
+	WanderPauseMaxMs int     // maximum pause at each wander stop (ms)
+	WanderTargetX    float32 // current random destination X (runtime)
+	WanderTargetZ    float32 // current random destination Z (runtime)
 
 	// SpellCooldowns tracks last-cast timestamp per spell ID (unix ms), under Mu.
 	SpellCooldowns map[uint16]int64

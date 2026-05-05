@@ -15,6 +15,16 @@ namespace gue {
 // Raw asset entries
 // ---------------------------------------------------------------------------
 
+// Collision primitive attached to a model. Type 0 = box (size_x/y/z = W/H/D),
+// type 1 = sphere (size_x = radius, size_y/z ignored).
+struct ModelShape {
+    int   id       = 0;
+    int   model_id = 0;
+    int   type     = 0;
+    float offset_x = 0.f, offset_y = 0.f, offset_z = 0.f;
+    float size_x   = 1.f, size_y   = 1.f, size_z   = 1.f;
+};
+
 struct MediaModel {
     int         id = 0;
     std::string name;
@@ -35,11 +45,12 @@ struct MediaMaterial {
     std::string albedo_path;
     std::string normal_path;
     std::string orm_path;
-    float       albedo_r  = 0.72f;
-    float       albedo_g  = 0.68f;
-    float       albedo_b  = 0.60f;
-    float       roughness = 0.5f;
-    float       metallic  = 0.f;
+    float       albedo_r       = 0.72f;
+    float       albedo_g       = 0.68f;
+    float       albedo_b       = 0.60f;
+    float       roughness      = 0.5f;
+    float       metallic       = 0.f;
+    float       normal_strength = 2.5f;  // normal map intensity for terrain triplanar blend
 };
 
 struct MediaAnimClip {
@@ -190,6 +201,13 @@ private:
     // reported in statusMsg_.
     void ImportFilesBatch(sqlite3* db);
 
+    // Folder import: picks a folder via native dialog, copies the entire
+    // subtree into assets/models/<folder_name>/ preserving internal structure,
+    // and registers every mesh file (glb/fbx/b3d/…) as a MediaModel row.
+    // Textures are NOT registered separately — they stay alongside their
+    // meshes so Assimp resolves them by directory_ + "/" + texname.
+    void ImportFolderTree(sqlite3* db);
+
     // CRUD helpers
     void SaveModel      (sqlite3* db, MediaModel& m);
     void DeleteModel    (sqlite3* db, int id);
@@ -207,6 +225,9 @@ private:
     void DeleteMeshSlot (sqlite3* db, int id);
     void SaveAnimMap    (sqlite3* db, ActorAnimMap& a);
     void DeleteAnimMap  (sqlite3* db, int id);
+    void LoadShapesForModel  (sqlite3* db, int model_id);
+    void SaveModelShape      (sqlite3* db, ModelShape& s);
+    void DeleteModelShape    (sqlite3* db, int id);
 
     std::vector<MediaModel>    models_;
     std::vector<MediaMaterial> materials_;
@@ -231,6 +252,15 @@ private:
     bool       newModel_   = false;
     MediaModel pendingModel_;
     char       filterModel_[128] = {};
+
+    // Collision shapes for the selected model.
+    std::vector<ModelShape> model_shapes_;
+    int        sel_shape_            = -1;
+    int        shapes_model_id_      = -1; // model_id whose shapes are loaded
+    ModelShape edit_shape_;
+    bool       dirty_shape_          = false;
+    ModelShape pending_shape_;
+    bool       new_shape_            = false;
 
     // --- Materials sub-tab state ---
     int           selMat_  = -1;

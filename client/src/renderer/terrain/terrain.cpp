@@ -4,11 +4,169 @@
 #include <cstdio>
 #include <cmath>
 #include <fstream>
+#include <sstream>
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
 
 namespace rco::renderer {
+
+// ---------------------------------------------------------------------------
+// Collision data — load from coldata.bin
+// ---------------------------------------------------------------------------
+
+ColData LoadColData(const std::string& area_name) {
+    char path[512];
+    std::snprintf(path, sizeof(path), "data/areas/%s/coldata.bin", area_name.c_str());
+    FILE* f = std::fopen(path, "rb");
+    if (!f) return {};
+
+    auto r32 = [&](uint32_t& v) { return std::fread(&v, 4, 1, f) == 1; };
+    auto rf  = [&](float&    v) { return std::fread(&v, 4, 1, f) == 1; };
+
+    uint32_t magic, version;
+    if (!r32(magic) || magic != 0x444C4F43u) { std::fclose(f); return {}; }
+    if (!r32(version) || version > 2)        { std::fclose(f); return {}; }
+
+    ColData out;
+    uint32_t n;
+    if (!r32(n)) { std::fclose(f); return {}; }
+    out.boxes.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        ColBox b;
+        if (!rf(b.pos.x)||!rf(b.pos.y)||!rf(b.pos.z)||
+            !rf(b.half.x)||!rf(b.half.y)||!rf(b.half.z)) break;
+        out.boxes.push_back(b);
+    }
+    if (!r32(n)) { std::fclose(f); out.loaded = true; return out; }
+    out.spheres.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        ColSphere s;
+        if (!rf(s.pos.x)||!rf(s.pos.y)||!rf(s.pos.z)||!rf(s.radius)) break;
+        out.spheres.push_back(s);
+    }
+    if (version >= 2) {
+        if (!r32(n)) { std::fclose(f); out.loaded = true; return out; }
+        out.tris.reserve(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            ColTri t;
+            bool ok = rf(t.v[0].x)&&rf(t.v[0].y)&&rf(t.v[0].z)
+                    &&rf(t.v[1].x)&&rf(t.v[1].y)&&rf(t.v[1].z)
+                    &&rf(t.v[2].x)&&rf(t.v[2].y)&&rf(t.v[2].z);
+            if (!ok) break;
+            out.tris.push_back(t);
+        }
+    }
+    std::fclose(f);
+    out.loaded = true;
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Collision resolution — push player out of boxes and spheres
+// ---------------------------------------------------------------------------
+
+// Closest point on a 2D line segment to point p (Ericson).
+static glm::vec2 ClosestPtSeg2D(glm::vec2 p, glm::vec2 a, glm::vec2 b) {
+    glm::vec2 ab = b - a, ap = p - a;
+    float len2 = glm::dot(ab, ab);
+    if (len2 < 1e-10f) return a;
+    float t = std::max(0.f, std::min(1.f, glm::dot(ap, ab) / len2));
+    return a + t * ab;
+}
+
+// Closest point on 2D triangle (a,b,c) to point p — Ericson barycentric method.
+// Handles degenerate (collinear) triangles gracefully.
+static glm::vec2 ClosestPtTri2D(glm::vec2 p, glm::vec2 a, glm::vec2 b, glm::vec2 c) {
+    glm::vec2 ab = b-a, ac = c-a, ap = p-a;
+    float d1 = glm::dot(ab,ap), d2 = glm::dot(ac,ap);
+    if (d1 <= 0.f && d2 <= 0.f) return a;
+    glm::vec2 bp = p-b;
+    float d3 = glm::dot(ab,bp), d4 = glm::dot(ac,bp);
+    if (d3 >= 0.f && d4 <= d3) return b;
+    float vc = d1*d4 - d3*d2;
+    if (vc <= 0.f && d1 >= 0.f && d3 <= 0.f) {
+        float v = d1/(d1-d3); return a + v*ab;
+    }
+    glm::vec2 cp = p-c;
+    float d5 = glm::dot(ab,cp), d6 = glm::dot(ac,cp);
+    if (d6 >= 0.f && d5 <= d6) return c;
+    float vb = d5*d2 - d1*d6;
+    if (vb <= 0.f && d2 >= 0.f && d6 <= 0.f) {
+        float w = d2/(d2-d6); return a + w*ac;
+    }
+    float va = d3*d6 - d5*d4;
+    if (va <= 0.f && (d4-d3) >= 0.f && (d5-d6) >= 0.f) {
+        float w = (d4-d3)/((d4-d3)+(d5-d6)); return b + w*(c-b);
+    }
+    float denom = va+vb+vc;
+    if (std::abs(denom) < 1e-10f) {
+        // Degenerate triangle — fall back to closest edge
+        glm::vec2 p1 = ClosestPtSeg2D(p,a,b);
+        glm::vec2 p2 = ClosestPtSeg2D(p,b,c);
+        glm::vec2 p3 = ClosestPtSeg2D(p,c,a);
+        float l1=glm::length(p-p1), l2=glm::length(p-p2), l3=glm::length(p-p3);
+        if (l1<=l2&&l1<=l3) return p1;
+        return l2<=l3 ? p2 : p3;
+    }
+    float inv = 1.f/denom, v = vb*inv, w = vc*inv;
+    return a + v*ab + w*ac;
+}
+
+void ColData::Resolve(float& px, float pz_in, float py, float& out_pz) const {
+    constexpr float R = 0.45f;   // player capsule radius
+    constexpr float H = 1.8f;    // player capsule height
+    float pz = pz_in;
+    float pYmin = py, pYmax = py + H;
+
+    for (int iter = 0; iter < 3; ++iter) {
+        for (const auto& b : boxes) {
+            if (pYmax < b.pos.y - b.half.y || pYmin > b.pos.y + b.half.y) continue;
+            float cx = std::max(b.pos.x - b.half.x, std::min(px, b.pos.x + b.half.x));
+            float cz = std::max(b.pos.z - b.half.z, std::min(pz, b.pos.z + b.half.z));
+            float dx = px - cx, dz = pz - cz;
+            float d2 = dx*dx + dz*dz;
+            if (d2 < R * R) {
+                if (d2 < 1e-7f) { dx = 1.f; dz = 0.f; d2 = 1.f; }
+                float d = std::sqrt(d2);
+                float push = R - d;
+                px += (dx / d) * push;
+                pz += (dz / d) * push;
+            }
+        }
+        for (const auto& s : spheres) {
+            if (pYmax < s.pos.y - s.radius || pYmin > s.pos.y + s.radius) continue;
+            float dx = px - s.pos.x, dz = pz - s.pos.z;
+            float d2 = dx*dx + dz*dz;
+            float minD = R + s.radius;
+            if (d2 < minD * minD) {
+                if (d2 < 1e-7f) { dx = 1.f; dz = 0.f; d2 = 1.f; }
+                float d = std::sqrt(d2);
+                px += (dx / d) * (minD - d);
+                pz += (dz / d) * (minD - d);
+            }
+        }
+        for (const auto& tri : tris) {
+            float tYmin = std::min({tri.v[0].y, tri.v[1].y, tri.v[2].y});
+            float tYmax = std::max({tri.v[0].y, tri.v[1].y, tri.v[2].y});
+            if (pYmax < tYmin || pYmin > tYmax) continue;
+            glm::vec2 a{tri.v[0].x, tri.v[0].z};
+            glm::vec2 b{tri.v[1].x, tri.v[1].z};
+            glm::vec2 c{tri.v[2].x, tri.v[2].z};
+            glm::vec2 pp{px, pz};
+            glm::vec2 closest = ClosestPtTri2D(pp, a, b, c);
+            glm::vec2 diff = pp - closest;
+            float d2 = glm::dot(diff, diff);
+            if (d2 < R * R) {
+                if (d2 < 1e-7f) { diff = {1.f, 0.f}; d2 = 1.f; }
+                float d = std::sqrt(d2);
+                px += (diff.x / d) * (R - d);
+                pz += (diff.y / d) * (R - d);
+            }
+        }
+    }
+    out_pz = pz;
+}
 
 // ---------------------------------------------------------------------------
 // Procedural fallback height
@@ -121,6 +279,7 @@ bool Terrain::Init(int gw, int gh) {
     def_roughness_ = MakeSolidTex(180, 180, 180);
     def_ao_        = MakeSolidTex(255, 255, 255);   // no occlusion
     def_height_    = MakeSolidTex(128, 128, 128);   // mid-height (neutral for height-blend)
+    def_macro_     = MakeSolidTex(128, 128, 128);   // 0.5 gray = no overlay change
 
     GenerateProcedural();
     return true;
@@ -189,7 +348,20 @@ bool Terrain::LoadFromEditor(const std::string& area_name) {
         hmap_size_z_   = (lh - 1) * cs;
     }
 
-    // Rebuild chunks with loaded heights
+    // Upload heightmap as R32F texture (read by vertex shader)
+    {
+        if (!hmap_tex_) glGenTextures(1, &hmap_tex_);
+        glBindTexture(GL_TEXTURE_2D, hmap_tex_);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, hmap_w_, hmap_h_, 0,
+                     GL_RED, GL_FLOAT, hmap_data_.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    // Rebuild chunks (static XZ grid — no heights in VBO)
     RebuildChunksFromHmap();
 
     // --- Load splatmap ---
@@ -198,23 +370,62 @@ bool Terrain::LoadFromEditor(const std::string& area_name) {
         if (f) {
             uint32_t magic = 0;
             f.read(reinterpret_cast<char*>(&magic), 4);
-            if (magic == 0x4D505352) {
-                int sw, sh;
-                f.read(reinterpret_cast<char*>(&sw), 4);
-                f.read(reinterpret_cast<char*>(&sh), 4);
-                std::vector<float> sdata(sw * sh * 4);
-                f.read(reinterpret_cast<char*>(sdata.data()), sdata.size() * 4);
+            int sw, sh;
+            f.read(reinterpret_cast<char*>(&sw), 4);
+            f.read(reinterpret_cast<char*>(&sh), 4);
+
+            std::vector<uint8_t> sdata;
+            bool ok = false;
+
+            if (magic == 0x32505352) {
+                // RSP2 — native uint8 format
+                sdata.resize((size_t)sw * sh * 4);
+                f.read(reinterpret_cast<char*>(sdata.data()), (std::streamsize)sdata.size());
+                ok = (bool)f;
+            } else if (magic == 0x4D505352) {
+                // RSPM — legacy float format; convert on load
+                std::vector<float> ftmp((size_t)sw * sh * 4);
+                f.read(reinterpret_cast<char*>(ftmp.data()), (std::streamsize)(ftmp.size() * 4));
                 if (f) {
-                    if (splatmap_tex_ == 0) glGenTextures(1, &splatmap_tex_);
-                    glBindTexture(GL_TEXTURE_2D, splatmap_tex_);
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, sw, sh, 0,
-                                 GL_RGBA, GL_FLOAT, sdata.data());
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                    sdata.resize(ftmp.size());
+                    for (size_t i = 0; i < ftmp.size(); i++)
+                        sdata[i] = static_cast<uint8_t>(std::clamp(ftmp[i] * 255.f + 0.5f, 0.f, 255.f));
+                    ok = true;
                 }
             }
+
+            if (ok) {
+                if (splatmap_tex_ == 0) glGenTextures(1, &splatmap_tex_);
+                glBindTexture(GL_TEXTURE_2D, splatmap_tex_);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, sw, sh, 0,
+                             GL_RGBA, GL_UNSIGNED_BYTE, sdata.data());
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            }
+        }
+    }
+
+    // --- Load macro variation ---
+    {
+        std::string macro_path = base + "macro.png";
+        int mw, mh, mch;
+        stbi_set_flip_vertically_on_load(false);
+        unsigned char* px = stbi_load(macro_path.c_str(), &mw, &mh, &mch, 1);
+        if (px) {
+            if (macro_tex_) glDeleteTextures(1, &macro_tex_);
+            glGenTextures(1, &macro_tex_);
+            glBindTexture(GL_TEXTURE_2D, macro_tex_);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, mw, mh, 0, GL_RED, GL_UNSIGNED_BYTE, px);
+            glGenerateMipmap(GL_TEXTURE_2D);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            macro_strength_ = 0.3f;
+            stbi_image_free(px);
+            std::fprintf(stderr, "[terrain] macro variation loaded: %dx%d\n", mw, mh);
         }
     }
 
@@ -229,16 +440,49 @@ bool Terrain::LoadFromEditor(const std::string& area_name) {
                 line.erase(line.find_last_not_of(" \t\r\n") + 1);
                 if (line.empty()) continue;
 
-                // Format: "name [tiling]"
-                std::string mat_name = line;
+                // Two formats:
+                //   Old: "foldername [tiling]"   — first token is a non-numeric name
+                //   New: "id tiling albedo normal orm"  — first token is a digit (media_materials id)
+                std::istringstream is(line);
+                std::string first;
                 float tiling = 4.f;
-                auto sp = line.find(' ');
-                if (sp != std::string::npos) {
-                    mat_name = line.substr(0, sp);
-                    try { tiling = std::stof(line.substr(sp + 1)); } catch (...) {}
+                if (!(is >> first)) continue;
+                is >> tiling;
+
+                bool isNewFormat = !first.empty() && std::isdigit((unsigned char)first[0]);
+
+                if (isNewFormat) {
+                    // Extended format written by GUE — direct texture paths relative to dist/client/
+                    // tokens: albedo normal orm normal_strength
+                    std::string albedo_rel, normal_rel, orm_rel, ns_str;
+                    is >> albedo_rel >> normal_rel >> orm_rel >> ns_str;
+
+                    MatTex m;
+                    m.tiling          = tiling;
+                    m.normal_strength = ns_str.empty() ? 2.5f : [&]{
+                        try { return std::stof(ns_str); } catch (...) { return 2.5f; }
+                    }();
+                    m.normal    = def_normal_;
+                    m.roughness = def_roughness_;
+                    m.ao        = def_ao_;
+                    m.height    = def_height_;
+
+                    if (!albedo_rel.empty() && albedo_rel != "-")
+                        m.albedo = LoadSRGBTex(albedo_rel);
+                    if (!normal_rel.empty() && normal_rel != "-")
+                        m.normal = LoadLinearTex(normal_rel);
+                    if (!orm_rel.empty() && orm_rel != "-") {
+                        m.roughness = LoadLinearTex(orm_rel);
+                        m.ao = m.roughness;  // same ORM: R=AO, G=Roughness, B=Metallic
+                    }
+
+                    if (!m.albedo) m.albedo = MakeSolidTex(200, 200, 200);
+                    materials_.push_back(m);
+                    continue;
                 }
 
-                std::string mat_dir = "data/terrain/materials/" + mat_name;
+                // Old format: resolve by folder under data/terrain/materials/<name>/
+                std::string mat_dir = "data/terrain/materials/" + first;
                 if (!fs::exists(mat_dir) || !fs::is_directory(mat_dir)) {
                     std::fprintf(stderr, "[terrain] material dir not found: %s\n", mat_dir.c_str());
                     // Push placeholder so slot indices match
@@ -312,20 +556,7 @@ void Terrain::RebuildChunksFromHmap() {
             // Sample from loaded heightmap.
             // stride = kSize-1 so adjacent chunks share their border vertex,
             // eliminating the one-cell gap that caused visible seams.
-            const int N      = TerrainChunk::kSize;
-            const int stride = N - 1;
-            std::vector<float> h(N * N);
-            for (int z = 0; z < N; ++z) {
-                for (int x = 0; x < N; ++x) {
-                    int gx = cx * stride + x;
-                    int gz = cz * stride + z;
-                    float val = 0.f;
-                    if (gx < hmap_w_ && gz < hmap_h_)
-                        val = hmap_data_[gz * hmap_w_ + gx];
-                    h[z * N + x] = val;
-                }
-            }
-            ch->SetHeights(h);
+            // Heights now come from the GPU texture — no per-chunk data needed.
             chunks_.push_back(std::move(ch));
         }
     }
@@ -335,27 +566,46 @@ void Terrain::RebuildChunksFromHmap() {
 // GenerateProcedural
 // ---------------------------------------------------------------------------
 void Terrain::GenerateProcedural() {
-    has_hmap_ = false;
     chunks_.clear();
 
     float ox = -(grid_w_ * kChunkSize) * 0.5f;
     float oz = -(grid_h_ * kChunkSize) * 0.5f;
 
+    // Build hmap_data_ so the heightmap GPU texture covers the full terrain.
+    const int stride = TerrainChunk::kSize - 1;
+    hmap_w_       = grid_w_ * stride + 1;
+    hmap_h_       = grid_h_ * stride + 1;
+    hmap_cell_    = kCellSize;
+    hmap_origin_x_ = ox;
+    hmap_origin_z_ = oz;
+    hmap_size_x_   = (hmap_w_ - 1) * hmap_cell_;
+    hmap_size_z_   = (hmap_h_ - 1) * hmap_cell_;
+    has_hmap_      = true;
+
+    hmap_data_.resize(hmap_w_ * hmap_h_);
+    for (int z = 0; z < hmap_h_; ++z)
+        for (int x = 0; x < hmap_w_; ++x)
+            hmap_data_[z * hmap_w_ + x] = ProceduralHeight(
+                hmap_origin_x_ + x * hmap_cell_,
+                hmap_origin_z_ + z * hmap_cell_);
+
+    if (!hmap_tex_) glGenTextures(1, &hmap_tex_);
+    glBindTexture(GL_TEXTURE_2D, hmap_tex_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, hmap_w_, hmap_h_, 0,
+                 GL_RED, GL_FLOAT, hmap_data_.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
     chunks_.reserve(grid_w_ * grid_h_);
     for (int cz = 0; cz < grid_h_; ++cz) {
         for (int cx = 0; cx < grid_w_; ++cx) {
             auto ch = std::make_unique<TerrainChunk>();
-            // kChunkSize = (kSize-1)*kCellSize → adjacent chunks share border vertex
             float wx = ox + cx * kChunkSize;
             float wz = oz + cz * kChunkSize;
             ch->Init(wx, wz, kCellSize);
-
-            const int N = TerrainChunk::kSize;
-            std::vector<float> h(N * N);
-            for (int z = 0; z < N; ++z)
-                for (int x = 0; x < N; ++x)
-                    h[z * N + x] = ProceduralHeight(wx + x * kCellSize, wz + z * kCellSize);
-            ch->SetHeights(h);
             chunks_.push_back(std::move(ch));
         }
     }
@@ -364,27 +614,39 @@ void Terrain::GenerateProcedural() {
 // ---------------------------------------------------------------------------
 // Render
 // ---------------------------------------------------------------------------
-void Terrain::Submit(Pipeline& pipeline) const {
+void Terrain::Submit(Pipeline& pipeline, const glm::vec3& cam_pos) const {
     TerrainChunkSubmission base{};
     for (int i = 0; i < 4; ++i) {
         if (i < (int)materials_.size()) {
-            base.mat_albedo[i]    = materials_[i].albedo;
-            base.mat_normal[i]    = materials_[i].normal    ? materials_[i].normal    : def_normal_;
-            base.mat_roughness[i] = materials_[i].roughness ? materials_[i].roughness : def_roughness_;
-            base.mat_ao[i]        = materials_[i].ao        ? materials_[i].ao        : def_ao_;
-            base.mat_height[i]    = materials_[i].height    ? materials_[i].height    : def_height_;
+            base.mat_albedo[i]          = materials_[i].albedo;
+            base.mat_normal[i]          = materials_[i].normal    ? materials_[i].normal    : def_normal_;
+            base.mat_roughness[i]       = materials_[i].roughness ? materials_[i].roughness : def_roughness_;
+            base.mat_ao[i]              = materials_[i].ao        ? materials_[i].ao        : def_ao_;
+            base.mat_height[i]          = materials_[i].height    ? materials_[i].height    : def_height_;
+            base.mat_normal_strength[i] = materials_[i].normal_strength;
         } else {
-            base.mat_albedo[i]    = 0;
-            base.mat_normal[i]    = def_normal_;
-            base.mat_roughness[i] = def_roughness_;
-            base.mat_ao[i]        = def_ao_;
-            base.mat_height[i]    = def_height_;
+            base.mat_albedo[i]          = 0;
+            base.mat_normal[i]          = def_normal_;
+            base.mat_roughness[i]       = def_roughness_;
+            base.mat_ao[i]              = def_ao_;
+            base.mat_height[i]          = def_height_;
+            base.mat_normal_strength[i] = 2.5f;
         }
     }
-    base.tiling         = materials_.empty() ? 4.0f : materials_[0].tiling;
-    base.splatmap       = splatmap_tex_;
-    base.terrain_origin = { hmap_origin_x_, hmap_origin_z_ };
-    base.terrain_size   = { hmap_size_x_,   hmap_size_z_   };
+    base.tilings        = glm::vec4(
+        materials_.size() > 0 ? materials_[0].tiling : 4.0f,
+        materials_.size() > 1 ? materials_[1].tiling : 4.0f,
+        materials_.size() > 2 ? materials_[2].tiling : 4.0f,
+        materials_.size() > 3 ? materials_[3].tiling : 4.0f);
+    base.macro_variation = macro_tex_ ? macro_tex_ : def_macro_;
+    base.macro_strength  = macro_strength_;
+    base.splatmap        = splatmap_tex_;
+    base.terrain_origin  = { hmap_origin_x_, hmap_origin_z_ };
+    base.terrain_size    = { hmap_size_x_,   hmap_size_z_   };
+    base.heightmap_tex   = hmap_tex_;
+    base.cell_size       = hmap_cell_;
+
+    constexpr float kLodBase = 128.f;  // distance at which LOD 0→1 transition begins
 
     for (const auto& ch : chunks_) {
         TerrainChunkSubmission c = base;
@@ -393,6 +655,14 @@ void Terrain::Submit(Pipeline& pipeline) const {
         c.ebo         = ch->ebo();
         c.index_count = ch->idx_count();
         c.model       = glm::mat4(1.0f);
+
+        // Fractional LOD based on XZ distance from camera to chunk centre
+        glm::vec3 origin = ch->Origin();
+        float cx   = origin.x + kChunkSize * 0.5f;
+        float cz   = origin.z + kChunkSize * 0.5f;
+        float dist = glm::length(glm::vec2(cx - cam_pos.x, cz - cam_pos.z));
+        c.lod_level = glm::clamp(std::log2(std::max(dist / kLodBase, 1.f)), 0.f, 3.f);
+
         pipeline.SubmitTerrainChunk(c);
     }
 }
@@ -455,7 +725,10 @@ void Terrain::Destroy() {
     if (def_roughness_) { glDeleteTextures(1, &def_roughness_); def_roughness_ = 0; }
     if (def_ao_)        { glDeleteTextures(1, &def_ao_);        def_ao_        = 0; }
     if (def_height_)    { glDeleteTextures(1, &def_height_);    def_height_    = 0; }
+    if (def_macro_)     { glDeleteTextures(1, &def_macro_);     def_macro_     = 0; }
+    if (macro_tex_)     { glDeleteTextures(1, &macro_tex_);     macro_tex_     = 0; }
     if (splatmap_tex_)  { glDeleteTextures(1, &splatmap_tex_);  splatmap_tex_  = 0; }
+    if (hmap_tex_)      { glDeleteTextures(1, &hmap_tex_);      hmap_tex_      = 0; }
 }
 
 } // namespace rco::renderer

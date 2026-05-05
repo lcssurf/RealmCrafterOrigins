@@ -19,8 +19,12 @@ struct NpcSpawn {
     int         aggressiveness   = 0; // 0=passive 1=defensive 2=aggressive 3=dialog-only
     float       aggressive_range = 8.f; // detection / chase trigger radius
     float       attack_range     = 2.f; // melee ~2, ranged ~15-25
-    int         respawn_delay_ms = 30000;
-    int         actor_def_id     = 0;   // FK → media_actor_defs.id (0 = unset)
+    int         respawn_delay_ms  = 30000;
+    int         actor_def_id      = 0;   // FK → media_actor_defs.id (0 = unset)
+    int         start_waypoint_id  = 0;   // FK → area_waypoints.id (0 = no patrol)
+    float       wander_radius      = 0.f; // 0 = no wander
+    int         wander_pause_min   = 2000;
+    int         wander_pause_max   = 5000;
 };
 
 class ActorsTab {

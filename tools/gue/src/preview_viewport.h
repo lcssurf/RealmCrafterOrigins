@@ -71,6 +71,14 @@ private:
     float     cam_pitch_ = -15.f;
     float     cam_dist_  = 2.5f;
     glm::vec3 cam_target_{0.f, 1.f, 0.f};
+    float     cam_near_     = 0.05f;
+    float     cam_far_      = 200.f;
+    float     cam_dist_min_ = 0.1f;
+    float     cam_dist_max_ = 50.f;
+
+    // Resets orbit camera to frame the currently loaded model's AABB.
+    // Called automatically by LoadModel on success.
+    void FitCameraToModel();
 
     float anim_t_  = 0.f;
     bool  playing_ = true;
