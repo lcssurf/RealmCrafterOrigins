@@ -1815,21 +1815,7 @@ int main() {
                     }
                     player_actor.position = {player.x, player.y, player.z};
                     player_actor.yaw      = player.yaw;
-                    if (player_anim_ctrl.IsReady() && player_anim_ctrl.IsBlending()) {
-                        player_actor.SubmitBlended(*pipeline,
-                            player_anim_ctrl.BlendFromAction(), player_anim_ctrl.BlendFromTime(),
-                            player_anim_ctrl.CurrentAction(),   player_anim_ctrl.CurrentTime(),
-                            player_anim_ctrl.BlendAlpha());
-                    } else {
-                        const bool lf = !player_anim_ctrl.IsReady()
-                            || (player_anim_ctrl.CurrentAction() != "Death" &&
-                                player_anim_ctrl.CurrentAction() != "Attack");
-                        const std::string& nm = player_anim_ctrl.IsReady()
-                            ? player_anim_ctrl.CurrentAction() : player_actor.CurrentAnim();
-                        const float tt = player_anim_ctrl.IsReady()
-                            ? player_anim_ctrl.CurrentTime() : player_actor.AnimTime();
-                        player_actor.SubmitAs(nm, tt, lf, *pipeline);
-                    }
+                    player_anim_ctrl.Submit(player_actor, *pipeline);
                 }
 
                 // ── Frustum culling setup (Gribb-Hartmann) ──────────────────────────
@@ -2000,36 +1986,11 @@ int main() {
                     if (e.actor) {
                         e.actor->position = pos;
                         e.actor->yaw      = e.yaw;
-                        if (e.anim_ctrl.IsReady() && e.anim_ctrl.IsBlending()) {
-                            e.actor->SubmitBlended(*pipeline,
-                                e.anim_ctrl.BlendFromAction(), e.anim_ctrl.BlendFromTime(),
-                                e.anim_ctrl.CurrentAction(),   e.anim_ctrl.CurrentTime(),
-                                e.anim_ctrl.BlendAlpha());
-                        } else {
-                            const bool lf = e.anim_ctrl.IsReady()
-                                ? (e.anim_ctrl.CurrentAction() != "Attack" && e.anim_ctrl.CurrentAction() != "Death" &&
-                                   e.anim_ctrl.CurrentAction() != "Jump"   && e.anim_ctrl.CurrentAction() != "Cast")
-                                : (e.anim_name != "Attack" && e.anim_name != "Death");
-                            const std::string& nm = e.anim_ctrl.IsReady() ? e.anim_ctrl.CurrentAction() : e.anim_name;
-                            const float        tt = e.anim_ctrl.IsReady() ? e.anim_ctrl.CurrentTime()   : e.anim_t;
-                            e.actor->SubmitAs(nm, tt, lf, *pipeline);
-                        }
+                        e.anim_ctrl.Submit(*e.actor, *pipeline);
                     } else {
                         player_actor.position = pos;
                         player_actor.yaw      = e.yaw;
-                        if (player_anim_ctrl.IsReady() && player_anim_ctrl.IsBlending()) {
-                            player_actor.SubmitBlended(*pipeline,
-                                player_anim_ctrl.BlendFromAction(), player_anim_ctrl.BlendFromTime(),
-                                player_anim_ctrl.CurrentAction(),   player_anim_ctrl.CurrentTime(),
-                                player_anim_ctrl.BlendAlpha());
-                        } else {
-                            const bool lf = player_anim_ctrl.IsReady()
-                                ? (player_anim_ctrl.CurrentAction() != "Attack" && player_anim_ctrl.CurrentAction() != "Death")
-                                : true;
-                            const std::string& nm = player_anim_ctrl.IsReady() ? player_anim_ctrl.CurrentAction() : "Idle";
-                            const float        tt = player_anim_ctrl.IsReady() ? player_anim_ctrl.CurrentTime()   : 0.f;
-                            player_actor.SubmitAs(nm, tt, lf, *pipeline);
-                        }
+                        player_anim_ctrl.Submit(player_actor, *pipeline);
                     }
                 }
 

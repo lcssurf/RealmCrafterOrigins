@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 
+namespace rco::renderer { class Actor; class Pipeline; }
+
 namespace rco::anim {
 
 // ── Structs ──────────────────────────────────────────────────────────────────
@@ -110,6 +112,11 @@ public:
 
     // Register a handler for an event type (e.g. "hitbox", "footstep", "sfx").
     void OnEvent(const std::string& event_type, EventHandler h);
+
+    // Drive actor rendering for this frame: delegates to SubmitBlended when a
+    // crossfade is in progress, SubmitAs otherwise. Falls back to actor.Submit()
+    // when no bindings have been registered yet.
+    void Submit(rco::renderer::Actor& actor, rco::renderer::Pipeline& pipeline) const;
 
     // Set to true on a specific controller instance to enable verbose stderr
     // diagnostics. Off by default so NPC controllers stay silent.

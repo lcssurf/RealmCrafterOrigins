@@ -460,6 +460,117 @@ void Model::ComputeBones(int clip_idx, float time_sec, int mesh_idx,
 }
 
 // ---------------------------------------------------------------------------
+// ComputeBlendedBones — blend two clips in LOCAL bone space before composing
+// ---------------------------------------------------------------------------
+
+// Extract rotation + scale from a bind-pose local matrix (used when a node
+// has no channel in one of the two clips being blended).
+static void BindPoseRS(const glm::mat4& local, glm::quat& r_out, glm::vec3& s_out) {
+    glm::vec3 c0(local[0]), c1(local[1]), c2(local[2]);
+    s_out.x = glm::length(c0);
+    s_out.y = glm::length(c1);
+    s_out.z = glm::length(c2);
+    glm::mat3 rot;
+    rot[0] = c0 / (s_out.x > 1e-4f ? s_out.x : 1.f);
+    rot[1] = c1 / (s_out.y > 1e-4f ? s_out.y : 1.f);
+    rot[2] = c2 / (s_out.z > 1e-4f ? s_out.z : 1.f);
+    r_out = glm::quat_cast(rot);
+}
+
+void Model::ComputeBlendedBones(int clip_from, float t_from,
+                                int clip_to,   float t_to,
+                                float alpha,   int mesh_idx,
+                                glm::mat4* out_mats, int max_out) const {
+    // Edge cases — no need to blend
+    if (alpha <= 0.f) { ComputeBones(clip_from, t_from, mesh_idx, out_mats, max_out); return; }
+    if (alpha >= 1.f) { ComputeBones(clip_to,   t_to,   mesh_idx, out_mats, max_out); return; }
+
+    for (int i = 0; i < std::min(max_out, kMaxBones); ++i)
+        out_mats[i] = glm::mat4(1.f);
+
+    if (bones_.empty()) return;
+
+    const std::vector<glm::mat4>* offsets = nullptr;
+    if (mesh_idx >= 0 && mesh_idx < (int)meshes_.size() &&
+        !meshes_[mesh_idx].bone_offsets.empty())
+        offsets = &meshes_[mesh_idx].bone_offsets;
+
+    auto offsetFor = [&](int bidx) -> glm::mat4 {
+        if (offsets && bidx < (int)offsets->size()) return (*offsets)[bidx];
+        return bones_[bidx].offset;
+    };
+
+    const AnimClip* ca = (clip_from >= 0 && clip_from < (int)clips_.size()) ? &clips_[clip_from] : nullptr;
+    const AnimClip* cb = (clip_to   >= 0 && clip_to   < (int)clips_.size()) ? &clips_[clip_to]   : nullptr;
+
+    const float ta = ca ? (ca->duration_sec > 0.f ? std::fmod(t_from, ca->duration_sec) : 0.f) : 0.f;
+    const float tb = cb ? (cb->duration_sec > 0.f ? std::fmod(t_to,   cb->duration_sec) : 0.f) : 0.f;
+
+    std::vector<glm::mat4> global(anim_nodes_.size(), glm::mat4(1.f));
+
+    for (int ni = 0; ni < (int)anim_nodes_.size(); ++ni) {
+        const AnimNode& node = anim_nodes_[ni];
+
+        // ── Sample clip A in local space ──────────────────────────────────────
+        glm::quat ra; glm::vec3 sa, pa = glm::vec3(node.local[3]);
+        {
+            bool has_chan = false;
+            if (ca) {
+                auto it = ca->chan_map.find(node.name);
+                if (it != ca->chan_map.end()) {
+                    const BoneChannel& ch = ca->channels[it->second];
+                    ra = InterpQ(ch.rot, ta);
+                    sa = ch.scl.empty() ? glm::vec3(1.f) : InterpV(ch.scl, ta);
+                    if (node.name == "mixamorig:Hips") {
+                        glm::vec3 ap = InterpV(ch.pos, ta);
+                        glm::vec3 ab = ch.pos.empty() ? glm::vec3(0.f) : glm::vec3(ch.pos[0].v);
+                        pa = hips_bind_pos_ + (ap - ab);
+                    }
+                    has_chan = true;
+                }
+            }
+            if (!has_chan) BindPoseRS(node.local, ra, sa);
+        }
+
+        // ── Sample clip B in local space ──────────────────────────────────────
+        glm::quat rb; glm::vec3 sb, pb = glm::vec3(node.local[3]);
+        {
+            bool has_chan = false;
+            if (cb) {
+                auto it = cb->chan_map.find(node.name);
+                if (it != cb->chan_map.end()) {
+                    const BoneChannel& ch = cb->channels[it->second];
+                    rb = InterpQ(ch.rot, tb);
+                    sb = ch.scl.empty() ? glm::vec3(1.f) : InterpV(ch.scl, tb);
+                    if (node.name == "mixamorig:Hips") {
+                        glm::vec3 ap = InterpV(ch.pos, tb);
+                        glm::vec3 ab = ch.pos.empty() ? glm::vec3(0.f) : glm::vec3(ch.pos[0].v);
+                        pb = hips_bind_pos_ + (ap - ab);
+                    }
+                    has_chan = true;
+                }
+            }
+            if (!has_chan) BindPoseRS(node.local, rb, sb);
+        }
+
+        // ── NLERP blend in local space (UE FastLerp: lerp + normalize + antipodal) ──
+        if (glm::dot(ra, rb) < 0.f) rb = -rb;
+        glm::quat r_blend = glm::normalize(glm::mix(ra, rb, alpha));
+        glm::vec3 s_blend = glm::mix(sa, sb, alpha);
+        glm::vec3 p_blend = glm::mix(pa, pb, alpha);
+
+        glm::mat4 local = glm::translate(glm::mat4(1.f), p_blend)
+                        * glm::mat4_cast(r_blend)
+                        * glm::scale(glm::mat4(1.f), s_blend);
+
+        global[ni] = (node.parent < 0) ? local : global[node.parent] * local;
+
+        if (node.bone_idx >= 0 && node.bone_idx < max_out)
+            out_mats[node.bone_idx] = global_inv_ * global[ni] * offsetFor(node.bone_idx);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ProcessMesh — geometry + bone weights
 // ---------------------------------------------------------------------------
 SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,

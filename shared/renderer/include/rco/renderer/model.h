@@ -148,6 +148,17 @@ public:
     void ComputeBones(int clip_idx, float time_sec, int mesh_idx,
                       glm::mat4* out_mats, int max_out) const;
 
+    // Like ComputeBones but blends two clips in LOCAL bone space before composing
+    // the global hierarchy — this is the correct way to crossfade animations.
+    // Blending the final skinning matrices (post-hierarchy) produces distortion
+    // on deep bones (arms, fingers) because their matrices encode all accumulated
+    // parent rotations. alpha=0 → fully from, alpha=1 → fully to.
+    // Uses NLERP with antipodal fix for rotations, matching Unreal's FastLerp.
+    void ComputeBlendedBones(int clip_from, float t_from,
+                             int clip_to,   float t_to,
+                             float alpha,   int mesh_idx,
+                             glm::mat4* out_mats, int max_out) const;
+
     // Load animations from a separate file and append them to this model's
     // clip list. name_override replaces the clip name embedded in the file
     // (pass "" to keep the file's own name). Returns the index of the first

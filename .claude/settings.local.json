@@ -92,7 +92,8 @@
       "Bash(cmake --build /d/Github/RealmCrafterOrigins/client/build --config Release)",
       "Bash(cmake --build D:/Github/RealmCrafterOrigins/client/build --config Release)",
       "Bash(grep -E \"\\\\.\\(h|cpp\\)$\")",
-      "Bash(cmd /c build-gue.bat)"
+      "Bash(cmd /c build-gue.bat)",
+      "PowerShell(cmake *)"
     ]
   },
   "model": "opusplan"

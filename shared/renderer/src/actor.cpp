@@ -4,36 +4,12 @@
 #include <glad/glad.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include <glm/gtc/quaternion.hpp>
-#include <cstdio>
 #include <cmath>
 
 #include "rco/renderer/pipeline.h"
 
 namespace rco::renderer {
 
-// ---------------------------------------------------------------------------
-// TRS decompose / recompose helpers for per-bone SLERP blending
-// ---------------------------------------------------------------------------
-
-static void DecomposeTRS(const glm::mat4& m, glm::vec3& t, glm::quat& r, glm::vec3& s) {
-    t = glm::vec3(m[3]);
-    s.x = glm::length(glm::vec3(m[0]));
-    s.y = glm::length(glm::vec3(m[1]));
-    s.z = glm::length(glm::vec3(m[2]));
-    glm::mat3 rot;
-    rot[0] = glm::vec3(m[0]) / (s.x > 1e-4f ? s.x : 1.f);
-    rot[1] = glm::vec3(m[1]) / (s.y > 1e-4f ? s.y : 1.f);
-    rot[2] = glm::vec3(m[2]) / (s.z > 1e-4f ? s.z : 1.f);
-    r = glm::quat_cast(rot);
-}
-
-static glm::mat4 ComposeTRS(const glm::vec3& t, const glm::quat& r, const glm::vec3& s) {
-    glm::mat4 m = glm::mat4_cast(r);
-    m[0] *= s.x; m[1] *= s.y; m[2] *= s.z;
-    m[3] = glm::vec4(t, 1.f);
-    return m;
-}
 
 // ---------------------------------------------------------------------------
 // Init / LoadAnim / Destroy
@@ -100,6 +76,16 @@ void Actor::PlayAnim(const std::string& name, bool loop,
         return;
     }
 
+    // Start a crossfade when switching to a different clip
+    if (idx != clip_idx_ && clip_idx_ >= 0 && blend_dur > 0.f) {
+        from_clip_idx_ = clip_idx_;
+        from_name_     = cur_name_;
+        from_t_        = anim_t_;
+        blend_t_       = 0.f;
+    } else {
+        blend_t_ = blend_dur;  // no previous clip or same-clip restart — skip blend
+    }
+
     clip_idx_  = idx;
     anim_t_    = 0.f;
     loop_      = loop;
@@ -116,6 +102,12 @@ void Actor::Update(float dt) {
 
     anim_t_ += dt;
 
+    // Keep the from-clip advancing and track blend progress
+    if (blend_t_ < blend_dur) {
+        from_t_  += dt;
+        blend_t_ += dt;
+    }
+
     if (!loop_) {
         float dur = model_->ClipDuration(clip_idx_);
         if (dur > 0.f && anim_t_ >= dur) {
@@ -126,9 +118,6 @@ void Actor::Update(float dt) {
             }
         }
     }
-
-    // Bone matrices are now computed per-submesh in Submit() because each
-    // submesh in a multi-part model has its own bind-pose offsets.
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +140,16 @@ void Actor::UploadBonesToSSBO_(size_t mesh_idx, const glm::mat4* bones, int coun
 }
 
 // ---------------------------------------------------------------------------
+// FillBlendedBones_ — SLERP blend per-bone between two clips into `out`
+// ---------------------------------------------------------------------------
+
+void Actor::FillBlendedBones_(int cidx_from, float ft, int cidx_to, float tt,
+                               float alpha, int mesh_idx,
+                               glm::mat4* out, int max) const {
+    model_->ComputeBlendedBones(cidx_from, ft, cidx_to, tt, alpha, mesh_idx, out, max);
+}
+
+// ---------------------------------------------------------------------------
 // Submit / SubmitAs — build a DynamicDrawRequest per submesh
 // ---------------------------------------------------------------------------
 
@@ -166,11 +165,19 @@ void Actor::Submit(Pipeline& pipeline) {
         model = glm::rotate(model, glm::radians(yaw_offset), glm::vec3(0.f, 1.f, 0.f));
     model = glm::scale(model, glm::vec3(scale));
 
+    bool  blending     = blend_t_ < blend_dur && from_clip_idx_ >= 0;
+    float blend_alpha  = blending ? glm::smoothstep(0.f, blend_dur, blend_t_) : 1.f;
+
     glm::mat4 bones[kMaxBones];
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
         const auto& m = meshes[mi];
         if (m.skinned) {
-            model_->ComputeBones(clip_idx_, anim_t_, (int)mi, bones, kMaxBones);
+            if (blending)
+                FillBlendedBones_(from_clip_idx_, from_t_, clip_idx_, anim_t_,
+                                  blend_alpha, (int)mi, bones, kMaxBones);
+            else
+                model_->ComputeBones(clip_idx_, anim_t_, (int)mi, bones, kMaxBones);
+
             SkinnedInstancedEntry e{};
             e.vao          = m.vao;
             e.ebo          = m.ebo;
@@ -197,11 +204,19 @@ void Actor::SubmitWithMatrix(Pipeline& pipeline, const glm::mat4& model_matrix) 
 
     const auto& meshes = model_->meshes();
 
+    bool  blending    = blend_t_ < blend_dur && from_clip_idx_ >= 0;
+    float blend_alpha = blending ? glm::smoothstep(0.f, blend_dur, blend_t_) : 1.f;
+
     glm::mat4 bones[kMaxBones];
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
         const auto& m = meshes[mi];
         if (m.skinned) {
-            model_->ComputeBones(clip_idx_, anim_t_, (int)mi, bones, kMaxBones);
+            if (blending)
+                FillBlendedBones_(from_clip_idx_, from_t_, clip_idx_, anim_t_,
+                                  blend_alpha, (int)mi, bones, kMaxBones);
+            else
+                model_->ComputeBones(clip_idx_, anim_t_, (int)mi, bones, kMaxBones);
+
             SkinnedInstancedEntry e{};
             e.vao          = m.vao;
             e.ebo          = m.ebo;
@@ -313,22 +328,12 @@ void Actor::SubmitBlended(Pipeline& pipeline,
         model_matrix = glm::rotate(model_matrix, glm::radians(yaw_offset), glm::vec3(0.f, 1.f, 0.f));
     model_matrix = glm::scale(model_matrix, glm::vec3(scale));
 
-    glm::mat4 bones_f[kMaxBones], bones_t[kMaxBones], bones_b[kMaxBones];
+    glm::mat4 bones_b[kMaxBones];
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
         const auto& m = meshes[mi];
         if (m.skinned) {
-            model_->ComputeBones(cidx_from, fa, (int)mi, bones_f, kMaxBones);
-            model_->ComputeBones(cidx_to,   ta, (int)mi, bones_t, kMaxBones);
-            for (int bi = 0; bi < kMaxBones; ++bi) {
-                glm::vec3 tf, tt, sf, st;
-                glm::quat rf, rt;
-                DecomposeTRS(bones_f[bi], tf, rf, sf);
-                DecomposeTRS(bones_t[bi], tt, rt, st);
-                bones_b[bi] = ComposeTRS(
-                    glm::mix(tf, tt, blend_alpha),
-                    glm::slerp(rf, rt, blend_alpha),
-                    glm::mix(sf, st, blend_alpha));
-            }
+            model_->ComputeBlendedBones(cidx_from, fa, cidx_to, ta,
+                                        blend_alpha, (int)mi, bones_b, kMaxBones);
             UploadBonesToSSBO_(mi, bones_b, kMaxBones);
         }
         DynamicDrawRequest req{};

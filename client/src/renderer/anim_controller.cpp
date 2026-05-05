@@ -1,4 +1,6 @@
 #include "anim_controller.h"
+#include <rco/renderer/actor.h>
+#include <rco/renderer/pipeline.h>
 #include <cstdio>
 
 namespace rco::anim {
@@ -244,6 +246,23 @@ void AnimController::SetClipDuration(const std::string& action, float dur_sec) {
 
 void AnimController::OnEvent(const std::string& event_type, EventHandler h) {
     handlers_[event_type].push_back(std::move(h));
+}
+
+void AnimController::Submit(rco::renderer::Actor& actor,
+                            rco::renderer::Pipeline& pipeline) const {
+    if (!IsReady()) {
+        actor.Submit(pipeline);
+        return;
+    }
+    if (IsBlending()) {
+        actor.SubmitBlended(pipeline,
+            BlendFromAction(), BlendFromTime(),
+            CurrentAction(),   CurrentTime(),
+            BlendAlpha());
+    } else {
+        bool loop_flag = active_.binding ? active_.binding->loop : true;
+        actor.SubmitAs(CurrentAction(), CurrentTime(), loop_flag, pipeline);
+    }
 }
 
 } // namespace rco::anim

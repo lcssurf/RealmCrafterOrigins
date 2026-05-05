@@ -133,6 +133,9 @@ public:
         return model_ ? *model_ : s_empty;
     }
 
+    // Cross-fade blend duration (seconds). Tweak per-actor if needed.
+    float blend_dur = 0.15f;
+
 private:
     std::shared_ptr<Model> model_;
 
@@ -141,6 +144,12 @@ private:
     float       anim_t_   = 0.f;
     bool        loop_     = true;
     std::string return_to_;    // clip to play after one-shot ends
+
+    // Cross-fade state — valid while blend_t_ < blend_dur_
+    std::string from_name_;
+    int         from_clip_idx_ = -1;
+    float       from_t_        = 0.f;
+    float       blend_t_       = 1.f;  // starts >= blend_dur so no blend initially
 
     // One SSBO per submesh — each submesh carries its own bind-pose offsets
     // so their bone matrices differ. Pipeline submissions are deferred and
@@ -151,6 +160,10 @@ private:
     int  FindClip(const std::string& name) const;
     void EnsureBoneSSBOs_(size_t count);
     void UploadBonesToSSBO_(size_t mesh_idx, const glm::mat4* bones, int count);
+    // Fill `out[0..max-1]` with SLERP-blended bone matrices for mesh_idx.
+    void FillBlendedBones_(int cidx_from, float ft, int cidx_to, float tt,
+                           float alpha, int mesh_idx,
+                           glm::mat4* out, int max) const;
 };
 
 } // namespace rco::renderer
