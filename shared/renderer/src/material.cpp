@@ -87,29 +87,33 @@ int MaterialManager::RegisterFromHandles(const std::string& name,
                                           unsigned int albedo,
                                           unsigned int normal,
                                           unsigned int orm,
-                                          unsigned int opacity) {
+                                          unsigned int opacity,
+                                          unsigned int ao) {
     uint64_t aH      = MakeResidentHandle_(albedo);
     uint64_t nH      = MakeResidentHandle_(normal);
     uint64_t ormH    = MakeResidentHandle_(orm);
     uint64_t opacH   = MakeResidentHandle_(opacity);
+    uint64_t aoH     = MakeResidentHandle_(ao);
 
     if (auto it = nameToIndex_.find(name); it != nameToIndex_.end()) {
         int idx = it->second;
         Material& m = materials[name];
-        m.albedoHandle    = aH;
-        m.normalHandle    = nH;
-        m.roughnessHandle = ormH;
-        m.metalnessHandle = ormH;
-        m.opacityHandle   = opacH;
+        m.albedoHandle           = aH;
+        m.normalHandle           = nH;
+        m.roughnessHandle        = ormH;
+        m.metalnessHandle        = ormH;
+        m.opacityHandle          = opacH;
+        m.ambientOcclusionHandle = aoH;
         return idx;
     }
 
     Material m;
-    m.albedoHandle    = aH;
-    m.normalHandle    = nH;
-    m.roughnessHandle = ormH;
-    m.metalnessHandle = ormH;
-    m.opacityHandle   = opacH;
+    m.albedoHandle           = aH;
+    m.normalHandle           = nH;
+    m.roughnessHandle        = ormH;
+    m.metalnessHandle        = ormH;
+    m.opacityHandle          = opacH;
+    m.ambientOcclusionHandle = aoH;
 
     materials.insert({ name, m });
     return appendName_(name);

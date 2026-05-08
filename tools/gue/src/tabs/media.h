@@ -33,6 +33,15 @@ struct MediaModel {
     // aiMaterial name (from the mesh file) → media_materials.name.
     // Persisted as "k1=v1;k2=v2" in the DB column `material_map`.
     std::unordered_map<std::string, std::string> material_map;
+
+    // Per-model UV transform applied on top of the engine's automatic
+    // KHR_texture_transform detection. Useful when the source DCC's exporter
+    // omits the transform or applies a slightly off correction (Unreal does
+    // both depending on version). Defaults preserve UVs unchanged.
+    float uv_offset_x = 0.f;
+    float uv_offset_y = 0.f;
+    float uv_scale_x  = 1.f;
+    float uv_scale_y  = 1.f;
 };
 
 // Serialize / parse the per-model material map column.

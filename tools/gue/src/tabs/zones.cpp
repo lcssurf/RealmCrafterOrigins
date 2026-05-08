@@ -818,6 +818,15 @@ void ZonesTab::DeleteSelected(sqlite3* db) {
     case kSelWater:     del(scene_.water);      break;
     case kSelScenery:   del(scene_.scenery);    break;
     }
+    // Collision vis must be rebuilt whenever a scenery or col shape is removed.
+    switch (selectedType_) {
+    case kSelScenery:
+    case kSelColBox:
+    case kSelColSphere:
+        scene_.colVisDirty = true;
+        break;
+    default: break;
+    }
     std::snprintf(statusMsg_, sizeof(statusMsg_), "Deleted object %d.", selectedID_);
     selectedID_ = -1; selectedType_ = kSelNone;
 }
@@ -851,7 +860,7 @@ void ZonesTab::DrawTopBar(sqlite3* db) {
     static const char* kModeLabels[kModeCount] = {
         "Scenery","Terrain","Emitters","Water","ColBox",
         "Sound","Trigger","Waypoint","Portal","NPC",
-        "Enviro","Other","SpawnPt"
+        "Enviro","Other","SpawnPt","ColSphere"
     };
     ImGui::SetNextItemWidth(120.f);
     if (ImGui::BeginCombo("##zmode", kModeLabels[zoneMode_])) {

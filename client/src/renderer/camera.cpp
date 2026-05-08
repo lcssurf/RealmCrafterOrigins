@@ -18,18 +18,18 @@ void Camera::ProcessScroll(float delta) {
 }
 
 void Camera::ApplyMouseDelta(float dx, float dy) {
-    yaw_   += dx * 0.25f;
-    pitch_ -= dy * 0.25f;
+    yaw_   -= dx * 0.25f;
+    pitch_ += dy * 0.25f;
     pitch_  = std::clamp(pitch_, kPitchMin, kPitchMax);
 }
 
 void Camera::Update(float dt) {
-    // Responsive target follow (20 hz effective responsiveness).
     float lag      = std::min(1.f, 20.f * dt);
     target_smooth_ = glm::mix(target_smooth_, target_, lag);
 
-    // Smooth zoom — dist_ catches up to dist_target_ quickly.
-    dist_ = glm::mix(dist_, dist_target_, std::min(1.f, 15.f * dt));
+    // Zoom target is the lesser of the user's scroll target and terrain collision.
+    float want = std::min(dist_target_, dist_collision_);
+    dist_ = glm::mix(dist_, want, std::min(1.f, 15.f * dt));
 
     dist_  = std::clamp(dist_,  kDistMin,  kDistMax);
     pitch_ = std::clamp(pitch_, kPitchMin, kPitchMax);
@@ -54,9 +54,17 @@ glm::mat4 Camera::View() const {
     glm::vec3 dir    = { std::cos(pr) * std::sin(yr),
                          std::sin(pr),
                          std::cos(pr) * std::cos(yr) };
-    glm::vec3 pivot  = target_smooth_ + glm::vec3(0.f, pivot_h_,  0.f);
-    glm::vec3 lookat = target_smooth_ + glm::vec3(0.f, lookat_h_, 0.f);
-    return glm::lookAt(pivot + dir * dist_, lookat, {0.f, 1.f, 0.f});
+
+    glm::vec3 base   = target_smooth_;
+    if (action_mode) {
+        // Shift the anchor point to the right in camera space so the player
+        // appears left of the crosshair (over-the-shoulder look).
+        glm::vec3 right = glm::normalize(glm::vec3(std::cos(yr), 0.f, -std::sin(yr)));
+        base += right * action_offset;
+    }
+
+    glm::vec3 lookat = base + glm::vec3(0.f, lookat_h_, 0.f);
+    return glm::lookAt(lookat + dir * dist_, lookat, {0.f, 1.f, 0.f});
 }
 
 glm::mat4 Camera::Projection(float aspect) const {
@@ -69,8 +77,15 @@ glm::vec3 Camera::Position() const {
     glm::vec3 dir   = { std::cos(pr) * std::sin(yr),
                         std::sin(pr),
                         std::cos(pr) * std::cos(yr) };
-    glm::vec3 pivot = target_smooth_ + glm::vec3(0.f, pivot_h_, 0.f);
-    return pivot + dir * dist_;
+
+    glm::vec3 base  = target_smooth_;
+    if (action_mode) {
+        glm::vec3 right = glm::normalize(glm::vec3(std::cos(yr), 0.f, -std::sin(yr)));
+        base += right * action_offset;
+    }
+
+    glm::vec3 lookat = base + glm::vec3(0.f, lookat_h_, 0.f);
+    return lookat + dir * dist_;
 }
 
 } // namespace rco::renderer

@@ -30,6 +30,7 @@ struct SubMesh {
     GLuint tex_normal   = 0;
     GLuint tex_orm      = 0;
     GLuint tex_opacity  = 0;
+    GLuint tex_ao       = 0;
 
     glm::vec3 albedo_factor    = {0.72f, 0.68f, 0.60f};
     float     roughness_factor = 0.5f;
@@ -124,6 +125,14 @@ public:
     // Multiply by Actor::scale to get the world-space height.
     float MaxY() const { return aabb_max_y_; }
 
+    // Returns the post-flip UV transform that was actually baked into this
+    // model's vertex data — either from the .uv sidecar or from the
+    // Assimp-detected KHR_texture_transform. The GUE uses this to
+    // consolidate live slider deltas with the existing transform when
+    // persisting a new sidecar.
+    glm::vec2 EffectiveUVOffset() const { return uv_effective_offset_; }
+    glm::vec2 EffectiveUVScale()  const { return uv_effective_scale_;  }
+
     // Full axis-aligned bounding box in bind-pose model space.
     glm::vec3 BoundsMin() const { return aabb_min_; }
     glm::vec3 BoundsMax() const { return aabb_max_; }
@@ -217,6 +226,18 @@ private:
 
     // GL textures created by ApplyMaterialsByName — we own them, destroy in Destroy().
     std::vector<GLuint>        owned_textures_;
+
+    // Per-model UV transform override loaded from a "<path>.uv" sidecar file.
+    // Replaces the Assimp-detected KHR_texture_transform when active.
+    glm::vec2 uv_sidecar_offset_ = glm::vec2(0.f, 0.f);
+    glm::vec2 uv_sidecar_scale_  = glm::vec2(1.f, 1.f);
+    bool      uv_sidecar_active_ = false;
+
+    // Post-flip UV transform actually applied to the VBO data — exposed via
+    // EffectiveUVOffset/Scale so the GUE can compose live slider deltas
+    // against the real baseline when writing a new sidecar.
+    glm::vec2 uv_effective_offset_ = glm::vec2(0.f, 0.f);
+    glm::vec2 uv_effective_scale_  = glm::vec2(1.f, 1.f);
 
     void    BuildNodeTree(aiNode* node, int parent_idx);
     void    LoadAnimations(const aiScene* scene);

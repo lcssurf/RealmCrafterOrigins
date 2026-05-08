@@ -2,6 +2,10 @@ package world
 
 import (
 	"context"
+	"fmt"
+	"log"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -120,6 +124,31 @@ func (w *World) CheckPortal(actor *Actor, area *Area) *Portal {
 		}
 	}
 	return nil
+}
+
+// LoadHeightmaps tries to load heightmap.bin for every known area.
+// basePath is the directory that contains the per-area subdirs
+// (e.g. "../client/data/areas").  Missing files are silently skipped.
+func (w *World) LoadHeightmaps(basePath string) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	for name, area := range w.areas {
+		// Folder name = area name with spaces replaced by underscores.
+		folder := strings.ReplaceAll(name, " ", "_")
+		path := filepath.Join(basePath, folder, "heightmap.bin")
+		hm, err := LoadHeightmap(path)
+		if err != nil {
+			// Try exact area name as folder (no substitution).
+			path2 := filepath.Join(basePath, name, "heightmap.bin")
+			hm, err = LoadHeightmap(path2)
+		}
+		if err != nil {
+			// No heightmap for this area — NPCs keep fixed Y.
+			continue
+		}
+		area.Heightmap = hm
+		log.Printf("world: loaded heightmap for %q (%s)", name, fmt.Sprintf("%dx%d cs=%.1f", hm.w, hm.h, hm.cellSize))
+	}
 }
 
 // FindActor searches every area for the actor with the given runtime ID.

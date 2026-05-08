@@ -55,11 +55,13 @@ public:
     // (kSize-1) cells per chunk so adjacent chunks share their border vertex.
     static constexpr float kChunkSize = (TerrainChunk::kSize - 1) * kCellSize;
 
-    bool  Init(int grid_w = 8, int grid_h = 8);
-    bool  LoadFromEditor(const std::string& area_name);
-    void  Submit(Pipeline& pipeline, const glm::vec3& cam_pos = glm::vec3(0.f)) const;
-    void  Destroy();
-    float SampleHeight(float wx, float wz) const;
+    bool      Init(int grid_w = 8, int grid_h = 8);
+    bool      LoadFromEditor(const std::string& area_name);
+    void      Submit(Pipeline& pipeline, const glm::vec3& cam_pos = glm::vec3(0.f)) const;
+    void      Destroy();
+    float     SampleHeight(float wx, float wz) const;
+    glm::vec3 SampleNormal(float wx, float wz) const;
+    float     SlopeAngle(float wx, float wz) const;
 
 private:
     void GenerateProcedural();

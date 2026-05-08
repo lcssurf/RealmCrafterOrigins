@@ -1,6 +1,7 @@
 #include "renderer/terrain/terrain.h"
 #include "rco/renderer/pipeline.h"
 #include <stb_image.h>
+#include <glm/gtc/type_ptr.hpp>
 #include <cstdio>
 #include <cmath>
 #include <fstream>
@@ -697,6 +698,23 @@ float Terrain::SampleHeight(float wx, float wz) const {
          + h10 * fx       * (1 - fz)
          + h01 * (1 - fx) * fz
          + h11 * fx       * fz;
+}
+
+// ---------------------------------------------------------------------------
+// SampleNormal / SlopeAngle
+// ---------------------------------------------------------------------------
+glm::vec3 Terrain::SampleNormal(float wx, float wz) const {
+    const float eps = (hmap_cell_ > 0.f ? hmap_cell_ : 2.f);
+    float hr = SampleHeight(wx + eps, wz);
+    float hl = SampleHeight(wx - eps, wz);
+    float hu = SampleHeight(wx, wz + eps);
+    float hd = SampleHeight(wx, wz - eps);
+    // Central-difference gradient → upward-pointing surface normal
+    return glm::normalize(glm::vec3(-(hr - hl), 2.f * eps, -(hu - hd)));
+}
+
+float Terrain::SlopeAngle(float wx, float wz) const {
+    return glm::degrees(std::acos(glm::clamp(SampleNormal(wx, wz).y, 0.f, 1.f)));
 }
 
 // ---------------------------------------------------------------------------

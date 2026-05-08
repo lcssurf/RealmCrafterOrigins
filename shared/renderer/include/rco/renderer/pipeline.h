@@ -16,7 +16,11 @@ struct FeatureConfig {
     bool volumetrics   = true;
     bool ssr           = false;
     bool fxaa          = true;
-    int  shadow_method = SHADOW_METHOD_ESM;
+    // PCF (default) is more robust than ESM/VSM/MSM when most of the shadow
+    // map is empty (depth=1) because only a few actors project shadows —
+    // exponential variants blur the near-infinite background into the
+    // foreground depth and produce no shadows on the ground.
+    int  shadow_method = SHADOW_METHOD_PCF;
 };
 
 struct DynamicDrawRequest {
@@ -26,6 +30,12 @@ struct DynamicDrawRequest {
     GLsizei   index_count = 0;
     int       material_idx = 0;
     glm::mat4 model        = glm::mat4(1.0f);
+
+    // Direct albedo texture — bypasses the bindless SSBO material system.
+    // When non-zero, bound to unit 10 and used via a plain sampler2D in
+    // gBufferBindless.fs. Avoids driver issues with newly-created bindless
+    // handles for embedded (GLB) textures.
+    GLuint    tex_albedo  = 0;
 
     // optional skinning
     GLuint bone_ssbo  = 0;
@@ -80,6 +90,7 @@ public:
     Pipeline& operator=(const Pipeline&) = delete;
 
     void SetFeatures(const FeatureConfig& cfg);
+    const FeatureConfig& Features() const { return features_; }
     void SetSun(const glm::vec3& direction, const glm::vec3& color);
 
     // Debug visualisation. 0=full lighting (default).

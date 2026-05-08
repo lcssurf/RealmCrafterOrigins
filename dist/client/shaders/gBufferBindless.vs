@@ -16,6 +16,13 @@ layout (binding = 2, std430) readonly buffer BoneMatrices
 
 layout (location = 0) uniform mat4 u_viewProj;
 
+// Instanced skinned path: model matrix + material index come from the objects SSBO
+// (one entry per instance, indexed by gl_InstanceID).
+// Non-instanced path: model matrix and material index are plain uniforms — avoids
+// declaring binding 0 at all, which on some drivers causes validation failures for
+// the first draw in a session when no prior SSBO was bound to that slot.
+#ifdef HAS_INSTANCED_SKINNING
+
 struct ObjectUniforms
 {
   mat4 modelMatrix;
@@ -27,6 +34,15 @@ layout (binding = 0, std430) readonly buffer uniforms
   ObjectUniforms objects[];
 };
 
+#else // non-instanced (dynamic static meshes and per-draw skinned)
+
+// No explicit location — driver assigns automatically to avoid conflict with
+// u_viewProj which occupies locations 0-3 (mat4 = 4 consecutive slots).
+uniform mat4  u_modelMatrix;
+uniform uint  u_materialIndex;
+
+#endif
+
 layout (location = 0) out VS_OUT
 {
   vec3 vNormal;
@@ -37,13 +53,6 @@ layout (location = 0) out VS_OUT
 
 void main()
 {
-// Per-instance model: gl_InstanceID for batched instanced draws, gl_DrawID otherwise.
-#ifdef HAS_INSTANCED_SKINNING
-  ObjectUniforms obj = objects[gl_InstanceID];
-#else
-  ObjectUniforms obj = objects[gl_DrawID];
-#endif
-  vMaterialIndex = obj.materialIndex;
   vTexCoord = aTexCoord;
 
   vec3 pos     = aPos;
@@ -52,8 +61,6 @@ void main()
 
 #ifdef HAS_SKINNING
   #ifdef HAS_INSTANCED_SKINNING
-  // bones[] is packed as N×64 blocks: [inst0_bone0..63 | inst1_bone0..63 | ...]
-  // The constant 64 must match kMaxBones in model.h.
   const int kMaxBones = 64;
   mat4 skin = bones[gl_InstanceID * kMaxBones + aBoneIDs.x] * aBoneWeights.x
             + bones[gl_InstanceID * kMaxBones + aBoneIDs.y] * aBoneWeights.y
@@ -70,13 +77,18 @@ void main()
   tangent = mat3(skin) * aTangent;
 #endif
 
-  vec3 wPos = vec3(obj.modelMatrix * vec4(pos, 1.0));
-  vNormal   = normalize(vec3(obj.modelMatrix * vec4(normal, 0.0)));
+#ifdef HAS_INSTANCED_SKINNING
+  mat4  modelMatrix   = objects[gl_InstanceID].modelMatrix;
+  vMaterialIndex      = objects[gl_InstanceID].materialIndex;
+#else
+  mat4  modelMatrix   = u_modelMatrix;
+  vMaterialIndex      = u_materialIndex;
+#endif
 
-  // Build a world-space tangent basis. Re-orthogonalise the tangent against
-  // the (possibly non-perfect) normal so TBN stays orthonormal even when the
-  // source tangents come from authored meshes.
-  vec3 t = vec3(obj.modelMatrix * vec4(tangent, 0.0));
+  vec3 wPos = vec3(modelMatrix * vec4(pos, 1.0));
+  vNormal   = normalize(vec3(modelMatrix * vec4(normal, 0.0)));
+
+  vec3 t = vec3(modelMatrix * vec4(tangent, 0.0));
   t = normalize(t - dot(t, vNormal) * vNormal);
   vec3 b = cross(vNormal, t);
   vTBN = mat3(t, b, vNormal);

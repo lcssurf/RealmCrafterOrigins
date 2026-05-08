@@ -18,4 +18,8 @@ std::shared_ptr<Model> ModelCacheGet(const std::string& path, MaterialManager* m
     return m;
 }
 
+void ModelCacheInvalidate(const std::string& path) {
+    s_cache.erase(path);
+}
+
 } // namespace rco::renderer

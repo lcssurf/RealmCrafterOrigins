@@ -295,6 +295,9 @@ func main() {
 		log.Printf("main: loaded %d portals from database", len(areaPortals))
 	}
 
+	// Load heightmaps so NPCs follow terrain Y when moving.
+	gameWorld.LoadHeightmaps("../client/data/areas")
+
 	// Start NPC AI and regen goroutines.
 	gameWorld.StartAI(ctx)
 	gameWorld.StartRegen(ctx)

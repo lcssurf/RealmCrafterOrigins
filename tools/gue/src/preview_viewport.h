@@ -24,6 +24,10 @@ public:
 
     bool LoadModel(const std::string& path);
 
+    // Drop any cached version of `path` and reload from disk. Used after the
+    // user edits the per-model UV transform so the sidecar is re-read.
+    void ReloadCurrent();
+
     // Names of the aiMaterials the currently-loaded model references
     // (distinct, in order of first occurrence). Empty if no model loaded.
     std::vector<std::string> MaterialNames() const {
@@ -57,6 +61,21 @@ public:
     void Clear();
     const std::string& CurrentPath() const { return current_path_; }
 
+    // Read-only access to the loaded model for diagnostic display in the
+    // calling tab (e.g. checking which submeshes have missing albedo textures).
+    const rco::renderer::Model& GetModel() const { return actor_.model(); }
+
+    // Per-model UV transform overlay edited via the on-viewport sliders.
+    // Values are post-flip and apply directly: u_out = u * scale + offset.
+    void SetUVTransform(float ox, float oy, float sx, float sy) {
+        uv_offset_[0] = ox; uv_offset_[1] = oy;
+        uv_scale_[0]  = sx; uv_scale_[1]  = sy;
+    }
+    void GetUVTransform(float& ox, float& oy, float& sx, float& sy) const {
+        ox = uv_offset_[0]; oy = uv_offset_[1];
+        sx = uv_scale_[0];  sy = uv_scale_[1];
+    }
+
 private:
     void RenderToEngineFrame_(int w, int h, float dt);
 
@@ -80,8 +99,26 @@ private:
     // Called automatically by LoadModel on success.
     void FitCameraToModel();
 
-    float anim_t_  = 0.f;
-    bool  playing_ = true;
+    float anim_t_        = 0.f;
+    bool  playing_       = true;
+    float sun_intensity_ = 1.0f;
+
+    // UV diagnostic — apply offset/scale on top of the VBO's UVs so the user
+    // can confirm the right alignment when the import didn't pick up the
+    // material's KHR_texture_transform.
+    float uv_offset_[2] = {0.f, 0.f};
+    float uv_scale_[2]  = {1.f, 1.f};
+
+    // Simple forward FBO used for non-skinned (static) actor preview.
+    // Bypasses the bindless deferred pipeline entirely so plain sampler2D
+    // textures work on all drivers.
+    GLuint simple_fbo_   = 0;
+    GLuint simple_color_ = 0;
+    GLuint simple_depth_ = 0;
+    int    simple_w_     = 0;
+    int    simple_h_     = 0;
+
+    void EnsureSimpleFbo_(int w, int h);
 
     // Debounce Engine::Resize when the user drags the splitter.
     int last_w_        = 0, last_h_ = 0;

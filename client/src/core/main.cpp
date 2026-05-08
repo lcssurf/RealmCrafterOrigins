@@ -20,6 +20,7 @@
 // RCO headers
 #include "window.h"
 #include "paths.h"
+#include "player_controller.h"
 #include "../net/connection.h"
 #include "../net/protocol.h"
 #include "../net/codec.h"
@@ -263,9 +264,10 @@ int main() {
     bool     player_dead       = false;
     glm::mat4 view_mat{1.f}, proj_mat{1.f};
 
-    // Click-to-move state
-    glm::vec3 move_target{0.f};
-    bool      has_move_target    = false;
+    // Player movement controller (gravity, slope, jump, sprint, click-to-move)
+    rco::PlayerController player_ctrl{};
+    bool      action_mode    = false; // V key: mouse always rotates, A/D strafe
+    bool      v_key_prev     = false;
     glm::vec2 last_player_pos{0.f}; // XZ position from previous frame (walk detection)
     uint32_t  pending_interact   = 0;     // RID of NPC we're walking toward to interact
     constexpr float kInteractRange = 5.f;
@@ -595,6 +597,7 @@ int main() {
                 // Reload editor-painted terrain + collision volumes for the new area
                 if (renderer_ready) terrain.LoadFromEditor(area);
                 col_data = rco::renderer::LoadColData(area);
+                player_ctrl.Reset();
                 // Server will send PNewActor + PKnownSpells packets for the new area.
                 break;
             }
@@ -1052,6 +1055,7 @@ int main() {
                     player.z = rz; player.yaw = ryaw;
                     last_player_pos = {rx, rz};
                     player_dead = false;
+                    player_ctrl.Reset();
                 } else {
                     auto it = world_actors.find(rid);
                     if (it != world_actors.end()) {
@@ -1540,6 +1544,7 @@ int main() {
                     terrain.LoadFromEditor(player.areaName);
                     col_data = rco::renderer::LoadColData(player.areaName);
                     player.y = terrain.SampleHeight(player.x, player.z);
+                    player_ctrl.Reset();
                     camera.SnapTarget({player.x, player.y, player.z});
                 } else {
                     std::fprintf(stderr, "[renderer] Failed to load shaders — check shaders/ directory\n");
@@ -1549,159 +1554,121 @@ int main() {
             if (renderer_ready) {
                 GLFWwindow* w = window.Handle();
 
-                // ---- Mouse orbit (WoW-style LMB + RMB) ----
-                // LMB drag : orbit camera only — player yaw stays unchanged.
-                // RMB drag : orbit camera AND rotate the character (player.yaw
-                //            syncs to camera.GetYaw() every frame while held).
-                // Both held: move forward in the camera's facing direction
-                //            (handled in the movement section below).
+                // ---- V key: toggle Action Mode / Classic Mode ----
+                {
+                    bool v_cur = glfwGetKey(w, GLFW_KEY_V) == GLFW_PRESS;
+                    if (v_cur && !v_key_prev && !ImGui::GetIO().WantCaptureKeyboard) {
+                        action_mode = !action_mode;
+                        ms_lmb_drag = false;
+                        if (action_mode) {
+                            glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                        } else {
+                            glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                        }
+                        glfwGetCursorPos(w, &ms_prev_x, &ms_prev_y);
+                    }
+                    v_key_prev = v_cur;
+                }
+
+                // ---- Mouse orbit ----
+                // Action mode : mouse always rotates camera + character, no button held needed.
+                // Classic mode: LMB drag = camera only, RMB drag = camera + turn character.
                 {
                     bool cur_rmb = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
                     bool cur_lmb = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
 
-                    // --- LMB press: record start pos for drag detection ---
-                    if (cur_lmb && !ms_lmb_prev) {
-                        glfwGetCursorPos(w, &ms_lmb_start_x, &ms_lmb_start_y);
-                        ms_lmb_drag  = false;
-                        ms_lmb_click = false;
-                    }
-                    // --- LMB held without RMB: promote to drag if moved enough ---
-                    if (cur_lmb && !cur_rmb && !ms_lmb_drag && !ImGui::GetIO().WantCaptureMouse) {
-                        double cx, cy;
-                        glfwGetCursorPos(w, &cx, &cy);
-                        float moved = std::hypot((float)(cx - ms_lmb_start_x),
-                                                 (float)(cy - ms_lmb_start_y));
-                        if (moved > kDragThresholdPx) {
-                            ms_lmb_drag = true;
-                            glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-                            glfwGetCursorPos(w, &ms_prev_x, &ms_prev_y);
-                        }
-                    }
-                    // --- LMB release ---
-                    if (!cur_lmb && ms_lmb_prev) {
-                        if (ms_lmb_drag) {
-                            ms_lmb_drag = false;
-                            if (!cur_rmb)
-                                glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-                        } else {
-                            ms_lmb_click = true;  // click without drag → targeting fires below
-                        }
-                    }
-
-                    // --- RMB press ---
-                    if (cur_rmb && !ms_rmb_prev) {
-                        glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-                        glfwGetCursorPos(w, &ms_prev_x, &ms_prev_y);
-                        ms_lmb_drag = false;  // LMB drag superseded by RMB
-                    }
-                    // --- RMB release ---
-                    if (!cur_rmb && ms_rmb_prev && !ms_lmb_drag)
-                        glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-
-                    // --- Apply mouse delta for any active drag ---
-                    if (cur_rmb || ms_lmb_drag) {
+                    if (action_mode) {
+                        // Always rotate camera; character yaw follows.
                         double cx, cy;
                         glfwGetCursorPos(w, &cx, &cy);
                         camera.ApplyMouseDelta((float)(cx - ms_prev_x),
                                                (float)(cy - ms_prev_y));
-                        ms_prev_x = cx; ms_prev_y = cy;
-
-                        if (cur_rmb) {
-                            // RMB: character rotates to face the same direction as camera.
-                            player.yaw = camera.GetYaw();
+                        ms_prev_x   = cx; ms_prev_y = cy;
+                        player.yaw  = camera.GetYaw();
+                        // LMB down in action mode = instant click (no drag detection needed)
+                        if (cur_lmb && !ms_lmb_prev) ms_lmb_click = true;
+                        ms_lmb_drag = false;
+                    } else {
+                        // --- Classic mode ---
+                        // LMB press: record start pos for drag detection
+                        if (cur_lmb && !ms_lmb_prev) {
+                            glfwGetCursorPos(w, &ms_lmb_start_x, &ms_lmb_start_y);
+                            ms_lmb_drag  = false;
+                            ms_lmb_click = false;
                         }
-                        // LMB drag: camera-only orbit, player yaw unchanged.
+                        // LMB held without RMB: promote to drag if moved enough
+                        if (cur_lmb && !cur_rmb && !ms_lmb_drag && !ImGui::GetIO().WantCaptureMouse) {
+                            double cx, cy;
+                            glfwGetCursorPos(w, &cx, &cy);
+                            float moved = std::hypot((float)(cx - ms_lmb_start_x),
+                                                     (float)(cy - ms_lmb_start_y));
+                            if (moved > kDragThresholdPx) {
+                                ms_lmb_drag = true;
+                                glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                                glfwGetCursorPos(w, &ms_prev_x, &ms_prev_y);
+                            }
+                        }
+                        // LMB release
+                        if (!cur_lmb && ms_lmb_prev) {
+                            if (ms_lmb_drag) {
+                                ms_lmb_drag = false;
+                                if (!cur_rmb)
+                                    glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                            } else {
+                                ms_lmb_click = true;
+                            }
+                        }
+                        // RMB press
+                        if (cur_rmb && !ms_rmb_prev) {
+                            glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                            glfwGetCursorPos(w, &ms_prev_x, &ms_prev_y);
+                            ms_lmb_drag = false;
+                        }
+                        // RMB release
+                        if (!cur_rmb && ms_rmb_prev && !ms_lmb_drag)
+                            glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+
+                        // Apply mouse delta
+                        if (cur_rmb || ms_lmb_drag) {
+                            double cx, cy;
+                            glfwGetCursorPos(w, &cx, &cy);
+                            camera.ApplyMouseDelta((float)(cx - ms_prev_x),
+                                                   (float)(cy - ms_prev_y));
+                            ms_prev_x = cx; ms_prev_y = cy;
+                            if (cur_rmb) player.yaw = camera.GetYaw();
+                        }
                     }
 
                     ms_rmb_prev = cur_rmb;
                     ms_lmb_prev = cur_lmb;
                 }
 
-                // ---- Keyboard + mouse-button movement ----
-                // W/S           : walk forward/back along the character's facing.
-                // A/D           : turn character (camera follows 1:1).
-                // Q/E           : strafe.
-                // LMB+RMB held  : run forward in the camera's facing direction.
-                // W/S without RMB+drag → smooth camera snap behind the player.
-                if (!player_dead && !ImGui::GetIO().WantCaptureKeyboard) {
-                    bool rmb_held  = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-                    bool lmb_held  = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
-                    bool both_held = rmb_held && lmb_held;
-                    constexpr float kSpeed    = 8.f;
-                    constexpr float kTurnRate = 150.f;
+                // ---- Player movement (keyboard, click-to-move, gravity, slope, jump) ----
+                if (!ImGui::GetIO().WantCaptureKeyboard) {
+                    bool rmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+                    bool lmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
 
-                    bool moving_fwd  = glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS || both_held;
-                    bool moving_back = glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS;
-
-                    // When both buttons are held the character faces the camera's
-                    // direction so movement goes where you're looking.
-                    if (both_held) player.yaw = camera.GetYaw();
-
-                    // A/D — turn character; camera keeps its relative offset.
-                    float turn = 0.f;
-                    if (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS) turn += kTurnRate * dt;
-                    if (glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS) turn -= kTurnRate * dt;
-                    if (turn != 0.f) {
-                        player.yaw += turn;
-                        camera.AddYaw(turn);
-                    }
-
-                    // W/S/both-btn without RMB drag → smooth camera re-centre.
-                    bool no_manual_drag = !rmb_held && !ms_lmb_drag;
-                    if ((moving_fwd || moving_back) && no_manual_drag) {
-                        // Fast lerp back behind the player (~270°/s).
+                    auto mr = player_ctrl.Update(w, dt, player_dead, action_mode,
+                                                 player, terrain,
+                                                 rmb_held, lmb_held, ms_lmb_drag);
+                    if (mr.yaw_delta != 0.f)
+                        camera.AddYaw(mr.yaw_delta);
+                    if (mr.center_camera) {
                         camera.LerpYawToward(player.yaw, 270.f, dt);
-                        camera.SetPitch(0.f);
-                    }
-
-                    float fwd = 0.f;
-                    if (moving_fwd)  fwd =  kSpeed;
-                    if (moving_back) fwd = -kSpeed * 0.65f;
-
-                    float strafe = 0.f;
-                    if (glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS) strafe -= kSpeed;
-                    if (glfwGetKey(w, GLFW_KEY_E) == GLFW_PRESS) strafe += kSpeed;
-
-                    // Move in the CHARACTER's facing direction, not the camera's.
-                    float yr = glm::radians(player.yaw);
-                    glm::vec2 fdir = { -std::sin(yr), -std::cos(yr) };
-                    glm::vec2 rdir = {  std::cos(yr), -std::sin(yr) };
-                    glm::vec2 vel  = fdir * fwd + rdir * strafe;
-
-                    if (vel.x*vel.x + vel.y*vel.y > 0.001f) {
-                        player.x += vel.x * dt;
-                        player.z += vel.y * dt;
-                        player.y  = terrain.SampleHeight(player.x, player.z);
-                        has_move_target = false;
-                    }
-                }
-
-                // ---- Click-to-move: move player toward target ----
-                if (has_move_target && !player_dead) {
-                    constexpr float kSpeed = 8.f;
-                    float dx = move_target.x - player.x;
-                    float dz = move_target.z - player.z;
-                    float d2 = dx * dx + dz * dz;
-                    if (d2 > 0.08f * 0.08f) {
-                        float dist = sqrtf(d2);
-                        float step = kSpeed * dt < dist ? kSpeed * dt : dist;
-                        player.x += (dx / dist) * step;
-                        player.z += (dz / dist) * step;
-                        player.y  = terrain.SampleHeight(player.x, player.z);
-                        player.yaw = glm::degrees(std::atan2f(dx / dist, dz / dist));
-                    } else {
-                        has_move_target = false;
+                        camera.SetPitch(camera.default_pitch);
                     }
                 }
 
                 // Resolve player position against collision volumes (boxes + spheres).
+                // Only re-snap y when grounded — controller owns y while airborne.
                 if (col_data.loaded) {
                     col_data.Resolve(player.x, player.z, player.y, player.z);
-                    player.y = terrain.SampleHeight(player.x, player.z);
+                    if (player_ctrl.IsOnGround())
+                        player.y = terrain.SampleHeight(player.x, player.z);
                 }
 
                 // Cancel movement on death.
-                if (player_dead) { has_move_target = false; pending_interact = 0; }
+                if (player_dead) { player_ctrl.CancelMoveTarget(); pending_interact = 0; }
 
                 // Auto-interact: fire kPRightClick once close enough.
                 if (pending_interact != 0 && !player_dead) {
@@ -1716,7 +1683,7 @@ int main() {
                             iw.WriteU32(pending_interact);
                             conn.SendPacket(rco::net::kPRightClick, iw);
                             pending_interact = 0;
-                            has_move_target  = false;
+                            player_ctrl.CancelMoveTarget();
                         }
                     }
                 }
@@ -1734,9 +1701,35 @@ int main() {
                     last_move_send = now;
                 }
 
-                // Camera follows player
-                camera.SetTarget({player.x, player.y, player.z});
+                // Camera follows player — anchor at the model's visual feet, not
+                // raw terrain y, so the pivot stays at shoulder regardless of y_offset.
+                camera.action_mode = action_mode;
+                camera.SetTarget({player.x, player.y + player_actor.FeetOffset(), player.z});
                 camera.Update(dt);
+
+                // Terrain collision: march from pivot to ideal camera position and
+                // find the furthest safe distance so the lens never clips into hills.
+                {
+                    float yr  = glm::radians(camera.GetYaw());
+                    float pr  = glm::radians(camera.GetPitch());
+                    glm::vec3 dir = { std::cos(pr) * std::sin(yr),
+                                      std::sin(pr),
+                                      std::cos(pr) * std::cos(yr) };
+                    float lookat_y  = player.y + player_actor.FeetOffset()
+                                      + player_actor.ModelHeight() * 0.85f;
+                    glm::vec3 pivot = glm::vec3(player.x, lookat_y, player.z);
+                    constexpr float kCollisionDist = 35.f;
+                    constexpr int   kSteps         = 16;
+                    constexpr float kMargin        = 0.4f;   // stay this far above terrain
+                    float safe = kCollisionDist;
+                    for (int i = 1; i <= kSteps; ++i) {
+                        float t      = kCollisionDist * (float)i / (float)kSteps;
+                        glm::vec3 p  = pivot + dir * t;
+                        float     th = terrain.SampleHeight(p.x, p.z) + kMargin;
+                        if (p.y < th) { safe = t - kCollisionDist / (float)kSteps; break; }
+                    }
+                    camera.SetCollisionDist((safe > 2.5f ? safe : 2.5f));
+                }
 
                 float aspect = window.Width() / static_cast<float>(window.Height());
                 glm::mat4 view = camera.View();
@@ -1753,16 +1746,30 @@ int main() {
                     static bool f8_prev = false;
                     bool f8_cur = glfwGetKey(w, GLFW_KEY_F8) == GLFW_PRESS;
                     if (f8_cur && !f8_prev) {
-                        int m = (pipeline->DebugMode() + 1) % 11;
+                        int m = (pipeline->DebugMode() + 1) % 12;
                         pipeline->SetDebugMode(m);
                         const char* names[] = {
                             "0 FULL", "1 albedo", "2 normal", "3 depth", "4 AO",
                             "5 shadow", "6 irradiance", "7 NoL", "8 albedo*NoL",
-                            "9 envDiffuse", "10 direct (no shadow)"
+                            "9 envDiffuse", "10 direct (no shadow)", "11 shadowmap sample"
                         };
                         std::fprintf(stderr, "[debug] gPhongGlobal mode = %s\n", names[m]);
                     }
                     f8_prev = f8_cur;
+                }
+
+                // -- F9 toggles volumetric fog (helps when investigating shadows).
+                {
+                    static bool f9_prev = false;
+                    bool f9_cur = glfwGetKey(w, GLFW_KEY_F9) == GLFW_PRESS;
+                    if (f9_cur && !f9_prev) {
+                        auto cfg = pipeline->Features();
+                        cfg.volumetrics = !cfg.volumetrics;
+                        pipeline->SetFeatures(cfg);
+                        std::fprintf(stderr, "[debug] volumetrics=%d\n",
+                                     cfg.volumetrics ? 1 : 0);
+                    }
+                    f9_prev = f9_cur;
                 }
 
                 // --- New pipeline: begin frame, submit all scene geometry, end writes to framebuffer 0 ---
@@ -2155,8 +2162,7 @@ int main() {
                                     float ny = renderer_ready
                                         ? terrain.SampleHeight(clicked.x, clicked.z)
                                         : clicked.y;
-                                    move_target       = {clicked.x, ny, clicked.z};
-                                    has_move_target   = true;
+                                    player_ctrl.SetMoveTarget({clicked.x, ny, clicked.z});
                                     pending_interact  = best_id;
                                 }
                             } else {
@@ -2267,10 +2273,29 @@ int main() {
                     ImGui::ProgressBar(xp_ratio, {-1.f, 10.f}, xp_lbl);
                     ImGui::PopStyleColor();
                 }
-                ImGui::Text("Gold: %u    Pos: %.1f, %.1f, %.1f",
-                    player_gold, player.x, player.y, player.z);
-                ImGui::TextDisabled("RMB move  Q/E rotate  Scroll zoom  LMB target  I bag  C character  F pickup  K controls");
+                ImGui::Text("Gold: %u    Pos: %.1f, %.1f, %.1f    %s",
+                    player_gold, player.x, player.y, player.z,
+                    action_mode ? "[ACTION]" : "");
+                if (action_mode)
+                    ImGui::TextDisabled("[Action] Mouse=cam  WASD=move  AD=strafe  Shift=sprint  V=classic");
+                else
+                    ImGui::TextDisabled("[Classic] RMB=cam  AD=turn  QE=strafe  Shift=sprint  NumLk=autorun  V=action");
                 ImGui::End();
+
+                // Action mode crosshair
+                if (action_mode) {
+                    auto* dl = ImGui::GetForegroundDrawList();
+                    float cx = window.Width()  * 0.5f;
+                    float cy = window.Height() * 0.5f;
+                    constexpr float kArm   = 10.f;
+                    constexpr float kGap   = 3.f;
+                    constexpr float kThick = 1.5f;
+                    ImU32 col = IM_COL32(255, 255, 255, 210);
+                    dl->AddLine({cx - kArm, cy}, {cx - kGap, cy}, col, kThick);
+                    dl->AddLine({cx + kGap, cy}, {cx + kArm, cy}, col, kThick);
+                    dl->AddLine({cx, cy - kArm}, {cx, cy - kGap}, col, kThick);
+                    dl->AddLine({cx, cy + kGap}, {cx, cy + kArm}, col, kThick);
+                }
 
                 // Toggle bag with I, character sheet with C, controls with K
                 if (ImGui::IsKeyPressed(ImGuiKey_I) && !player_dead && !ImGui::GetIO().WantTextInput)

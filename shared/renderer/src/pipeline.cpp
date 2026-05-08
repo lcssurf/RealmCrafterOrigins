@@ -76,30 +76,119 @@ void Pipeline::computeLightMatrix_() {
 // ---------------------------------------------------------------------------
 
 void Pipeline::shadowPass_() {
-    if (!engine_->drawIndirectBuffer_) return;
-
     glViewport(0, 0, engine_->shadowWidth_, engine_->shadowHeight_);
     glBindFramebuffer(GL_FRAMEBUFFER, engine_->shadowFbo_);
     glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+    // Make sure depth writes are enabled — some prior pass (e.g. tonemapping
+    // post-process) may have left depthMask=FALSE which would no-op our draws.
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LEQUAL);
 
-    std::vector<glm::mat4> uniforms;
-    uniforms.reserve(engine_->staticMeshes_.size());
-    for (std::size_t i = 0; i < engine_->staticMeshes_.size(); ++i) {
-        uniforms.emplace_back(lightMat_);
+    static int s_logged = 0;
+    if (s_logged < 3) {
+        std::fprintf(stderr,
+            "[shadow] static=%zu dynamic=%zu skinned_inst=%zu lightMat[0][0]=%.3f\n",
+            engine_->staticMeshes_.size(), dynamicDraws_.size(),
+            skinnedInstancedEntries_.size(), lightMat_[0][0]);
+        ++s_logged;
     }
-    StaticBuffer uniformBuffer(uniforms.data(), uniforms.size() * sizeof(glm::mat4), 0);
 
-    auto& shadowShader = Shader::shaders["shadowBindless"];
-    shadowShader->Bind();
-    uniformBuffer.BindBase(GL_SHADER_STORAGE_BUFFER, 0);
-    engine_->drawIndirectBuffer_->Bind(GL_DRAW_INDIRECT_BUFFER);
-    glVertexArrayVertexBuffer(engine_->vao_, 0,
-        engine_->vertexBuffer_->GetBufferHandle(), 0, sizeof(Vertex));
-    glVertexArrayElementBuffer(engine_->vao_,
-        engine_->indexBuffer_->GetBufferHandle());
-    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, 0,
-        static_cast<GLsizei>(uniforms.size()),
-        sizeof(DrawElementsIndirectCommand));
+    // -- Static scene (multi-draw indirect) --
+    if (engine_->drawIndirectBuffer_ && !engine_->staticMeshes_.empty()) {
+        std::vector<glm::mat4> uniforms;
+        uniforms.reserve(engine_->staticMeshes_.size());
+        for (std::size_t i = 0; i < engine_->staticMeshes_.size(); ++i) {
+            uniforms.emplace_back(lightMat_);
+        }
+        StaticBuffer uniformBuffer(uniforms.data(), uniforms.size() * sizeof(glm::mat4), 0);
+
+        auto& shadowShader = Shader::shaders["shadowBindless"];
+        shadowShader->Bind();
+        uniformBuffer.BindBase(GL_SHADER_STORAGE_BUFFER, 0);
+        engine_->drawIndirectBuffer_->Bind(GL_DRAW_INDIRECT_BUFFER);
+        glVertexArrayVertexBuffer(engine_->vao_, 0,
+            engine_->vertexBuffer_->GetBufferHandle(), 0, sizeof(Vertex));
+        glVertexArrayElementBuffer(engine_->vao_,
+            engine_->indexBuffer_->GetBufferHandle());
+        glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, 0,
+            static_cast<GLsizei>(uniforms.size()),
+            sizeof(DrawElementsIndirectCommand));
+    }
+
+    // -- Dynamic non-skinned draws (props, terrain props, GUE preview, etc.) --
+    if (!dynamicDraws_.empty()) {
+        auto& sh = Shader::shaders["shadow_dynamic"];
+        sh->Bind();
+        sh->SetMat4("u_lightMatrix", lightMat_);
+        for (const auto& r : dynamicDraws_) {
+            if (!r.vao || r.index_count == 0) continue;
+            sh->SetMat4("u_model", r.model);
+            glBindVertexArray(r.vao);
+            glDrawElements(GL_TRIANGLES, r.index_count, GL_UNSIGNED_INT, nullptr);
+        }
+    }
+
+    // -- Non-instanced skinned draws (animation crossfades go through this
+    //    path because SubmitBlended uploads bones into per-mesh SSBOs).
+    //    Without this entry, shadows blink for one frame whenever an actor
+    //    transitions Idle->Walk etc.
+    if (!skinnedDraws_.empty()) {
+        auto& sh = Shader::shaders["shadow_skinned"];
+        sh->Bind();
+        sh->SetMat4("u_lightMatrix", lightMat_);
+        for (const auto& r : skinnedDraws_) {
+            if (!r.vao || r.index_count == 0 || !r.bone_ssbo) continue;
+            sh->SetMat4("u_model", r.model);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, r.bone_ssbo);
+            glBindVertexArray(r.vao);
+            glDrawElements(GL_TRIANGLES, r.index_count, GL_UNSIGNED_INT, nullptr);
+        }
+    }
+
+    // -- Skinned instanced draws (NPCs, players) --
+    if (!skinnedInstancedEntries_.empty()) {
+        auto& sh = Shader::shaders["shadow_skinned_instanced"];
+        sh->Bind();
+        sh->SetMat4("u_lightMatrix", lightMat_);
+
+        // Mirror gBufferPass_'s instanced batching: group by (vao, ebo),
+        // build per-batch object + bone SSBOs, draw once per group.
+        struct Batch {
+            GLuint  vao, ebo;
+            GLsizei idx_count;
+            std::vector<ObjectUniforms> obj_unis;
+            std::vector<glm::mat4>      all_bones;
+        };
+        std::vector<Batch> batches;
+        batches.reserve(8);
+        for (const auto& e : skinnedInstancedEntries_) {
+            if (!e.vao) continue;
+            Batch* b = nullptr;
+            for (auto& x : batches)
+                if (x.vao == e.vao && x.ebo == e.ebo) { b = &x; break; }
+            if (!b) {
+                batches.push_back({e.vao, e.ebo, e.index_count, {}, {}});
+                b = &batches.back();
+            }
+            b->obj_unis.push_back(ObjectUniforms{e.model, static_cast<uint32_t>(e.material_idx)});
+            b->all_bones.insert(b->all_bones.end(), e.bones, e.bones + 64);
+        }
+        for (const auto& b : batches) {
+            const GLsizei N = static_cast<GLsizei>(b.obj_unis.size());
+            StaticBuffer obj_buf(b.obj_unis.data(),
+                                 b.obj_unis.size() * sizeof(ObjectUniforms), 0);
+            obj_buf.BindBase(GL_SHADER_STORAGE_BUFFER, 0);
+            StaticBuffer bone_buf(b.all_bones.data(),
+                                  b.all_bones.size() * sizeof(glm::mat4), 0);
+            bone_buf.BindBase(GL_SHADER_STORAGE_BUFFER, 2);
+            glBindVertexArray(b.vao);
+            glDrawElementsInstanced(GL_TRIANGLES, b.idx_count, GL_UNSIGNED_INT,
+                                    nullptr, N);
+        }
+    }
+
+    glBindVertexArray(engine_->vao_);
 
     // Shadow copy/blur for VSM/ESM/MSM
     filteredShadowTex_ = 0;
@@ -195,9 +284,8 @@ void Pipeline::gBufferPass_() {
         sh->SetMat4("u_viewProj", viewProj_);
         engine_->materialsBuffer_->BindBase(GL_SHADER_STORAGE_BUFFER, 1);
         for (const auto& r : dynamicDraws_) {
-            ObjectUniforms u{ r.model, static_cast<uint32_t>(r.material_idx) };
-            StaticBuffer ub(&u, sizeof(u), 0);
-            ub.BindBase(GL_SHADER_STORAGE_BUFFER, 0);
+            sh->SetMat4("u_modelMatrix",  r.model);
+            sh->SetUInt("u_materialIndex", static_cast<unsigned>(r.material_idx));
             if (r.vao) {
                 glBindVertexArray(r.vao);
             } else {
@@ -219,9 +307,8 @@ void Pipeline::gBufferPass_() {
         sh->SetMat4("u_viewProj", viewProj_);
         engine_->materialsBuffer_->BindBase(GL_SHADER_STORAGE_BUFFER, 1);
         for (const auto& r : skinnedDraws_) {
-            ObjectUniforms u{ r.model, static_cast<uint32_t>(r.material_idx) };
-            StaticBuffer ub(&u, sizeof(u), 0);
-            ub.BindBase(GL_SHADER_STORAGE_BUFFER, 0);
+            sh->SetMat4("u_modelMatrix",  r.model);
+            sh->SetUInt("u_materialIndex", static_cast<unsigned>(r.material_idx));
             if (r.bone_ssbo) {
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, r.bone_ssbo);
             }
@@ -434,6 +521,8 @@ void Pipeline::globalLightPass_() {
     if (engine_->irradianceCube_) glBindTextureUnit(6, engine_->irradianceCube_);
     if (engine_->prefilterCube_)  glBindTextureUnit(7, engine_->prefilterCube_);
     if (engine_->brdfLUT_)        glBindTextureUnit(8, engine_->brdfLUT_);
+    // Raw shadow depth — used by debug mode 11 to inspect what gets written.
+    if (engine_->shadowDepth_)    glBindTextureUnit(9, engine_->shadowDepth_);
 
     glDisable(GL_DEPTH_TEST);
     auto& sh = Shader::shaders["gPhongGlobal"];

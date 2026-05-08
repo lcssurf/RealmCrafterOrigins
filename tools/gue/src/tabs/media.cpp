@@ -272,6 +272,18 @@ void MediaTab::EnsureTables(sqlite3* db) {
         "ALTER TABLE media_models ADD COLUMN material_map TEXT NOT NULL DEFAULT ''",
         nullptr, nullptr, nullptr);
 
+    // Per-model UV transform — applied on top of the engine's automatic
+    // KHR_texture_transform detection when an export omits or under-applies it.
+    // Defaults preserve UVs unchanged.
+    const char* modelUvColumns[] = {
+        "ALTER TABLE media_models ADD COLUMN uv_offset_x REAL NOT NULL DEFAULT 0.0",
+        "ALTER TABLE media_models ADD COLUMN uv_offset_y REAL NOT NULL DEFAULT 0.0",
+        "ALTER TABLE media_models ADD COLUMN uv_scale_x  REAL NOT NULL DEFAULT 1.0",
+        "ALTER TABLE media_models ADD COLUMN uv_scale_y  REAL NOT NULL DEFAULT 1.0",
+    };
+    for (const char* s : modelUvColumns)
+        sqlite3_exec(db, s, nullptr, nullptr, nullptr);
+
     // Additive migrations for media_anim_clips new columns (V11).
     const char* clipColumns[] = {
         "ALTER TABLE media_anim_clips ADD COLUMN start_frame INTEGER NOT NULL DEFAULT 0",
@@ -361,7 +373,9 @@ void MediaTab::FetchAll(sqlite3* db) {
 
     // Models
     if (sqlite3_prepare_v2(db,
-        "SELECT id, name, file_path, scale, material_map FROM media_models ORDER BY name",
+        "SELECT id, name, file_path, scale, material_map,"
+        "       uv_offset_x, uv_offset_y, uv_scale_x, uv_scale_y"
+        "  FROM media_models ORDER BY name",
         -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             MediaModel m;
@@ -370,6 +384,10 @@ void MediaTab::FetchAll(sqlite3* db) {
             m.file_path    = colText              (stmt, 2);
             m.scale        = (float)sqlite3_column_double(stmt, 3);
             m.material_map = ParseMaterialMap(colText(stmt, 4));
+            m.uv_offset_x  = (float)sqlite3_column_double(stmt, 5);
+            m.uv_offset_y  = (float)sqlite3_column_double(stmt, 6);
+            m.uv_scale_x   = (float)sqlite3_column_double(stmt, 7);
+            m.uv_scale_y   = (float)sqlite3_column_double(stmt, 8);
             models_.push_back(std::move(m));
         }
         sqlite3_finalize(stmt);
@@ -515,17 +533,47 @@ void MediaTab::FetchAll(sqlite3* db) {
 // CRUD — Models
 // ---------------------------------------------------------------------------
 
+// Write a sidecar `<glb_path>.uv` next to the model file so the engine
+// (Model::Load) can apply the same UV transform on the client side without
+// having to read the GUE database. Format: 4 floats separated by spaces:
+//   "<offset_x> <offset_y> <scale_x> <scale_y>"
+// On defaults (offset=0,0 scale=1,1) the file is removed instead of written so
+// untouched models leave no clutter.
+static void WriteSidecarUV(const std::string& model_relpath,
+                           float ox, float oy, float sx, float sy) {
+    if (model_relpath.empty()) return;
+    // Resolve same way the runtime does (see asset_path.h).
+    std::string full = (model_relpath.size() > 1 && model_relpath[1] == ':')
+                       ? model_relpath
+                       : ("../client/" + model_relpath);
+    std::filesystem::path p(full);
+    p += ".uv";
+    const bool is_default =
+        ox == 0.f && oy == 0.f && sx == 1.f && sy == 1.f;
+    std::error_code ec;
+    if (is_default) {
+        std::filesystem::remove(p, ec);
+        return;
+    }
+    if (FILE* f = std::fopen(p.string().c_str(), "w")) {
+        std::fprintf(f, "%.6f %.6f %.6f %.6f\n", ox, oy, sx, sy);
+        std::fclose(f);
+    }
+}
+
 void MediaTab::SaveModel(sqlite3* db, MediaModel& m) {
     sqlite3_stmt* stmt = nullptr;
     int rc;
     const std::string mapSerialized = SerializeMaterialMap(m.material_map);
     if (m.id == 0) {
         rc = sqlite3_prepare_v2(db,
-            "INSERT INTO media_models (name, file_path, scale, material_map)"
-            " VALUES (?, ?, ?, ?)", -1, &stmt, nullptr);
+            "INSERT INTO media_models (name, file_path, scale, material_map,"
+            "                          uv_offset_x, uv_offset_y, uv_scale_x, uv_scale_y)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
-            "UPDATE media_models SET name=?, file_path=?, scale=?, material_map=?"
+            "UPDATE media_models SET name=?, file_path=?, scale=?, material_map=?,"
+            "                        uv_offset_x=?, uv_offset_y=?, uv_scale_x=?, uv_scale_y=?"
             " WHERE id=?", -1, &stmt, nullptr);
     }
     if (rc != SQLITE_OK) {
@@ -537,7 +585,11 @@ void MediaTab::SaveModel(sqlite3* db, MediaModel& m) {
     sqlite3_bind_text  (stmt, 2, m.file_path.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_double(stmt, 3, m.scale);
     sqlite3_bind_text  (stmt, 4, mapSerialized.c_str(), -1, SQLITE_TRANSIENT);
-    if (m.id != 0) sqlite3_bind_int(stmt, 5, m.id);
+    sqlite3_bind_double(stmt, 5, m.uv_offset_x);
+    sqlite3_bind_double(stmt, 6, m.uv_offset_y);
+    sqlite3_bind_double(stmt, 7, m.uv_scale_x);
+    sqlite3_bind_double(stmt, 8, m.uv_scale_y);
+    if (m.id != 0) sqlite3_bind_int(stmt, 9, m.id);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         std::snprintf(statusMsg_, sizeof(statusMsg_),
@@ -545,7 +597,9 @@ void MediaTab::SaveModel(sqlite3* db, MediaModel& m) {
     } else {
         if (m.id == 0) m.id = (int)sqlite3_last_insert_rowid(db);
         needFetch_ = true;
-        ++media_revision_;  // material_map edits need to reach Zone/Client
+        ++media_revision_;  // material_map / UV edits need to reach Zone/Client
+        WriteSidecarUV(m.file_path, m.uv_offset_x, m.uv_offset_y,
+                                    m.uv_scale_x,  m.uv_scale_y);
         std::snprintf(statusMsg_, sizeof(statusMsg_),
                       "Saved model '%s' (id=%d).", m.name.c_str(), m.id);
     }
@@ -1310,15 +1364,75 @@ void MediaTab::DrawModels(sqlite3* db) {
         ImGui::TextDisabled("[...] imports automatically into assets/models/<name>/ if needed.");
         ImGui::Spacing();
 
-        ImGui::BeginDisabled(!dirtyModel_);
-        if (ImGui::Button("Save")) { SaveModel(db, editModel_); dirtyModel_ = false; }
+        // Check whether the on-viewport UV sliders have a non-identity delta
+        // pending; the Save button must enable for those edits even when no
+        // other field changed.
+        float uv_slider_ox = 0, uv_slider_oy = 0, uv_slider_sx = 1, uv_slider_sy = 1;
+        if (preview_) preview_->GetUVTransform(uv_slider_ox, uv_slider_oy,
+                                                uv_slider_sx, uv_slider_sy);
+        const bool uv_dirty =
+            !(uv_slider_ox == 0.f && uv_slider_oy == 0.f
+              && uv_slider_sx == 1.f && uv_slider_sy == 1.f);
+
+        ImGui::BeginDisabled(!dirtyModel_ && !uv_dirty);
+        if (ImGui::Button("Save")) {
+            // Consolidate the live slider delta with whatever UV transform the
+            // engine actually applied to the loaded VBO (could be a previous
+            // sidecar OR the file's own KHR_texture_transform).  Composing
+            // against the persisted DB values would lose the KHR baseline on
+            // the very first save and introduce visible misalignment.
+            //   u_final = (u * baseline_S + baseline_O) * delta_S + delta_O
+            //           = u * (baseline_S * delta_S)
+            //               + (baseline_O * delta_S + delta_O)
+            if (uv_dirty && preview_) {
+                glm::vec2 base_o = preview_->GetModel().EffectiveUVOffset();
+                glm::vec2 base_s = preview_->GetModel().EffectiveUVScale();
+                editModel_.uv_offset_x = base_o.x * uv_slider_sx + uv_slider_ox;
+                editModel_.uv_offset_y = base_o.y * uv_slider_sy + uv_slider_oy;
+                editModel_.uv_scale_x  = base_s.x * uv_slider_sx;
+                editModel_.uv_scale_y  = base_s.y * uv_slider_sy;
+            }
+            SaveModel(db, editModel_);
+            dirtyModel_ = false;
+            if (uv_dirty && preview_) {
+                preview_->SetUVTransform(0.f, 0.f, 1.f, 1.f);  // delta consumed
+                preview_->ReloadCurrent();                      // pick up sidecar
+            }
+        }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("Revert")) { editModel_ = models_[selModel_]; dirtyModel_ = false; }
+        if (ImGui::Button("Revert")) {
+            editModel_ = models_[selModel_];
+            dirtyModel_ = false;
+            if (preview_) preview_->SetUVTransform(0.f, 0.f, 1.f, 1.f);
+        }
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, {0.65f, 0.1f, 0.1f, 1.f});
         if (ImGui::Button("Delete")) DeleteModel(db, editModel_.id);
         ImGui::PopStyleColor();
+        // Surface the persisted UV transform inline + offer a one-click reset
+        // so the user can wipe a bad transform without manual DB / file edits.
+        const bool uv_persisted =
+            editModel_.uv_offset_x != 0.f || editModel_.uv_offset_y != 0.f
+         || editModel_.uv_scale_x  != 1.f || editModel_.uv_scale_y  != 1.f;
+        if (uv_persisted) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("UV: O=(%.3f,%.3f) S=(%.3f,%.3f)",
+                editModel_.uv_offset_x, editModel_.uv_offset_y,
+                editModel_.uv_scale_x,  editModel_.uv_scale_y);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clear UV")) {
+                editModel_.uv_offset_x = 0.f; editModel_.uv_offset_y = 0.f;
+                editModel_.uv_scale_x  = 1.f; editModel_.uv_scale_y  = 1.f;
+                SaveModel(db, editModel_);
+                if (selModel_ >= 0 && selModel_ < (int)models_.size())
+                    models_[selModel_] = editModel_;
+                if (preview_) {
+                    preview_->SetUVTransform(0.f, 0.f, 1.f, 1.f);
+                    preview_->ReloadCurrent();
+                }
+            }
+        }
 
         // ── Collision Shapes ─────────────────────────────────────────────
         ImGui::Spacing();
@@ -1436,6 +1550,11 @@ void MediaTab::DrawModels(sqlite3* db) {
                     previewAiToMedia_ = show->material_map;
                     preview_material_names_model_ = show->file_path;
                 }
+                // Sync the preview's on-screen UV sliders with the persisted
+                // values from the DB so the sidecar's transform is shown as
+                // "0/0/1/1" (already baked in) and the user can fine-tune
+                // further deltas on top.
+                preview_->SetUVTransform(0.f, 0.f, 1.f, 1.f);
             }
 
             auto buildLookups = [&]() {
@@ -1477,6 +1596,28 @@ void MediaTab::DrawModels(sqlite3* db) {
                 materialsDirtyForPreview_ = false;
             }
             preview_->DrawImGui();
+
+            // ── Texture diagnostic ───────────────────────────────────────
+            {
+                const auto& mdl = preview_->GetModel();
+                if (mdl.IsLoaded()) {
+                    int missing = 0;
+                    for (const auto& m : mdl.meshes())
+                        if (!m.tex_albedo) ++missing;
+                    if (missing > 0) {
+                        ImGui::Separator();
+                        ImGui::TextColored({1.f, 0.65f, 0.1f, 1.f},
+                            "No embedded texture (%d/%d submesh(es) missing albedo).",
+                            missing, (int)mdl.meshes().size());
+                        ImGui::TextDisabled(
+                            "Possible causes:\n"
+                            "  1. Textures are external files — use 'Import Folder' to copy them alongside the mesh.\n"
+                            "  2. Unreal export: enable 'Embed Textures' option (or check Texture Export Method = PNG).\n"
+                            "  3. Assimp can't find the texture key — assign a Material below as a workaround.");
+                    }
+                }
+            }
+
 
             // ── Material mapping UI ──────────────────────────────────────
             auto ai_names = preview_->MaterialNames();
@@ -2518,8 +2659,13 @@ void MediaTab::ImportFolderTree(sqlite3* db) {
         if (kind && std::strcmp(kind, "model") == 0) {
             // DB path is relative to assets/: models/<folderName>/<rel>
             std::string dbPath = "assets/models/" + folderName + "/" + rel.generic_string();
+            // Build a folder-qualified name that mirrors the imported folder
+            // structure on disk: "<rootFolder>/<subdir>/<filename>".
+            std::string relDir = rel.parent_path().generic_string();
+            std::string stem   = filePath.stem().string();
+            std::string inner  = relDir.empty() ? stem : (relDir + "/" + stem);
             MediaModel m;
-            m.name      = filePath.stem().string();
+            m.name      = folderName + "/" + inner;
             m.file_path = dbPath;
             m.scale     = 1.f;
             SaveModel(db, m);

@@ -119,11 +119,24 @@ public:
         return (model_ && idx >= 0) ? model_->ClipDuration(idx) : 0.f;
     }
 
-    // World-space height of the model (bind-pose AABB top × scale).
+    // World-space height of the model (bind-pose AABB full extent × scale).
+    // Uses BoundsMax.y - BoundsMin.y so models whose origin is not at the feet
+    // (center-origin exports) report the correct full visual height.
     // Returns a sensible default (1.8) if the model isn't loaded yet.
     float ModelHeight() const {
-        float h = model_ ? model_->MaxY() * scale : 0.f;
+        float h = model_ ? (model_->BoundsMax().y - model_->BoundsMin().y) * scale : 0.f;
         return h > 0.1f ? h : 1.8f;
+    }
+
+    // World-space Y offset from position.y to the model's visual feet.
+    // = y_offset + BoundsMin.y * scale
+    // BoundsMin may be positive (model exported above its local origin),
+    // negative (cape/skirt geometry below feet), or zero.
+    // This is the only value that reliably anchors camera maths to the
+    // actual rendered foot position.
+    float FeetOffset() const {
+        float min_y = model_ ? model_->BoundsMin().y * scale : 0.f;
+        return y_offset + min_y;
     }
 
     // Read-only access to the wrapped Model — useful for callers that need

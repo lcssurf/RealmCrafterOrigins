@@ -213,6 +213,7 @@ void Model::FreeMesh(SubMesh& m) {
     del(m.tex_normal);
     del(m.tex_orm);
     del(m.tex_opacity);
+    del(m.tex_ao);
     m = {};
 }
 
@@ -251,6 +252,10 @@ GLuint Model::LoadTex(const aiScene* scene, const std::string& path, bool srgb) 
             px = stbi_load_from_memory(
                 reinterpret_cast<const stbi_uc*>(t->pcData),
                 static_cast<int>(t->mWidth), &w, &h, &ch, 4);
+            if (!px)
+                std::fprintf(stderr,
+                    "[model] embedded tex '%s' fmt='%s' size=%u decode failed: %s\n",
+                    path.c_str(), t->achFormatHint, t->mWidth, stbi_failure_reason());
         } else {
             w = t->mWidth; h = t->mHeight;
             px = new unsigned char[w * h * 4];
@@ -265,6 +270,9 @@ GLuint Model::LoadTex(const aiScene* scene, const std::string& path, bool srgb) 
         int ch;
         px = stbi_load(full.c_str(), &w, &h, &ch, 4);
         if (!px) px = stbi_load(path.c_str(), &w, &h, &ch, 4);
+        if (!px)
+            std::fprintf(stderr, "[model] texture not found: tried '%s' and '%s'\n",
+                full.c_str(), path.c_str());
     }
     if (!px) return 0;
 
@@ -599,6 +607,71 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
         return glm::normalize(nxform * glm::vec3(v.x, v.y, v.z));
     };
 
+    // Detect which UV channel the base-color texture references and any
+    // KHR_texture_transform applied. glTF exporters (Unreal, Blender) commonly
+    // route material textures through TEXCOORD_1 (their TEXCOORD_0 is reserved
+    // for lightmaps). Sampling the wrong channel produces garbled-looking
+    // textures; ignoring the per-material UV transform causes visible seams /
+    // misalignment.
+    int uvIndex = 0;
+    glm::vec2 uv_scale  = glm::vec2(1.f, 1.f);
+    glm::vec2 uv_offset = glm::vec2(0.f, 0.f);
+    // True when uv_offset/uv_scale are in glTF's V=0-at-top convention and
+    // need flip-aware math when applied (the Assimp-detected KHR transform).
+    // False for sidecar overrides whose values are post-flip and apply
+    // directly: u_out = u * scale + offset.
+    bool uv_in_gltf_convention = false;
+    if (mesh->mMaterialIndex < scene->mNumMaterials) {
+        aiMaterial* mat = scene->mMaterials[mesh->mMaterialIndex];
+        int idx = 0;
+        if (mat->Get(AI_MATKEY_UVWSRC(aiTextureType_BASE_COLOR, 0), idx) == AI_SUCCESS ||
+            mat->Get(AI_MATKEY_UVWSRC(aiTextureType_DIFFUSE,    0), idx) == AI_SUCCESS) {
+            uvIndex = idx;
+        }
+        if (uvIndex >= AI_MAX_NUMBER_OF_TEXTURECOORDS ||
+            !mesh->mTextureCoords[uvIndex]) {
+            uvIndex = 0;
+        }
+
+        // KHR_texture_transform: Assimp exposes it as aiUVTransform — translation,
+        // scaling, and rotation packed into a 2D affine. We support the common
+        // case (offset + scale; rotation is rare for static meshes).
+        aiUVTransform tr{};
+        if (mat->Get(AI_MATKEY_UVTRANSFORM(aiTextureType_BASE_COLOR, 0), tr) == AI_SUCCESS ||
+            mat->Get(AI_MATKEY_UVTRANSFORM(aiTextureType_DIFFUSE,    0), tr) == AI_SUCCESS) {
+            uv_scale  = glm::vec2(tr.mScaling.x,     tr.mScaling.y);
+            uv_offset = glm::vec2(tr.mTranslation.x, tr.mTranslation.y);
+            uv_in_gltf_convention = true;  // KHR is in glTF top-left convention
+        }
+        // The .uv sidecar (written by the GUE) takes precedence and stores
+        // post-flip values that go straight into the shader-equivalent math.
+        if (uv_sidecar_active_) {
+            uv_scale  = uv_sidecar_scale_;
+            uv_offset = uv_sidecar_offset_;
+            uv_in_gltf_convention = false;
+        }
+        // Record the post-flip equivalent of whatever transform was actually
+        // applied — this is what the GUE composes live slider deltas against
+        // when persisting a new sidecar.
+        if (uv_in_gltf_convention) {
+            uv_effective_scale_  = uv_scale;
+            uv_effective_offset_ = glm::vec2(
+                uv_offset.x,
+                1.f - uv_scale.y - uv_offset.y);
+        } else {
+            uv_effective_scale_  = uv_scale;
+            uv_effective_offset_ = uv_offset;
+        }
+        std::fprintf(stderr,
+            "[uv] mesh='%s' uvIndex=%d offset=(%.4f,%.4f) scale=(%.4f,%.4f) "
+            "sidecar=%d gltf_conv=%d effective_off=(%.4f,%.4f) effective_scale=(%.4f,%.4f)\n",
+            mesh->mName.C_Str(), uvIndex,
+            uv_offset.x, uv_offset.y, uv_scale.x, uv_scale.y,
+            uv_sidecar_active_ ? 1 : 0, uv_in_gltf_convention ? 1 : 0,
+            uv_effective_offset_.x, uv_effective_offset_.y,
+            uv_effective_scale_.x,  uv_effective_scale_.y);
+    }
+
     for (unsigned i = 0; i < mesh->mNumVertices; ++i) {
         glm::vec3 pos = xformPos(mesh->mVertices[i]);
         if (pos.y > aabb_max_y_) aabb_max_y_ = pos.y;
@@ -609,9 +682,23 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
             glm::vec3 n = xformDir(mesh->mNormals[i]);
             verts.push_back(n.x); verts.push_back(n.y); verts.push_back(n.z);
         } else { verts.push_back(0.f); verts.push_back(1.f); verts.push_back(0.f); }
-        if (mesh->mTextureCoords[0]) {
-            verts.push_back(mesh->mTextureCoords[0][i].x);
-            verts.push_back(mesh->mTextureCoords[0][i].y);
+        if (mesh->mTextureCoords[uvIndex]) {
+            float u = mesh->mTextureCoords[uvIndex][i].x;
+            float v = mesh->mTextureCoords[uvIndex][i].y;
+            if (uv_in_gltf_convention) {
+                // Assimp-detected KHR_texture_transform is authored against the
+                // glTF V=0-at-top convention, but aiProcess_FlipUVs has already
+                // inverted V (v_assimp = 1 - v_glTF). Substitute and simplify
+                // to apply the transform post-flip:
+                //   v_out = v_assimp * scale + (1 - scale - offset).
+                u = u * uv_scale.x + uv_offset.x;
+                v = v * uv_scale.y + (1.0f - uv_scale.y - uv_offset.y);
+            } else {
+                // Sidecar values are post-flip, applied directly.
+                u = u * uv_scale.x + uv_offset.x;
+                v = v * uv_scale.y + uv_offset.y;
+            }
+            verts.push_back(u); verts.push_back(v);
         } else { verts.push_back(0.f); verts.push_back(0.f); }
         if (mesh->HasTangentsAndBitangents()) {
             glm::vec3 t = xformDir(mesh->mTangents[i]);
@@ -690,17 +777,46 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
         if (mat->Get(AI_MATKEY_NAME, mname) == AI_SUCCESS)
             sm.material_name = mname.C_Str();
         aiString texPath;
+        std::string albedo_path_str;
         if (mat->GetTexture(AI_MATKEY_BASE_COLOR_TEXTURE, &texPath) == AI_SUCCESS ||
-            mat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS)
+            mat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS) {
+            albedo_path_str = texPath.C_Str();
             sm.tex_albedo = LoadTex(scene, texPath.C_Str(), true);
+        }
         if (mat->GetTexture(aiTextureType_NORMALS, 0, &texPath) == AI_SUCCESS ||
             mat->GetTexture(aiTextureType_HEIGHT,  0, &texPath) == AI_SUCCESS)
             sm.tex_normal = LoadTex(scene, texPath.C_Str(), false);
+        std::string mr_path_str;
         if (mat->GetTexture(AI_MATKEY_METALLIC_TEXTURE, &texPath) == AI_SUCCESS ||
-            mat->GetTexture(aiTextureType_METALNESS, 0, &texPath) == AI_SUCCESS)
+            mat->GetTexture(aiTextureType_METALNESS, 0, &texPath) == AI_SUCCESS) {
+            mr_path_str = texPath.C_Str();
             sm.tex_orm = LoadTex(scene, texPath.C_Str(), false);
-        if (mat->GetTexture(aiTextureType_OPACITY, 0, &texPath) == AI_SUCCESS)
-            sm.tex_opacity = LoadTex(scene, texPath.C_Str(), false);
+        }
+        // Dedicated AO texture (glTF separates occlusionTexture from
+        // metallicRoughnessTexture). Unreal exports always have these split, and
+        // their metallicRoughness.r channel is undefined — using it as AO drives
+        // the ambient term to ~0 and makes the whole model look black.
+        if (mat->GetTexture(aiTextureType_AMBIENT_OCCLUSION, 0, &texPath) == AI_SUCCESS ||
+            mat->GetTexture(aiTextureType_LIGHTMAP,          0, &texPath) == AI_SUCCESS) {
+            // Skip when AO and metallicRoughness reference the same texture
+            // (true ORM-packed); the shader's ormPacked path handles it.
+            if (mr_path_str != texPath.C_Str())
+                sm.tex_ao = LoadTex(scene, texPath.C_Str(), false);
+        }
+        if (mat->GetTexture(aiTextureType_OPACITY, 0, &texPath) == AI_SUCCESS) {
+            // glTF alphaMode=MASK exporters (Unreal, Blender) often expose the
+            // base-color texture itself as the "opacity" texture so we can use
+            // its alpha channel for cutout. Our bindless shader samples the .r
+            // channel from a dedicated grayscale opacity map, so feeding it the
+            // base-color RGBA produces wrong discards (dark pixels disappear,
+            // making the whole mesh black). Skip when paths match.
+            if (albedo_path_str != texPath.C_Str())
+                sm.tex_opacity = LoadTex(scene, texPath.C_Str(), false);
+            else
+                std::fprintf(stderr,
+                    "[mat] '%s' opacity == albedo path; skipping (glTF MASK alpha mode)\n",
+                    sm.material_name.c_str());
+        }
         aiColor4D c;
         if (mat->Get(AI_MATKEY_BASE_COLOR, c) == AI_SUCCESS ||
             mat->Get(AI_MATKEY_COLOR_DIFFUSE, c) == AI_SUCCESS)
@@ -808,8 +924,38 @@ void Model::ProcessNode(aiNode* node, const aiScene* scene,
 // ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
+// Try to read a "<model_path>.uv" sidecar containing 4 floats:
+// "offset_x offset_y scale_x scale_y". When present, the values override the
+// glTF KHR_texture_transform detected by Assimp — useful when an exporter
+// (Unreal, older Blender) omits or mis-applies the transform. Returns true
+// only when the file exists AND parses successfully.
+static bool ReadUVSidecar(const char* model_path,
+                          glm::vec2& out_offset, glm::vec2& out_scale) {
+    std::string p = std::string(model_path) + ".uv";
+    FILE* f = std::fopen(p.c_str(), "r");
+    if (!f) return false;
+    float ox = 0.f, oy = 0.f, sx = 1.f, sy = 1.f;
+    int n = std::fscanf(f, "%f %f %f %f", &ox, &oy, &sx, &sy);
+    std::fclose(f);
+    if (n != 4) return false;
+    out_offset = glm::vec2(ox, oy);
+    out_scale  = glm::vec2(sx, sy);
+    std::fprintf(stderr,
+        "[uv-sidecar] '%s' override offset=(%.4f,%.4f) scale=(%.4f,%.4f)\n",
+        p.c_str(), ox, oy, sx, sy);
+    return true;
+}
+
 bool Model::Load(const char* path, MaterialManager* mm) {
     EnsureDefaults();
+
+    // Sidecar override (per-model UV transform persisted by the GUE).
+    glm::vec2 sidecar_offset(0.f);
+    glm::vec2 sidecar_scale (1.f);
+    const bool has_sidecar = ReadUVSidecar(path, sidecar_offset, sidecar_scale);
+    uv_sidecar_offset_ = sidecar_offset;
+    uv_sidecar_scale_  = sidecar_scale;
+    uv_sidecar_active_ = has_sidecar;
 
     Assimp::Importer importer;
     // Normalise to metres. FBX from Maya/3ds Max typically stores positions
@@ -951,7 +1097,7 @@ bool Model::Load(const char* path, MaterialManager* mm) {
             char key[512];
             std::snprintf(key, sizeof(key), "%s#%zu", path, i);
             m.material_idx = mm->RegisterFromHandles(
-                key, m.tex_albedo, m.tex_normal, m.tex_orm, m.tex_opacity);
+                key, m.tex_albedo, m.tex_normal, m.tex_orm, m.tex_opacity, m.tex_ao);
         }
     }
 

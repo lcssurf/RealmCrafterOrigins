@@ -193,6 +193,7 @@ void Actor::Submit(Pipeline& pipeline) {
             req.ebo          = m.ebo;
             req.index_count  = m.idx_count;
             req.material_idx = m.material_idx;
+            req.tex_albedo   = m.tex_albedo;
             req.model        = model;
             pipeline.SubmitDynamic(req);
         }
@@ -285,6 +286,7 @@ void Actor::SubmitAs(const std::string& anim_name, float anim_t, bool loop,
             req.ebo          = m.ebo;
             req.index_count  = m.idx_count;
             req.material_idx = m.material_idx;
+            req.tex_albedo   = m.tex_albedo;
             req.model        = model;
             pipeline.SubmitDynamic(req);
         }

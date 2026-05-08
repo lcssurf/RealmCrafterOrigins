@@ -71,7 +71,8 @@ public:
                             unsigned int albedo,
                             unsigned int normal   = 0,
                             unsigned int orm      = 0,
-                            unsigned int opacity  = 0);
+                            unsigned int opacity  = 0,
+                            unsigned int ao       = 0);
 
     // Name → index (-1 if unknown).
     int IndexOf(const std::string& name) const;

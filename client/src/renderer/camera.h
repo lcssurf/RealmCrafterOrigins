@@ -20,11 +20,10 @@ public:
     void SetPitch(float p)   { pitch_ = p; }
     void AddYaw(float delta) { yaw_ += delta; }
 
-    // Derive pivot and lookat heights from the model's world-space height.
+    // Derive lookat height from the model's world-space height.
     // Call once after the player model is initialized (or when it changes).
     void SetActorHeight(float h) {
-        pivot_h_  = h * 1.00f;   // orbit anchor: top of head
-        lookat_h_ = h * 0.45f;   // focus: chest/torso level
+        lookat_h_ = h * 1.05f;
     }
 
     // Instantly snap smooth target (use after teleport / area change).
@@ -35,28 +34,38 @@ public:
     glm::mat4 Projection(float aspect) const;
     glm::vec3 Position()              const;
 
-    glm::vec3 Target() const { return target_smooth_; }
-    float     GetYaw() const { return yaw_; }
+    glm::vec3 Target()    const { return target_smooth_; }
+    float     GetYaw()   const { return yaw_; }
+    float     GetPitch() const { return pitch_; }
 
-    float fov   = 60.f;
-    float znear = 0.5f;
-    float zfar  = 1000.f;
+    // Called each frame by main.cpp after the terrain-collision march.
+    // Constrains the effective camera distance so the lens never clips into terrain.
+    void SetCollisionDist(float d) { dist_collision_ = d; }
+
+    float fov           = 70.f;
+    float znear         = 0.5f;
+    float zfar          = 1000.f;
+    float default_pitch = 32.f;  // pitch restaurado ao andar (classic mode)
+
+    // When true, View() shifts the lookat/pivot laterally so the player model
+    // sits slightly left of center (crosshair-mode shoulder offset).
+    bool  action_mode   = false;
+    float action_offset = 0.8f;  // world-units of right-strafe offset
 
 private:
     glm::vec3 target_        = {};
     glm::vec3 target_smooth_ = {};
     float     yaw_           = 0.f;
-    float     pitch_         = 15.f;   // RC: 0° is eye-level; we start slightly tilted
+    float     pitch_         = default_pitch;
 
-    // RC 1.26 ranges — allows looking up (negative pitch) and clamps zoom tight.
     static constexpr float kPitchMin = -70.f;
     static constexpr float kPitchMax =  85.f;
     static constexpr float kDistMin  =   3.f;
-    static constexpr float kDistMax  =  25.f;
-    float dist_        = 10.f;
-    float dist_target_ = 10.f;  // zoom target — dist_ lerps toward this
-    float pivot_h_     = 2.0f;  // orbit anchor height (top of head)
-    float lookat_h_    = 0.9f;  // focus height (chest)
+    static constexpr float kDistMax  =  35.f;
+    float dist_           = 14.f;
+    float dist_target_    = 14.f;
+    float dist_collision_ = kDistMax;
+    float lookat_h_       = 2.0f;
 };
 
 } // namespace rco::renderer

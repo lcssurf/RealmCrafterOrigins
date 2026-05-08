@@ -11,11 +11,42 @@
 
 #include "rco/renderer/engine.h"
 #include "rco/renderer/pipeline.h"
+#include "rco/renderer/shader.h"
+#include "rco/renderer/model_cache.h"
 
 namespace gue {
 
 PreviewViewport::~PreviewViewport() {
     actor_.Destroy();
+    if (simple_fbo_)   glDeleteFramebuffers(1, &simple_fbo_);
+    if (simple_color_) glDeleteTextures(1, &simple_color_);
+    if (simple_depth_) glDeleteRenderbuffers(1, &simple_depth_);
+}
+
+void PreviewViewport::EnsureSimpleFbo_(int w, int h) {
+    if (w == simple_w_ && h == simple_h_ && simple_fbo_) return;
+    if (simple_fbo_)   glDeleteFramebuffers(1, &simple_fbo_);
+    if (simple_color_) glDeleteTextures(1, &simple_color_);
+    if (simple_depth_) glDeleteRenderbuffers(1, &simple_depth_);
+
+    glGenTextures(1, &simple_color_);
+    glBindTexture(GL_TEXTURE_2D, simple_color_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glGenRenderbuffers(1, &simple_depth_);
+    glBindRenderbuffer(GL_RENDERBUFFER, simple_depth_);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+
+    glGenFramebuffers(1, &simple_fbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, simple_fbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, simple_color_, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, simple_depth_);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    simple_w_ = w;
+    simple_h_ = h;
 }
 
 void PreviewViewport::Init(rco::renderer::Engine*   engine,
@@ -60,6 +91,17 @@ void PreviewViewport::FitCameraToModel() {
     cam_far_      = std::max(200.f,  radius * 10.f);
     cam_dist_min_ = std::max(0.01f,  radius * 0.05f);
     cam_dist_max_ = std::max(50.f,   radius * 20.f);
+}
+
+void PreviewViewport::ReloadCurrent() {
+    if (current_path_.empty()) return;
+    std::string path = current_path_;
+    actor_.Destroy();
+    // Cache key is whatever was passed to ModelCacheGet — see LoadModel:
+    // the resolved (runtime-relative) path.
+    rco::renderer::ModelCacheInvalidate(ResolveClientAsset(path));
+    current_path_.clear();  // force LoadModel to skip its early-return
+    LoadModel(path);
 }
 
 bool PreviewViewport::LoadModel(const std::string& path) {
@@ -134,10 +176,6 @@ void PreviewViewport::RenderToEngineFrame_(int w, int h, float dt) {
     }
     if (stable_frames_ >= 2) engine_->Resize(w, h);
 
-    int engW = engine_->width();
-    int engH = engine_->height();
-    if (engW <= 0 || engH <= 0) return;
-
     float yaw   = glm::radians(cam_yaw_);
     float pitch = glm::radians(cam_pitch_);
     glm::vec3 offset = {
@@ -146,21 +184,80 @@ void PreviewViewport::RenderToEngineFrame_(int w, int h, float dt) {
         cam_dist_ * std::cos(pitch) * std::cos(yaw),
     };
     glm::vec3 eye  = cam_target_ + offset;
+
+    // Non-skinned static meshes use a dedicated simple forward shader instead
+    // of the deferred bindless pipeline, so plain sampler2D textures work on
+    // every driver without GL_ARB_bindless_texture involvement.
+    const bool is_static = actor_.IsLoaded() && !actor_.model().HasAnimations()
+                           && actor_.model().meshes().size() > 0
+                           && !actor_.model().meshes()[0].skinned;
+
+    if (is_static) {
+        EnsureSimpleFbo_(w, h);
+
+        GLint prev_fbo = 0;
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_fbo);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, simple_fbo_);
+        glViewport(0, 0, w, h);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        glDisable(GL_BLEND);
+        glClearColor(0.12f, 0.12f, 0.14f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glm::mat4 proj = glm::perspective(glm::radians(55.0f),
+                                          (float)w / (float)h, cam_near_, cam_far_);
+        glm::mat4 view = glm::lookAt(eye, cam_target_, glm::vec3(0, 1, 0));
+        glm::mat4 vp   = proj * view;
+
+        auto& sh = rco::renderer::Shader::shaders["preview_static"];
+        sh->Bind();
+        sh->SetMat4("u_viewProj", vp);
+        sh->SetMat4("u_model",    glm::mat4(1.0f));  // actor at origin, prebaked
+        sh->SetVec2("u_uvOffset", uv_offset_[0], uv_offset_[1]);
+        sh->SetVec2("u_uvScale",  uv_scale_[0],  uv_scale_[1]);
+        sh->SetVec3("u_sunDir",   glm::normalize(glm::vec3(-0.4f, -1.0f, -0.3f)));
+        sh->SetVec3("u_sunColor", glm::vec3(1.0f, 0.95f, 0.80f) * sun_intensity_);
+        sh->SetFloat("u_ambientStrength", 0.25f);
+
+        for (const auto& m : actor_.model().meshes()) {
+            if (!m.vao || m.idx_count == 0) continue;
+            if (m.tex_albedo) {
+                glBindTextureUnit(0, m.tex_albedo);
+                sh->SetBool("u_hasAlbedo", true);
+                sh->SetInt ("u_albedo",    0);
+            } else {
+                sh->SetBool("u_hasAlbedo",   false);
+                sh->SetVec3("u_albedoFactor", m.albedo_factor);
+            }
+            glBindVertexArray(m.vao);
+            glDrawElements(GL_TRIANGLES, m.idx_count, GL_UNSIGNED_INT, nullptr);
+        }
+        glBindVertexArray(0);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo);
+        return;
+    }
+
+    // Skinned / animated models: full deferred pipeline.
+    int engW = engine_->width();
+    int engH = engine_->height();
+    if (engW <= 0 || engH <= 0) return;
+
     glm::mat4 view = glm::lookAt(eye, cam_target_, glm::vec3(0, 1, 0));
     glm::mat4 proj = glm::perspective(glm::radians(55.0f),
                                       (float)engW / (float)engH, cam_near_, cam_far_);
 
     pipeline_->Begin(view, proj, eye, dt);
-    pipeline_->SetSun(glm::vec3(-0.4f, -1.0f, -0.3f), glm::vec3(1.0f, 0.95f, 0.80f));
+    pipeline_->SetSun(glm::vec3(-0.4f, -1.0f, -0.3f),
+                      glm::vec3(1.0f, 0.95f, 0.80f) * sun_intensity_);
 
     if (actor_.IsLoaded()) {
-        if (playing_) {
-            anim_t_ += dt;
-            actor_.SubmitAs(actor_.CurrentAnim(), anim_t_, /*loop*/true, *pipeline_);
-        } else {
-            // Frozen pose — reuse the current anim time.
-            actor_.SubmitAs(actor_.CurrentAnim(), anim_t_, /*loop*/true, *pipeline_);
-        }
+        anim_t_ += playing_ ? dt : 0.f;
+        actor_.SubmitAs(actor_.CurrentAnim(), anim_t_, /*loop*/true, *pipeline_);
     }
 
     rco::renderer::Pipeline::EndConfig cfg{};
@@ -213,11 +310,20 @@ void PreviewViewport::DrawImGui() {
     glViewport(prev_vp[0], prev_vp[1], prev_vp[2], prev_vp[3]);
 
     ImGui::SetCursorScreenPos(cursor_before);
-    ImGui::Image(
-        (ImTextureID)(intptr_t)engine_->finalImage(),
-        view_size,
-        ImVec2(0.f, 1.f), ImVec2(1.f, 0.f)
-    );
+    // Static meshes render into simple_fbo_ (no bindless); skinned models use
+    // the engine's deferred pipeline output.
+    const bool used_simple = simple_fbo_ != 0
+        && actor_.IsLoaded()
+        && !actor_.model().HasAnimations()
+        && !actor_.model().meshes().empty()
+        && !actor_.model().meshes()[0].skinned;
+    ImTextureID img_id = used_simple
+        ? (ImTextureID)(intptr_t)simple_color_
+        : (ImTextureID)(intptr_t)engine_->finalImage();
+    // Both FBOs have Y=0 at the bottom (OpenGL convention); flip for ImGui.
+    ImVec2 uv0 = ImVec2(0.f, 1.f);
+    ImVec2 uv1 = ImVec2(1.f, 0.f);
+    ImGui::Image(img_id, view_size, uv0, uv1);
 
     const auto& mdl = actor_.model();
     if (mdl.HasAnimations() && mdl.ClipCount() > 0) {
@@ -239,6 +345,28 @@ void PreviewViewport::DrawImGui() {
         ImGui::SameLine();
     }
     if (ImGui::Button("Reset cam")) FitCameraToModel();
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.f);
+    ImGui::SliderFloat("Light", &sun_intensity_, 0.0f, 4.0f, "%.2f");
+
+    // UV transform diagnostic — visible only for static (non-skinned) meshes
+    // since they use the simple preview shader.
+    const bool show_uv_panel = actor_.IsLoaded()
+        && !actor_.model().HasAnimations()
+        && !actor_.model().meshes().empty()
+        && !actor_.model().meshes()[0].skinned;
+    if (show_uv_panel) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset UV")) {
+            uv_offset_[0] = 0.f; uv_offset_[1] = 0.f;
+            uv_scale_[0]  = 1.f; uv_scale_[1]  = 1.f;
+        }
+        ImGui::SetNextItemWidth(180.f);
+        ImGui::DragFloat2("UV offset", uv_offset_, 0.001f, -1.f, 1.f, "%.3f");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(180.f);
+        ImGui::DragFloat2("UV scale",  uv_scale_,  0.005f,  0.1f, 8.f, "%.2f");
+    }
 }
 
 } // namespace gue

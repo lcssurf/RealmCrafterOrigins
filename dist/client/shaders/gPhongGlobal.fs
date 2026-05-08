@@ -17,6 +17,8 @@ layout (binding = 3) uniform sampler2D gDepth;
 // AO + shadow
 layout (binding = 4) uniform sampler2D ambientOcclusionTexture;
 layout (binding = 5) uniform sampler2D filteredShadow;
+// Raw shadow depth — used only by the debug visualisation (mode 11).
+layout (binding = 9) uniform sampler2D shadowDepthRaw;
 
 // IBL — cubemap suite (split-sum approximation)
 layout (binding = 6) uniform samplerCube irradianceCube;
@@ -93,10 +95,30 @@ float ShadowESM(vec4 lsp) {
     float ld = texture(filteredShadow, c.xy).x;
     return clamp(ld * exp(-u_C * c.z), 0.0, 1.0);
 }
+// 3x3 PCF over the raw shadow depth — robust to sparse occluders (most of the
+// shadow map is empty / depth=1 because only a handful of dynamic actors
+// actually project shadows). ESM with C=80 turns the empty regions into
+// near-infinite ld values that drown any real occluders during blur.
+float ShadowPCF(vec4 lsp) {
+    vec3 c = ShadowTexCoord(lsp);
+    if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0) return 1.0;
+    if (c.z >= 1.0) return 1.0;
+    float bias = 0.0015;
+    vec2 texel = 1.0 / vec2(textureSize(shadowDepthRaw, 0));
+    float sum = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            float occluder = texture(shadowDepthRaw,
+                                     c.xy + vec2(x, y) * texel).r;
+            sum += (c.z - bias > occluder) ? 0.0 : 1.0;
+        }
+    }
+    return sum / 9.0;
+}
 float Shadow(vec4 lsp) {
     if (u_shadowMethod == SHADOW_METHOD_VSM) return ShadowVSM(lsp);
     if (u_shadowMethod == SHADOW_METHOD_ESM) return ShadowESM(lsp);
-    return 1.0;
+    return ShadowPCF(lsp);  // PCF — used by SHADOW_METHOD_PCF (0)
 }
 
 void main()
@@ -120,6 +142,35 @@ void main()
     if (u_debugMode == 2) { fragColor = vec4(N * 0.5 + 0.5, 1.0); return; }
     if (u_debugMode == 3) { fragColor = vec4(vec3(depth), 1.0); return; }
     if (u_debugMode == 4) { fragColor = vec4(vec3(ao), 1.0); return; }
+    // Mode 11: visualise the RAW shadow depth (not the ESM-exp version) at
+    // this fragment's light-space UV. Sample is in [0,1] so geometry shows up
+    // as darker silhouettes against a white (depth=1) background.
+    if (u_debugMode == 11) {
+        vec4 lsp = u_lightMatrix * vec4(vPos, 1.0);
+        vec3 lpu = lsp.xyz / lsp.w;
+        lpu = lpu * 0.5 + 0.5;
+        if (lpu.x < 0.0 || lpu.x > 1.0 || lpu.y < 0.0 || lpu.y > 1.0) {
+            fragColor = vec4(1, 0, 1, 1);
+            return;
+        }
+        float sd = texture(shadowDepthRaw, lpu.xy).r;
+        fragColor = vec4(vec3(sd), 1.0);
+        return;
+    }
+    // Mode 12: render-time decision. Compute shadow inline ignoring the
+    // NdotL > 0 gate. Lets us tell whether the gate is dropping shadows on
+    // surfaces facing away from the light.
+    if (u_debugMode == 12) {
+        vec4 lsp = u_lightMatrix * vec4(vPos, 1.0);
+        vec3 lpu = lsp.xyz / lsp.w;
+        lpu = lpu * 0.5 + 0.5;
+        float sd = texture(filteredShadow, lpu.xy).r;
+        // Show ESM ratio compared to receiver depth
+        float receiver = lpu.z;
+        float v = clamp(sd * exp(-u_C * receiver), 0.0, 1.0);
+        fragColor = vec4(vec3(v), 1.0);
+        return;
+    }
 
     vec3 V = normalize(u_viewPos - vPos);
     vec3 R = reflect(-V, N);

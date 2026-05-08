@@ -58,6 +58,16 @@ void CompileAllShaders() {
     Shader::shaders["shadowBindless"].emplace(Shader({
         {"shadowBindless.vs", GL_VERTEX_SHADER}
     }));
+    // Shadow variants for dynamic submissions (mirrors gBufferBindless variants).
+    Shader::shaders["shadow_dynamic"].emplace(Shader({
+        {"shadow_dynamic.vs", GL_VERTEX_SHADER}
+    }));
+    Shader::shaders["shadow_skinned_instanced"].emplace(Shader({
+        {"shadow_skinned_instanced.vs", GL_VERTEX_SHADER}
+    }));
+    Shader::shaders["shadow_skinned"].emplace(Shader({
+        {"shadow_skinned.vs", GL_VERTEX_SHADER}
+    }));
     Shader::shaders["volumetric"].emplace(Shader({
         {"fullscreen_tri.vs", GL_VERTEX_SHADER},
         {"volumetric.fs",     GL_FRAGMENT_SHADER}
@@ -160,6 +170,13 @@ void CompileAllShaders() {
     Shader::shaders["brush_overlay"].emplace(Shader({
         {"brush_overlay.vs", GL_VERTEX_SHADER},
         {"brush_overlay.fs", GL_FRAGMENT_SHADER}
+    }));
+
+    // Simple forward preview — static (non-skinned) mesh preview in the GUE.
+    // No bindless textures, no SSBO: plain sampler2D + Phong lighting.
+    Shader::shaders["preview_static"].emplace(Shader({
+        {"preview_static.vs", GL_VERTEX_SHADER},
+        {"preview_static.fs", GL_FRAGMENT_SHADER}
     }));
 
     // Particle system — forward pass with GL_POINTS + additive blend

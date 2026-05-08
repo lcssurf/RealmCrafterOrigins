@@ -68,6 +68,9 @@ type Area struct {
 	// Script trigger volumes
 	Triggers []Trigger
 
+	// Heightmap for server-side Y sampling (nil for areas without terrain).
+	Heightmap *Heightmap
+
 	// Dead NPCs waiting to respawn.
 	dnmu     sync.Mutex
 	deadNPCs []deadNPC
@@ -271,7 +274,7 @@ func broadcastNPCPosition(a *Area, npc *Actor) {
 
 // moveNPCToward advances npc one AI step toward target and updates its yaw.
 // Returns true if the NPC moved (was not already in attack range).
-func moveNPCToward(npc, target *Actor) {
+func moveNPCToward(npc, target *Actor, a *Area) {
 	dx := target.X - npc.X
 	dz := target.Z - npc.Z
 	dist := float32(math.Sqrt(float64(dx*dx + dz*dz)))
@@ -284,6 +287,9 @@ func moveNPCToward(npc, target *Actor) {
 	}
 	npc.X += (dx / dist) * step
 	npc.Z += (dz / dist) * step
+	if a.Heightmap != nil {
+		npc.Y = a.Heightmap.SampleWorld(npc.X, npc.Z)
+	}
 	// Face the movement direction.
 	yaw := float32(math.Atan2(float64(dx), float64(dz)) * 180.0 / math.Pi)
 	if yaw < 0 {
@@ -430,6 +436,9 @@ func (a *Area) tickAI() {
 				}
 				npc.X += (dx / dist) * step
 				npc.Z += (dz / dist) * step
+				if a.Heightmap != nil {
+					npc.Y = a.Heightmap.SampleWorld(npc.X, npc.Z)
+				}
 				yaw := float32(math.Atan2(float64(dx), float64(dz)) * 180.0 / math.Pi)
 				if yaw < 0 {
 					yaw += 360
@@ -506,6 +515,9 @@ func (a *Area) tickAI() {
 				}
 				npc.X += (dx2 / dist) * step
 				npc.Z += (dz2 / dist) * step
+				if a.Heightmap != nil {
+					npc.Y = a.Heightmap.SampleWorld(npc.X, npc.Z)
+				}
 				yaw := float32(math.Atan2(float64(dx2), float64(dz2)) * 180.0 / math.Pi)
 				if yaw < 0 {
 					yaw += 360
@@ -598,7 +610,7 @@ func (a *Area) tickAI() {
 				}
 			} else {
 				// Not in attack range — step toward the target.
-				moveNPCToward(npc, target)
+				moveNPCToward(npc, target, a)
 				broadcastNPCPosition(a, npc)
 				BroadcastAnimate(a, npc, "Walk")
 			}

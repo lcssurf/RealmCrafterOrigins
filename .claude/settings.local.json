@@ -95,6 +95,5 @@
       "Bash(cmd /c build-gue.bat)",
       "PowerShell(cmake *)"
     ]
-  },
-  "model": "opusplan"
+  }
 }
