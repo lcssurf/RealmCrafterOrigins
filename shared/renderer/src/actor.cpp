@@ -184,6 +184,7 @@ void Actor::Submit(Pipeline& pipeline) {
             e.index_count  = m.idx_count;
             e.material_idx = m.material_idx;
             e.model        = model;
+            e.readability_mask = ReadabilityMask_();
             for (int b = 0; b < kMaxBones; ++b) e.bones[b] = bones[b];
             pipeline.SubmitSkinnedInstanced(e);
         } else {
@@ -195,6 +196,7 @@ void Actor::Submit(Pipeline& pipeline) {
             req.material_idx = m.material_idx;
             req.tex_albedo   = m.tex_albedo;
             req.model        = model;
+            req.readability_mask = ReadabilityMask_();
             pipeline.SubmitDynamic(req);
         }
     }
@@ -224,6 +226,7 @@ void Actor::SubmitWithMatrix(Pipeline& pipeline, const glm::mat4& model_matrix) 
             e.index_count  = m.idx_count;
             e.material_idx = m.material_idx;
             e.model        = model_matrix;
+            e.readability_mask = ReadabilityMask_();
             for (int b = 0; b < kMaxBones; ++b) e.bones[b] = bones[b];
             pipeline.SubmitSkinnedInstanced(e);
         } else {
@@ -234,6 +237,7 @@ void Actor::SubmitWithMatrix(Pipeline& pipeline, const glm::mat4& model_matrix) 
             req.index_count  = m.idx_count;
             req.material_idx = m.material_idx;
             req.model        = model_matrix;
+            req.readability_mask = ReadabilityMask_();
             pipeline.SubmitDynamic(req);
         }
     }
@@ -277,6 +281,7 @@ void Actor::SubmitAs(const std::string& anim_name, float anim_t, bool loop,
             e.index_count  = m.idx_count;
             e.material_idx = m.material_idx;
             e.model        = model;
+            e.readability_mask = ReadabilityMask_();
             for (int b = 0; b < kMaxBones; ++b) e.bones[b] = bones[b];
             pipeline.SubmitSkinnedInstanced(e);
         } else {
@@ -288,6 +293,7 @@ void Actor::SubmitAs(const std::string& anim_name, float anim_t, bool loop,
             req.material_idx = m.material_idx;
             req.tex_albedo   = m.tex_albedo;
             req.model        = model;
+            req.readability_mask = ReadabilityMask_();
             pipeline.SubmitDynamic(req);
         }
     }
@@ -347,6 +353,7 @@ void Actor::SubmitBlended(Pipeline& pipeline,
         req.model       = model_matrix;
         req.bone_ssbo   = m.skinned ? bone_ssbos_[mi] : 0;
         req.bone_count  = kMaxBones;
+        req.readability_mask = ReadabilityMask_();
         if (m.skinned) pipeline.SubmitSkinned(req);
         else           pipeline.SubmitDynamic(req);
     }

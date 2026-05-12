@@ -17,7 +17,10 @@ layout (location = 1) uniform float u_adjustmentSpeed;
 layout (location = 2) uniform float u_logLowLum;
 layout (location = 3) uniform float u_logMaxLum;
 layout (location = 4) uniform float u_targetLuminance = 0.22;
-layout (location = 5) uniform int u_numPixels;
+layout (location = 5) uniform float u_minValidFraction = 0.20;
+layout (location = 6) uniform uint u_histogramSampleCount = 1u;
+layout (location = 7) uniform float u_maxStepUp = 0.08;
+layout (location = 8) uniform float u_maxStepDown = 0.08;
 
 float map(float val, float r1s, float r1e, float r2s, float r2e)
 {
@@ -32,14 +35,43 @@ void main()
   readExposure = writeExposure;
   writeExposure = temp;
 
-  uint sum = 0;
+  uint weightedSum = 0;
+  uint validPixels = 0;
   for (int i = 0; i < NUM_BUCKETS; i++)
   {
-    sum += buckets[i] * (i + 1);
+    uint c = uint(max(buckets[i], 0));
+    weightedSum += c * uint(i + 1);
+    validPixels += c;
     buckets[i] = 0;
   }
-  
-  float meanLuminance = exp(map(float(sum) / float(u_numPixels), 0.0, NUM_BUCKETS, u_logLowLum, u_logMaxLum));
-  float exposureTarget = u_targetLuminance / meanLuminance;
-  writeExposure = mix(readExposure, exposureTarget, u_dt * u_adjustmentSpeed);
+
+  if (validPixels == 0u) {
+    writeExposure = readExposure;
+    return;
+  }
+
+  float meanLuminance = exp(map(float(weightedSum) / float(validPixels), 0.0, NUM_BUCKETS, u_logLowLum, u_logMaxLum));
+  if (isnan(meanLuminance) || isinf(meanLuminance)) meanLuminance = 1.0;
+  meanLuminance = max(meanLuminance, 0.0001);
+
+  // When the sky dominates the frame, depth-rejected pixels can leave too few
+  // valid samples and make exposure jump. Blend toward previous luminance when
+  // coverage is low so "looking at the sun" behaves like a camera effect, not
+  // a global relight of the whole scene.
+  float sampleCount = max(1.0, float(u_histogramSampleCount));
+  float validFrac = clamp(float(validPixels) / sampleCount, 0.0, 1.0);
+  float coverT = smoothstep(u_minValidFraction, min(1.0, u_minValidFraction * 2.0), validFrac);
+  float prevLuminance = u_targetLuminance / max(readExposure, 0.0001);
+  float stableLuminance = mix(prevLuminance, meanLuminance, coverT);
+
+  float exposureTarget = u_targetLuminance / stableLuminance;
+  exposureTarget = clamp(exposureTarget, 0.01, 64.0);
+
+  float stepUp = clamp(u_maxStepUp, 0.0, 0.95);
+  float stepDown = clamp(u_maxStepDown, 0.0, 0.95);
+  float minTarget = readExposure * (1.0 - stepDown);
+  float maxTarget = readExposure * (1.0 + stepUp);
+  exposureTarget = clamp(exposureTarget, minTarget, maxTarget);
+
+  writeExposure = mix(readExposure, exposureTarget, clamp(u_dt * u_adjustmentSpeed, 0.0, 1.0));
 }

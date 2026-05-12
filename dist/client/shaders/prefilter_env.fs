@@ -3,6 +3,7 @@
 in vec3 vLocalPos;
 layout (binding = 0) uniform samplerCube u_envCube;
 uniform float u_roughness;
+uniform float u_iblClamp;
 
 layout (location = 0) out vec4 fragColor;
 
@@ -76,7 +77,9 @@ void main()
             float saSample = 1.0 / (float(SAMPLE_COUNT) * pdf + 0.0001);
             float mipLevel = u_roughness == 0.0 ? 0.0 : 0.5 * log2(saSample / saTexel);
 
-            prefilteredColor += textureLod(u_envCube, L, mipLevel).rgb * NdotL;
+            vec3 env = textureLod(u_envCube, L, mipLevel).rgb;
+            env = min(env, vec3(max(u_iblClamp, 0.001)));
+            prefilteredColor += env * NdotL;
             totalWeight      += NdotL;
         }
     }

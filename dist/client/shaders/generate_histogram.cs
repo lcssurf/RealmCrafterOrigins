@@ -8,6 +8,8 @@
 layout (location = 0) uniform sampler2D u_hdrBuffer;
 layout (location = 1) uniform float u_logLowLum;
 layout (location = 2) uniform float u_logMaxLum;
+layout (location = 3) uniform sampler2D u_depthBuffer;
+layout (location = 4) uniform float u_skyDepthCutoff;
 
 layout (std430, binding = 0) buffer histogram
 {
@@ -29,8 +31,13 @@ void main()
   //if (any(greaterThanEqual(coords, texSize))) return;
   //vec3 color = texelFetch(u_hdrBuffer, ivec2(coords), 0).rgb;
   vec2 uv = vec2(gl_GlobalInvocationID.xy) / (gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  float depth = texture(u_depthBuffer, uv).r;
+  if (depth >= u_skyDepthCutoff) return;
+
   vec3 color = texture(u_hdrBuffer, uv).rgb;
   float luminance = dot(color, vec3(.3, .59, .11));
+  if (isnan(luminance) || isinf(luminance)) luminance = 0.0001;
+  luminance = max(luminance, 0.0001);
   int bucket = clamp(int(map(log(luminance), u_logLowLum, u_logMaxLum, 0.0, float(NUM_BUCKETS - 1))), 0, NUM_BUCKETS - 1);
   atomicAdd(buckets[bucket], 1);
   // const uint numWrites = NUM_BUCKETS / WORKGROUPSIZE;

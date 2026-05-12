@@ -7,8 +7,21 @@
 #include <vector>
 #include <string>
 #include <utility>
+#include <cstdlib>
+#include <cstring>
 
 namespace rco::renderer {
+
+static bool VerboseConsolidationLogsEnabled() {
+    static const bool enabled = []() {
+        const char* v = std::getenv("RCO_ASSET_LOG_VERBOSE");
+        if (!v) return false;
+        return std::strcmp(v, "1") == 0 || std::strcmp(v, "true") == 0 ||
+               std::strcmp(v, "TRUE") == 0 || std::strcmp(v, "on") == 0 ||
+               std::strcmp(v, "ON") == 0;
+    }();
+    return enabled;
+}
 
 ConsolidationResult ConsolidateMeshes(Model& model, const char* path) {
     const auto& meshes = model.meshes();  // const& — safe for OFF mode read
@@ -25,9 +38,11 @@ ConsolidationResult ConsolidateMeshes(Model& model, const char* path) {
     result.materials_detected = (int)mat_groups.size();
 
     // ── Detection log (always emitted, OFF and ON mode) ───────────────────────
-    std::fprintf(stderr,
-        "[consolidate-detect] '%s' total_submeshes=%d unique_materials=%d\n",
-        path ? path : "", (int)meshes.size(), (int)mat_groups.size());
+    if (VerboseConsolidationLogsEnabled()) {
+        std::fprintf(stderr,
+            "[consolidate-detect] '%s' total_submeshes=%d unique_materials=%d\n",
+            path ? path : "", (int)meshes.size(), (int)mat_groups.size());
+    }
 
     for (const auto& [mat_name, indices] : mat_groups) {
         size_t total_verts   = 0;
@@ -36,9 +51,11 @@ ConsolidationResult ConsolidateMeshes(Model& model, const char* path) {
             total_verts   += (size_t)meshes[si].raw_vertex_count;
             total_indices += meshes[si].raw_indices.size();
         }
-        std::fprintf(stderr,
-            "[consolidate-detect]   mat='%s' submeshes=%d total_verts=%zu total_indices=%zu\n",
-            mat_name.c_str(), (int)indices.size(), total_verts, total_indices);
+        if (VerboseConsolidationLogsEnabled()) {
+            std::fprintf(stderr,
+                "[consolidate-detect]   mat='%s' submeshes=%d total_verts=%zu total_indices=%zu\n",
+                mat_name.c_str(), (int)indices.size(), total_verts, total_indices);
+        }
     }
 
 #if RCO_MESH_CONSOLIDATE == 1
@@ -159,6 +176,7 @@ ConsolidationResult ConsolidateMeshes(Model& model, const char* path) {
         sm.tex_albedo       = first.tex_albedo;
         sm.tex_normal       = first.tex_normal;
         sm.tex_orm          = first.tex_orm;
+        sm.orm_packed       = first.orm_packed;
         sm.albedo_factor    = first.albedo_factor;
         sm.roughness_factor = first.roughness_factor;
         sm.metallic_factor  = first.metallic_factor;
@@ -257,9 +275,11 @@ ConsolidationResult ConsolidateMeshes(Model& model, const char* path) {
         sm.raw_bone_ids     = std::move(merged_bone_ids);
         sm.raw_bone_weights = std::move(merged_bone_wts);
 
-        std::fprintf(stderr,
-            "[mesh-consolidate]   mat='%s' merged %d submeshes -> 1 (%u verts, %d indices)\n",
-            mat_name.c_str(), (int)idxs.size(), vertex_offset, sm.idx_count);
+        if (VerboseConsolidationLogsEnabled()) {
+            std::fprintf(stderr,
+                "[mesh-consolidate]   mat='%s' merged %d submeshes -> 1 (%u verts, %d indices)\n",
+                mat_name.c_str(), (int)idxs.size(), vertex_offset, sm.idx_count);
+        }
 
         new_meshes.push_back(std::move(sm));
         any_merged = true;
@@ -268,11 +288,13 @@ ConsolidationResult ConsolidateMeshes(Model& model, const char* path) {
     if (any_merged) {
         model.meshes_ = std::move(new_meshes);
         result.consolidated_submesh_count = (int)model.meshes_.size();
-        std::fprintf(stderr,
-            "[mesh-consolidate] '%s' consolidated %d -> %d submeshes\n",
-            path ? path : "",
-            result.original_submesh_count,
-            result.consolidated_submesh_count);
+        if (VerboseConsolidationLogsEnabled()) {
+            std::fprintf(stderr,
+                "[mesh-consolidate] '%s' consolidated %d -> %d submeshes\n",
+                path ? path : "",
+                result.original_submesh_count,
+                result.consolidated_submesh_count);
+        }
     }
 #endif // RCO_MESH_CONSOLIDATE == 1
 

@@ -13,14 +13,20 @@ namespace rco {
 // before collision resolution.
 class PlayerController {
 public:
-    float speed         = 8.0f;
-    float back_mult     = 0.65f;
-    float sprint_mult   = 1.65f;  // speed multiplier while Shift is held
-    float turn_rate     = 150.0f;
-    float max_slope_deg = 45.0f;
-    float jump_vel      = 9.0f;
-    float gravity       = 20.0f;
-    float snap_down     = 0.8f;
+    struct Config {
+        float speed               = 8.0f;
+        float back_mult           = 0.65f;
+        float sprint_mult         = 1.65f;  // speed multiplier while Shift is held
+        float turn_rate           = 150.0f;
+        float max_slope_deg       = 45.0f;
+        float jump_vel            = 9.0f;
+        float gravity             = 20.0f;
+        float snap_down           = 0.8f;
+        float click_stop_radius   = 0.08f;
+        float min_move_len_sq     = 1e-8f;
+        float min_proj_len        = 0.001f;
+        float min_dir_len_sq      = 0.001f;
+    };
 
     struct Result {
         float yaw_delta     = 0.f;   // classic A/D turn: add to player.yaw AND camera
@@ -37,6 +43,8 @@ public:
     void Reset() { vel_y_ = 0.f; on_ground_ = true; auto_run_ = false; CancelMoveTarget(); }
     bool IsOnGround() const { return on_ground_; }
     bool IsAutoRunning() const { return auto_run_; }
+    const Config& GetConfig() const { return cfg_; }
+    void SetConfig(const Config& cfg) { cfg_ = cfg; }
 
     // action_mode: when true, A/D strafe instead of turn (mouse handles rotation).
     Result Update(GLFWwindow* win, float dt, bool dead, bool action_mode,
@@ -45,6 +53,7 @@ public:
                   bool rmb_held, bool lmb_held, bool ms_lmb_drag);
 
 private:
+    Config    cfg_{};
     float     vel_y_          = 0.f;
     bool      on_ground_      = true;
     bool      auto_run_       = false;

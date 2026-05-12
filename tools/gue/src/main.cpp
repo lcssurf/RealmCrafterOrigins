@@ -163,6 +163,7 @@ int main() {
     gue::SpawnPointsTab  spawnPointsTab;
     mediaTab.SetRenderer(&engine, pipeline.get());
     zonesTab.SetRenderer(&engine, pipeline.get());
+    zonesTab.SetWindow(win);  // shared GL context for background thumbnail rendering
 
     // Scan available HDR skyboxes so users can swap environments from the
     // View menu. File name (stem) is the display label; full path feeds

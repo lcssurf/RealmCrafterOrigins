@@ -93,7 +93,9 @@
       "Bash(cmake --build D:/Github/RealmCrafterOrigins/client/build --config Release)",
       "Bash(grep -E \"\\\\.\\(h|cpp\\)$\")",
       "Bash(cmd /c build-gue.bat)",
-      "PowerShell(cmake *)"
+      "PowerShell(cmake *)",
+      "Bash(git -C \"D:/Github/RealmCrafterOrigins\" status --short)",
+      "Bash(xargs wc -l)"
     ]
   }
 }

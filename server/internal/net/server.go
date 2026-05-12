@@ -28,6 +28,22 @@ type Config struct {
 	ListenAddr string
 	CertFile   string
 	KeyFile    string
+	Movement   MovementValidationConfig
+}
+
+// MovementValidationConfig controls sanity checks for client-reported movement.
+// These values should be tuned from config.toml; code defaults are safe fallbacks.
+type MovementValidationConfig struct {
+	MinDeltaSec       float64
+	MaxDeltaSec       float64
+	BaseStepAllowance float64
+	MaxMoveSpeed      float64
+	SpeedSlackMult    float64
+	MaxBelowGround    float64
+	MaxAboveGround    float64
+	EnableTelemetry   bool
+	LogRejections     bool
+	TelemetrySampleMs int64
 }
 
 // Server manages the QUIC listener and spawns a ClientConn per connection.
@@ -136,8 +152,8 @@ func generateSelfSignedCert() (tls.Certificate, error) {
 	template := x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			Organization:  []string{"RealmCrafter Origins"},
-			CommonName:    "localhost",
+			Organization: []string{"RealmCrafter Origins"},
+			CommonName:   "localhost",
 		},
 		NotBefore:             now,
 		NotAfter:              now.Add(10 * 365 * 24 * time.Hour),

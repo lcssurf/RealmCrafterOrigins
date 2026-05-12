@@ -3,6 +3,9 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <vector>
+#include <cstdlib>
+#include <cstring>
+#include <cmath>
 
 #include "rco/renderer/buffers.h"
 #include "rco/renderer/helpers.h"
@@ -12,6 +15,17 @@
 #include "rco/renderer/shader.h"
 
 namespace rco::renderer {
+
+static bool ShadowDebugLogsEnabled() {
+    static const bool enabled = []() {
+        const char* v = std::getenv("RCO_CLIENT_DEBUG_LOGS");
+        if (!v) return false;
+        return std::strcmp(v, "1") == 0 || std::strcmp(v, "true") == 0 ||
+               std::strcmp(v, "TRUE") == 0 || std::strcmp(v, "on") == 0 ||
+               std::strcmp(v, "ON") == 0;
+    }();
+    return enabled;
+}
 
 Pipeline::Pipeline(Engine& e) : engine_(&e) {
     sun_.direction = glm::normalize(glm::vec3(1.0f, -0.5f, 0.0f));
@@ -25,6 +39,31 @@ void Pipeline::SetFeatures(const FeatureConfig& cfg) { features_ = cfg; }
 void Pipeline::SetSun(const glm::vec3& dir, const glm::vec3& col) {
     sun_.direction = glm::normalize(dir);
     sun_.diffuse   = col;
+}
+
+void Pipeline::SetCharacterReadability(const CharacterReadabilityTuning& cfg) {
+    characterReadability_ = cfg;
+}
+
+void Pipeline::SetSceneLook(const SceneLookTuning& cfg) {
+    sceneLook_ = cfg;
+    lightBalance_.directScale = cfg.directScale;
+    lightBalance_.ambientScale = cfg.ambientScale;
+    hdr_.exposureFactor = cfg.exposureFactor;
+}
+
+void Pipeline::SetColorGrading(float contrast,
+                               float saturation,
+                               float vibrance,
+                               float blackPoint,
+                               float vignetteStrength,
+                               float vignetteSoftness) {
+    color_.contrast = glm::clamp(contrast, 0.80f, 1.35f);
+    color_.saturation = glm::clamp(saturation, 0.80f, 1.40f);
+    color_.vibrance = glm::clamp(vibrance, -0.30f, 0.60f);
+    color_.blackPoint = glm::clamp(blackPoint, 0.00f, 0.06f);
+    color_.vignetteStrength = glm::clamp(vignetteStrength, 0.00f, 0.20f);
+    color_.vignetteSoftness = glm::clamp(vignetteSoftness, 0.00f, 1.00f);
 }
 
 void Pipeline::Begin(const glm::mat4& view, const glm::mat4& proj,
@@ -86,7 +125,7 @@ void Pipeline::shadowPass_() {
     glDepthFunc(GL_LEQUAL);
 
     static int s_logged = 0;
-    if (s_logged < 3) {
+    if (ShadowDebugLogsEnabled() && s_logged < 3) {
         std::fprintf(stderr,
             "[shadow] static=%zu dynamic=%zu skinned_inst=%zu lightMat[0][0]=%.3f\n",
             engine_->staticMeshes_.size(), dynamicDraws_.size(),
@@ -263,6 +302,7 @@ void Pipeline::gBufferPass_() {
         sh->SetFloat("u_metalnessOverride",        0.0f);
         sh->SetFloat("u_AOoverride",               0.0f);
         sh->SetFloat("u_ambientOcclusionOverride", 1.0f);
+        sh->SetFloat("u_characterMask",            0.0f);
         uniformBuffer.BindBase(GL_SHADER_STORAGE_BUFFER, 0);
         engine_->materialsBuffer_->BindBase(GL_SHADER_STORAGE_BUFFER, 1);
         engine_->drawIndirectBuffer_->Bind(GL_DRAW_INDIRECT_BUFFER);
@@ -286,6 +326,7 @@ void Pipeline::gBufferPass_() {
         for (const auto& r : dynamicDraws_) {
             sh->SetMat4("u_modelMatrix",  r.model);
             sh->SetUInt("u_materialIndex", static_cast<unsigned>(r.material_idx));
+            sh->SetFloat("u_characterMask", r.readability_mask);
             if (r.vao) {
                 glBindVertexArray(r.vao);
             } else {
@@ -309,6 +350,7 @@ void Pipeline::gBufferPass_() {
         for (const auto& r : skinnedDraws_) {
             sh->SetMat4("u_modelMatrix",  r.model);
             sh->SetUInt("u_materialIndex", static_cast<unsigned>(r.material_idx));
+            sh->SetFloat("u_characterMask", r.readability_mask);
             if (r.bone_ssbo) {
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, r.bone_ssbo);
             }
@@ -338,6 +380,7 @@ void Pipeline::gBufferPass_() {
             GLuint  vao, ebo;
             GLsizei idx_count;
             int     material_idx;
+            float   readability_mask;
             std::vector<ObjectUniforms> obj_unis;
             std::vector<glm::mat4>      all_bones; // [inst0_bone0..63 | inst1_bone0..63 | ...]
         };
@@ -348,10 +391,16 @@ void Pipeline::gBufferPass_() {
             if (!e.vao) continue;
             InstancedBatch* b = nullptr;
             for (auto& x : batches) {
-                if (x.vao == e.vao && x.ebo == e.ebo) { b = &x; break; }
+                if (x.vao == e.vao &&
+                    x.ebo == e.ebo &&
+                    std::fabs(x.readability_mask - e.readability_mask) < 0.01f) {
+                    b = &x;
+                    break;
+                }
             }
             if (!b) {
-                batches.push_back({e.vao, e.ebo, e.index_count, e.material_idx, {}, {}});
+                batches.push_back({e.vao, e.ebo, e.index_count, e.material_idx,
+                                   e.readability_mask, {}, {}});
                 b = &batches.back();
             }
             b->obj_unis.push_back(ObjectUniforms{e.model, static_cast<uint32_t>(e.material_idx)});
@@ -370,6 +419,7 @@ void Pipeline::gBufferPass_() {
             StaticBuffer bone_buf(b.all_bones.data(),
                                   b.all_bones.size() * sizeof(glm::mat4), 0);
             bone_buf.BindBase(GL_SHADER_STORAGE_BUFFER, 2);
+            sh->SetFloat("u_characterMask", b.readability_mask);
 
             glBindVertexArray(b.vao);
             glDrawElementsInstanced(GL_TRIANGLES, b.idx_count, GL_UNSIGNED_INT, nullptr, N);
@@ -536,6 +586,20 @@ void Pipeline::globalLightPass_() {
     sh->SetVec3 ("u_globalLight_direction", sun_.direction);
     sh->SetMat4 ("u_lightMatrix",           lightMat_);
     sh->SetFloat("u_lightBleedFix",         vlightBleedFix_);
+    sh->SetFloat("u_directScale",           lightBalance_.directScale);
+    sh->SetFloat("u_ambientScale",          lightBalance_.ambientScale);
+    sh->SetFloat("u_characterShadowLift",   characterReadability_.shadowLift);
+    sh->SetFloat("u_characterRimStrength",  characterReadability_.rimStrength);
+    sh->SetFloat("u_characterRimExponent",  characterReadability_.rimExponent);
+    sh->SetFloat("u_characterMinNdotL",     characterReadability_.minNdotL);
+    sh->SetFloat("u_characterAmbientBoost", characterReadability_.ambientBoost);
+    sh->SetFloat("u_worldShadowLift",       sceneLook_.worldShadowLift);
+    sh->SetFloat("u_iblIntensity",          sceneLook_.iblIntensity);
+    sh->SetFloat("u_flatAmbient",           sceneLook_.flatAmbient);
+    sh->SetFloat("u_worldMinNdotL",         sceneLook_.worldMinNdotL);
+    sh->SetFloat("u_albedoMinLuma",         sceneLook_.albedoMinLuma);
+    sh->SetFloat("u_albedoLiftStrength",    sceneLook_.albedoLiftStrength);
+    sh->SetFloat("u_specularScale",         sceneLook_.specularScale);
     sh->SetInt  ("u_debugMode",             debugMode_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
@@ -598,6 +662,7 @@ void Pipeline::skyboxPass_() {
     sh->SetMat4 ("u_invViewProj", glm::inverse(viewProj_));
     sh->SetVec3 ("u_camPos",      camPos_);
     sh->SetInt  ("u_envCube",     0);
+    sh->SetFloat("u_skyIntensity", sceneLook_.skyIntensity);
     glBindTextureUnit(0, engine_->envCubemap_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
@@ -747,18 +812,23 @@ void Pipeline::tonemappingPass_(float dt) {
     glDisable(GL_BLEND);
 
     glBindTextureUnit(1, engine_->postprocessColor_);
+    glBindTextureUnit(2, engine_->gDepth_);
 
     const float logLowLum     = glm::log(hdr_.targetLuminance / hdr_.maxExposure);
     const float logMaxLum     = glm::log(hdr_.targetLuminance / hdr_.minExposure);
     const int   computePixelsX = engine_->width_  / 2;
     const int   computePixelsY = engine_->height_ / 2;
+    const unsigned histogramSampleCount =
+        static_cast<unsigned>(std::max(1, computePixelsX) * std::max(1, computePixelsY));
 
     {
         auto& hshdr = Shader::shaders["generate_histogram"];
         hshdr->Bind();
-        hshdr->SetInt  ("u_hdrBuffer",  1);
-        hshdr->SetFloat("u_logLowLum", logLowLum);
-        hshdr->SetFloat("u_logMaxLum", logMaxLum);
+        hshdr->SetInt  ("u_hdrBuffer",      1);
+        hshdr->SetFloat("u_logLowLum",      logLowLum);
+        hshdr->SetFloat("u_logMaxLum",      logMaxLum);
+        hshdr->SetInt  ("u_depthBuffer",    2);
+        hshdr->SetFloat("u_skyDepthCutoff", 0.99995f);
         constexpr int X_SIZE = 8, Y_SIZE = 8;
         engine_->histogramBuffer_->BindBase(GL_SHADER_STORAGE_BUFFER, 0);
         glDispatchCompute((computePixelsX + X_SIZE - 1) / X_SIZE,
@@ -776,7 +846,10 @@ void Pipeline::tonemappingPass_(float dt) {
         cshdr->SetFloat("u_logLowLum",       logLowLum);
         cshdr->SetFloat("u_logMaxLum",       logMaxLum);
         cshdr->SetFloat("u_targetLuminance", hdr_.targetLuminance);
-        cshdr->SetInt  ("u_numPixels",       computePixelsX * computePixelsY);
+        cshdr->SetFloat("u_minValidFraction", 0.20f);
+        cshdr->SetUInt ("u_histogramSampleCount", histogramSampleCount);
+        cshdr->SetFloat("u_maxStepUp", 0.08f);
+        cshdr->SetFloat("u_maxStepDown", 0.08f);
         glDispatchCompute(1, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
@@ -789,6 +862,12 @@ void Pipeline::tonemappingPass_(float dt) {
     auto& shdr = Shader::shaders["tonemap"];
     shdr->Bind();
     shdr->SetFloat("u_exposureFactor", hdr_.exposureFactor);
+    shdr->SetFloat("u_contrast",       color_.contrast);
+    shdr->SetFloat("u_saturation",     color_.saturation);
+    shdr->SetFloat("u_vibrance",       color_.vibrance);
+    shdr->SetFloat("u_blackPoint",     color_.blackPoint);
+    shdr->SetFloat("u_vignetteStrength", color_.vignetteStrength);
+    shdr->SetFloat("u_vignetteSoftness", color_.vignetteSoftness);
     shdr->SetInt  ("u_hdrBuffer",      1);
     shdr->SetInt  ("u_debugBypass",    debugMode_ != 0 ? 1 : 0);
     glNamedFramebufferTexture(engine_->postprocessFbo_, GL_COLOR_ATTACHMENT0,

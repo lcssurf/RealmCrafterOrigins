@@ -7,6 +7,8 @@ layout (location = 0) out vec4 fragColor;
 void main()
 {
   float fog = texture(u_texture, vTexCoord).r;
-  // White fog: mix(scene, white, fog) via GL_SRC_ALPHA blend.
-  fragColor = vec4(1.0, 1.0, 1.0, clamp(fog, 0.0, 1.0));
+  // Clear-day atmospheric fog: subtler and less gray to keep open-sky feel.
+  fog = clamp(pow(max(fog, 0.0), 1.55) * 0.12, 0.0, 0.22);
+  vec3 fogColor = vec3(0.70, 0.80, 0.93);
+  fragColor = vec4(fogColor, fog);
 }

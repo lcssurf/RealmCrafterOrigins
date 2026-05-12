@@ -50,10 +50,24 @@ type gameConfig struct {
 	MaxPlayers   int    `toml:"max_players"`
 }
 
+type movementConfig struct {
+	MinDeltaSec       float64 `toml:"min_delta_sec"`
+	MaxDeltaSec       float64 `toml:"max_delta_sec"`
+	BaseStepAllowance float64 `toml:"base_step_allowance"`
+	MaxMoveSpeed      float64 `toml:"max_move_speed"`
+	SpeedSlackMult    float64 `toml:"speed_slack_mult"`
+	MaxBelowGround    float64 `toml:"max_below_ground"`
+	MaxAboveGround    float64 `toml:"max_above_ground"`
+	EnableTelemetry   bool    `toml:"enable_telemetry"`
+	LogRejections     bool    `toml:"log_rejections"`
+	TelemetrySampleMs int64   `toml:"telemetry_sample_ms"`
+}
+
 type config struct {
 	Server   serverConfig   `toml:"server"`
 	Database databaseConfig `toml:"database"`
 	Game     gameConfig     `toml:"game"`
+	Movement movementConfig `toml:"movement"`
 }
 
 // defaultConfig returns sensible defaults for local development.
@@ -71,6 +85,18 @@ func defaultConfig() config {
 		Game: gameConfig{
 			LoginMessage: "Welcome to RealmCrafter: Origins",
 			MaxPlayers:   500,
+		},
+		Movement: movementConfig{
+			MinDeltaSec:       0.016,
+			MaxDeltaSec:       1.0,
+			BaseStepAllowance: 0.75,
+			MaxMoveSpeed:      18.0,
+			SpeedSlackMult:    1.25,
+			MaxBelowGround:    1.0,
+			MaxAboveGround:    12.0,
+			EnableTelemetry:   false,
+			LogRejections:     true,
+			TelemetrySampleMs: 500,
 		},
 	}
 }
@@ -156,14 +182,14 @@ func main() {
 		area := gameWorld.GetOrCreateArea(s.AreaName)
 		npc := gameWorld.SpawnNPC(area, s.Name, s.Race, s.Class, s.Level,
 			s.X, s.Y, s.Z, s.Yaw)
-		npc.Aggressiveness    = s.Aggressiveness
-		npc.AggressiveRange   = s.AggressiveRange
-		npc.AttackRange       = s.AttackRange
-		npc.RespawnDelay      = s.RespawnDelayMs
-		npc.StartWaypointID   = s.StartWaypointID
-		npc.WanderRadius      = s.WanderRadius
-		npc.WanderPauseMinMs  = s.WanderPauseMinMs
-		npc.WanderPauseMaxMs  = s.WanderPauseMaxMs
+		npc.Aggressiveness = s.Aggressiveness
+		npc.AggressiveRange = s.AggressiveRange
+		npc.AttackRange = s.AttackRange
+		npc.RespawnDelay = s.RespawnDelayMs
+		npc.StartWaypointID = s.StartWaypointID
+		npc.WanderRadius = s.WanderRadius
+		npc.WanderPauseMinMs = s.WanderPauseMinMs
+		npc.WanderPauseMaxMs = s.WanderPauseMaxMs
 
 		// Resolve actor_def_id → full Appearance (meshes + anim bindings).
 		if s.ActorDefID > 0 {
@@ -206,7 +232,7 @@ func main() {
 			area.Objects = append(area.Objects, world.WorldObject{
 				ModelPath: wo.ModelPath,
 				Scale:     wo.Scale,
-				X: wo.X, Y: wo.Y, Z: wo.Z,
+				X:         wo.X, Y: wo.Y, Z: wo.Z,
 				Yaw: wo.Yaw,
 			})
 			area.Mu.Unlock()
@@ -277,19 +303,19 @@ func main() {
 		gameWorld.AddPortal("Starter Zone", world.Portal{
 			X: 537, Z: 537, Radius: 3,
 			TargetArea: "Forest",
-			DestX: 512, DestY: 0, DestZ: 517, DestYaw: 180,
+			DestX:      512, DestY: 0, DestZ: 517, DestYaw: 180,
 		})
 		gameWorld.AddPortal("Forest", world.Portal{
 			X: 512, Z: 512, Radius: 3,
 			TargetArea: "Starter Zone",
-			DestX: 534, DestY: 0, DestZ: 534, DestYaw: 0,
+			DestX:      534, DestY: 0, DestZ: 534, DestYaw: 0,
 		})
 	} else {
 		for _, p := range areaPortals {
 			gameWorld.AddPortal(p.AreaName, world.Portal{
 				X: p.X, Z: p.Z, Radius: p.Radius,
-				TargetArea:            p.TargetArea,
-				DestX: p.DestX, DestY: p.DestY, DestZ: p.DestZ, DestYaw: p.DestYaw,
+				TargetArea: p.TargetArea,
+				DestX:      p.DestX, DestY: p.DestY, DestZ: p.DestZ, DestYaw: p.DestYaw,
 			})
 		}
 		log.Printf("main: loaded %d portals from database", len(areaPortals))
@@ -307,6 +333,18 @@ func main() {
 		ListenAddr: cfg.Server.ListenAddr,
 		CertFile:   cfg.Server.CertFile,
 		KeyFile:    cfg.Server.KeyFile,
+		Movement: rconet.MovementValidationConfig{
+			MinDeltaSec:       cfg.Movement.MinDeltaSec,
+			MaxDeltaSec:       cfg.Movement.MaxDeltaSec,
+			BaseStepAllowance: cfg.Movement.BaseStepAllowance,
+			MaxMoveSpeed:      cfg.Movement.MaxMoveSpeed,
+			SpeedSlackMult:    cfg.Movement.SpeedSlackMult,
+			MaxBelowGround:    cfg.Movement.MaxBelowGround,
+			MaxAboveGround:    cfg.Movement.MaxAboveGround,
+			EnableTelemetry:   cfg.Movement.EnableTelemetry,
+			LogRejections:     cfg.Movement.LogRejections,
+			TelemetrySampleMs: cfg.Movement.TelemetrySampleMs,
+		},
 	}, database, acctService, gameWorld, scriptReg)
 
 	// Run server in background goroutine so we can wait on OS signals.
@@ -429,4 +467,3 @@ func setupDropsAndShops(ctx context.Context, database *db.DB) error {
 	log.Printf("main: drop tables and shops registered")
 	return nil
 }
-

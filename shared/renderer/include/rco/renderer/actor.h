@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <unordered_map>
+#include <cstdint>
 #include "rco/renderer/model.h"
 
 namespace rco::renderer {
@@ -24,6 +25,11 @@ class MaterialManager;
 // static scenery, leave clip_idx at -1 and only call Submit().
 class Actor {
 public:
+    enum class ReadabilityProfile : uint8_t {
+        World = 0,
+        Character = 1,
+    };
+
     // Init an actor from a file. If `mm` is provided, the model's textures are
     // also registered in the MaterialManager so the deferred pipeline can
     // shade them correctly (caller must RebuildMaterialsBuffer afterwards).
@@ -106,6 +112,11 @@ public:
 
     void Destroy();
 
+    void SetReadabilityProfile(ReadabilityProfile profile) {
+        readability_profile_ = profile;
+    }
+    ReadabilityProfile GetReadabilityProfile() const { return readability_profile_; }
+
     glm::vec3 position   = {0.f, 0.f, 0.f};
     float     yaw        = 0.f;
     float     scale      = 1.f;
@@ -169,10 +180,14 @@ private:
     // all sample their SSBO at End(), so we can't reuse a single buffer
     // across multiple submissions in the same frame.
     std::vector<unsigned int> bone_ssbos_;   // sized to model_->meshes().size()
+    ReadabilityProfile readability_profile_ = ReadabilityProfile::World;
 
     int  FindClip(const std::string& name) const;
     void EnsureBoneSSBOs_(size_t count);
     void UploadBonesToSSBO_(size_t mesh_idx, const glm::mat4* bones, int count);
+    float ReadabilityMask_() const {
+        return readability_profile_ == ReadabilityProfile::Character ? 1.0f : 0.0f;
+    }
     // Fill `out[0..max-1]` with SLERP-blended bone matrices for mesh_idx.
     void FillBlendedBones_(int cidx_from, float ft, int cidx_to, float tt,
                            float alpha, int mesh_idx,

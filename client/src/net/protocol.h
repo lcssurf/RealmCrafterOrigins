@@ -1,11 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include <cstdint>
 
 namespace rco::net {
 
 // ---------------------------------------------------------------------------
-// Packet type IDs — must match server exactly
+// Packet type IDs â€” must match server exactly
 // ---------------------------------------------------------------------------
 constexpr uint16_t kPCreateAccount    = 1;
 constexpr uint16_t kPVerifyAccount    = 2;
@@ -51,12 +51,13 @@ constexpr uint16_t kPPickupItem       = 113;
 constexpr uint16_t kPRemoveWorldItem  = 114;
 constexpr uint16_t kPOpenShop         = 115;
 constexpr uint16_t kPShopAction       = 116;
-constexpr uint16_t kPAreaConfig       = 117; // S→C: per-area environment config (skybox_hdr str)
-constexpr uint16_t kPPlayableDefs     = 118; // S→C: list of actor defs available for character creation
-constexpr uint16_t kPPlayerAction    = 119; // C→S: action(str)+state(u8)+axis(f32)
-constexpr uint16_t kPSetInputContext = 120; // S→C: context(str)
-constexpr uint16_t kPInputBindings   = 121; // S→C: input bindings for active preset
-constexpr uint16_t kPWorldObjects    = 122; // S→C: static world object instances for current area
+constexpr uint16_t kPAreaConfig       = 117; // Sâ†’C: per-area environment config (skybox_hdr str)
+constexpr uint16_t kPPlayableDefs     = 118; // Sâ†’C: list of actor defs available for character creation
+constexpr uint16_t kPPlayerAction    = 119; // Câ†’S: action(str)+state(u8)+axis(f32)
+constexpr uint16_t kPSetInputContext = 120; // Sâ†’C: context(str)
+constexpr uint16_t kPInputBindings   = 121; // Sâ†’C: input bindings for active preset
+constexpr uint16_t kPWorldObjects    = 122; // S->C: static world object instances for current area
+constexpr uint16_t kPClientWorldReady = 123; // C->S: client reached first playable frame after world enter
 
 // ---------------------------------------------------------------------------
 // Result codes
@@ -79,3 +80,4 @@ struct PacketHeader {
 };
 
 } // namespace rco::net
+

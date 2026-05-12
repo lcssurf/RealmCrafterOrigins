@@ -8,12 +8,12 @@ import (
 const sendChSize = 64
 
 const (
-	AIWait         = 0
-	AIPatrol       = 1
-	AIWander       = 2
-	AIChase        = 3
-	AIPatrolPause  = 4
-	AIWanderPause  = 5
+	AIWait        = 0
+	AIPatrol      = 1
+	AIWander      = 2
+	AIChase       = 3
+	AIPatrolPause = 4
+	AIWanderPause = 5
 )
 
 // Actor represents any entity in the game world — player or NPC.
@@ -40,12 +40,13 @@ type Actor struct {
 	Gold      int64
 
 	// Combat — read/write under Mu.
-	LastPortal    int64  // unix ms of last portal use (cooldown)
-	AIMode        int    // AIWait or AIChase
-	AITarget      *Actor // current target; nil = none
-	LastAttack    int64  // unix ms of last successful attack
-	LastCombatAt  int64  // unix ms of last combat action (attack/spell); 0 = never
-	DeadAt        int64  // unix ms when killed; 0 = alive
+	LastPortal   int64  // unix ms of last portal use (cooldown)
+	LastMoveAt   int64  // unix ms of last accepted movement update
+	AIMode       int    // AIWait or AIChase
+	AITarget     *Actor // current target; nil = none
+	LastAttack   int64  // unix ms of last successful attack
+	LastCombatAt int64  // unix ms of last combat action (attack/spell); 0 = never
+	DeadAt       int64  // unix ms when killed; 0 = alive
 
 	// Combat config — set once at spawn, then read-only.
 	IsNPC           bool
@@ -104,9 +105,9 @@ type Appearance struct {
 // MeshSlot is one mesh attached to an actor. Slot values match the GUE:
 // 0=Body 1=Hair 2=Helm 3=Chest 4=Hands 5=Belt 6=Legs 7=Feet 8=Weapon 9=Shield 10=Attachment.
 type MeshSlot struct {
-	Slot       uint8
-	ModelPath  string
-	Scale      float32
+	Slot      uint8
+	ModelPath string
+	Scale     float32
 
 	// Material overrides. Empty string = use model's embedded material.
 	AlbedoPath string
@@ -155,15 +156,15 @@ type AnimBinding struct {
 	Action       string
 	SourcePath   string
 	ClipOverride string
-	StartFrame int32
-	EndFrame   int32   // -1 = play to end of file
-	FPS        float32
-	Loop       bool
-	Speed      float32
-	BlendIn    float32
-	ReturnTo   string
-	Priority   uint8
-	Events     []AnimEvent
+	StartFrame   int32
+	EndFrame     int32 // -1 = play to end of file
+	FPS          float32
+	Loop         bool
+	Speed        float32
+	BlendIn      float32
+	ReturnTo     string
+	Priority     uint8
+	Events       []AnimEvent
 }
 
 // NewActor creates an Actor with initialised channels.

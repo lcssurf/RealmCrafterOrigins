@@ -18,5 +18,11 @@ vec2 sampleSphericalMap(vec3 v)
 void main()
 {
     vec2 uv = sampleSphericalMap(normalize(vLocalPos));
-    fragColor = vec4(texture(u_equirect, uv).rgb, 1.0);
+    vec3 c = texture(u_equirect, uv).rgb;
+    // Guard against invalid/overflowed HDR texels around strong sun hotspots.
+    if (c.r != c.r) c.r = 0.0;
+    if (c.g != c.g) c.g = 0.0;
+    if (c.b != c.b) c.b = 0.0;
+    c = clamp(c, vec3(0.0), vec3(64000.0));
+    fragColor = vec4(c, 1.0);
 }

@@ -207,6 +207,34 @@ void ZoneRenderer::SyncSceneryModels(const std::vector<ZScenery>& scenery,
     if (need_rebuild) fullEngine_->RebuildMaterialsBuffer();
 }
 
+void ZoneRenderer::SetGhostModel(int modelId, const std::string& filePath,
+                                  const glm::vec3& pos, float yaw, float scale) {
+    if (modelId < 0) {
+        ghostActor_.reset();
+        ghostModelId_ = -1;
+        return;
+    }
+
+    // Reload actor only when the model changes.
+    if (modelId != ghostModelId_) {
+        ghostActor_ = std::make_unique<rco::renderer::Actor>();
+        std::string resolved = "../client/" + filePath;
+        // Use existing model cache — no extra disk I/O.
+        rco::renderer::MaterialManager* mm =
+            fullEngine_ ? &fullEngine_->materials() : nullptr;
+        ghostActor_->Init("", resolved.c_str(), mm);
+        if (fullEngine_) fullEngine_->RebuildMaterialsBuffer();
+        ghostModelId_ = modelId;
+    }
+
+    // Build transform matrix (no pitch/roll for placement).
+    glm::mat4 m = glm::translate(glm::mat4(1.f), pos);
+    m = glm::rotate(m, glm::radians(yaw), {0.f, 1.f, 0.f});
+    m = glm::scale(m, glm::vec3(scale));
+    ghostTransform_ = m;
+    ghostPos_ = pos;
+}
+
 void ZoneRenderer::SyncNpcModels(const std::unordered_map<int, ModelBind>& npcBinds) {
     if (!fullEngine_) return;
     auto& mm = fullEngine_->materials();
@@ -542,11 +570,43 @@ void ZoneRenderer::RenderFramePBR_(const ZoneCamera& cam, const ZoneScene& scene
         it->second->SubmitAs(anim, elapsed_time_, /*loop*/true, *fullPipeline_);
     }
 
+    // Ghost: drag-and-drop preview rendered into the deferred pipeline so it
+    // receives correct depth sorting against the scene.
+    if (ghostModelId_ >= 0 && ghostActor_ && ghostActor_->IsLoaded()) {
+        ghostActor_->SubmitWithMatrix(*fullPipeline_, ghostTransform_);
+    }
+
     // Forward pass — overlays (portals, triggers, colboxes, gizmo) into the
     // same FBO so they respect the deferred depth buffer.
     glm::mat4 vp = proj * view;
     fullPipeline_->End([&]() {
         DrawForwardOverlays_(scene, selectedID, selectedType, vp);
+
+        // Ghost outline — drawn on top with additive blue tint so the user
+        // can see it's a preview. Uses the prim shader in wireframe mode.
+        if (ghostModelId_ >= 0 && ghostActor_ && ghostActor_->IsLoaded()) {
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            glDisable(GL_CULL_FACE);
+            glLineWidth(1.5f);
+            // Reuse primProg_ with a blue-white tint applied via u_col.
+            if (primProg_) {
+                glUseProgram(primProg_);
+                glUniformMatrix4fv(glGetUniformLocation(primProg_, "u_mvp"),
+                    1, GL_FALSE, glm::value_ptr(vp * ghostTransform_));
+                glUniform4f(glGetUniformLocation(primProg_, "u_col"),
+                    0.4f, 0.8f, 1.0f, 0.9f);
+                for (const auto& m : ghostActor_->model().meshes()) {
+                    if (!m.vao || m.idx_count == 0) continue;
+                    glBindVertexArray(m.vao);
+                    glDrawElements(GL_TRIANGLES, m.idx_count,
+                                   GL_UNSIGNED_INT, nullptr);
+                }
+                glBindVertexArray(0);
+            }
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            glEnable(GL_CULL_FACE);
+            glLineWidth(1.f);
+        }
     });
 }
 

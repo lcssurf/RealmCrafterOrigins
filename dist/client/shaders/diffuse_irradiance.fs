@@ -2,6 +2,7 @@
 
 in vec3 vLocalPos;
 layout (binding = 0) uniform samplerCube u_envCube;
+uniform float u_iblClamp;
 
 layout (location = 0) out vec4 fragColor;
 
@@ -25,7 +26,9 @@ void main()
         {
             vec3 tangentSample = vec3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
             vec3 sampleVec = tangentSample.x * right + tangentSample.y * up + tangentSample.z * N;
-            irradiance += texture(u_envCube, sampleVec).rgb * cos(theta) * sin(theta);
+            vec3 env = texture(u_envCube, sampleVec).rgb;
+            env = min(env, vec3(max(u_iblClamp, 0.001)));
+            irradiance += env * cos(theta) * sin(theta);
             nrSamples += 1.0;
         }
     }

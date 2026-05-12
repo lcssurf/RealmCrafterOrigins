@@ -1,6 +1,6 @@
 package protocol
 
-// Packet type constants — values mirror RC's Packets.bb where applicable.
+// Packet type constants â€” values mirror RC's Packets.bb where applicable.
 // RCO extensions start at 100.
 const (
 	PCreateAccount   uint16 = 1
@@ -31,7 +31,7 @@ const (
 	PSound           uint16 = 29
 	PMusic           uint16 = 34
 	PRepositionActor uint16 = 49
-	PAnimateActor    uint16 = 30  // payload: rid(u32)+action_id(u8)
+	PAnimateActor    uint16 = 30 // payload: rid(u32)+action_id(u8)
 	PKickedPlayer    uint16 = 60
 
 	// RCO extensions
@@ -52,12 +52,13 @@ const (
 	PRemoveWorldItem  uint16 = 114
 	POpenShop         uint16 = 115
 	PShopAction       uint16 = 116
-	PAreaConfig       uint16 = 117 // S→C: fog/ambient/pvp settings for the current area
-	PPlayableDefs     uint16 = 118 // S→C: list of actor defs available for character creation
-	PPlayerAction     uint16 = 119 // C→S: action(str)+state(u8)+axis_value(f32)
-	PSetInputContext  uint16 = 120 // S→C: context(str)
-	PInputBindings    uint16 = 121 // S→C: sends input bindings for the active preset
-	PWorldObjects     uint16 = 122 // S→C: static world object instances for the current area
+	PAreaConfig       uint16 = 117 // Sâ†’C: fog/ambient/pvp settings for the current area
+	PPlayableDefs     uint16 = 118 // Sâ†’C: list of actor defs available for character creation
+	PPlayerAction     uint16 = 119 // Câ†’S: action(str)+state(u8)+axis_value(f32)
+	PSetInputContext  uint16 = 120 // Sâ†’C: context(str)
+	PInputBindings    uint16 = 121 // Sâ†’C: sends input bindings for the active preset
+	PWorldObjects     uint16 = 122 // S->C: static world object instances for the current area
+	PClientWorldReady uint16 = 123 // C->S: client reached first playable frame after world enter
 )
 
 // EmitterType values for PCreateEmitter.

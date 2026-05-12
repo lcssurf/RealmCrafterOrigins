@@ -35,6 +35,20 @@ uniform vec3  u_globalLight_direction;
 uniform int   u_shadowMethod;
 uniform float u_C;
 uniform float u_lightBleedFix;
+uniform float u_directScale;
+uniform float u_ambientScale;
+uniform float u_characterShadowLift;
+uniform float u_characterRimStrength;
+uniform float u_characterRimExponent;
+uniform float u_characterMinNdotL;
+uniform float u_characterAmbientBoost;
+uniform float u_worldShadowLift;
+uniform float u_iblIntensity;
+uniform float u_flatAmbient;
+uniform float u_worldMinNdotL;
+uniform float u_albedoMinLuma;
+uniform float u_albedoLiftStrength;
+uniform float u_specularScale;
 uniform int   u_debugMode;
 
 layout (location = 0) out vec4 fragColor;
@@ -47,6 +61,19 @@ const float MAX_REFLECTION_LOD = 4.0;
 // ---------------------------------------------------------------------------
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+vec3 liftLegacyAlbedo(vec3 color) {
+    float minLuma = clamp(u_albedoMinLuma, 0.0, 1.0);
+    float strength = clamp(u_albedoLiftStrength, 0.0, 1.0);
+    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    if (luma >= minLuma || strength <= 0.0) return color;
+
+    // Scale color toward a minimum luminance instead of adding white. This
+    // keeps hue/detail better than a flat brightness boost on legacy assets.
+    float safeLuma = max(luma, 0.025);
+    vec3 lifted = clamp(color * (minLuma / safeLuma), 0.0, 1.0);
+    if (luma < 0.025) lifted = vec3(minLuma);
+    return mix(color, lifted, strength);
 }
 vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
     return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
@@ -127,6 +154,7 @@ void main()
     if (depth >= 1.0) discard;
 
     vec3 albedo   = texture(gAlbedo, vTexCoord).rgb;
+    vec3 litAlbedo = liftLegacyAlbedo(albedo);
     vec3 vPos     = WorldPosFromDepth(depth, u_screenSize, u_invViewProj);
     vec2 octN     = texture(gNormal, vTexCoord).xy;
     vec3 N        = normalize(oct_to_float32x3(octN));
@@ -134,6 +162,7 @@ void main()
     float roughness = clamp(RMA.r, 0.04, 1.0);
     float metallic  = clamp(RMA.g, 0.0, 1.0);
     float matAO     = RMA.b;
+    float charMask  = clamp(RMA.a, 0.0, 1.0);
     float ssao      = texture(ambientOcclusionTexture, vTexCoord).r;
     float ao        = matAO * ssao;
 
@@ -157,26 +186,11 @@ void main()
         fragColor = vec4(vec3(sd), 1.0);
         return;
     }
-    // Mode 12: render-time decision. Compute shadow inline ignoring the
-    // NdotL > 0 gate. Lets us tell whether the gate is dropping shadows on
-    // surfaces facing away from the light.
-    if (u_debugMode == 12) {
-        vec4 lsp = u_lightMatrix * vec4(vPos, 1.0);
-        vec3 lpu = lsp.xyz / lsp.w;
-        lpu = lpu * 0.5 + 0.5;
-        float sd = texture(filteredShadow, lpu.xy).r;
-        // Show ESM ratio compared to receiver depth
-        float receiver = lpu.z;
-        float v = clamp(sd * exp(-u_C * receiver), 0.0, 1.0);
-        fragColor = vec4(vec3(v), 1.0);
-        return;
-    }
-
     vec3 V = normalize(u_viewPos - vPos);
     vec3 R = reflect(-V, N);
 
     // Fresnel base reflectance — 0.04 dielectric, albedo for metals.
-    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+    vec3 F0 = mix(vec3(0.04), litAlbedo, metallic);
 
     // ---- Direct lighting (single directional sun) ----
     vec3 L = normalize(-u_globalLight_direction);
@@ -189,22 +203,30 @@ void main()
 
     vec3 numerator   = D * G * F;
     float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001;
-    vec3 specular = numerator / denominator;
+    vec3 specular = (numerator / denominator) * u_specularScale;
 
     vec3 kS = F;
     vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
 
-    vec3 directColor = (kD * albedo / PI + specular) * u_globalLight_diffuse * NdotL;
+    float worldMinNdotL = (1.0 - charMask) * max(u_worldMinNdotL, 0.0);
+    float NdotLReadable = max(NdotL, max(worldMinNdotL, charMask * max(u_characterMinNdotL, 0.0)));
+    vec3 directColor = (kD * litAlbedo / PI + specular) * u_globalLight_diffuse * NdotLReadable * u_directScale;
 
     vec4 lsp = u_lightMatrix * vec4(vPos, 1.0);
-    float shadow = (NdotL > 0.0) ? Shadow(lsp) : 0.0;
+    float shadow = (NdotLReadable > 0.0) ? Shadow(lsp) : 0.0;
+    float worldShadowLifted = mix(shadow, 1.0, clamp(u_worldShadowLift, 0.0, 1.0));
+    float charShadowLifted = mix(shadow, 1.0, clamp(u_characterShadowLift, 0.0, 1.0));
+    shadow = mix(worldShadowLifted, charShadowLifted, charMask);
 
     if (u_debugMode == 5) { fragColor = vec4(vec3(shadow), 1.0); return; }
     if (u_debugMode == 7) { fragColor = vec4(vec3(NdotL), 1.0); return; }
-    if (u_debugMode == 8) { fragColor = vec4(albedo * NdotL, 1.0); return; }
+    if (u_debugMode == 8) { fragColor = vec4(litAlbedo * NdotL, 1.0); return; }
     if (u_debugMode == 10) { fragColor = vec4(directColor, 1.0); return; }
 
     vec3 Lo = directColor * shadow;
+    float NdotV = max(dot(N, V), 0.0);
+    float rim = pow(clamp(1.0 - NdotV, 0.0, 1.0), max(u_characterRimExponent, 1.0));
+    Lo += litAlbedo * u_globalLight_diffuse * rim * u_characterRimStrength * charMask;
 
     // ---- Indirect lighting (split-sum IBL) ----
     vec3 Fr = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
@@ -212,16 +234,24 @@ void main()
     vec3 kD_ibl = (vec3(1.0) - kS_ibl) * (1.0 - metallic);
 
     vec3 irradiance = texture(irradianceCube, N).rgb;
-    vec3 diffuseIBL = irradiance * albedo;
+    vec3 diffuseIBL = irradiance * litAlbedo;
 
     vec3 prefilteredColor = textureLod(prefilterCube, R, roughness * MAX_REFLECTION_LOD).rgb;
     vec2 brdf = texture(brdfLUT, vec2(max(dot(N, V), 0.0), roughness)).rg;
-    vec3 specularIBL = prefilteredColor * (Fr * brdf.x + brdf.y);
+    vec3 specularIBL = prefilteredColor * (Fr * brdf.x + brdf.y) * u_specularScale;
 
-    vec3 ambient = (kD_ibl * diffuseIBL + specularIBL) * ao;
+    vec3 fillAlbedo = max(litAlbedo, vec3(0.42));
+    vec3 ambient = (kD_ibl * diffuseIBL + specularIBL) * ao * u_ambientScale * u_iblIntensity;
+    ambient += fillAlbedo * u_flatAmbient;
+    ambient *= (1.0 + charMask * u_characterAmbientBoost);
 
     if (u_debugMode == 6) { fragColor = vec4(irradiance, 1.0); return; }
     if (u_debugMode == 9) { fragColor = vec4(diffuseIBL, 1.0); return; }
+    if (u_debugMode == 12) { fragColor = vec4(ambient, 1.0); return; }
+    if (u_debugMode == 13) { fragColor = vec4(Lo, 1.0); return; }
+    if (u_debugMode == 14) { fragColor = vec4(ambient + Lo, 1.0); return; }
+    if (u_debugMode == 15) { fragColor = vec4(fillAlbedo * u_flatAmbient, 1.0); return; }
+    if (u_debugMode == 16) { fragColor = vec4(litAlbedo, 1.0); return; }
 
     fragColor = vec4(ambient + Lo, 1.0);
 }

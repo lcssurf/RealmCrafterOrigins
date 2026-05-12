@@ -10,6 +10,8 @@ struct Material
   uvec2 normalHandle;
   uvec2 ambientOcclusionHandle;
   uvec2 opacityHandle;
+  vec4 albedoFactor;
+  vec4 pbrFactors;
 };
 
 layout (location = 3) uniform bool u_materialOverride;
@@ -18,6 +20,7 @@ layout (location = 5) uniform float u_roughnessOverride;
 layout (location = 6) uniform float u_metalnessOverride;
 layout (location = 7) uniform bool u_AOoverride;
 layout (location = 8) uniform float u_ambientOcclusionOverride;
+layout (location = 9) uniform float u_characterMask;
 
 layout (binding = 1, std430) readonly buffer Materials
 {
@@ -45,15 +48,18 @@ void main()
   const bool hasMetalness = (material.metalnessHandle.x != 0 || material.metalnessHandle.y != 0);
   const bool hasNormal = (material.normalHandle.x != 0 || material.normalHandle.y != 0);
   const bool hasAmbientOcclusion = (material.ambientOcclusionHandle.x != 0 || material.ambientOcclusionHandle.y != 0);
+  vec3 baseFactor = max(material.albedoFactor.rgb, vec3(0.0));
+  float roughnessFactor = clamp(material.pbrFactors.x, 0.0, 1.0);
+  float metallicFactor = clamp(material.pbrFactors.y, 0.0, 1.0);
+  float aoFactor = clamp(material.pbrFactors.z, 0.0, 1.0);
 
-  // Detect glTF ORM-packed encoding: when both roughness and metalness point
-  // to the same texture, that texture is expected to be a single ORM image
-  // with R=AO, G=roughness, B=metallic (the glTF 2.0 MetallicRoughness +
-  // Occlusion convention). In that case we sample once and read the right
-  // channels. Otherwise, fall back to the legacy behaviour of sampling .r
-  // from three separate textures.
-  const bool ormPacked = hasRoughness && hasMetalness &&
-      all(equal(material.roughnessHandle, material.metalnessHandle));
+  // ORM packing is authored per-material by the import path.
+  // pbrFactors.w = 1 -> packed ORM (R=AO,G=roughness,B=metallic),
+  // pbrFactors.w = 0 -> non-packed (roughness/metalness sampled independently).
+  // Keep an equality fallback for pre-flagged data.
+  const bool ormPacked = (material.pbrFactors.w > 0.5) ||
+      (hasRoughness && hasMetalness &&
+       all(equal(material.roughnessHandle, material.metalnessHandle)));
 
   // Apply tangent-space normal map when provided.
   if (hasNormal)
@@ -65,10 +71,13 @@ void main()
   }
 
   gNormal = float32x3_to_oct(normalize(normal));
-  vec4 color = vec4(0.1, 0.1, 0.1, 1);
+  // Fallback for assets without albedo texture binding: use the imported
+  // material factor instead of ignoring authoring metadata.
+  vec4 color = vec4(baseFactor, 1.0);
   if (hasAlbedo)
   {
     color = texture(sampler2D(material.albedoHandle), vTexCoord).rgba;
+    color.rgb *= baseFactor;
   }
   // Opacity cutout: only when an explicit opacity map is registered.
   // Albedo alpha is NOT used for cutout — many solid meshes (buildings, props, NPCs)
@@ -81,30 +90,34 @@ void main()
 
   gAlbedo.rgb = color.rgb;
   gAlbedo.a = 1.0; // unused
-  gRMA.rgba = vec4(1.0, 0.0, 1.0, 1.0); // sane defaults, gRMA.a is unused
+  // gRMA: R=roughness, G=metallic, B=AO, A=character mask (readability pass).
+  gRMA.rgba = vec4(clamp(roughnessFactor, 0.04, 1.0),
+                   metallicFactor,
+                   aoFactor,
+                   clamp(u_characterMask, 0.0, 1.0));
   if (!u_materialOverride)
   {
     if (ormPacked)
     {
       vec3 orm = texture(sampler2D(material.roughnessHandle), vTexCoord).rgb;
-      gRMA[0] = orm.g;  // roughness
-      gRMA[1] = orm.b;  // metalness
-      gRMA[2] = orm.r;  // occlusion (overridden again below if AO handle set)
+      gRMA[0] = clamp(orm.g * roughnessFactor, 0.04, 1.0);  // roughness
+      gRMA[1] = clamp(orm.b * metallicFactor, 0.0, 1.0);    // metalness
+      gRMA[2] = clamp(orm.r * aoFactor, 0.0, 1.0);          // occlusion
     }
     else
     {
       if (hasRoughness)
       {
-        gRMA[0] = texture(sampler2D(material.roughnessHandle), vTexCoord).r;
+        gRMA[0] = clamp(texture(sampler2D(material.roughnessHandle), vTexCoord).r * roughnessFactor, 0.04, 1.0);
       }
       if (hasMetalness)
       {
-        gRMA[1] = texture(sampler2D(material.metalnessHandle), vTexCoord).r;
+        gRMA[1] = clamp(texture(sampler2D(material.metalnessHandle), vTexCoord).r * metallicFactor, 0.0, 1.0);
       }
     }
     if (hasAmbientOcclusion)
     {
-      gRMA[2] = texture(sampler2D(material.ambientOcclusionHandle), vTexCoord).r;
+      gRMA[2] = clamp(texture(sampler2D(material.ambientOcclusionHandle), vTexCoord).r * aoFactor, 0.0, 1.0);
     }
   }
   else

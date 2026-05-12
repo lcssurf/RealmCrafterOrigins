@@ -119,3 +119,4 @@ unreal/Plugins/*/Binaries/
 unreal/Plugins/*/Intermediate/
 unreal/**/*.sln
 unreal/**/*.vcxproj*
+dist/tools/thumbcache/

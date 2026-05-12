@@ -18,6 +18,12 @@ std::shared_ptr<Model> ModelCacheGet(const std::string& path, MaterialManager* m
     return m;
 }
 
+std::shared_ptr<Model> ModelCachePeek(const std::string& path) {
+    auto it = s_cache.find(path);
+    if (it == s_cache.end()) return nullptr;
+    return it->second.lock();  // nullptr if model was already freed
+}
+
 void ModelCacheInvalidate(const std::string& path) {
     s_cache.erase(path);
 }

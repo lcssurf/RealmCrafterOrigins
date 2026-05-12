@@ -40,6 +40,9 @@ struct DynamicDrawRequest {
     // optional skinning
     GLuint bone_ssbo  = 0;
     int    bone_count = 0;
+
+    // 0 = world/static readability, 1 = character readability.
+    float readability_mask = 0.0f;
 };
 
 // One CPU-side entry per skinned actor instance submitted via Actor::Submit().
@@ -53,6 +56,7 @@ struct SkinnedInstancedEntry {
     int       material_idx;
     glm::mat4 model;
     glm::mat4 bones[64];
+    float     readability_mask = 0.0f;
 };
 
 struct TerrainChunkSubmission {
@@ -84,6 +88,39 @@ struct TerrainChunkSubmission {
 
 class Pipeline {
 public:
+    struct CharacterReadabilityTuning {
+        float shadowLift  = 0.30f; // lifts shadowed characters for combat readability
+        float rimStrength = 0.18f; // subtle silhouette edge light
+        float rimExponent = 2.4f;  // controls rim falloff
+        float minNdotL    = 0.10f; // keeps a minimum key light on characters
+        float ambientBoost = 0.12f; // ambient gain only for characters
+    };
+
+    struct SceneLookTuning {
+        // Multiplies indirect lighting (irradiance + specular prefilter) from IBL.
+        float iblIntensity = 1.00f;
+        // Multiplies the visible skybox only (does not affect IBL probes).
+        float skyIntensity = 1.00f;
+        // Lifts world shadows to avoid black crush on legacy content.
+        float worldShadowLift = 0.20f;
+        // Balances directional sun against IBL/fill lighting.
+        float directScale = 1.00f;
+        float ambientScale = 1.00f;
+        // Neutral albedo-based fill independent of HDR directionality.
+        float flatAmbient = 0.10f;
+        // Keeps world faces readable even when their normals point away from the sun.
+        float worldMinNdotL = 0.06f;
+        // Raises very dark legacy albedo into a physically usable range.
+        float albedoMinLuma = 0.18f;
+        float albedoLiftStrength = 0.0f;
+        // Tames harsh highlights from legacy/partial PBR materials.
+        float specularScale = 0.60f;
+        // Overall HDR exposure before tonemapping.
+        float exposureFactor = 1.00f;
+        // Multiplies area sun color before it reaches the pipeline.
+        float sunIntensity = 1.10f;
+    };
+
     explicit Pipeline(Engine& e);
     ~Pipeline();
     Pipeline(const Pipeline&)            = delete;
@@ -92,6 +129,16 @@ public:
     void SetFeatures(const FeatureConfig& cfg);
     const FeatureConfig& Features() const { return features_; }
     void SetSun(const glm::vec3& direction, const glm::vec3& color);
+    void SetCharacterReadability(const CharacterReadabilityTuning& cfg);
+    const CharacterReadabilityTuning& CharacterReadability() const { return characterReadability_; }
+    void SetSceneLook(const SceneLookTuning& cfg);
+    const SceneLookTuning& SceneLook() const { return sceneLook_; }
+    void SetColorGrading(float contrast,
+                         float saturation,
+                         float vibrance,
+                         float blackPoint,
+                         float vignetteStrength,
+                         float vignetteSoftness);
 
     // Debug visualisation. 0=full lighting (default).
     // 1=albedo, 2=normal, 3=depth, 4=AO, 5=shadow, 6=irradiance,
@@ -185,15 +232,15 @@ private:
     FrameStats pending_stats_;
 
     struct VolumetricTuning {
-        GLint steps        = 32; // 16 | 32 | 64
-        float intensity    = 0.025f; // 0.01f | 0.025f | 0.05f
+        GLint steps        = 24; // 16 | 24 | 32
+        float intensity    = 0.006f; // subtle default; avoids over-fogging gameplay
         float noiseOffset  = 1.0f;
         float beerPower    = 1.0f; // higher makes light falloff sharper, lower makes it softer
         float powderPower  = 1.0f; // higher makes light scatter more forward, lower makes it more isotropic
         float distanceScale = 1.0f;
         float heightOffset = 0.0f; // raises the volumetric effect above the ground, helps hide artifacts when using few steps
-        float hfIntensity  = 0.025f; // higher makes more organic, turbulent. Lower makes it more uniform/artificial.
-        int   atrous_passes = 1;
+        float hfIntensity  = 0.012f; // lower by default for cleaner readability
+        int   atrous_passes = 2;
         float c_phi        = 0.04f;
         float stepWidth    = 1.0f;
         float atrouskernel[25] = {
@@ -216,7 +263,7 @@ private:
         int   samples_near     = 12;
         float delta            = 0.001f;
         float range            = 1.1f;
-        float s                = 1.8f;
+        float s                = 2.2f;
         float k                = 1.0f;
         int   atrous_passes    = 3;
         float atrous_n_phi     = 0.1f;
@@ -246,10 +293,27 @@ private:
         float targetLuminance  = 0.22f;
         float minExposure      = 0.1f;
         float maxExposure      = 100.0f;
-        float exposureFactor   = 1.0f;
+        float exposureFactor   = 0.92f;
         float adjustmentSpeed  = 2.0f;
         int   numBuckets       = 128;
     } hdr_{};
+
+    struct ColorGradingTuning {
+        float contrast         = 1.00f;
+        float saturation       = 1.03f;
+        float vibrance         = 0.12f;
+        float blackPoint       = 0.005f;
+        float vignetteStrength = 0.08f;
+        float vignetteSoftness = 0.45f;
+    } color_{};
+
+    struct LightingBalanceTuning {
+        float directScale  = 0.88f;
+        float ambientScale = 1.00f;
+    } lightBalance_{};
+
+    CharacterReadabilityTuning characterReadability_{};
+    SceneLookTuning sceneLook_{};
 
     int numEnvSamples_ = 10;
 };

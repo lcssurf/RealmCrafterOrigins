@@ -13,11 +13,25 @@
 #include <cstring>
 #include <string>
 #include <algorithm>
+#include <cctype>
 #include <memory>
 #include <unordered_map>
 #include <chrono>
+#include <cstdlib>
+#include <vector>
 
 namespace rco::renderer {
+
+static bool VerboseAssetLogsEnabled() {
+    static const bool enabled = []() {
+        const char* v = std::getenv("RCO_ASSET_LOG_VERBOSE");
+        if (!v) return false;
+        return std::strcmp(v, "1") == 0 || std::strcmp(v, "true") == 0 ||
+               std::strcmp(v, "TRUE") == 0 || std::strcmp(v, "on") == 0 ||
+               std::strcmp(v, "ON") == 0;
+    }();
+    return enabled;
+}
 
 // ---------------------------------------------------------------------------
 // Animation file cache — raw parsed data keyed by file path.
@@ -55,7 +69,8 @@ static GLuint LoadTexCached(const std::string& path, bool srgb) {
     if (it != g_tex_cache.end()) {
         return it->second;
     }
-    std::fprintf(stderr, "[tex-cache] MISS '%s'\n", path.c_str());
+    if (VerboseAssetLogsEnabled())
+        std::fprintf(stderr, "[tex-cache] MISS '%s'\n", path.c_str());
     int w = 0, h = 0, ch = 0;
     stbi_set_flip_vertically_on_load(false);
     unsigned char* px = stbi_load(path.c_str(), &w, &h, &ch, 4);
@@ -77,6 +92,52 @@ static GLuint LoadTexCached(const std::string& path, bool srgb) {
     stbi_image_free(px);
     g_tex_cache[key] = tex;
     return tex;
+}
+
+static std::string NormalizeSlashes(std::string s) {
+    std::replace(s.begin(), s.end(), '\\', '/');
+    return s;
+}
+
+static std::vector<std::string> BuildTextureCandidates(const std::string& model_dir,
+                                                       const std::string& in_path) {
+    std::vector<std::string> out;
+    auto push_unique = [&](const std::string& p) {
+        if (p.empty()) return;
+        if (std::find(out.begin(), out.end(), p) == out.end()) out.push_back(p);
+    };
+
+    std::string path = NormalizeSlashes(in_path);
+    while (path.rfind("./", 0) == 0) path.erase(0, 2);
+    while (!path.empty() && path.front() == '/') path.erase(path.begin());
+
+    std::string basename = path;
+    if (auto slash = basename.find_last_of('/'); slash != std::string::npos)
+        basename = basename.substr(slash + 1);
+
+    // 1) Standard relative-to-model-dir resolution.
+    push_unique(model_dir + "/" + path);
+    // 2) As-provided relative path.
+    push_unique(path);
+    // 3) Legacy absolute path fallback: use basename in model dir.
+    push_unique(model_dir + "/" + basename);
+    // 4) Generic texture roots used in this project.
+    push_unique("assets/textures/" + basename);
+    push_unique("assets/textures/textures/" + basename);
+
+    // 5) If exporter embedded a ".../textures/..." path, keep only tail after textures/.
+    std::string lower = path;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const std::string token = "textures/";
+    if (auto pos = lower.find(token); pos != std::string::npos) {
+        std::string tail = path.substr(pos + token.size());
+        push_unique(model_dir + "/" + tail);
+        push_unique("assets/textures/" + tail);
+        push_unique("assets/textures/textures/" + tail);
+    }
+
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -266,13 +327,20 @@ GLuint Model::LoadTex(const aiScene* scene, const std::string& path, bool srgb) 
             }
         }
     } else {
-        std::string full = directory_ + "/" + path;
         int ch;
-        px = stbi_load(full.c_str(), &w, &h, &ch, 4);
-        if (!px) px = stbi_load(path.c_str(), &w, &h, &ch, 4);
-        if (!px)
-            std::fprintf(stderr, "[model] texture not found: tried '%s' and '%s'\n",
-                full.c_str(), path.c_str());
+        std::vector<std::string> tried;
+        const auto candidates = BuildTextureCandidates(directory_, path);
+        for (const auto& c : candidates) {
+            tried.push_back(c);
+            px = stbi_load(c.c_str(), &w, &h, &ch, 4);
+            if (px) break;
+        }
+        if (!px && VerboseAssetLogsEnabled()) {
+            std::fprintf(stderr, "[model] texture not found: source='%s' tried=%zu\n",
+                path.c_str(), tried.size());
+            for (const auto& t : tried)
+                std::fprintf(stderr, "  -> '%s'\n", t.c_str());
+        }
     }
     if (!px) return 0;
 
@@ -662,14 +730,16 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
             uv_effective_scale_  = uv_scale;
             uv_effective_offset_ = uv_offset;
         }
-        std::fprintf(stderr,
-            "[uv] mesh='%s' uvIndex=%d offset=(%.4f,%.4f) scale=(%.4f,%.4f) "
-            "sidecar=%d gltf_conv=%d effective_off=(%.4f,%.4f) effective_scale=(%.4f,%.4f)\n",
-            mesh->mName.C_Str(), uvIndex,
-            uv_offset.x, uv_offset.y, uv_scale.x, uv_scale.y,
-            uv_sidecar_active_ ? 1 : 0, uv_in_gltf_convention ? 1 : 0,
-            uv_effective_offset_.x, uv_effective_offset_.y,
-            uv_effective_scale_.x,  uv_effective_scale_.y);
+        if (VerboseAssetLogsEnabled()) {
+            std::fprintf(stderr,
+                "[uv] mesh='%s' uvIndex=%d offset=(%.4f,%.4f) scale=(%.4f,%.4f) "
+                "sidecar=%d gltf_conv=%d effective_off=(%.4f,%.4f) effective_scale=(%.4f,%.4f)\n",
+                mesh->mName.C_Str(), uvIndex,
+                uv_offset.x, uv_offset.y, uv_scale.x, uv_scale.y,
+                uv_sidecar_active_ ? 1 : 0, uv_in_gltf_convention ? 1 : 0,
+                uv_effective_offset_.x, uv_effective_offset_.y,
+                uv_effective_scale_.x,  uv_effective_scale_.y);
+        }
     }
 
     for (unsigned i = 0; i < mesh->mNumVertices; ++i) {
@@ -778,6 +848,7 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
             sm.material_name = mname.C_Str();
         aiString texPath;
         std::string albedo_path_str;
+        bool has_base_color_factor = false;
         if (mat->GetTexture(AI_MATKEY_BASE_COLOR_TEXTURE, &texPath) == AI_SUCCESS ||
             mat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS) {
             albedo_path_str = texPath.C_Str();
@@ -787,10 +858,24 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
             mat->GetTexture(aiTextureType_HEIGHT,  0, &texPath) == AI_SUCCESS)
             sm.tex_normal = LoadTex(scene, texPath.C_Str(), false);
         std::string mr_path_str;
+        std::string rough_path_str;
         if (mat->GetTexture(AI_MATKEY_METALLIC_TEXTURE, &texPath) == AI_SUCCESS ||
             mat->GetTexture(aiTextureType_METALNESS, 0, &texPath) == AI_SUCCESS) {
             mr_path_str = texPath.C_Str();
             sm.tex_orm = LoadTex(scene, texPath.C_Str(), false);
+        }
+        if (mat->GetTexture(AI_MATKEY_ROUGHNESS_TEXTURE, &texPath) == AI_SUCCESS ||
+            mat->GetTexture(aiTextureType_DIFFUSE_ROUGHNESS, 0, &texPath) == AI_SUCCESS) {
+            rough_path_str = texPath.C_Str();
+        }
+        sm.orm_packed = false;
+        if (sm.tex_orm) {
+            if (!rough_path_str.empty() && rough_path_str == mr_path_str) {
+                sm.orm_packed = true;
+            } else if (rough_path_str.empty() && source_is_gltf_) {
+                // glTF typically stores roughness+metalness in a single texture.
+                sm.orm_packed = true;
+            }
         }
         // Dedicated AO texture (glTF separates occlusionTexture from
         // metallicRoughnessTexture). Unreal exports always have these split, and
@@ -800,7 +885,7 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
             mat->GetTexture(aiTextureType_LIGHTMAP,          0, &texPath) == AI_SUCCESS) {
             // Skip when AO and metallicRoughness reference the same texture
             // (true ORM-packed); the shader's ormPacked path handles it.
-            if (mr_path_str != texPath.C_Str())
+            if (!sm.orm_packed || mr_path_str != texPath.C_Str())
                 sm.tex_ao = LoadTex(scene, texPath.C_Str(), false);
         }
         if (mat->GetTexture(aiTextureType_OPACITY, 0, &texPath) == AI_SUCCESS) {
@@ -812,20 +897,42 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
             // making the whole mesh black). Skip when paths match.
             if (albedo_path_str != texPath.C_Str())
                 sm.tex_opacity = LoadTex(scene, texPath.C_Str(), false);
-            else
+            else if (VerboseAssetLogsEnabled())
                 std::fprintf(stderr,
                     "[mat] '%s' opacity == albedo path; skipping (glTF MASK alpha mode)\n",
                     sm.material_name.c_str());
         }
         aiColor4D c;
         if (mat->Get(AI_MATKEY_BASE_COLOR, c) == AI_SUCCESS ||
-            mat->Get(AI_MATKEY_COLOR_DIFFUSE, c) == AI_SUCCESS)
+            mat->Get(AI_MATKEY_COLOR_DIFFUSE, c) == AI_SUCCESS) {
             sm.albedo_factor = {c.r, c.g, c.b};
-        float rough=0.5f, metal=0.f;
-        mat->Get(AI_MATKEY_ROUGHNESS_FACTOR, rough);
-        mat->Get(AI_MATKEY_METALLIC_FACTOR,  metal);
-        sm.roughness_factor = rough;
-        sm.metallic_factor  = metal;
+            has_base_color_factor = true;
+        }
+        float rough = 1.f, metal = 0.f;
+        const bool has_rough = (mat->Get(AI_MATKEY_ROUGHNESS_FACTOR, rough) == AI_SUCCESS);
+        const bool has_metal = (mat->Get(AI_MATKEY_METALLIC_FACTOR,  metal) == AI_SUCCESS);
+
+        // Normalize imported PBR factors for stability across mixed/legacy assets.
+        if (!has_base_color_factor) {
+            // Avoid black-tinted materials when base color factor is missing.
+            sm.albedo_factor = glm::vec3(1.f);
+        } else {
+            sm.albedo_factor.r = glm::clamp(sm.albedo_factor.r, 0.f, 1.f);
+            sm.albedo_factor.g = glm::clamp(sm.albedo_factor.g, 0.f, 1.f);
+            sm.albedo_factor.b = glm::clamp(sm.albedo_factor.b, 0.f, 1.f);
+        }
+
+        if (!has_rough) {
+            // Without explicit roughness, let ORM texture drive (factor=1)
+            // or use a matte fallback for legacy materials.
+            rough = (sm.tex_orm && sm.orm_packed) ? 1.f : 0.85f;
+        }
+        if (!has_metal) {
+            // Legacy props are usually dielectric.
+            metal = 0.f;
+        }
+        sm.roughness_factor = glm::clamp(rough, 0.f, 1.f);
+        sm.metallic_factor  = glm::clamp(metal, 0.f, 1.f);
     }
 
     // --- Build VAO ---
@@ -940,14 +1047,24 @@ static bool ReadUVSidecar(const char* model_path,
     if (n != 4) return false;
     out_offset = glm::vec2(ox, oy);
     out_scale  = glm::vec2(sx, sy);
-    std::fprintf(stderr,
-        "[uv-sidecar] '%s' override offset=(%.4f,%.4f) scale=(%.4f,%.4f)\n",
-        p.c_str(), ox, oy, sx, sy);
+    if (VerboseAssetLogsEnabled())
+        std::fprintf(stderr,
+            "[uv-sidecar] '%s' override offset=(%.4f,%.4f) scale=(%.4f,%.4f)\n",
+            p.c_str(), ox, oy, sx, sy);
     return true;
 }
 
 bool Model::Load(const char* path, MaterialManager* mm) {
     EnsureDefaults();
+    source_is_gltf_ = false;
+    if (path && *path) {
+        std::string lower(path);
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        source_is_gltf_ = (lower.size() >= 5 &&
+                           (lower.rfind(".gltf") == lower.size() - 5 ||
+                            lower.rfind(".glb")  == lower.size() - 4));
+    }
 
     // Sidecar override (per-model UV transform persisted by the GUE).
     glm::vec2 sidecar_offset(0.f);
@@ -995,7 +1112,8 @@ bool Model::Load(const char* path, MaterialManager* mm) {
     size_t slash = p.find_last_of("/\\");
     directory_ = (slash != std::string::npos) ? p.substr(0, slash) : ".";
 
-    std::fprintf(stderr, "[body-load] '%s' scene has %u animations\n", path, scene->mNumAnimations);
+    if (VerboseAssetLogsEnabled())
+        std::fprintf(stderr, "[body-load] '%s' scene has %u animations\n", path, scene->mNumAnimations);
 
     // Build the node hierarchy first (needed for bone→node linking in ProcessMesh).
     BuildNodeTree(scene->mRootNode, -1);
@@ -1006,10 +1124,12 @@ bool Model::Load(const char* path, MaterialManager* mm) {
         if (nit != node_map_.end()) {
             const glm::mat4& m = anim_nodes_[nit->second].local;
             hips_bind_pos_ = glm::vec3(m[3]);
-            std::fprintf(stderr, "[body-node] 'mixamorig:Hips' local_pos=(%.4f,%.4f,%.4f)\n",
-                         hips_bind_pos_.x, hips_bind_pos_.y, hips_bind_pos_.z);
+            if (VerboseAssetLogsEnabled())
+                std::fprintf(stderr, "[body-node] 'mixamorig:Hips' local_pos=(%.4f,%.4f,%.4f)\n",
+                             hips_bind_pos_.x, hips_bind_pos_.y, hips_bind_pos_.z);
         } else {
-            std::fprintf(stderr, "[body-node] 'mixamorig:Hips' NOT FOUND in node tree\n");
+            if (VerboseAssetLogsEnabled())
+                std::fprintf(stderr, "[body-node] 'mixamorig:Hips' NOT FOUND in node tree\n");
         }
     }
 
@@ -1078,12 +1198,14 @@ bool Model::Load(const char* path, MaterialManager* mm) {
         for (const char* bname : kLogBones) {
             auto it = bone_map_.find(bname);
             if (it == bone_map_.end()) {
-                std::fprintf(stderr, "[bone-offset] body bone='%s' NOT FOUND\n", bname);
+                if (VerboseAssetLogsEnabled())
+                    std::fprintf(stderr, "[bone-offset] body bone='%s' NOT FOUND\n", bname);
                 continue;
             }
             const glm::mat4& off = bones_[it->second].offset;
-            std::fprintf(stderr, "[bone-offset] body bone='%s' offset_translation=(%.4f,%.4f,%.4f)\n",
-                         bname, off[3][0], off[3][1], off[3][2]);
+            if (VerboseAssetLogsEnabled())
+                std::fprintf(stderr, "[bone-offset] body bone='%s' offset_translation=(%.4f,%.4f,%.4f)\n",
+                             bname, off[3][0], off[3][1], off[3][2]);
         }
     }
 
@@ -1097,7 +1219,8 @@ bool Model::Load(const char* path, MaterialManager* mm) {
             char key[512];
             std::snprintf(key, sizeof(key), "%s#%zu", path, i);
             m.material_idx = mm->RegisterFromHandles(
-                key, m.tex_albedo, m.tex_normal, m.tex_orm, m.tex_opacity, m.tex_ao);
+                key, m.tex_albedo, m.tex_normal, m.tex_orm, m.tex_opacity, m.tex_ao,
+                m.orm_packed, m.albedo_factor, m.roughness_factor, m.metallic_factor, 1.0f);
         }
     }
 
@@ -1136,7 +1259,8 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
         if (it != g_anim_file_cache.end()) {
             fcache = it->second;
         } else {
-            std::fprintf(stderr, "[anim-cache] MISS '%s' — parsing FBX\n", path);
+            if (VerboseAssetLogsEnabled())
+                std::fprintf(stderr, "[anim-cache] MISS '%s' — parsing FBX\n", path);
 
             Assimp::Importer importer;
             // preserve_pivots=false collapses _$AssimpFbx$_* aux nodes so
@@ -1239,9 +1363,10 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
         for (const RawAnimChannel& rc : raw.channels) {
             // Skip channels absent from this body's skeleton (e.g. extra finger bones).
             if (node_map_.find(rc.name) == node_map_.end()) {
-                std::fprintf(stderr,
-                    "[anim-skip] clip='%s' channel='%s' (no matching bone in body)\n",
-                    clip.name.c_str(), rc.name.c_str());
+                if (VerboseAssetLogsEnabled())
+                    std::fprintf(stderr,
+                        "[anim-skip] clip='%s' channel='%s' (no matching bone in body)\n",
+                        clip.name.c_str(), rc.name.c_str());
                 continue;
             }
             BoneChannel bc;
@@ -1257,7 +1382,7 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
             auto hit = clip.chan_map.find("mixamorig:Hips");
             if (hit != clip.chan_map.end()) {
                 const auto& hc = clip.channels[hit->second];
-                if (!hc.pos.empty())
+                if (!hc.pos.empty() && VerboseAssetLogsEnabled())
                     std::fprintf(stderr, "[clip-frame0] '%s' Hips_pos=(%.4f,%.4f,%.4f)\n",
                                  clip.name.c_str(), hc.pos[0].v.x, hc.pos[0].v.y, hc.pos[0].v.z);
             }
@@ -1316,7 +1441,10 @@ void Model::OverrideMaterial(const std::string& albedo_path,
     for (auto& m : meshes_) {
         if (new_albedo) m.tex_albedo = new_albedo;
         if (new_normal) m.tex_normal = new_normal;
-        if (new_orm)    m.tex_orm    = new_orm;
+        if (new_orm) {
+            m.tex_orm = new_orm;
+            m.orm_packed = true;
+        }
         m.albedo_factor    = tint;
         m.roughness_factor = roughness;
         m.metallic_factor  = metallic;
@@ -1373,7 +1501,8 @@ void Model::ApplyMaterialsByName(
         l.orm    = LoadTexFromDisk(p.orm,    /*srgb*/false);
 
         // Textures come from g_tex_cache — not owned by this model.
-        l.idx = mm.RegisterFromHandles(name, l.albedo, l.normal, l.orm);
+        l.idx = mm.RegisterFromHandles(name, l.albedo, l.normal, l.orm,
+                                       0, 0, true, glm::vec3(1.0f), 1.0f, 0.0f, 1.0f);
         cache[name] = l;
         return l;
     };
@@ -1395,7 +1524,10 @@ void Model::ApplyMaterialsByName(
         sm.material_idx = l.idx;
         if (l.albedo) sm.tex_albedo = l.albedo;
         if (l.normal) sm.tex_normal = l.normal;
-        if (l.orm)    sm.tex_orm    = l.orm;
+        if (l.orm) {
+            sm.tex_orm = l.orm;
+            sm.orm_packed = true;
+        }
         ++applied;
     }
     if (log_bones)

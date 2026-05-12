@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"time"
 
 	"realm-crafter/server/internal/db"
@@ -15,6 +16,19 @@ import (
 
 	"github.com/quic-go/quic-go"
 )
+
+var defaultMovementValidation = MovementValidationConfig{
+	MinDeltaSec:       0.016, // avoid extreme tiny dt
+	MaxDeltaSec:       1.0,   // clamp big stalls
+	BaseStepAllowance: 0.75,  // jitter/packet burst tolerance
+	MaxMoveSpeed:      18.0,  // conservative sanity cap for player locomotion
+	SpeedSlackMult:    1.25,  // latency slack over nominal speed budget
+	MaxBelowGround:    1.0,   // allow small penetration before correction
+	MaxAboveGround:    12.0,  // allow jump/fall but reject impossible heights
+	EnableTelemetry:   false,
+	LogRejections:     true,
+	TelemetrySampleMs: 500,
+}
 
 // Connection state constants.
 const (
@@ -34,6 +48,8 @@ type ClientConn struct {
 	account         *db.Account
 	actor           *world.Actor
 	activeDialogNPC uint32 // RID of NPC currently in dialog with this player; 0 = none
+	lastMoveLogAtMs int64
+	worldEnterStart int64 // unix ms when handleStartGame started
 }
 
 // Run is the main goroutine for a connected client.
@@ -156,6 +172,8 @@ func (c *ClientConn) dispatch(ctx context.Context, pktType uint16, payload []byt
 			return c.handleShopAction(ctx, payload)
 		case protocol.PPlayerAction:
 			return c.handlePlayerAction(ctx, payload)
+		case protocol.PClientWorldReady:
+			return c.handleClientWorldReady(payload)
 		case protocol.PPing:
 			return c.sendPong()
 		default:
@@ -332,6 +350,8 @@ func (c *ClientConn) handleDeleteCharacter(ctx context.Context, payload []byte) 
 }
 
 func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error {
+	startAt := time.Now()
+	c.worldEnterStart = startAt.UnixMilli()
 	r := NewReader(payload)
 	slot, err := r.ReadUint8()
 	if err != nil {
@@ -359,17 +379,17 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	actor.Z = char.Z
 	actor.Yaw = char.Yaw
 	actor.AreaName = char.AreaName
-	actor.Health    = char.Health
+	actor.Health = char.Health
 	actor.HealthMax = char.HealthMax
-	actor.Energy    = char.Energy
+	actor.Energy = char.Energy
 	actor.EnergyMax = char.EnergyMax
-	actor.XP        = char.XP
-	actor.Gold      = char.Gold
-	actor.Strength  = int32(char.Level) * 3
-	actor.Radius    = 0.4
+	actor.XP = char.XP
+	actor.Gold = char.Gold
+	actor.Strength = int32(char.Level) * 3
+	actor.Radius = 0.4
 	if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, char.ID); err == nil {
 		actor.WeaponDamage = wdmg
-		actor.CachedArmor  = armor
+		actor.CachedArmor = armor
 	}
 	actor.SpellCooldowns = make(map[uint16]int64)
 
@@ -473,6 +493,28 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	// Send input bindings from the default preset.
 	c.sendInputBindings(ctx)
 
+	log.Printf("perf-world-enter: user=%s char=%q area=%s total_ms=%d",
+		c.account.Username, actor.Name, actor.AreaName, time.Since(startAt).Milliseconds())
+
+	return nil
+}
+
+func (c *ClientConn) handleClientWorldReady(payload []byte) error {
+	r := NewReader(payload)
+	clientTotalMs, err := r.ReadUint32()
+	if err != nil {
+		return err
+	}
+	clientInitMs, err := r.ReadUint32()
+	if err != nil {
+		return err
+	}
+	var serverEndToEnd int64 = -1
+	if c.worldEnterStart > 0 {
+		serverEndToEnd = time.Now().UnixMilli() - c.worldEnterStart
+	}
+	log.Printf("perf-world-enter-ready: user=%s rid=%d client_total_ms=%d client_init_ms=%d server_e2e_ms=%d",
+		c.account.Username, c.actor.RuntimeID, clientTotalMs, clientInitMs, serverEndToEnd)
 	return nil
 }
 
@@ -480,16 +522,17 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 // PInputBindings to the client.
 //
 // Wire format:
-//   preset_name  str
-//   count        u16
-//   [count times]:
-//     context      str
-//     key          str
-//     modifier     str
-//     trigger_type str
-//     action       str
-//     axis_value   f32
-//     remappable   u8
+//
+//	preset_name  str
+//	count        u16
+//	[count times]:
+//	  context      str
+//	  key          str
+//	  modifier     str
+//	  trigger_type str
+//	  action       str
+//	  axis_value   f32
+//	  remappable   u8
 func (c *ClientConn) sendInputBindings(ctx context.Context) {
 	bindings, err := c.server.db.LoadInputBindings(ctx, 1)
 	if err != nil || len(bindings) == 0 {
@@ -553,10 +596,93 @@ func (c *ClientConn) handleStandardUpdate(_ context.Context, payload []byte) err
 		return err
 	}
 
+	prevX, prevY, prevZ := c.actor.X, c.actor.Y, c.actor.Z
+	prevYaw := c.actor.Yaw
+	nowMs := time.Now().UnixMilli()
+	dtSec := float64(nowMs-c.actor.LastMoveAt) / 1000.0
+	if c.actor.LastMoveAt == 0 {
+		dtSec = 0.1 // default client send cadence
+	}
+	mv := c.server.config.Movement
+	if mv.MinDeltaSec <= 0 || mv.MaxDeltaSec <= 0 || mv.MaxMoveSpeed <= 0 || mv.SpeedSlackMult <= 0 {
+		mv = defaultMovementValidation
+	}
+	if dtSec < mv.MinDeltaSec {
+		dtSec = mv.MinDeltaSec
+	}
+	if dtSec > mv.MaxDeltaSec {
+		dtSec = mv.MaxDeltaSec
+	}
+
+	var groundY float32
+	hasGround := false
+	area, ok := c.server.world.GetArea(c.actor.AreaName)
+	if ok && area.Heightmap != nil {
+		groundY = area.Heightmap.SampleWorld(x, z)
+		hasGround = true
+	}
+
+	if mv.EnableTelemetry {
+		if mv.TelemetrySampleMs <= 0 {
+			mv.TelemetrySampleMs = defaultMovementValidation.TelemetrySampleMs
+		}
+		shouldLog := nowMs-c.lastMoveLogAtMs >= mv.TelemetrySampleMs
+		if shouldLog {
+			dx := float64(x - prevX)
+			dy := float64(y - prevY)
+			dz := float64(z - prevZ)
+			stepDist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+			if hasGround {
+				yErr := float64(y - groundY)
+				log.Printf("move-telemetry: player=%s rid=%d step=%.2f y_err=%.2f",
+					c.actor.Name, c.actor.RuntimeID, stepDist, yErr)
+			} else {
+				log.Printf("move-telemetry: player=%s rid=%d step=%.2f no_heightmap",
+					c.actor.Name, c.actor.RuntimeID, stepDist)
+			}
+			c.lastMoveLogAtMs = nowMs
+		}
+	}
+
+	// Horizontal move sanity check.
+	dx2D := float64(x - prevX)
+	dz2D := float64(z - prevZ)
+	horizDist := math.Sqrt(dx2D*dx2D + dz2D*dz2D)
+	maxAllowedStep := mv.BaseStepAllowance + (mv.MaxMoveSpeed * dtSec * mv.SpeedSlackMult)
+
+	// Vertical sanity check against terrain when this area has a heightmap.
+	yInvalid := false
+	var yErr float64
+	if hasGround {
+		yErr = float64(y - groundY)
+		if yErr < -mv.MaxBelowGround || yErr > mv.MaxAboveGround {
+			yInvalid = true
+		}
+	}
+
+	if horizDist > maxAllowedStep || yInvalid {
+		if mv.LogRejections || mv.EnableTelemetry {
+			reason := "horizontal"
+			if yInvalid {
+				reason = "vertical"
+				if horizDist > maxAllowedStep {
+					reason = "horizontal+vertical"
+				}
+			}
+			log.Printf("move-reject: player=%s rid=%d horiz=%.2f max=%.2f y_err=%.2f",
+				c.actor.Name, c.actor.RuntimeID, horizDist, maxAllowedStep, yErr)
+			log.Printf("move-reject-detail: player=%s rid=%d reason=%s dt=%.3f",
+				c.actor.Name, c.actor.RuntimeID, reason, dtSec)
+		}
+		c.sendRepositionActor(c.actor.RuntimeID, prevX, prevY, prevZ, prevYaw)
+		return nil
+	}
+
 	c.actor.X = x
 	c.actor.Y = y
 	c.actor.Z = z
 	c.actor.Yaw = yaw
+	c.actor.LastMoveAt = nowMs
 
 	var w Writer
 	w.WriteUint32(c.actor.RuntimeID)
@@ -566,7 +692,6 @@ func (c *ClientConn) handleStandardUpdate(_ context.Context, payload []byte) err
 	w.WriteFloat32(yaw)
 	w.WriteUint8(flags)
 
-	area, ok := c.server.world.GetArea(c.actor.AreaName)
 	if ok {
 		area.Broadcast(buildFramedPacket(protocol.PStandardUpdate, w.Bytes()), c.actor.RuntimeID)
 
@@ -576,6 +701,16 @@ func (c *ClientConn) handleStandardUpdate(_ context.Context, payload []byte) err
 		}
 	}
 	return nil
+}
+
+func (c *ClientConn) sendRepositionActor(rid uint32, x, y, z, yaw float32) {
+	var rp Writer
+	rp.WriteUint32(rid)
+	rp.WriteFloat32(x)
+	rp.WriteFloat32(y)
+	rp.WriteFloat32(z)
+	rp.WriteFloat32(yaw)
+	c.actor.Send(buildFramedPacket(protocol.PRepositionActor, rp.Bytes()))
 }
 
 func (c *ClientConn) sendPortals(area *world.Area) {
@@ -810,11 +945,14 @@ func (c *ClientConn) sendXPUpdate() error {
 	// Push HP, healthMax and energyMax so the HUD stays in sync.
 	rid := c.actor.RuntimeID
 	c.actor.Mu.Lock()
-	ep    := c.actor.Energy
+	ep := c.actor.Energy
 	epMax := c.actor.EnergyMax
 	c.actor.Mu.Unlock()
 
-	for _, attr := range []struct{ id uint8; val int32 }{
+	for _, attr := range []struct {
+		id  uint8
+		val int32
+	}{
 		{1, hpMax},
 		{0, hp},
 		{3, epMax},
@@ -870,7 +1008,7 @@ func (c *ClientConn) handleInventorySwap(ctx context.Context, payload []byte) er
 	// Refresh equipped combat stats after any equip change.
 	if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, c.actor.CharacterID); err == nil {
 		c.actor.WeaponDamage = wdmg
-		c.actor.CachedArmor  = armor
+		c.actor.CachedArmor = armor
 	}
 	return c.sendInventory(ctx, c.actor.CharacterID)
 }
@@ -1613,4 +1751,3 @@ func isClosedErr(err error) bool {
 	}
 	return false
 }
-

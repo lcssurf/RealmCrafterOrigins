@@ -140,6 +140,11 @@ public:
     // Call once after ZoneScene::RebuildColVis(); must happen on the GL thread.
     void UploadColVisBatch(const ColVisData& vis);
 
+    // Drag-and-drop ghost: call every frame while dragging to update the
+    // preview mesh and world position. Call with modelId=-1 to clear.
+    void SetGhostModel(int modelId, const std::string& filePath,
+                       const glm::vec3& pos, float yaw = 0.f, float scale = 1.f);
+
     // Phase 2 — primitive objects (sphere, box, cylinder, lines).
     // DrawSphere / DrawBox / DrawLine are called from RenderFrame internally.
 
@@ -205,6 +210,14 @@ private:
     float      elapsed_time_ = 0.f;
     glm::vec3  last_cam_pos_ = {};
     GizmoState gizmo_;
+
+    // ── Drag-and-drop ghost preview ───────────────────────────────────────
+    // While the user drags an asset from the browser, a translucent ghost of
+    // the model is rendered at the terrain-raycast position under the cursor.
+    std::unique_ptr<rco::renderer::Actor> ghostActor_;
+    int       ghostModelId_  = -1;   // -1 = no ghost
+    glm::vec3 ghostPos_      = {};
+    glm::mat4 ghostTransform_= glm::mat4(1.f);
 
     // ── PBR render path (lazy) ────────────────────────────────────────────
     RenderMode                                renderMode_ = kRenderSimple;

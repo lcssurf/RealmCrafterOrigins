@@ -7,12 +7,16 @@
 #include <iostream>
 #include <stdexcept>
 #include <vector>
+#include <array>
+#include <cmath>
+#include <algorithm>
 
 #include "rco/renderer/helpers.h"
 #include "rco/renderer/object.h"
 #include "rco/renderer/shader.h"
 
 #include <glm/gtc/matrix_transform.hpp>
+#include <stb_image.h>
 
 namespace rco::renderer {
 
@@ -46,6 +50,91 @@ void RenderUnitCube(GLuint vao) {
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, 36);
     glBindVertexArray(0);
+}
+
+struct HdrLumaStats {
+    bool valid = false;
+    float p50 = 1.0f;
+    float p95 = 1.0f;
+    float p99 = 1.0f;
+    float max = 1.0f;
+    uint64_t samples = 0;
+};
+
+static HdrLumaStats ComputeHdrLumaStats(const std::string& path) {
+    HdrLumaStats out{};
+    int w = 0, h = 0, n = 0;
+    stbi_set_flip_vertically_on_load(false);
+    float* px = stbi_loadf(path.c_str(), &w, &h, &n, 3);
+    if (!px || w <= 0 || h <= 0) {
+        if (px) stbi_image_free(px);
+        return out;
+    }
+
+    constexpr int kBins = 256;
+    constexpr float kLogMin = -16.0f;
+    constexpr float kLogMax = 16.0f;
+    constexpr float kEps = 1e-6f;
+    std::array<uint32_t, kBins> hist{};
+    hist.fill(0);
+
+    const size_t totalPixels = size_t(w) * size_t(h);
+    const int stride = std::max(1, int(std::sqrt(double(totalPixels) / 250000.0)));
+
+    float maxLum = 0.0f;
+    uint64_t count = 0;
+    for (int y = 0; y < h; y += stride) {
+        for (int x = 0; x < w; x += stride) {
+            const size_t idx = (size_t(y) * size_t(w) + size_t(x)) * 3;
+            const float r = px[idx + 0];
+            const float g = px[idx + 1];
+            const float b = px[idx + 2];
+            float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+            if (!std::isfinite(lum)) continue;
+            lum = std::max(lum, kEps);
+            maxLum = std::max(maxLum, lum);
+            const float logLum = std::log2(lum);
+            const float t = (logLum - kLogMin) / (kLogMax - kLogMin);
+            const int bin = std::clamp(int(t * float(kBins - 1)), 0, kBins - 1);
+            hist[size_t(bin)]++;
+            count++;
+        }
+    }
+    stbi_image_free(px);
+    if (count == 0) return out;
+
+    auto percentileLum = [&](double p) -> float {
+        const uint64_t target = std::max<uint64_t>(1, uint64_t(std::ceil(double(count) * p)));
+        uint64_t acc = 0;
+        for (int i = 0; i < kBins; ++i) {
+            acc += hist[size_t(i)];
+            if (acc >= target) {
+                const float u = (float(i) + 0.5f) / float(kBins);
+                const float logLum = kLogMin + u * (kLogMax - kLogMin);
+                return std::exp2(logLum);
+            }
+        }
+        return std::max(maxLum, 1.0f);
+    };
+
+    out.valid = true;
+    out.samples = count;
+    out.p50 = percentileLum(0.50);
+    out.p95 = percentileLum(0.95);
+    out.p99 = percentileLum(0.99);
+    out.max = std::max(maxLum, out.p99);
+    return out;
+}
+
+static float ComputeIblClamp(const HdrLumaStats& s) {
+    if (!s.valid) return 16.0f;
+    // Preserve most of the map but clamp extreme solar hotspots so any HDR
+    // remains stable when combined with our directional sun lighting.
+    const float clampFromP95 = s.p95 * 3.0f;
+    const float clampFromP99 = s.p99 * 1.5f;
+    float clampV = std::max(1.0f, std::min(clampFromP95, clampFromP99));
+    clampV = std::clamp(clampV, 1.0f, 64.0f);
+    return clampV;
 }
 
 } // namespace
@@ -299,7 +388,9 @@ void Engine::createFramebuffers_() {
     // Tonemapping SSBOs
     {
         std::vector<int> zeros(128, 0);
-        float expo[] = { 1.0f, 0.0f };
+        // Keep both exposure slots initialized to 1.0 so the first frame does
+        // not start from a black exposure value during ping-pong swap.
+        float expo[] = { 1.0f, 1.0f };
         exposureBuffer_  = std::make_unique<StaticBuffer>(expo, 2 * sizeof(float), 0);
         histogramBuffer_ = std::make_unique<StaticBuffer>(zeros.data(), zeros.size() * sizeof(int), 0);
     }
@@ -490,6 +581,14 @@ void Engine::createVAO_() {
 // (specular w/ roughness mips), and brdfLUT_ (split-sum BRDF integration).
 void Engine::LoadEnvironment(const std::string& hdr_path) {
     std::fprintf(stderr, "[ibl] LoadEnvironment '%s' start\n", hdr_path.c_str());
+    const HdrLumaStats luma = ComputeHdrLumaStats(hdr_path);
+    const float iblClamp = ComputeIblClamp(luma);
+    if (luma.valid) {
+        std::fprintf(stderr,
+                     "[ibl] luma p50=%.3f p95=%.3f p99=%.3f max=%.3f clamp=%.3f (samples=%llu)\n",
+                     luma.p50, luma.p95, luma.p99, luma.max, iblClamp,
+                     static_cast<unsigned long long>(luma.samples));
+    }
     // 1) Load equirectangular HDRI as a 2D texture (still useful for raw skybox fallbacks).
     TextureCreateInfo info{
         .path         = hdr_path,
@@ -499,7 +598,14 @@ void Engine::LoadEnvironment(const std::string& hdr_path) {
         .minFilter    = GL_LINEAR,
         .magFilter    = GL_LINEAR,
     };
-    envMap_hdri_ = std::make_unique<Texture2D>(info);
+    auto loaded_hdri = std::make_unique<Texture2D>(info);
+    if (!loaded_hdri || !loaded_hdri->Valid()) {
+        std::fprintf(stderr,
+            "[ibl] ERROR: failed to load environment '%s' (keeping previous IBL)\n",
+            hdr_path.c_str());
+        return;
+    }
+    envMap_hdri_ = std::move(loaded_hdri);
 
     // 2) Set up the unit cube VAO once.
     if (!iblCubeVAO_) {
@@ -585,6 +691,7 @@ void Engine::LoadEnvironment(const std::string& hdr_path) {
         sh->Bind();
         sh->SetMat4("u_proj", captureProj);
         sh->SetInt("u_envCube", 0);
+        sh->SetFloat("u_iblClamp", iblClamp);
         glBindTextureUnit(0, envCubemap_);
         glViewport(0, 0, irradianceCubeSize_, irradianceCubeSize_);
         for (int face = 0; face < 6; ++face) {
@@ -601,6 +708,7 @@ void Engine::LoadEnvironment(const std::string& hdr_path) {
         sh->Bind();
         sh->SetMat4("u_proj", captureProj);
         sh->SetInt("u_envCube", 0);
+        sh->SetFloat("u_iblClamp", iblClamp);
         glBindTextureUnit(0, envCubemap_);
         for (int mip = 0; mip < prefilterMipLevels_; ++mip) {
             const int mipSize = (int)(prefilterCubeSize_ * glm::pow(0.5f, (float)mip));

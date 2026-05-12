@@ -1,10 +1,15 @@
 #include <cstdio>
 #include <cmath>
+#include <cstring>
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <chrono>
+#include <fstream>
+#include <filesystem>
 
 // OpenGL / GLFW
 #include <glad/glad.h>
@@ -45,11 +50,407 @@
 
 #include "rco/renderer/engine.h"
 #include "rco/renderer/pipeline.h"
+#include "rco/renderer/model_cache.h"
 
 // Scroll callback routes wheel input to the camera.
 static rco::renderer::Camera* g_camera = nullptr;
 static void ScrollCallback(GLFWwindow*, double, double y) {
     if (g_camera) g_camera->ProcessScroll(static_cast<float>(y));
+}
+
+static bool SceneDebugLogsEnabled() {
+    static const bool enabled = []() {
+        const char* v = std::getenv("RCO_CLIENT_DEBUG_LOGS");
+        if (!v) return false;
+        return std::strcmp(v, "1") == 0 || std::strcmp(v, "true") == 0 ||
+               std::strcmp(v, "TRUE") == 0 || std::strcmp(v, "on") == 0 ||
+               std::strcmp(v, "ON") == 0;
+    }();
+    return enabled;
+}
+
+struct LoadingPresetConfig {
+    const char* name;
+    float core_preload_radius;
+    double core_preload_timeout_ms;
+    int core_init_per_frame;
+    double core_init_budget_ms;
+    int core_cold_loads_per_frame;
+    int loading_exit_pending_max;
+    int global_init_per_frame_after_core;
+    double global_init_budget_ms_after_core;
+    int static_init_per_frame;
+    double static_init_budget_ms;
+    int static_max_cold_loads_per_frame;
+};
+
+static LoadingPresetConfig ResolveLoadingPreset() {
+    auto trim = [](std::string s) {
+        const char* ws = " \t\r\n";
+        const std::size_t b = s.find_first_not_of(ws);
+        if (b == std::string::npos) return std::string{};
+        const std::size_t e = s.find_last_not_of(ws);
+        return s.substr(b, e - b + 1);
+    };
+
+    std::string v = "medium";
+    std::ifstream f("config.toml");
+    if (f) {
+        std::string line;
+        bool in_loading = false;
+        while (std::getline(f, line)) {
+            const auto hash = line.find('#');
+            if (hash != std::string::npos) line = line.substr(0, hash);
+            line = trim(line);
+            if (line.empty()) continue;
+
+            if (line.front() == '[' && line.back() == ']') {
+                const std::string section = trim(line.substr(1, line.size() - 2));
+                in_loading = (section == "loading");
+                continue;
+            }
+            if (!in_loading) continue;
+
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string key = trim(line.substr(0, eq));
+            std::string val = trim(line.substr(eq + 1));
+            if (key != "preset") continue;
+            if (val.size() >= 2 && val.front() == '"' && val.back() == '"')
+                val = val.substr(1, val.size() - 2);
+            std::transform(val.begin(), val.end(), val.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (val == "low" || val == "medium" || val == "high") v = val;
+            break;
+        }
+    }
+
+    if (v == "low") {
+        return {
+            "low",
+            90.f, 7000.0, 3, 6.0, 1, 220,
+            2, 3.0,
+            1, 1.0, 1
+        };
+    }
+    if (v == "high") {
+        return {
+            "high",
+            170.f, 20000.0, 8, 16.0, 4, 60,
+            6, 10.0,
+            3, 3.0, 2
+        };
+    }
+    // default: medium
+    return {
+        "medium",
+        140.f, 15000.0, 6, 12.0, 3, 120,
+        4, 6.0,
+        2, 2.0, 1
+    };
+}
+
+struct AreaLightingProfile {
+    glm::vec3 sun_dir;
+    glm::vec3 sun_color;
+    bool volumetrics_default;
+};
+
+struct RenderColorProfile {
+    float contrast = 1.08f;
+    float saturation = 1.08f;
+    float vibrance = 0.20f;
+    float black_point = 0.010f;
+    float vignette_strength = 0.04f;
+    float vignette_softness = 0.55f;
+};
+
+static AreaLightingProfile ResolveAreaLightingProfile(const std::string& area_name) {
+    std::string n = area_name;
+    std::transform(n.begin(), n.end(), n.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    if (n == "training camp") {
+        // Clear-sky noon profile: stronger, higher sun for a brighter open day.
+        return {
+            glm::normalize(glm::vec3(0.18f, 0.96f, 0.20f)),
+            glm::vec3(1.14f, 1.12f, 1.05f),
+            true
+        };
+    }
+
+    // Safe fallback for other areas.
+    return {
+        glm::normalize(glm::vec3(0.24f, 0.92f, 0.30f)),
+        glm::vec3(1.10f, 1.08f, 1.02f),
+        true
+    };
+}
+
+static rco::renderer::Pipeline::CharacterReadabilityTuning ResolveCharacterReadabilityTuning() {
+    auto trim = [](std::string s) {
+        const char* ws = " \t\r\n";
+        const std::size_t b = s.find_first_not_of(ws);
+        if (b == std::string::npos) return std::string{};
+        const std::size_t e = s.find_last_not_of(ws);
+        return s.substr(b, e - b + 1);
+    };
+    auto parseFloat = [&](const std::string& raw, float* out) -> bool {
+        if (!out) return false;
+        try {
+            std::size_t idx = 0;
+            float v = std::stof(raw, &idx);
+            if (idx != raw.size()) return false;
+            *out = v;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    };
+
+    rco::renderer::Pipeline::CharacterReadabilityTuning tuning{};
+    std::ifstream f("config.toml");
+    if (!f) return tuning;
+
+    std::string line;
+    bool in_section = false;
+    while (std::getline(f, line)) {
+        const auto hash = line.find('#');
+        if (hash != std::string::npos) line = line.substr(0, hash);
+        line = trim(line);
+        if (line.empty()) continue;
+
+        if (line.front() == '[' && line.back() == ']') {
+            const std::string section = trim(line.substr(1, line.size() - 2));
+            in_section = (section == "render.character_readability");
+            continue;
+        }
+        if (!in_section) continue;
+
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = trim(line.substr(0, eq));
+        std::string val = trim(line.substr(eq + 1));
+        if (val.size() >= 2 && val.front() == '"' && val.back() == '"')
+            val = val.substr(1, val.size() - 2);
+
+        if (key == "shadow_lift") {
+            parseFloat(val, &tuning.shadowLift);
+        } else if (key == "rim_strength") {
+            parseFloat(val, &tuning.rimStrength);
+        } else if (key == "rim_exponent") {
+            parseFloat(val, &tuning.rimExponent);
+        } else if (key == "min_ndotl") {
+            parseFloat(val, &tuning.minNdotL);
+        } else if (key == "ambient_boost") {
+            parseFloat(val, &tuning.ambientBoost);
+        }
+    }
+
+    tuning.shadowLift   = glm::clamp(tuning.shadowLift,   0.0f, 1.0f);
+    tuning.rimStrength  = glm::clamp(tuning.rimStrength,  0.0f, 1.0f);
+    tuning.rimExponent  = glm::clamp(tuning.rimExponent,  1.0f, 6.0f);
+    tuning.minNdotL     = glm::clamp(tuning.minNdotL,     0.0f, 0.5f);
+    tuning.ambientBoost = glm::clamp(tuning.ambientBoost, 0.0f, 0.5f);
+    return tuning;
+}
+
+static rco::renderer::Pipeline::SceneLookTuning ResolveSceneLookTuning() {
+    auto trim = [](std::string s) {
+        const char* ws = " \t\r\n";
+        const std::size_t b = s.find_first_not_of(ws);
+        if (b == std::string::npos) return std::string{};
+        const std::size_t e = s.find_last_not_of(ws);
+        return s.substr(b, e - b + 1);
+    };
+    auto parseFloat = [&](const std::string& raw, float* out) -> bool {
+        if (!out) return false;
+        try {
+            std::size_t idx = 0;
+            float v = std::stof(raw, &idx);
+            if (idx != raw.size()) return false;
+            *out = v;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    };
+
+    rco::renderer::Pipeline::SceneLookTuning tuning{};
+    std::ifstream f("config.toml");
+    if (!f) return tuning;
+
+    std::string line;
+    bool in_section = false;
+    while (std::getline(f, line)) {
+        const auto hash = line.find('#');
+        if (hash != std::string::npos) line = line.substr(0, hash);
+        line = trim(line);
+        if (line.empty()) continue;
+
+        if (line.front() == '[' && line.back() == ']') {
+            const std::string section = trim(line.substr(1, line.size() - 2));
+            in_section = (section == "render.scene_look");
+            continue;
+        }
+        if (!in_section) continue;
+
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = trim(line.substr(0, eq));
+        std::string val = trim(line.substr(eq + 1));
+        if (val.size() >= 2 && val.front() == '"' && val.back() == '"')
+            val = val.substr(1, val.size() - 2);
+
+        if (key == "ibl_intensity") {
+            parseFloat(val, &tuning.iblIntensity);
+        } else if (key == "sky_intensity") {
+            parseFloat(val, &tuning.skyIntensity);
+        } else if (key == "world_shadow_lift") {
+            parseFloat(val, &tuning.worldShadowLift);
+        } else if (key == "direct_scale") {
+            parseFloat(val, &tuning.directScale);
+        } else if (key == "ambient_scale") {
+            parseFloat(val, &tuning.ambientScale);
+        } else if (key == "flat_ambient") {
+            parseFloat(val, &tuning.flatAmbient);
+        } else if (key == "world_min_ndotl") {
+            parseFloat(val, &tuning.worldMinNdotL);
+        } else if (key == "albedo_min_luma") {
+            parseFloat(val, &tuning.albedoMinLuma);
+        } else if (key == "albedo_lift_strength") {
+            parseFloat(val, &tuning.albedoLiftStrength);
+        } else if (key == "specular_scale") {
+            parseFloat(val, &tuning.specularScale);
+        } else if (key == "exposure_factor") {
+            parseFloat(val, &tuning.exposureFactor);
+        } else if (key == "sun_intensity") {
+            parseFloat(val, &tuning.sunIntensity);
+        }
+    }
+
+    tuning.iblIntensity    = glm::clamp(tuning.iblIntensity,    0.00f, 2.00f);
+    tuning.skyIntensity    = glm::clamp(tuning.skyIntensity,    0.00f, 2.00f);
+    tuning.worldShadowLift = glm::clamp(tuning.worldShadowLift, 0.00f, 0.95f);
+    tuning.directScale     = glm::clamp(tuning.directScale,     0.00f, 2.00f);
+    tuning.ambientScale    = glm::clamp(tuning.ambientScale,    0.00f, 3.00f);
+    tuning.flatAmbient     = glm::clamp(tuning.flatAmbient,     0.00f, 2.00f);
+    tuning.worldMinNdotL   = glm::clamp(tuning.worldMinNdotL,   0.00f, 1.00f);
+    tuning.albedoMinLuma   = glm::clamp(tuning.albedoMinLuma,   0.00f, 1.00f);
+    tuning.albedoLiftStrength = glm::clamp(tuning.albedoLiftStrength, 0.00f, 1.00f);
+    tuning.specularScale   = glm::clamp(tuning.specularScale,   0.00f, 2.00f);
+    tuning.exposureFactor  = glm::clamp(tuning.exposureFactor,  0.05f, 2.00f);
+    tuning.sunIntensity    = glm::clamp(tuning.sunIntensity,    0.00f, 2.00f);
+    return tuning;
+}
+
+static RenderColorProfile ResolveRenderColorProfile() {
+    auto trim = [](std::string s) {
+        const char* ws = " \t\r\n";
+        const std::size_t b = s.find_first_not_of(ws);
+        if (b == std::string::npos) return std::string{};
+        const std::size_t e = s.find_last_not_of(ws);
+        return s.substr(b, e - b + 1);
+    };
+    auto parseFloat = [&](const std::string& raw, float* out) -> bool {
+        if (!out) return false;
+        try {
+            std::size_t idx = 0;
+            float v = std::stof(raw, &idx);
+            if (idx != raw.size()) return false;
+            *out = v;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    };
+
+    RenderColorProfile cfg{};
+    std::ifstream f("config.toml");
+    if (!f) return cfg;
+
+    std::string line;
+    bool in_section = false;
+    while (std::getline(f, line)) {
+        const auto hash = line.find('#');
+        if (hash != std::string::npos) line = line.substr(0, hash);
+        line = trim(line);
+        if (line.empty()) continue;
+
+        if (line.front() == '[' && line.back() == ']') {
+            const std::string section = trim(line.substr(1, line.size() - 2));
+            in_section = (section == "render.color");
+            continue;
+        }
+        if (!in_section) continue;
+
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = trim(line.substr(0, eq));
+        std::string val = trim(line.substr(eq + 1));
+        if (val.size() >= 2 && val.front() == '"' && val.back() == '"')
+            val = val.substr(1, val.size() - 2);
+
+        if (key == "contrast") {
+            parseFloat(val, &cfg.contrast);
+        } else if (key == "saturation") {
+            parseFloat(val, &cfg.saturation);
+        } else if (key == "vibrance") {
+            parseFloat(val, &cfg.vibrance);
+        } else if (key == "black_point") {
+            parseFloat(val, &cfg.black_point);
+        } else if (key == "vignette_strength") {
+            parseFloat(val, &cfg.vignette_strength);
+        } else if (key == "vignette_softness") {
+            parseFloat(val, &cfg.vignette_softness);
+        }
+    }
+
+    cfg.contrast = glm::clamp(cfg.contrast, 0.80f, 1.35f);
+    cfg.saturation = glm::clamp(cfg.saturation, 0.80f, 1.40f);
+    cfg.vibrance = glm::clamp(cfg.vibrance, -0.30f, 0.60f);
+    cfg.black_point = glm::clamp(cfg.black_point, 0.00f, 0.06f);
+    cfg.vignette_strength = glm::clamp(cfg.vignette_strength, 0.00f, 0.20f);
+    cfg.vignette_softness = glm::clamp(cfg.vignette_softness, 0.00f, 1.00f);
+    return cfg;
+}
+
+static std::string ResolveIblPathFromAreaConfig(const std::string& skybox_hdr) {
+    namespace fs = std::filesystem;
+    const std::string fallback = "assets/ibl/default.hdr";
+    auto trim = [](std::string s) {
+        const char* ws = " \t\r\n";
+        const std::size_t b = s.find_first_not_of(ws);
+        if (b == std::string::npos) return std::string{};
+        const std::size_t e = s.find_last_not_of(ws);
+        return s.substr(b, e - b + 1);
+    };
+    auto hasExt = [](const std::string& s) {
+        return fs::path(s).has_extension();
+    };
+
+    std::string raw = trim(skybox_hdr);
+    if (raw.empty()) return fallback;
+
+    std::vector<std::string> candidates;
+    const bool already_scoped =
+        raw.rfind("assets/ibl/", 0) == 0 || raw.rfind("assets\\ibl\\", 0) == 0;
+    if (already_scoped) candidates.push_back(raw);
+    else candidates.push_back("assets/ibl/" + raw);
+
+    if (!hasExt(raw)) {
+        if (already_scoped) candidates.push_back(raw + ".hdr");
+        else candidates.push_back("assets/ibl/" + raw + ".hdr");
+    }
+
+    for (const auto& c : candidates) {
+        if (fs::exists(c) && fs::is_regular_file(c)) return c;
+    }
+
+    std::fprintf(stderr,
+        "[ibl] warning: skybox '%s' not found in assets/ibl (tried %zu path(s)); using default.hdr\n",
+        raw.c_str(), candidates.size());
+    return fallback;
 }
 
 int main() {
@@ -205,6 +606,25 @@ int main() {
 
     rco::renderer::ParticleSystem particles;
     rco::audio::AudioSystem       audio;
+    const LoadingPresetConfig loading_preset = ResolveLoadingPreset();
+    const rco::renderer::Pipeline::CharacterReadabilityTuning character_readability_tuning =
+        ResolveCharacterReadabilityTuning();
+    const rco::renderer::Pipeline::SceneLookTuning scene_look_tuning =
+        ResolveSceneLookTuning();
+    const RenderColorProfile render_color_profile =
+        ResolveRenderColorProfile();
+
+    // World-enter timing (Etapa A / Fase 2 baseline):
+    // StartGame sent -> PStartGame received -> renderer_ready (first playable frame).
+    bool world_enter_pending = false;
+    bool world_enter_logged  = false;
+    std::chrono::steady_clock::time_point world_enter_start_tp{};
+    std::chrono::steady_clock::time_point world_enter_pstart_tp{};
+    bool world_entry_loading = false;
+    double world_entry_loading_start = 0.0;
+    std::vector<std::size_t> world_entry_core_indices;
+    std::size_t world_entry_core_cursor = 0;
+    bool area_lighting_profile_pending = true;
 
     struct DialogState {
         bool                     open = false;
@@ -237,6 +657,8 @@ int main() {
         WorldObjectEntry& operator=(const WorldObjectEntry&) = delete;
     };
     std::vector<WorldObjectEntry> world_static_objects;
+    std::vector<std::string> static_model_prewarm_queue;
+    std::size_t static_model_prewarm_cursor = 0;
 
     // Shop UI
     struct ShopEntry {
@@ -423,6 +845,13 @@ int main() {
             }
 
             case rco::net::kPStartGame: {
+                world_enter_pstart_tp = std::chrono::steady_clock::now();
+                if (world_enter_pending) {
+                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        world_enter_pstart_tp - world_enter_start_tp).count();
+                    std::fprintf(stderr, "[perf-world-enter] phase=pstart_received ms=%lld\n",
+                                 static_cast<long long>(ms));
+                }
                 player.runtimeId = r.ReadU32();
                 player.areaName  = r.ReadString();
                 player.x         = r.ReadF32();
@@ -533,6 +962,11 @@ int main() {
 
                 last_player_pos = {player.x, player.z};
                 state = rco::GameState::InGame;
+                world_entry_loading = true;
+                world_entry_loading_start = glfwGetTime();
+                world_entry_core_indices.clear();
+                world_entry_core_cursor = 0;
+                area_lighting_profile_pending = true;
 
                 // Initialize InputSystem now that we have a live connection
                 input_system = std::make_unique<rco::input::InputSystem>(
@@ -586,10 +1020,16 @@ int main() {
                 last_player_pos = {player.x, player.z};
                 world_actors.clear();
                 world_static_objects.clear();
+                world_entry_loading = false;
+                world_entry_core_indices.clear();
+                world_entry_core_cursor = 0;
+                static_model_prewarm_queue.clear();
+                static_model_prewarm_cursor = 0;
                 area_portals.clear();
                 world_items.clear();
                 shop.open = false;
                 combat_target = 0;
+                area_lighting_profile_pending = true;
                 spellbar.Clear();
                 spell_fx.Clear();
                 chat_bubbles.Clear();
@@ -793,6 +1233,8 @@ int main() {
                         player_actor.Init("shaders",
                                           body.model_path.c_str(),
                                           &engine.materials());
+                        player_actor.SetReadabilityProfile(
+                            rco::renderer::Actor::ReadabilityProfile::Character);
                         player_actor.scale      = body.scale > 0.f ? body.scale : 1.f;
                         player_actor.yaw_offset = player_yaw_offset;
                         player_actor.y_offset   = player_y_offset;
@@ -961,6 +1403,12 @@ int main() {
                 login_error = reason.empty() ? "Disconnected by server." : reason;
                 characters.clear();
                 world_actors.clear();
+                world_static_objects.clear();
+                world_entry_loading = false;
+                world_entry_core_indices.clear();
+                world_entry_core_cursor = 0;
+                static_model_prewarm_queue.clear();
+                static_model_prewarm_cursor = 0;
                 renderer_ready = false;
                 break;
             }
@@ -1154,8 +1602,12 @@ int main() {
 
             case rco::net::kPWorldObjects: {
                 world_static_objects.clear();
+                static_model_prewarm_queue.clear();
+                static_model_prewarm_cursor = 0;
                 uint16_t obj_count = r.ReadU16();
                 world_static_objects.reserve(obj_count);
+                std::unordered_set<std::string> unique_models;
+                unique_models.reserve(obj_count);
                 for (uint16_t oi = 0; oi < obj_count && r.OK(); ++oi) {
                     WorldObjectEntry e;
                     e.model_path = r.ReadString();
@@ -1165,16 +1617,12 @@ int main() {
                     e.z          = r.ReadF32();
                     e.yaw        = r.ReadF32();
                     if (!r.OK() || e.model_path.empty()) break;
-                    if (renderer_ready) {
-                        e.actor = std::make_unique<rco::renderer::Actor>();
-                        e.actor->Init("shaders", e.model_path.c_str(), &engine.materials());
-                        e.actor->position = {e.x, e.y, e.z};
-                        e.actor->yaw      = e.yaw;
-                        e.actor->scale    = e.scale;
-                    }
+                    unique_models.insert(e.model_path);
                     world_static_objects.push_back(std::move(e));
                 }
-                if (renderer_ready) engine.RebuildMaterialsBuffer();
+                static_model_prewarm_queue.reserve(unique_models.size());
+                for (const auto& path : unique_models)
+                    static_model_prewarm_queue.push_back(path);
                 break;
             }
 
@@ -1325,9 +1773,7 @@ int main() {
             case rco::net::kPAreaConfig: {
                 std::string skybox_hdr = r.ReadString();
                 if (!r.OK() || !renderer_ready) break;
-                const std::string path = skybox_hdr.empty()
-                    ? "assets/ibl/default.hdr"
-                    : "assets/ibl/" + skybox_hdr;
+                const std::string path = ResolveIblPathFromAreaConfig(skybox_hdr);
                 engine.LoadEnvironment(path);
                 break;
             }
@@ -1412,6 +1858,10 @@ int main() {
             rco::net::Writer w;
             w.WriteU8(static_cast<uint8_t>(slot));
             conn.SendPacket(rco::net::kPStartGame, w);
+            world_enter_pending = true;
+            world_enter_logged  = false;
+            world_enter_start_tp = std::chrono::steady_clock::now();
+            std::fprintf(stderr, "[perf-world-enter] phase=startgame_sent\n");
         },
         .OnCreate = [&](int slot,
                         const std::string& name,
@@ -1435,6 +1885,12 @@ int main() {
             renderer_ready = false;
             characters.clear();
             world_actors.clear();
+            world_static_objects.clear();
+            world_entry_loading = false;
+            world_entry_core_indices.clear();
+            world_entry_core_cursor = 0;
+            static_model_prewarm_queue.clear();
+            static_model_prewarm_cursor = 0;
             login_error.clear();
         }
     });
@@ -1486,6 +1942,37 @@ int main() {
                 engine.Init(ecfg);
                 engine.LoadEnvironment("assets/ibl/default.hdr");
                 pipeline = std::make_unique<rco::renderer::Pipeline>(engine);
+                pipeline->SetCharacterReadability(character_readability_tuning);
+                pipeline->SetSceneLook(scene_look_tuning);
+                pipeline->SetColorGrading(
+                    render_color_profile.contrast,
+                    render_color_profile.saturation,
+                    render_color_profile.vibrance,
+                    render_color_profile.black_point,
+                    render_color_profile.vignette_strength,
+                    render_color_profile.vignette_softness);
+                std::fprintf(stderr,
+                    "[render-look] ibl=%.2f sky=%.2f shadow_lift=%.2f direct=%.2f ambient=%.2f flat=%.2f min_ndotl=%.2f albedo_min=%.2f albedo_lift=%.2f spec=%.2f exposure=%.2f sun=%.2f\n",
+                    scene_look_tuning.iblIntensity,
+                    scene_look_tuning.skyIntensity,
+                    scene_look_tuning.worldShadowLift,
+                    scene_look_tuning.directScale,
+                    scene_look_tuning.ambientScale,
+                    scene_look_tuning.flatAmbient,
+                    scene_look_tuning.worldMinNdotL,
+                    scene_look_tuning.albedoMinLuma,
+                    scene_look_tuning.albedoLiftStrength,
+                    scene_look_tuning.specularScale,
+                    scene_look_tuning.exposureFactor,
+                    scene_look_tuning.sunIntensity);
+                std::fprintf(stderr,
+                    "[render-color] contrast=%.2f saturation=%.2f vibrance=%.2f black_point=%.3f vignette=%.2f softness=%.2f\n",
+                    render_color_profile.contrast,
+                    render_color_profile.saturation,
+                    render_color_profile.vibrance,
+                    render_color_profile.black_point,
+                    render_color_profile.vignette_strength,
+                    render_color_profile.vignette_softness);
                 std::fprintf(stderr, "[engine] init ok\n");
 
                 if (terrain.Init()) {
@@ -1496,6 +1983,8 @@ int main() {
                         : "assets/models/player.glb";
                     player_actor.Init("shaders", player_model,
                                       &engine.materials());
+                    player_actor.SetReadabilityProfile(
+                        rco::renderer::Actor::ReadabilityProfile::Character);
                     if (!player_meshes.empty()) {
                         const WorldMesh& body = player_meshes[0];
                         player_actor.scale      = body.scale > 0.f ? body.scale : 1.f;
@@ -1530,28 +2019,281 @@ int main() {
                     camera.SetActorHeight(player_actor.ModelHeight());
                     particles.Init();
                     renderer_ready = true;
-                    // Init any world objects received before the renderer was ready.
-                    for (auto& obj : world_static_objects) {
-                        if (!obj.actor && !obj.model_path.empty()) {
-                            obj.actor = std::make_unique<rco::renderer::Actor>();
-                            obj.actor->Init("shaders", obj.model_path.c_str(), &engine.materials());
-                            obj.actor->position = {obj.x, obj.y, obj.z};
-                            obj.actor->yaw      = obj.yaw;
-                            obj.actor->scale    = obj.scale;
-                        }
-                    }
-                    if (!world_static_objects.empty()) engine.RebuildMaterialsBuffer();
                     terrain.LoadFromEditor(player.areaName);
                     col_data = rco::renderer::LoadColData(player.areaName);
                     player.y = terrain.SampleHeight(player.x, player.z);
                     player_ctrl.Reset();
                     camera.SnapTarget({player.x, player.y, player.z});
+                    if (world_enter_pending && !world_enter_logged) {
+                        auto now_tp = std::chrono::steady_clock::now();
+                        auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now_tp - world_enter_start_tp).count();
+                        auto client_init_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now_tp - world_enter_pstart_tp).count();
+                        std::fprintf(stderr,
+                            "[perf-world-enter] phase=renderer_ready total_ms=%lld client_init_ms=%lld\n",
+                            static_cast<long long>(total_ms),
+                            static_cast<long long>(client_init_ms));
+                        rco::net::Writer pwe;
+                        pwe.WriteU32(static_cast<uint32_t>(std::max<long long>(0, total_ms)));
+                        pwe.WriteU32(static_cast<uint32_t>(std::max<long long>(0, client_init_ms)));
+                        conn.SendPacket(rco::net::kPClientWorldReady, pwe);
+                        world_enter_logged = true;
+                        world_enter_pending = false;
+                    }
                 } else {
                     std::fprintf(stderr, "[renderer] Failed to load shaders — check shaders/ directory\n");
                 }
             }
 
             if (renderer_ready) {
+                if (area_lighting_profile_pending) {
+                    const auto lp = ResolveAreaLightingProfile(player.areaName);
+                    auto cfg = pipeline->Features();
+                    cfg.volumetrics = lp.volumetrics_default;
+                    pipeline->SetFeatures(cfg);
+                    area_lighting_profile_pending = false;
+                }
+
+                // Character-entry loading gate:
+                // pre-load a core radius around player spawn before gameplay.
+                if (world_entry_loading) {
+                    const float kCorePreloadRadius = loading_preset.core_preload_radius;
+                    const double kCorePreloadTimeoutMs = loading_preset.core_preload_timeout_ms;
+                    const int kCoreInitPerFrame = loading_preset.core_init_per_frame;
+                    const double kCoreInitBudgetMs = loading_preset.core_init_budget_ms;
+                    const int kCoreColdLoadsPerFrame = loading_preset.core_cold_loads_per_frame;
+                    const int kLoadingExitPendingMax = loading_preset.loading_exit_pending_max;
+
+                    if (world_entry_core_indices.empty()) {
+                        const float r2 = kCorePreloadRadius * kCorePreloadRadius;
+                        std::vector<std::pair<float, std::size_t>> core_sorted;
+                        core_sorted.reserve(world_static_objects.size());
+                        for (std::size_t i = 0; i < world_static_objects.size(); ++i) {
+                            auto& obj = world_static_objects[i];
+                            if (obj.actor || obj.model_path.empty()) continue;
+                            float dx = obj.x - player.x;
+                            float dz = obj.z - player.z;
+                            float d2 = dx * dx + dz * dz;
+                            if (d2 <= r2) core_sorted.emplace_back(d2, i);
+                        }
+                        std::sort(core_sorted.begin(), core_sorted.end(),
+                            [](const auto& a, const auto& b) { return a.first < b.first; });
+                        world_entry_core_indices.reserve(core_sorted.size());
+                        for (const auto& it : core_sorted) world_entry_core_indices.push_back(it.second);
+                        world_entry_core_cursor = 0;
+                    }
+
+                    int initialized = 0;
+                    int cold_loads = 0;
+                    const auto core_start_tp = std::chrono::steady_clock::now();
+                    while (world_entry_core_cursor < world_entry_core_indices.size() &&
+                           initialized < kCoreInitPerFrame) {
+                        auto elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - core_start_tp).count() / 1000.0;
+                        if (elapsed_ms >= kCoreInitBudgetMs) break;
+
+                        auto& obj = world_static_objects[world_entry_core_indices[world_entry_core_cursor++]];
+                        if (obj.actor || obj.model_path.empty()) continue;
+                        const bool warm_cached =
+                            static_cast<bool>(rco::renderer::ModelCachePeek(obj.model_path));
+                        if (!warm_cached && cold_loads >= kCoreColdLoadsPerFrame) continue;
+
+                        obj.actor = std::make_unique<rco::renderer::Actor>();
+                        obj.actor->Init("shaders", obj.model_path.c_str(), &engine.materials());
+                        obj.actor->position = {obj.x, obj.y, obj.z};
+                        obj.actor->yaw      = obj.yaw;
+                        obj.actor->scale    = obj.scale;
+                        if (!warm_cached) ++cold_loads;
+                        ++initialized;
+                    }
+                    if (initialized > 0) engine.RebuildMaterialsBuffer();
+
+                    // After core is done, continue loading the most relevant global
+                    // objects while still inside the loading screen so gameplay
+                    // starts with a denser world.
+                    if (world_entry_core_cursor >= world_entry_core_indices.size()) {
+                        const int kGlobalInitPerFrame = loading_preset.global_init_per_frame_after_core;
+                        const double kGlobalInitBudgetMs = loading_preset.global_init_budget_ms_after_core;
+                        const auto global_start_tp = std::chrono::steady_clock::now();
+                        int global_inits = 0;
+                        int cold_loads = 0;
+
+                        std::vector<std::pair<float, std::size_t>> candidates;
+                        candidates.reserve(world_static_objects.size());
+                        const float camYawRad = glm::radians(camera.GetYaw());
+                        const glm::vec2 camForward(std::sin(camYawRad), std::cos(camYawRad));
+                        for (std::size_t i = 0; i < world_static_objects.size(); ++i) {
+                            auto& obj = world_static_objects[i];
+                            if (obj.actor || obj.model_path.empty()) continue;
+                            const bool warm_cached =
+                                static_cast<bool>(rco::renderer::ModelCachePeek(obj.model_path));
+                            const glm::vec2 toObj(obj.x - player.x, obj.z - player.z);
+                            const float dist2 = glm::dot(toObj, toObj);
+                            const float frontDot = glm::dot(glm::normalize(toObj + glm::vec2(1e-6f, 1e-6f)), camForward);
+                            const float score = dist2
+                                              + (frontDot < 0.f ? 1e8f : 0.f)
+                                              + (warm_cached ? 0.f : 5e7f);
+                            candidates.emplace_back(score, i);
+                        }
+
+                        if (!candidates.empty()) {
+                            const std::size_t take = std::min<std::size_t>(
+                                static_cast<std::size_t>(kGlobalInitPerFrame), candidates.size());
+                            std::partial_sort(
+                                candidates.begin(), candidates.begin() + take, candidates.end(),
+                                [](const auto& a, const auto& b) { return a.first < b.first; });
+
+                            for (std::size_t n = 0; n < take; ++n) {
+                                auto elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+                                    std::chrono::steady_clock::now() - global_start_tp).count() / 1000.0;
+                                if (elapsed_ms >= kGlobalInitBudgetMs) break;
+                                auto& obj = world_static_objects[candidates[n].second];
+                                if (obj.actor || obj.model_path.empty()) continue;
+                                const bool warm_cached =
+                                    static_cast<bool>(rco::renderer::ModelCachePeek(obj.model_path));
+                                if (!warm_cached && cold_loads >= kCoreColdLoadsPerFrame) continue;
+                                obj.actor = std::make_unique<rco::renderer::Actor>();
+                                obj.actor->Init("shaders", obj.model_path.c_str(), &engine.materials());
+                                obj.actor->position = {obj.x, obj.y, obj.z};
+                                obj.actor->yaw      = obj.yaw;
+                                obj.actor->scale    = obj.scale;
+                                if (!warm_cached) ++cold_loads;
+                                ++global_inits;
+                            }
+                        }
+
+                        if (global_inits > 0) engine.RebuildMaterialsBuffer();
+                    }
+
+                    const double loading_elapsed_ms =
+                        (glfwGetTime() - world_entry_loading_start) * 1000.0;
+                    const bool core_done =
+                        world_entry_core_cursor >= world_entry_core_indices.size();
+                    int pending_total = 0;
+                    for (const auto& obj : world_static_objects) {
+                        if (!obj.actor && !obj.model_path.empty()) ++pending_total;
+                    }
+                    const bool ready_enough = core_done && pending_total <= kLoadingExitPendingMax;
+                    const bool timeout = loading_elapsed_ms >= kCorePreloadTimeoutMs;
+                    if (ready_enough || timeout) {
+                        world_entry_loading = false;
+                    }
+                }
+
+                // Incremental model prewarm:
+                // Warm unique static-object model paths in tiny slices so the
+                // later Actor::Init path hits ModelCache more often.
+                {
+                    constexpr int kPrewarmMaxPerFrame = 1;
+                    constexpr double kPrewarmBudgetMs = 1.0;
+                    const double frame_ms = dt * 1000.0;
+                    if (frame_ms <= 22.0 &&
+                        static_model_prewarm_cursor < static_model_prewarm_queue.size()) {
+                        const auto prewarm_start_tp = std::chrono::steady_clock::now();
+                        int warmed = 0;
+                        while (warmed < kPrewarmMaxPerFrame &&
+                               static_model_prewarm_cursor < static_model_prewarm_queue.size()) {
+                            auto elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - prewarm_start_tp).count() / 1000.0;
+                            if (elapsed_ms >= kPrewarmBudgetMs) break;
+
+                            const std::string& path =
+                                static_model_prewarm_queue[static_model_prewarm_cursor++];
+                            if (!rco::renderer::ModelCachePeek(path))
+                                (void)rco::renderer::ModelCacheGet(path, &engine.materials());
+                            ++warmed;
+                        }
+                    }
+                }
+
+                // Progressive static world-object init: keep world-enter snappy.
+                // We load only a small batch per frame to avoid a long blocking stall
+                // when an area sends hundreds of objects.
+                if (!world_entry_loading) {
+                    const int kStaticInitPerFrame = loading_preset.static_init_per_frame;
+                    const double kStaticInitBudgetMs = loading_preset.static_init_budget_ms;
+                    constexpr double kFrameSoftLimitMs = 16.0; // ~60 FPS
+                    constexpr double kFrameHardLimitMs = 22.0; // below ~45 FPS: pause streaming
+                    const int kMaxColdLoadsPerFrame = loading_preset.static_max_cold_loads_per_frame;
+                    const auto init_start_tp = std::chrono::steady_clock::now();
+                    int initialized = 0;
+                    int pending = 0;
+                    int cold_loads = 0;
+                    const double frame_ms = dt * 1000.0;
+                    int max_inits_this_frame = kStaticInitPerFrame;
+                    double init_budget_ms = kStaticInitBudgetMs;
+                    if (frame_ms > kFrameHardLimitMs) {
+                        max_inits_this_frame = 0;
+                        init_budget_ms = 0.0;
+                    } else if (frame_ms > kFrameSoftLimitMs) {
+                        max_inits_this_frame = 1;
+                        init_budget_ms = 1.0;
+                    }
+
+                    // Camera-aware streaming:
+                    // 1) prefer objects in front of camera
+                    // 2) within that, prefer nearest by distance
+                    std::vector<std::pair<float, std::size_t>> candidates;
+                    candidates.reserve(world_static_objects.size());
+                    const float camYawRad = glm::radians(camera.GetYaw());
+                    const glm::vec2 camForward(std::sin(camYawRad), std::cos(camYawRad));
+                    for (std::size_t i = 0; i < world_static_objects.size(); ++i) {
+                        auto& obj = world_static_objects[i];
+                        if (obj.actor || obj.model_path.empty()) continue;
+                        const bool warm_cached =
+                            static_cast<bool>(rco::renderer::ModelCachePeek(obj.model_path));
+                        const glm::vec2 toObj(obj.x - player.x, obj.z - player.z);
+                        const float dist2 = glm::dot(toObj, toObj);
+                        const float frontDot = glm::dot(glm::normalize(toObj + glm::vec2(1e-6f, 1e-6f)), camForward);
+                        // Strong penalty for behind-camera objects so visible space
+                        // fills first, while still eventually loading everything.
+                        // Prefer warm-cached models to reduce stutter from first-time loads.
+                        const float score = dist2
+                                          + (frontDot < 0.f ? 1e8f : 0.f)
+                                          + (warm_cached ? 0.f : 5e7f);
+                        candidates.emplace_back(score, i);
+                    }
+                    pending = static_cast<int>(candidates.size());
+
+                    if (max_inits_this_frame > 0 && !candidates.empty()) {
+                        const std::size_t take = std::min<std::size_t>(
+                            static_cast<std::size_t>(max_inits_this_frame), candidates.size());
+                        std::partial_sort(
+                            candidates.begin(), candidates.begin() + take, candidates.end(),
+                            [](const auto& a, const auto& b) { return a.first < b.first; });
+
+                        for (std::size_t n = 0; n < take; ++n) {
+                            auto elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - init_start_tp).count() / 1000.0;
+                            if (elapsed_ms >= init_budget_ms) break;
+
+                            auto& obj = world_static_objects[candidates[n].second];
+                            const bool warm_cached =
+                                static_cast<bool>(rco::renderer::ModelCachePeek(obj.model_path));
+                            if (!warm_cached && cold_loads >= kMaxColdLoadsPerFrame) continue;
+                            obj.actor = std::make_unique<rco::renderer::Actor>();
+                            obj.actor->Init("shaders", obj.model_path.c_str(), &engine.materials());
+                            obj.actor->position = {obj.x, obj.y, obj.z};
+                            obj.actor->yaw      = obj.yaw;
+                            obj.actor->scale    = obj.scale;
+                            if (!warm_cached) ++cold_loads;
+                            ++initialized;
+                        }
+                    }
+
+                    if (initialized > 0) {
+                        engine.RebuildMaterialsBuffer();
+                        static double s_last_static_log = 0.0;
+                        if (now - s_last_static_log > 1.0) {
+                            std::fprintf(stderr,
+                                "[perf-world-enter] static_stream init=%d pending=%d total=%zu\n",
+                                initialized, pending, world_static_objects.size());
+                            s_last_static_log = now;
+                        }
+                    }
+                }
+
                 GLFWwindow* w = window.Handle();
 
                 // ---- V key: toggle Action Mode / Classic Mode ----
@@ -1736,7 +2478,8 @@ int main() {
                 glm::mat4 proj = camera.Projection(aspect);
                 view_mat = view;
                 proj_mat = proj;
-                glm::vec3 sun  = glm::normalize(glm::vec3(0.3f, 1.f, 0.5f));
+                const auto area_light = ResolveAreaLightingProfile(player.areaName);
+                glm::vec3 sun  = area_light.sun_dir;
 
 
 
@@ -1746,35 +2489,25 @@ int main() {
                     static bool f8_prev = false;
                     bool f8_cur = glfwGetKey(w, GLFW_KEY_F8) == GLFW_PRESS;
                     if (f8_cur && !f8_prev) {
-                        int m = (pipeline->DebugMode() + 1) % 12;
+                        int m = (pipeline->DebugMode() + 1) % 17;
                         pipeline->SetDebugMode(m);
                         const char* names[] = {
                             "0 FULL", "1 albedo", "2 normal", "3 depth", "4 AO",
                             "5 shadow", "6 irradiance", "7 NoL", "8 albedo*NoL",
-                            "9 envDiffuse", "10 direct (no shadow)", "11 shadowmap sample"
+                            "9 envDiffuse", "10 direct (no shadow)", "11 shadowmap sample",
+                            "12 ambient final", "13 direct shadowed", "14 lighting no sky",
+                            "15 flat fill only", "16 lifted albedo"
                         };
                         std::fprintf(stderr, "[debug] gPhongGlobal mode = %s\n", names[m]);
                     }
                     f8_prev = f8_cur;
                 }
 
-                // -- F9 toggles volumetric fog (helps when investigating shadows).
-                {
-                    static bool f9_prev = false;
-                    bool f9_cur = glfwGetKey(w, GLFW_KEY_F9) == GLFW_PRESS;
-                    if (f9_cur && !f9_prev) {
-                        auto cfg = pipeline->Features();
-                        cfg.volumetrics = !cfg.volumetrics;
-                        pipeline->SetFeatures(cfg);
-                        std::fprintf(stderr, "[debug] volumetrics=%d\n",
-                                     cfg.volumetrics ? 1 : 0);
-                    }
-                    f9_prev = f9_cur;
-                }
+                // Volumetric fog stays always enabled (design decision for atmosphere).
 
                 // --- New pipeline: begin frame, submit all scene geometry, end writes to framebuffer 0 ---
                 pipeline->Begin(view, proj, camera.Position(), static_cast<float>(dt));
-                pipeline->SetSun(-sun, glm::vec3(1.0f, 0.95f, 0.80f));
+                pipeline->SetSun(-sun, area_light.sun_color * scene_look_tuning.sunIntensity);
                 terrain.Submit(*pipeline, camera.Position());
 
                 // Render local player
@@ -1789,16 +2522,18 @@ int main() {
                         static bool s_anim_logged = false;
                         if (!s_anim_logged) {
                             s_anim_logged = true;
-                            std::fprintf(stderr,
-                                "[anim-debug] IsReady=%d action='%s' time=%.3f "
-                                "speed=%.2f clips=%d\n",
-                                player_anim_ctrl.IsReady() ? 1 : 0,
-                                player_anim_ctrl.IsReady()
-                                    ? player_anim_ctrl.CurrentAction().c_str() : "(none)",
-                                player_anim_ctrl.IsReady()
-                                    ? player_anim_ctrl.CurrentTime() : 0.f,
-                                player_speed,
-                                player_actor.model().ClipCount());
+                            if (SceneDebugLogsEnabled()) {
+                                std::fprintf(stderr,
+                                    "[anim-debug] IsReady=%d action='%s' time=%.3f "
+                                    "speed=%.2f clips=%d\n",
+                                    player_anim_ctrl.IsReady() ? 1 : 0,
+                                    player_anim_ctrl.IsReady()
+                                        ? player_anim_ctrl.CurrentAction().c_str() : "(none)",
+                                    player_anim_ctrl.IsReady()
+                                        ? player_anim_ctrl.CurrentTime() : 0.f,
+                                    player_speed,
+                                    player_actor.model().ClipCount());
+                            }
                         }
                     }
 
@@ -1885,6 +2620,8 @@ int main() {
                         auto a = std::make_unique<rco::renderer::Actor>();
                         a->Init("shaders", body->model_path.c_str(),
                                 &engine.materials());
+                        a->SetReadabilityProfile(
+                            rco::renderer::Actor::ReadabilityProfile::Character);
                         a->scale      = body->scale > 0.f ? body->scale : 1.f;
                         a->yaw_offset = e.yaw_offset;
                         a->y_offset   = e.y_offset;
@@ -1930,13 +2667,15 @@ int main() {
                                 a->AliasClip(an.clip_override, an.action);
                         }
                         a->PlayAnim("Idle", true);
-                        std::fprintf(stderr,
-                            "[Actor init] rid=%u model=%s scale=%.2f "
-                            "mat=albedo:'%s' normal:'%s' orm:'%s' "
-                            "anim_bindings=%zu clips_loaded=%d\n",
-                            rid, body->model_path.c_str(), a->scale,
-                            body->albedo.c_str(), body->normal.c_str(), body->orm.c_str(),
-                            e.anims.size(), a->model().ClipCount());
+                        if (SceneDebugLogsEnabled()) {
+                            std::fprintf(stderr,
+                                "[Actor init] rid=%u model=%s scale=%.2f "
+                                "mat=albedo:'%s' normal:'%s' orm:'%s' "
+                                "anim_bindings=%zu clips_loaded=%d\n",
+                                rid, body->model_path.c_str(), a->scale,
+                                body->albedo.c_str(), body->normal.c_str(), body->orm.c_str(),
+                                e.anims.size(), a->model().ClipCount());
+                        }
                         e.actor = std::move(a);
                     }
 
@@ -2014,15 +2753,17 @@ int main() {
                     s_perf_acc += static_cast<float>(dt);
                     if (s_perf_acc >= 1.f) {
                         s_perf_acc = 0.f;
-                        std::fprintf(stderr,
-                            "[perf] actors_vis=%d actors_culled=%d actors_tot=%d\n",
-                            fc_vis, fc_culled, fc_vis + fc_culled);
-                        for (const auto& [path, count] : fc_model_counts) {
-                            // Extract just the filename for brevity
-                            auto slash = path.find_last_of("/\\");
-                            std::string fname = (slash == std::string::npos) ? path : path.substr(slash + 1);
-                            std::fprintf(stderr, "[perf]   model='%s' instances=%d\n",
-                                         fname.c_str(), count);
+                        if (SceneDebugLogsEnabled()) {
+                            std::fprintf(stderr,
+                                "[perf] actors_vis=%d actors_culled=%d actors_tot=%d\n",
+                                fc_vis, fc_culled, fc_vis + fc_culled);
+                            for (const auto& [path, count] : fc_model_counts) {
+                                // Extract just the filename for brevity
+                                auto slash = path.find_last_of("/\\");
+                                std::string fname = (slash == std::string::npos) ? path : path.substr(slash + 1);
+                                std::fprintf(stderr, "[perf]   model='%s' instances=%d\n",
+                                             fname.c_str(), count);
+                            }
                         }
                     }
                 }
@@ -2249,6 +2990,39 @@ int main() {
                 break;
 
             case rco::GameState::InGame: {
+                if (world_entry_loading) {
+                    const int core_total = static_cast<int>(world_entry_core_indices.size());
+                    const int core_done  = static_cast<int>(
+                        (std::min)(world_entry_core_cursor, world_entry_core_indices.size()));
+                    const float p = core_total > 0
+                        ? static_cast<float>(core_done) / static_cast<float>(core_total)
+                        : 0.f;
+                    const double elapsed_ms = (glfwGetTime() - world_entry_loading_start) * 1000.0;
+
+                    ImGui::SetNextWindowPos({0.f, 0.f}, ImGuiCond_Always);
+                    ImGui::SetNextWindowSize(
+                        {static_cast<float>(window.Width()), static_cast<float>(window.Height())},
+                        ImGuiCond_Always);
+                    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.04f, 0.05f, 0.07f, 0.98f));
+                    ImGui::Begin("##world_loading", nullptr,
+                        ImGuiWindowFlags_NoDecoration |
+                        ImGuiWindowFlags_NoMove |
+                        ImGuiWindowFlags_NoSavedSettings);
+                    ImGui::Dummy({0.f, window.Height() * 0.35f});
+                    ImGui::SetCursorPosX(window.Width() * 0.5f - 180.f);
+                    ImGui::Text("Entrando em %s...", player.areaName.c_str());
+                    ImGui::SetCursorPosX(window.Width() * 0.5f - 180.f);
+                    ImGui::ProgressBar(p, {360.f, 18.f});
+                    ImGui::SetCursorPosX(window.Width() * 0.5f - 180.f);
+                    ImGui::Text("Preset: %s", loading_preset.name);
+                    ImGui::SetCursorPosX(window.Width() * 0.5f - 180.f);
+                    ImGui::Text("Preload core (raio spawn): %d / %d  (%.1fs)", core_done, core_total,
+                                static_cast<float>(elapsed_ms / 1000.0));
+                    ImGui::End();
+                    ImGui::PopStyleColor();
+                    break;
+                }
+
                 // HUD
                 ImGui::SetNextWindowPos({10.f, 10.f}, ImGuiCond_Always);
                 ImGui::SetNextWindowSize({300.f, 125.f}, ImGuiCond_Always);

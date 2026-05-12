@@ -2,6 +2,9 @@
 #include "../zone_camera.h"
 #include "../zone_renderer.h"
 #include "../zone_scene.h"
+#include "../thumbnail_cache.h"
+
+struct GLFWwindow;
 
 #include <imgui.h>
 #include <sqlite3.h>
@@ -57,6 +60,8 @@ public:
                      ::rco::renderer::Pipeline* pipeline) {
         (void)engine; (void)pipeline;
     }
+
+    void SetWindow(GLFWwindow* win) { thumbs_.Init(win); }
 
     // Called every ImGui frame when the Zones tab is active.
     void Draw(sqlite3* db, MediaTab* media);
@@ -138,9 +143,10 @@ private:
     static constexpr float kStatusBarH =  24.f;
 
     // ── Core state ────────────────────────────────────────────────────────────
-    ZoneCamera   cam_;
-    ZoneRenderer renderer_;
-    ZoneScene    scene_;
+    ZoneCamera      cam_;
+    ZoneRenderer    renderer_;
+    ZoneScene       scene_;
+    ThumbnailCache  thumbs_;
 
     ZoneMode     zoneMode_   = kModePortal;
     XFormMode    xformMode_  = kXFormSelect;
@@ -149,9 +155,12 @@ private:
     int  selectedType_ = kSelNone;
 
     // Viewport interaction
-    bool   vpHovered_  = false;
-    bool   mouseLook_  = false;
-    bool   mmbPan_     = false;
+    bool      vpHovered_   = false;
+    bool      mouseLook_   = false;
+    bool      mmbPan_      = false;
+    bool      altOrbit_    = false;
+    bool      altDolly_    = false;
+    glm::vec3 orbitTarget_ = {};
     ImVec2 vpOrigin_   = {0, 0};
     ImVec2 vpSize_     = {800, 600};
 
@@ -226,7 +235,11 @@ private:
     // Scenery
     int   scnModelId_     = 0;
     int   scnMaterialId_  = 0;
-    bool  scnAlignGround_ = false;
+    bool  scnAlignGround_ = true;   // default on — ground snap expected
+    char  scnFilter_[128] = {};     // asset browser search filter
+    bool  scnSnapGrid_    = false;  // G key toggles grid snap
+    float scnGridSize_    = 1.0f;   // grid step in world units
+    float scnRotSnap_     = 45.f;   // rotation snap in degrees (0 = free)
     // Terrain brush state
     int   brushMode_      = 0;     // 0=Raise 1=Lower 2=Smooth 3=Flatten 4=Paint
     int   brushFalloff_   = 0;     // 0=Smooth 1=Gaussian 2=Linear 3=Spherical
@@ -275,6 +288,10 @@ private:
 
     // Mesh triangle cache for collision vis — model-local tris, keyed by model_id.
     MeshTriCache meshTriCache_;
+
+    // Live-sync: poll zone_dirty table every ~1s; reload if version changed.
+    int    zoneDirtyVersion_ = -1;  // last known version (-1 = not yet read)
+    double zoneDirtyNextMs_  = 0.0; // next check time (chrono ms)
 };
 
 } // namespace gue

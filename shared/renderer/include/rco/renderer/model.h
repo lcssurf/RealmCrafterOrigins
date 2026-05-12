@@ -31,6 +31,7 @@ struct SubMesh {
     GLuint tex_orm      = 0;
     GLuint tex_opacity  = 0;
     GLuint tex_ao       = 0;
+    bool   orm_packed   = true;
 
     glm::vec3 albedo_factor    = {0.72f, 0.68f, 0.60f};
     float     roughness_factor = 0.5f;
@@ -232,6 +233,7 @@ private:
     glm::vec2 uv_sidecar_offset_ = glm::vec2(0.f, 0.f);
     glm::vec2 uv_sidecar_scale_  = glm::vec2(1.f, 1.f);
     bool      uv_sidecar_active_ = false;
+    bool      source_is_gltf_    = false;
 
     // Post-flip UV transform actually applied to the VBO data — exposed via
     // EffectiveUVOffset/Scale so the GUE can compose live slider deltas

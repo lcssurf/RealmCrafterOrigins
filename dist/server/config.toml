@@ -16,3 +16,16 @@ dsn    = "./rco.db"
 [game]
 login_message = "Welcome to RealmCrafter: Origins"
 max_players   = 500
+
+[movement]
+# Server-side movement validation tuning.
+min_delta_sec       = 0.016
+max_delta_sec       = 1.0
+base_step_allowance = 0.75
+max_move_speed      = 18.0
+speed_slack_mult    = 1.25
+max_below_ground    = 1.0
+max_above_ground    = 12.0
+enable_telemetry    = false
+log_rejections      = true
+telemetry_sample_ms = 500

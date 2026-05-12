@@ -1,5 +1,6 @@
 #include "rco/renderer/material.h"
 #include <glad/glad.h>
+#include <algorithm>
 
 namespace rco::renderer {
 
@@ -88,32 +89,59 @@ int MaterialManager::RegisterFromHandles(const std::string& name,
                                           unsigned int normal,
                                           unsigned int orm,
                                           unsigned int opacity,
-                                          unsigned int ao) {
+                                          unsigned int ao,
+                                          bool ormPacked,
+                                          const glm::vec3& albedoFactor,
+                                          float roughnessFactor,
+                                          float metallicFactor,
+                                          float aoFactor) {
     uint64_t aH      = MakeResidentHandle_(albedo);
     uint64_t nH      = MakeResidentHandle_(normal);
     uint64_t ormH    = MakeResidentHandle_(orm);
     uint64_t opacH   = MakeResidentHandle_(opacity);
     uint64_t aoH     = MakeResidentHandle_(ao);
+    glm::vec4 baseFactor{
+        std::clamp(albedoFactor.r, 0.0f, 4.0f),
+        std::clamp(albedoFactor.g, 0.0f, 4.0f),
+        std::clamp(albedoFactor.b, 0.0f, 4.0f),
+        1.0f,
+    };
+    glm::vec4 pbrFactors{
+        std::clamp(roughnessFactor, 0.0f, 1.0f),
+        std::clamp(metallicFactor, 0.0f, 1.0f),
+        std::clamp(aoFactor, 0.0f, 1.0f),
+        ormPacked ? 1.0f : 0.0f,
+    };
+    uint64_t roughH = ormH;
+    uint64_t metalH = ormH;
+    if (!ormPacked) {
+        roughH = 0;
+        metalH = ormH;
+    }
 
     if (auto it = nameToIndex_.find(name); it != nameToIndex_.end()) {
         int idx = it->second;
         Material& m = materials[name];
         m.albedoHandle           = aH;
         m.normalHandle           = nH;
-        m.roughnessHandle        = ormH;
-        m.metalnessHandle        = ormH;
+        m.roughnessHandle        = roughH;
+        m.metalnessHandle        = metalH;
         m.opacityHandle          = opacH;
         m.ambientOcclusionHandle = aoH;
+        m.albedoFactor           = baseFactor;
+        m.pbrFactors             = pbrFactors;
         return idx;
     }
 
     Material m;
     m.albedoHandle           = aH;
     m.normalHandle           = nH;
-    m.roughnessHandle        = ormH;
-    m.metalnessHandle        = ormH;
+    m.roughnessHandle        = roughH;
+    m.metalnessHandle        = metalH;
     m.opacityHandle          = opacH;
     m.ambientOcclusionHandle = aoH;
+    m.albedoFactor           = baseFactor;
+    m.pbrFactors             = pbrFactors;
 
     materials.insert({ name, m });
     return appendName_(name);
@@ -143,6 +171,8 @@ std::vector<BindlessMaterial> MaterialManager::GetLinearBindless() const {
             .normalHandle           = m.normalHandle,
             .ambientOcclusionHandle = m.ambientOcclusionHandle,
             .opacityHandle          = m.opacityHandle,
+            .albedoFactor           = m.albedoFactor,
+            .pbrFactors             = m.pbrFactors,
         });
     }
     return out;

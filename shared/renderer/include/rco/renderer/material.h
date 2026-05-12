@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <glm/glm.hpp>
 #include "rco/renderer/texture.h"
 
 namespace rco::renderer {
@@ -26,6 +27,8 @@ struct Material {
     uint64_t normalHandle           {};
     uint64_t ambientOcclusionHandle {};
     uint64_t opacityHandle          {};
+    glm::vec4 albedoFactor {1.0f, 1.0f, 1.0f, 1.0f};
+    glm::vec4 pbrFactors   {1.0f, 0.0f, 1.0f, 0.0f};
 };
 
 // GPU-side layout — exactly 6× uint64_t per entry (matches gBufferBindless.fs).
@@ -36,6 +39,8 @@ struct BindlessMaterial {
     uint64_t normalHandle           {};
     uint64_t ambientOcclusionHandle {};
     uint64_t opacityHandle          {};
+    glm::vec4 albedoFactor {1.0f, 1.0f, 1.0f, 1.0f};
+    glm::vec4 pbrFactors   {1.0f, 0.0f, 1.0f, 0.0f};
 };
 
 class MaterialManager {
@@ -59,11 +64,10 @@ public:
     // extracted by Assimp from an embedded GLB). Any id=0 means "no texture"
     // — shader falls back to sane defaults for that channel.
     //
-    // `orm` is the standard glTF packed occlusion/roughness/metallic texture
-    // (R=AO, G=roughness, B=metallic). It is bound to both roughness and
-    // metalness handles; gBufferBindless.fs detects this case and samples
-    // .g, .b, and .r respectively — giving correct PBR values without any
-    // channel swizzle on the CPU side.
+    // `orm` may be either:
+    // - packed ORM (R=AO, G=roughness, B=metallic) when ormPacked=true
+    // - metalness-only grayscale map when ormPacked=false
+    //   (roughness then falls back to factor/default path)
     //
     // Returns the stable index of the material in the bindless SSBO. If the
     // same name has already been registered, returns its existing index.
@@ -72,7 +76,12 @@ public:
                             unsigned int normal   = 0,
                             unsigned int orm      = 0,
                             unsigned int opacity  = 0,
-                            unsigned int ao       = 0);
+                            unsigned int ao       = 0,
+                            bool ormPacked = true,
+                            const glm::vec3& albedoFactor = glm::vec3(1.0f),
+                            float roughnessFactor = 1.0f,
+                            float metallicFactor  = 0.0f,
+                            float aoFactor        = 1.0f);
 
     // Name → index (-1 if unknown).
     int IndexOf(const std::string& name) const;
