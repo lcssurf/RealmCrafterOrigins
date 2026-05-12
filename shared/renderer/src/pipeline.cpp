@@ -66,6 +66,13 @@ void Pipeline::SetColorGrading(float contrast,
     color_.vignetteSoftness = glm::clamp(vignetteSoftness, 0.00f, 1.00f);
 }
 
+void Pipeline::SetAtmosphereFog(const glm::vec3& fogColor, float densityScale) {
+    atmosphereFog_.color.r = glm::clamp(fogColor.r, 0.0f, 2.0f);
+    atmosphereFog_.color.g = glm::clamp(fogColor.g, 0.0f, 2.0f);
+    atmosphereFog_.color.b = glm::clamp(fogColor.b, 0.0f, 2.0f);
+    atmosphereFog_.densityScale = glm::clamp(densityScale, 0.0f, 2.0f);
+}
+
 void Pipeline::Begin(const glm::mat4& view, const glm::mat4& proj,
                      const glm::vec3& cam_pos, float dt) {
     view_     = view;
@@ -487,6 +494,7 @@ void Pipeline::terrainPass_() {
         glBindTextureUnit(21, c.macro_variation);
         sh->SetInt  ("u_macroVariation", 21);
         sh->SetFloat("u_macroStrength",          c.macro_strength);
+        sh->SetFloat("u_heightBlendSlop",        c.height_blend_slop);
         sh->SetFloat("u_mat0_normal_strength",   c.mat_normal_strength[0]);
         sh->SetFloat("u_mat1_normal_strength",   c.mat_normal_strength[1]);
         sh->SetFloat("u_mat2_normal_strength",   c.mat_normal_strength[2]);
@@ -790,6 +798,8 @@ void Pipeline::compositePass_() {
         auto& vc = Shader::shaders["vol_composite"];
         vc->Bind();
         vc->SetInt("u_texture", 0);
+        vc->SetVec3("u_fogColor", atmosphereFog_.color);
+        vc->SetFloat("u_fogDensityScale", atmosphereFog_.densityScale);
         glBindTextureUnit(0, volTex);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDrawArrays(GL_TRIANGLES, 0, 3);

@@ -493,7 +493,7 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	// Send input bindings from the default preset.
 	c.sendInputBindings(ctx)
 
-	log.Printf("perf-world-enter: user=%s char=%q area=%s total_ms=%d",
+	log.Printf("perf-world-enter: user=%s char=%q area=%s server_prepare_ms=%d",
 		c.account.Username, actor.Name, actor.AreaName, time.Since(startAt).Milliseconds())
 
 	return nil
@@ -1665,14 +1665,115 @@ func SetAreaConfigMap(m map[string]*db.AreaConfig) { areaConfigMap = m }
 
 // sendAreaConfig sends PAreaConfig to this client with the skybox HDR for the area.
 func (c *ClientConn) sendAreaConfig(areaName string) {
-	hdr := ""
+	cfg := db.AreaConfig{
+		SkyboxHdr:               "",
+		SunDirX:                 0.18,
+		SunDirY:                 0.96,
+		SunDirZ:                 0.20,
+		SunColorR:               1.14,
+		SunColorG:               1.12,
+		SunColorB:               1.05,
+		SunIntensityMul:         1.00,
+		SkyIntensityMul:         1.00,
+		FogDensityMul:           0.92,
+		FogR:                    0.70,
+		FogG:                    0.80,
+		FogB:                    0.93,
+		Volumetrics:             true,
+		CharShadowLift:          0.30,
+		CharRimStrength:         0.18,
+		CharRimExponent:         2.40,
+		CharMinNdotL:            0.10,
+		CharAmbientBoost:        0.12,
+		SceneIblIntensity:       1.00,
+		SceneSkyIntensity:       1.16,
+		SceneWorldShadowLift:    0.10,
+		SceneDirectScale:        1.32,
+		SceneAmbientScale:       0.88,
+		SceneFlatAmbient:        0.03,
+		SceneWorldMinNdotL:      0.05,
+		SceneAlbedoMinLuma:      0.18,
+		SceneAlbedoLiftStrength: 0.00,
+		SceneSpecularScale:      0.88,
+		SceneExposureFactor:     1.10,
+		SceneSunIntensity:       1.36,
+		ColorContrast:           1.08,
+		ColorSaturation:         1.08,
+		ColorVibrance:           0.20,
+		ColorBlackPoint:         0.010,
+		ColorVignetteStrength:   0.04,
+		ColorVignetteSoftness:   0.55,
+		TerrainTilingMul:        1.00,
+		TerrainMacroStrengthMul: 1.00,
+		TerrainHeightBlendSlop:  0.20,
+	}
 	if areaConfigMap != nil {
-		if cfg, ok := areaConfigMap[areaName]; ok {
-			hdr = cfg.SkyboxHdr
+		if areaCfg, ok := areaConfigMap[areaName]; ok && areaCfg != nil {
+			cfg = *areaCfg
 		}
 	}
+
+	clampf := func(v, mn, mx float32) float32 {
+		if v < mn {
+			return mn
+		}
+		if v > mx {
+			return mx
+		}
+		return v
+	}
+	sunDirX, sunDirY, sunDirZ := cfg.SunDirX, cfg.SunDirY, cfg.SunDirZ
+	sunLen := float32(math.Sqrt(float64(sunDirX*sunDirX + sunDirY*sunDirY + sunDirZ*sunDirZ)))
+	if sunLen < 0.0001 {
+		sunDirX, sunDirY, sunDirZ = 0.18, 0.96, 0.20
+		sunLen = float32(math.Sqrt(float64(sunDirX*sunDirX + sunDirY*sunDirY + sunDirZ*sunDirZ)))
+	}
+	inv := float32(1.0) / sunLen
+	sunDirX *= inv
+	sunDirY *= inv
+	sunDirZ *= inv
+
 	var w Writer
-	w.WriteString(hdr)
+	w.WriteString(cfg.SkyboxHdr)
+	w.WriteFloat32(sunDirX)
+	w.WriteFloat32(sunDirY)
+	w.WriteFloat32(sunDirZ)
+	w.WriteFloat32(clampf(cfg.SunColorR, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.SunColorG, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.SunColorB, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.SunIntensityMul, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.SkyIntensityMul, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.FogDensityMul, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.FogR, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.FogG, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.FogB, 0.0, 2.0))
+	w.WriteBool(cfg.Volumetrics)
+	w.WriteFloat32(clampf(cfg.CharShadowLift, 0.0, 1.0))
+	w.WriteFloat32(clampf(cfg.CharRimStrength, 0.0, 1.0))
+	w.WriteFloat32(clampf(cfg.CharRimExponent, 1.0, 6.0))
+	w.WriteFloat32(clampf(cfg.CharMinNdotL, 0.0, 0.5))
+	w.WriteFloat32(clampf(cfg.CharAmbientBoost, 0.0, 0.5))
+	w.WriteFloat32(clampf(cfg.SceneIblIntensity, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.SceneSkyIntensity, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.SceneWorldShadowLift, 0.0, 0.95))
+	w.WriteFloat32(clampf(cfg.SceneDirectScale, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.SceneAmbientScale, 0.0, 3.0))
+	w.WriteFloat32(clampf(cfg.SceneFlatAmbient, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.SceneWorldMinNdotL, 0.0, 1.0))
+	w.WriteFloat32(clampf(cfg.SceneAlbedoMinLuma, 0.0, 1.0))
+	w.WriteFloat32(clampf(cfg.SceneAlbedoLiftStrength, 0.0, 1.0))
+	w.WriteFloat32(clampf(cfg.SceneSpecularScale, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.SceneExposureFactor, 0.05, 2.0))
+	w.WriteFloat32(clampf(cfg.SceneSunIntensity, 0.0, 2.0))
+	w.WriteFloat32(clampf(cfg.ColorContrast, 0.80, 1.35))
+	w.WriteFloat32(clampf(cfg.ColorSaturation, 0.80, 1.40))
+	w.WriteFloat32(clampf(cfg.ColorVibrance, -0.30, 0.60))
+	w.WriteFloat32(clampf(cfg.ColorBlackPoint, 0.0, 0.06))
+	w.WriteFloat32(clampf(cfg.ColorVignetteStrength, 0.0, 0.20))
+	w.WriteFloat32(clampf(cfg.ColorVignetteSoftness, 0.0, 1.0))
+	w.WriteFloat32(clampf(cfg.TerrainTilingMul, 0.50, 2.50))
+	w.WriteFloat32(clampf(cfg.TerrainMacroStrengthMul, 0.00, 3.00))
+	w.WriteFloat32(clampf(cfg.TerrainHeightBlendSlop, 0.02, 0.70))
 	_ = c.sendPacket(protocol.PAreaConfig, w.Bytes())
 }
 

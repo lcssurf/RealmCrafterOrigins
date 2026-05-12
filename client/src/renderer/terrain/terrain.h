@@ -49,6 +49,12 @@ struct MatTex {
     float  normal_strength = 2.5f; // per-material normal map intensity
 };
 
+struct TerrainRenderTuning {
+    float tiling_mul         = 1.00f; // multiplies per-layer tiling from materials.txt
+    float macro_strength_mul = 1.00f; // multiplies macro strength loaded from macro.png
+    float height_blend_slop  = 0.20f; // larger = smoother layer transitions
+};
+
 class Terrain {
 public:
     static constexpr float kCellSize  = 2.f;
@@ -57,6 +63,8 @@ public:
 
     bool      Init(int grid_w = 8, int grid_h = 8);
     bool      LoadFromEditor(const std::string& area_name);
+    void      SetRenderTuning(const TerrainRenderTuning& tuning);
+    const TerrainRenderTuning& RenderTuning() const { return render_tuning_; }
     void      Submit(Pipeline& pipeline, const glm::vec3& cam_pos = glm::vec3(0.f)) const;
     void      Destroy();
     float     SampleHeight(float wx, float wz) const;
@@ -98,6 +106,8 @@ private:
     GLuint def_ao_        = 0;
     GLuint def_height_    = 0;
     bool   has_materials_ = false;
+
+    TerrainRenderTuning render_tuning_{};
 };
 
 } // namespace rco::renderer

@@ -7,7 +7,7 @@ Objetivo: manter a facilidade de criacao do RealmCrafter, com qualidade tecnica 
 - Renderer migrado para `shared/renderer` e em producao no client e tools.
 - Base MMO funcional: login, personagens, combate basico, inventario, drops, shop, spells, audio/particles.
 - GUE centralizado com edicao de DB e terrain/zones.
-- Pendencias funcionais declaradas: quests, weather, projectile, party, appearance update.
+- Pendencias funcionais declaradas: quests, weather, projectile, party, appearance update, combat session moderna, skill system + HUD.
 - Hotspots de acoplamento:
   - `server/internal/db/db.go`
   - `server/internal/net/client.go`
@@ -99,6 +99,12 @@ Criterio de saida:
 
 Meta: fechar lacunas de MMO liveable.
 
+Detalhamento oficial desta fase:
+- `doc/FASE3_MMO_SYSTEMS_EXPANSION_PLAN.md`
+
+Regra operacional da fase:
+- Toda nova feature da Fase 3 so fecha com fluxo correspondente no GUE (criar/editar/duplicar/validar), nao apenas implementacao por codigo.
+
 1. Quests (PQuestLog=23)
 - Schema + fluxo de quest state.
 - UI de log e progresso.
@@ -110,8 +116,16 @@ Meta: fechar lacunas de MMO liveable.
 - `PProjectile=37`, `PPartyUpdate=38`, `PAppearanceUpdate=39`.
 - Priorizar impacto de gameplay em grupo.
 
+4. Combat session (estilo Throne and Liberty)
+- Defesa ativa (dodge/parry/guard), interrupt, skill chains e status effects com DR.
+- 100% server-authoritative e data-driven (DB/config/Lua).
+
+5. Skill system + HUD overhaul
+- Modelo hibrido: classe (identidade) + arma (kit principal) + EXP de arma (mastery).
+- HUD de combate moderno: barras primaria/secundaria, chain prompts, stamina/guard, cast/interrupt, buff/debuff/party frames.
+
 Criterio de saida:
-- Loop MMO mais completo para grupos e progressao.
+- Loop MMO mais completo para grupos, progressao, combate moderno e legibilidade de HUD.
 
 ## Fase 4 - Tooling e Conteudo em Escala (continuo)
 
@@ -145,11 +159,17 @@ Meta: suportar crescimento sem perder qualidade.
 - Tratamento de latencia/perda com UX resiliente.
 - Reconciliacao e interpolacao revisadas.
 
-## Ordem Recomendada Imediata (proximas 3 entregas)
+## Ordem Recomendada Imediata (ordem canonica da Fase 3)
 
-1. Character Controller completo + validacao server-side de height.
-2. Vertical slice grafico do terrain/material/lighting em 1 area de referencia.
-3. Quests baseline (schema + fluxo + UI minima), com refatoracao incremental no que for tocado.
+1. Etapa A (foundation): contratos de protocolo + modularizacao inicial (server/client).
+2. Etapa B (quests ponta a ponta).
+3. Etapa C (party system baseline).
+4. Etapa C.5 (combat session core): defesa ativa, status effects, interrupt, chain rules.
+5. Etapa D (projectile server-authoritative).
+6. Etapa C.6 (skill system + HUD overhaul): classe+arma+EXP de arma + legibilidade.
+7. Etapa E (weather dinamico por area).
+8. Etapa F (appearance update em runtime).
+9. Etapas G/H/I (Lua + GUE, hardening e fechamento).
 
 ## KPIs de Sucesso
 

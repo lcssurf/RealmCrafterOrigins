@@ -52,7 +52,7 @@ const (
 	PRemoveWorldItem  uint16 = 114
 	POpenShop         uint16 = 115
 	PShopAction       uint16 = 116
-	PAreaConfig       uint16 = 117 // Sâ†’C: fog/ambient/pvp settings for the current area
+	PAreaConfig       uint16 = 117 // Sâ†’C: per-area authoritative render config (skybox/light/fog/look/color/terrain-tuning)
 	PPlayableDefs     uint16 = 118 // Sâ†’C: list of actor defs available for character creation
 	PPlayerAction     uint16 = 119 // Câ†’S: action(str)+state(u8)+axis_value(f32)
 	PSetInputContext  uint16 = 120 // Sâ†’C: context(str)

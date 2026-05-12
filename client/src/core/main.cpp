@@ -151,9 +151,20 @@ static LoadingPresetConfig ResolveLoadingPreset() {
 }
 
 struct AreaLightingProfile {
-    glm::vec3 sun_dir;
-    glm::vec3 sun_color;
-    bool volumetrics_default;
+    std::string preset_name = "clear_day";
+    glm::vec3 sun_dir = glm::normalize(glm::vec3(0.24f, 0.92f, 0.30f));
+    glm::vec3 sun_color = glm::vec3(1.10f, 1.08f, 1.02f);
+    bool volumetrics_default = true;
+    float sun_intensity_mul = 1.00f;
+    float sky_intensity_mul = 1.00f;
+    float fog_density_mul = 1.00f;
+    glm::vec3 fog_color = glm::vec3(0.70f, 0.80f, 0.93f);
+};
+
+struct AreaLightingConfig {
+    std::unordered_map<std::string, AreaLightingProfile> presets;
+    std::unordered_map<std::string, std::string> area_preset;
+    std::string default_preset = "clear_day";
 };
 
 struct RenderColorProfile {
@@ -165,253 +176,122 @@ struct RenderColorProfile {
     float vignette_softness = 0.55f;
 };
 
-static AreaLightingProfile ResolveAreaLightingProfile(const std::string& area_name) {
-    std::string n = area_name;
-    std::transform(n.begin(), n.end(), n.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+static rco::renderer::TerrainRenderTuning ResolveTerrainRenderTuning() {
+    rco::renderer::TerrainRenderTuning cfg{};
+    cfg.tiling_mul = 1.00f;
+    cfg.macro_strength_mul = 1.00f;
+    cfg.height_blend_slop = 0.20f;
+    return cfg;
+}
 
-    if (n == "training camp") {
-        // Clear-sky noon profile: stronger, higher sun for a brighter open day.
-        return {
-            glm::normalize(glm::vec3(0.18f, 0.96f, 0.20f)),
-            glm::vec3(1.14f, 1.12f, 1.05f),
-            true
-        };
+static std::string NormalizeLightingKey(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (char& c : s) {
+        if (c == ' ' || c == '-' || c == '/' || c == '\\' || c == '.') c = '_';
+    }
+    return s;
+}
+
+static AreaLightingConfig ResolveAreaLightingConfig() {
+    AreaLightingConfig cfg{};
+
+    // Built-in safe defaults.
+    // Authoritative values can arrive from server via PAreaConfig.
+    cfg.presets["clear_day"] = AreaLightingProfile{
+        .preset_name = "clear_day",
+        .sun_dir = glm::normalize(glm::vec3(0.18f, 0.96f, 0.20f)),
+        .sun_color = glm::vec3(1.14f, 1.12f, 1.05f),
+        .volumetrics_default = true,
+        .sun_intensity_mul = 1.00f,
+        .sky_intensity_mul = 1.00f,
+        .fog_density_mul = 1.00f,
+        .fog_color = glm::vec3(0.70f, 0.80f, 0.93f),
+    };
+    cfg.presets["overcast"] = AreaLightingProfile{
+        .preset_name = "overcast",
+        .sun_dir = glm::normalize(glm::vec3(0.10f, 0.88f, 0.18f)),
+        .sun_color = glm::vec3(0.92f, 0.95f, 1.00f),
+        .volumetrics_default = true,
+        .sun_intensity_mul = 0.78f,
+        .sky_intensity_mul = 0.92f,
+        .fog_density_mul = 1.18f,
+        .fog_color = glm::vec3(0.67f, 0.75f, 0.88f),
+    };
+    cfg.presets["golden_hour"] = AreaLightingProfile{
+        .preset_name = "golden_hour",
+        .sun_dir = glm::normalize(glm::vec3(0.45f, 0.62f, 0.28f)),
+        .sun_color = glm::vec3(1.26f, 1.02f, 0.82f),
+        .volumetrics_default = true,
+        .sun_intensity_mul = 0.92f,
+        .sky_intensity_mul = 0.98f,
+        .fog_density_mul = 1.08f,
+        .fog_color = glm::vec3(0.82f, 0.74f, 0.66f),
+    };
+    cfg.area_preset["training_camp"] = "clear_day";
+    cfg.area_preset["starter_zone"] = "clear_day";
+
+    for (auto& [name, p] : cfg.presets) {
+        if (glm::dot(p.sun_dir, p.sun_dir) > 0.0001f) p.sun_dir = glm::normalize(p.sun_dir);
+        else p.sun_dir = glm::normalize(glm::vec3(0.24f, 0.92f, 0.30f));
+        p.sun_intensity_mul = glm::clamp(p.sun_intensity_mul, 0.0f, 2.0f);
+        p.sky_intensity_mul = glm::clamp(p.sky_intensity_mul, 0.0f, 2.0f);
+        p.fog_density_mul = glm::clamp(p.fog_density_mul, 0.0f, 2.0f);
+        p.fog_color.r = glm::clamp(p.fog_color.r, 0.0f, 2.0f);
+        p.fog_color.g = glm::clamp(p.fog_color.g, 0.0f, 2.0f);
+        p.fog_color.b = glm::clamp(p.fog_color.b, 0.0f, 2.0f);
+    }
+    return cfg;
+}
+
+static AreaLightingProfile ResolveAreaLightingProfile(const std::string& area_name,
+                                                      const AreaLightingConfig& cfg) {
+    const std::string area = NormalizeLightingKey(area_name);
+    std::string preset = cfg.default_preset.empty() ? std::string("clear_day") : cfg.default_preset;
+    if (auto it = cfg.area_preset.find(area); it != cfg.area_preset.end()) {
+        preset = NormalizeLightingKey(it->second);
     }
 
-    // Safe fallback for other areas.
-    return {
-        glm::normalize(glm::vec3(0.24f, 0.92f, 0.30f)),
-        glm::vec3(1.10f, 1.08f, 1.02f),
-        true
-    };
+    if (auto it = cfg.presets.find(preset); it != cfg.presets.end()) return it->second;
+    if (auto it = cfg.presets.find("clear_day"); it != cfg.presets.end()) return it->second;
+    return AreaLightingProfile{};
 }
 
 static rco::renderer::Pipeline::CharacterReadabilityTuning ResolveCharacterReadabilityTuning() {
-    auto trim = [](std::string s) {
-        const char* ws = " \t\r\n";
-        const std::size_t b = s.find_first_not_of(ws);
-        if (b == std::string::npos) return std::string{};
-        const std::size_t e = s.find_last_not_of(ws);
-        return s.substr(b, e - b + 1);
-    };
-    auto parseFloat = [&](const std::string& raw, float* out) -> bool {
-        if (!out) return false;
-        try {
-            std::size_t idx = 0;
-            float v = std::stof(raw, &idx);
-            if (idx != raw.size()) return false;
-            *out = v;
-            return true;
-        } catch (...) {
-            return false;
-        }
-    };
-
     rco::renderer::Pipeline::CharacterReadabilityTuning tuning{};
-    std::ifstream f("config.toml");
-    if (!f) return tuning;
-
-    std::string line;
-    bool in_section = false;
-    while (std::getline(f, line)) {
-        const auto hash = line.find('#');
-        if (hash != std::string::npos) line = line.substr(0, hash);
-        line = trim(line);
-        if (line.empty()) continue;
-
-        if (line.front() == '[' && line.back() == ']') {
-            const std::string section = trim(line.substr(1, line.size() - 2));
-            in_section = (section == "render.character_readability");
-            continue;
-        }
-        if (!in_section) continue;
-
-        const auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        std::string key = trim(line.substr(0, eq));
-        std::string val = trim(line.substr(eq + 1));
-        if (val.size() >= 2 && val.front() == '"' && val.back() == '"')
-            val = val.substr(1, val.size() - 2);
-
-        if (key == "shadow_lift") {
-            parseFloat(val, &tuning.shadowLift);
-        } else if (key == "rim_strength") {
-            parseFloat(val, &tuning.rimStrength);
-        } else if (key == "rim_exponent") {
-            parseFloat(val, &tuning.rimExponent);
-        } else if (key == "min_ndotl") {
-            parseFloat(val, &tuning.minNdotL);
-        } else if (key == "ambient_boost") {
-            parseFloat(val, &tuning.ambientBoost);
-        }
-    }
-
-    tuning.shadowLift   = glm::clamp(tuning.shadowLift,   0.0f, 1.0f);
-    tuning.rimStrength  = glm::clamp(tuning.rimStrength,  0.0f, 1.0f);
-    tuning.rimExponent  = glm::clamp(tuning.rimExponent,  1.0f, 6.0f);
-    tuning.minNdotL     = glm::clamp(tuning.minNdotL,     0.0f, 0.5f);
-    tuning.ambientBoost = glm::clamp(tuning.ambientBoost, 0.0f, 0.5f);
+    tuning.shadowLift = 0.30f;
+    tuning.rimStrength = 0.18f;
+    tuning.rimExponent = 2.40f;
+    tuning.minNdotL = 0.10f;
+    tuning.ambientBoost = 0.12f;
     return tuning;
 }
 
 static rco::renderer::Pipeline::SceneLookTuning ResolveSceneLookTuning() {
-    auto trim = [](std::string s) {
-        const char* ws = " \t\r\n";
-        const std::size_t b = s.find_first_not_of(ws);
-        if (b == std::string::npos) return std::string{};
-        const std::size_t e = s.find_last_not_of(ws);
-        return s.substr(b, e - b + 1);
-    };
-    auto parseFloat = [&](const std::string& raw, float* out) -> bool {
-        if (!out) return false;
-        try {
-            std::size_t idx = 0;
-            float v = std::stof(raw, &idx);
-            if (idx != raw.size()) return false;
-            *out = v;
-            return true;
-        } catch (...) {
-            return false;
-        }
-    };
-
     rco::renderer::Pipeline::SceneLookTuning tuning{};
-    std::ifstream f("config.toml");
-    if (!f) return tuning;
-
-    std::string line;
-    bool in_section = false;
-    while (std::getline(f, line)) {
-        const auto hash = line.find('#');
-        if (hash != std::string::npos) line = line.substr(0, hash);
-        line = trim(line);
-        if (line.empty()) continue;
-
-        if (line.front() == '[' && line.back() == ']') {
-            const std::string section = trim(line.substr(1, line.size() - 2));
-            in_section = (section == "render.scene_look");
-            continue;
-        }
-        if (!in_section) continue;
-
-        const auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        std::string key = trim(line.substr(0, eq));
-        std::string val = trim(line.substr(eq + 1));
-        if (val.size() >= 2 && val.front() == '"' && val.back() == '"')
-            val = val.substr(1, val.size() - 2);
-
-        if (key == "ibl_intensity") {
-            parseFloat(val, &tuning.iblIntensity);
-        } else if (key == "sky_intensity") {
-            parseFloat(val, &tuning.skyIntensity);
-        } else if (key == "world_shadow_lift") {
-            parseFloat(val, &tuning.worldShadowLift);
-        } else if (key == "direct_scale") {
-            parseFloat(val, &tuning.directScale);
-        } else if (key == "ambient_scale") {
-            parseFloat(val, &tuning.ambientScale);
-        } else if (key == "flat_ambient") {
-            parseFloat(val, &tuning.flatAmbient);
-        } else if (key == "world_min_ndotl") {
-            parseFloat(val, &tuning.worldMinNdotL);
-        } else if (key == "albedo_min_luma") {
-            parseFloat(val, &tuning.albedoMinLuma);
-        } else if (key == "albedo_lift_strength") {
-            parseFloat(val, &tuning.albedoLiftStrength);
-        } else if (key == "specular_scale") {
-            parseFloat(val, &tuning.specularScale);
-        } else if (key == "exposure_factor") {
-            parseFloat(val, &tuning.exposureFactor);
-        } else if (key == "sun_intensity") {
-            parseFloat(val, &tuning.sunIntensity);
-        }
-    }
-
-    tuning.iblIntensity    = glm::clamp(tuning.iblIntensity,    0.00f, 2.00f);
-    tuning.skyIntensity    = glm::clamp(tuning.skyIntensity,    0.00f, 2.00f);
-    tuning.worldShadowLift = glm::clamp(tuning.worldShadowLift, 0.00f, 0.95f);
-    tuning.directScale     = glm::clamp(tuning.directScale,     0.00f, 2.00f);
-    tuning.ambientScale    = glm::clamp(tuning.ambientScale,    0.00f, 3.00f);
-    tuning.flatAmbient     = glm::clamp(tuning.flatAmbient,     0.00f, 2.00f);
-    tuning.worldMinNdotL   = glm::clamp(tuning.worldMinNdotL,   0.00f, 1.00f);
-    tuning.albedoMinLuma   = glm::clamp(tuning.albedoMinLuma,   0.00f, 1.00f);
-    tuning.albedoLiftStrength = glm::clamp(tuning.albedoLiftStrength, 0.00f, 1.00f);
-    tuning.specularScale   = glm::clamp(tuning.specularScale,   0.00f, 2.00f);
-    tuning.exposureFactor  = glm::clamp(tuning.exposureFactor,  0.05f, 2.00f);
-    tuning.sunIntensity    = glm::clamp(tuning.sunIntensity,    0.00f, 2.00f);
+    tuning.iblIntensity = 1.00f;
+    tuning.skyIntensity = 1.16f;
+    tuning.worldShadowLift = 0.10f;
+    tuning.directScale = 1.32f;
+    tuning.ambientScale = 0.88f;
+    tuning.flatAmbient = 0.03f;
+    tuning.worldMinNdotL = 0.05f;
+    tuning.albedoMinLuma = 0.18f;
+    tuning.albedoLiftStrength = 0.00f;
+    tuning.specularScale = 0.88f;
+    tuning.exposureFactor = 1.10f;
+    tuning.sunIntensity = 1.36f;
     return tuning;
 }
 
 static RenderColorProfile ResolveRenderColorProfile() {
-    auto trim = [](std::string s) {
-        const char* ws = " \t\r\n";
-        const std::size_t b = s.find_first_not_of(ws);
-        if (b == std::string::npos) return std::string{};
-        const std::size_t e = s.find_last_not_of(ws);
-        return s.substr(b, e - b + 1);
-    };
-    auto parseFloat = [&](const std::string& raw, float* out) -> bool {
-        if (!out) return false;
-        try {
-            std::size_t idx = 0;
-            float v = std::stof(raw, &idx);
-            if (idx != raw.size()) return false;
-            *out = v;
-            return true;
-        } catch (...) {
-            return false;
-        }
-    };
-
     RenderColorProfile cfg{};
-    std::ifstream f("config.toml");
-    if (!f) return cfg;
-
-    std::string line;
-    bool in_section = false;
-    while (std::getline(f, line)) {
-        const auto hash = line.find('#');
-        if (hash != std::string::npos) line = line.substr(0, hash);
-        line = trim(line);
-        if (line.empty()) continue;
-
-        if (line.front() == '[' && line.back() == ']') {
-            const std::string section = trim(line.substr(1, line.size() - 2));
-            in_section = (section == "render.color");
-            continue;
-        }
-        if (!in_section) continue;
-
-        const auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        std::string key = trim(line.substr(0, eq));
-        std::string val = trim(line.substr(eq + 1));
-        if (val.size() >= 2 && val.front() == '"' && val.back() == '"')
-            val = val.substr(1, val.size() - 2);
-
-        if (key == "contrast") {
-            parseFloat(val, &cfg.contrast);
-        } else if (key == "saturation") {
-            parseFloat(val, &cfg.saturation);
-        } else if (key == "vibrance") {
-            parseFloat(val, &cfg.vibrance);
-        } else if (key == "black_point") {
-            parseFloat(val, &cfg.black_point);
-        } else if (key == "vignette_strength") {
-            parseFloat(val, &cfg.vignette_strength);
-        } else if (key == "vignette_softness") {
-            parseFloat(val, &cfg.vignette_softness);
-        }
-    }
-
-    cfg.contrast = glm::clamp(cfg.contrast, 0.80f, 1.35f);
-    cfg.saturation = glm::clamp(cfg.saturation, 0.80f, 1.40f);
-    cfg.vibrance = glm::clamp(cfg.vibrance, -0.30f, 0.60f);
-    cfg.black_point = glm::clamp(cfg.black_point, 0.00f, 0.06f);
-    cfg.vignette_strength = glm::clamp(cfg.vignette_strength, 0.00f, 0.20f);
-    cfg.vignette_softness = glm::clamp(cfg.vignette_softness, 0.00f, 1.00f);
+    cfg.contrast = 1.08f;
+    cfg.saturation = 1.08f;
+    cfg.vibrance = 0.20f;
+    cfg.black_point = 0.010f;
+    cfg.vignette_strength = 0.04f;
+    cfg.vignette_softness = 0.55f;
     return cfg;
 }
 
@@ -611,8 +491,23 @@ int main() {
         ResolveCharacterReadabilityTuning();
     const rco::renderer::Pipeline::SceneLookTuning scene_look_tuning =
         ResolveSceneLookTuning();
+    const AreaLightingConfig area_lighting_fallback_config = ResolveAreaLightingConfig();
     const RenderColorProfile render_color_profile =
         ResolveRenderColorProfile();
+    const rco::renderer::TerrainRenderTuning terrain_render_tuning =
+        ResolveTerrainRenderTuning();
+    rco::renderer::Pipeline::CharacterReadabilityTuning active_character_readability_tuning =
+        character_readability_tuning;
+    rco::renderer::Pipeline::SceneLookTuning active_scene_look_tuning =
+        scene_look_tuning;
+    RenderColorProfile active_render_color_profile =
+        render_color_profile;
+    rco::renderer::TerrainRenderTuning active_terrain_render_tuning =
+        terrain_render_tuning;
+    AreaLightingProfile active_area_lighting =
+        ResolveAreaLightingProfile("training_camp", area_lighting_fallback_config);
+    std::string pending_area_skybox_hdr;
+    bool area_environment_pending_apply = false;
 
     // World-enter timing (Etapa A / Fase 2 baseline):
     // StartGame sent -> PStartGame received -> renderer_ready (first playable frame).
@@ -624,7 +519,6 @@ int main() {
     double world_entry_loading_start = 0.0;
     std::vector<std::size_t> world_entry_core_indices;
     std::size_t world_entry_core_cursor = 0;
-    bool area_lighting_profile_pending = true;
 
     struct DialogState {
         bool                     open = false;
@@ -966,7 +860,14 @@ int main() {
                 world_entry_loading_start = glfwGetTime();
                 world_entry_core_indices.clear();
                 world_entry_core_cursor = 0;
-                area_lighting_profile_pending = true;
+                active_character_readability_tuning = character_readability_tuning;
+                active_scene_look_tuning = scene_look_tuning;
+                active_render_color_profile = render_color_profile;
+                active_terrain_render_tuning = terrain_render_tuning;
+                active_area_lighting =
+                    ResolveAreaLightingProfile(player.areaName, area_lighting_fallback_config);
+                area_environment_pending_apply = true;
+                pending_area_skybox_hdr.clear();
 
                 // Initialize InputSystem now that we have a live connection
                 input_system = std::make_unique<rco::input::InputSystem>(
@@ -1029,13 +930,23 @@ int main() {
                 world_items.clear();
                 shop.open = false;
                 combat_target = 0;
-                area_lighting_profile_pending = true;
+                active_character_readability_tuning = character_readability_tuning;
+                active_scene_look_tuning = scene_look_tuning;
+                active_render_color_profile = render_color_profile;
+                active_terrain_render_tuning = terrain_render_tuning;
+                active_area_lighting =
+                    ResolveAreaLightingProfile(player.areaName, area_lighting_fallback_config);
+                area_environment_pending_apply = true;
+                pending_area_skybox_hdr.clear();
                 spellbar.Clear();
                 spell_fx.Clear();
                 chat_bubbles.Clear();
                 dialog.open = false;
                 // Reload editor-painted terrain + collision volumes for the new area
-                if (renderer_ready) terrain.LoadFromEditor(area);
+                if (renderer_ready) {
+                    terrain.SetRenderTuning(active_terrain_render_tuning);
+                    terrain.LoadFromEditor(area);
+                }
                 col_data = rco::renderer::LoadColData(area);
                 player_ctrl.Reset();
                 // Server will send PNewActor + PKnownSpells packets for the new area.
@@ -1772,9 +1683,153 @@ int main() {
 
             case rco::net::kPAreaConfig: {
                 std::string skybox_hdr = r.ReadString();
-                if (!r.OK() || !renderer_ready) break;
-                const std::string path = ResolveIblPathFromAreaConfig(skybox_hdr);
-                engine.LoadEnvironment(path);
+                if (!r.OK()) break;
+
+                AreaLightingProfile server_light =
+                    ResolveAreaLightingProfile(player.areaName, area_lighting_fallback_config);
+                server_light.preset_name = "server_authoritative";
+                auto server_char_readability = active_character_readability_tuning;
+                auto server_scene_look = active_scene_look_tuning;
+                auto server_render_color = active_render_color_profile;
+                auto server_terrain_tuning = active_terrain_render_tuning;
+
+                if (!r.Done()) {
+                    server_light.sun_dir.x = r.ReadF32();
+                    server_light.sun_dir.y = r.ReadF32();
+                    server_light.sun_dir.z = r.ReadF32();
+                    server_light.sun_color.r = r.ReadF32();
+                    server_light.sun_color.g = r.ReadF32();
+                    server_light.sun_color.b = r.ReadF32();
+                    server_light.sun_intensity_mul = r.ReadF32();
+                    server_light.sky_intensity_mul = r.ReadF32();
+                    server_light.fog_density_mul = r.ReadF32();
+                    server_light.fog_color.r = r.ReadF32();
+                    server_light.fog_color.g = r.ReadF32();
+                    server_light.fog_color.b = r.ReadF32();
+                    server_light.volumetrics_default = r.ReadBool();
+                }
+                if (!r.Done()) {
+                    server_char_readability.shadowLift = r.ReadF32();
+                    server_char_readability.rimStrength = r.ReadF32();
+                    server_char_readability.rimExponent = r.ReadF32();
+                    server_char_readability.minNdotL = r.ReadF32();
+                    server_char_readability.ambientBoost = r.ReadF32();
+                }
+                if (!r.Done()) {
+                    server_scene_look.iblIntensity = r.ReadF32();
+                    server_scene_look.skyIntensity = r.ReadF32();
+                    server_scene_look.worldShadowLift = r.ReadF32();
+                    server_scene_look.directScale = r.ReadF32();
+                    server_scene_look.ambientScale = r.ReadF32();
+                    server_scene_look.flatAmbient = r.ReadF32();
+                    server_scene_look.worldMinNdotL = r.ReadF32();
+                    server_scene_look.albedoMinLuma = r.ReadF32();
+                    server_scene_look.albedoLiftStrength = r.ReadF32();
+                    server_scene_look.specularScale = r.ReadF32();
+                    server_scene_look.exposureFactor = r.ReadF32();
+                    server_scene_look.sunIntensity = r.ReadF32();
+                }
+                if (!r.Done()) {
+                    server_render_color.contrast = r.ReadF32();
+                    server_render_color.saturation = r.ReadF32();
+                    server_render_color.vibrance = r.ReadF32();
+                    server_render_color.black_point = r.ReadF32();
+                    server_render_color.vignette_strength = r.ReadF32();
+                    server_render_color.vignette_softness = r.ReadF32();
+                }
+                if (!r.Done()) {
+                    server_terrain_tuning.tiling_mul = r.ReadF32();
+                    server_terrain_tuning.macro_strength_mul = r.ReadF32();
+                    server_terrain_tuning.height_blend_slop = r.ReadF32();
+                }
+                if (!r.OK()) {
+                    std::fprintf(stderr, "[area-config] malformed payload ignored\n");
+                    break;
+                }
+
+                if (glm::dot(server_light.sun_dir, server_light.sun_dir) > 0.0001f) {
+                    server_light.sun_dir = glm::normalize(server_light.sun_dir);
+                } else {
+                    server_light.sun_dir = glm::normalize(glm::vec3(0.18f, 0.96f, 0.20f));
+                }
+                server_light.sun_color.r = glm::clamp(server_light.sun_color.r, 0.0f, 2.0f);
+                server_light.sun_color.g = glm::clamp(server_light.sun_color.g, 0.0f, 2.0f);
+                server_light.sun_color.b = glm::clamp(server_light.sun_color.b, 0.0f, 2.0f);
+                server_light.sun_intensity_mul = glm::clamp(server_light.sun_intensity_mul, 0.0f, 2.0f);
+                server_light.sky_intensity_mul = glm::clamp(server_light.sky_intensity_mul, 0.0f, 2.0f);
+                server_light.fog_density_mul = glm::clamp(server_light.fog_density_mul, 0.0f, 2.0f);
+                server_light.fog_color.r = glm::clamp(server_light.fog_color.r, 0.0f, 2.0f);
+                server_light.fog_color.g = glm::clamp(server_light.fog_color.g, 0.0f, 2.0f);
+                server_light.fog_color.b = glm::clamp(server_light.fog_color.b, 0.0f, 2.0f);
+
+                server_char_readability.shadowLift =
+                    glm::clamp(server_char_readability.shadowLift, 0.0f, 1.0f);
+                server_char_readability.rimStrength =
+                    glm::clamp(server_char_readability.rimStrength, 0.0f, 1.0f);
+                server_char_readability.rimExponent =
+                    glm::clamp(server_char_readability.rimExponent, 1.0f, 6.0f);
+                server_char_readability.minNdotL =
+                    glm::clamp(server_char_readability.minNdotL, 0.0f, 0.5f);
+                server_char_readability.ambientBoost =
+                    glm::clamp(server_char_readability.ambientBoost, 0.0f, 0.5f);
+
+                server_scene_look.iblIntensity = glm::clamp(server_scene_look.iblIntensity, 0.00f, 2.00f);
+                server_scene_look.skyIntensity = glm::clamp(server_scene_look.skyIntensity, 0.00f, 2.00f);
+                server_scene_look.worldShadowLift = glm::clamp(server_scene_look.worldShadowLift, 0.00f, 0.95f);
+                server_scene_look.directScale = glm::clamp(server_scene_look.directScale, 0.00f, 2.00f);
+                server_scene_look.ambientScale = glm::clamp(server_scene_look.ambientScale, 0.00f, 3.00f);
+                server_scene_look.flatAmbient = glm::clamp(server_scene_look.flatAmbient, 0.00f, 2.00f);
+                server_scene_look.worldMinNdotL = glm::clamp(server_scene_look.worldMinNdotL, 0.00f, 1.00f);
+                server_scene_look.albedoMinLuma = glm::clamp(server_scene_look.albedoMinLuma, 0.00f, 1.00f);
+                server_scene_look.albedoLiftStrength = glm::clamp(server_scene_look.albedoLiftStrength, 0.00f, 1.00f);
+                server_scene_look.specularScale = glm::clamp(server_scene_look.specularScale, 0.00f, 2.00f);
+                server_scene_look.exposureFactor = glm::clamp(server_scene_look.exposureFactor, 0.05f, 2.00f);
+                server_scene_look.sunIntensity = glm::clamp(server_scene_look.sunIntensity, 0.00f, 2.00f);
+
+                server_render_color.contrast = glm::clamp(server_render_color.contrast, 0.80f, 1.35f);
+                server_render_color.saturation = glm::clamp(server_render_color.saturation, 0.80f, 1.40f);
+                server_render_color.vibrance = glm::clamp(server_render_color.vibrance, -0.30f, 0.60f);
+                server_render_color.black_point = glm::clamp(server_render_color.black_point, 0.00f, 0.06f);
+                server_render_color.vignette_strength =
+                    glm::clamp(server_render_color.vignette_strength, 0.00f, 0.20f);
+                server_render_color.vignette_softness =
+                    glm::clamp(server_render_color.vignette_softness, 0.00f, 1.00f);
+                server_terrain_tuning.tiling_mul =
+                    glm::clamp(server_terrain_tuning.tiling_mul, 0.50f, 2.50f);
+                server_terrain_tuning.macro_strength_mul =
+                    glm::clamp(server_terrain_tuning.macro_strength_mul, 0.00f, 3.00f);
+                server_terrain_tuning.height_blend_slop =
+                    glm::clamp(server_terrain_tuning.height_blend_slop, 0.02f, 0.70f);
+
+                active_character_readability_tuning = server_char_readability;
+                active_scene_look_tuning = server_scene_look;
+                active_render_color_profile = server_render_color;
+                active_terrain_render_tuning = server_terrain_tuning;
+                active_area_lighting = server_light;
+                area_environment_pending_apply = true;
+                pending_area_skybox_hdr = skybox_hdr;
+                std::fprintf(
+                    stderr,
+                    "[area-config] area=\"%s\" skybox=\"%s\" sun=(%.2f,%.2f,%.2f) sun_mul=%.2f sky_mul=%.2f fog_mul=%.2f volumetrics=%d exposure=%.2f contrast=%.2f terrain_tiling=%.2f terrain_macro=%.2f terrain_slop=%.2f\n",
+                    player.areaName.c_str(),
+                    skybox_hdr.c_str(),
+                    active_area_lighting.sun_dir.x,
+                    active_area_lighting.sun_dir.y,
+                    active_area_lighting.sun_dir.z,
+                    active_area_lighting.sun_intensity_mul,
+                    active_area_lighting.sky_intensity_mul,
+                    active_area_lighting.fog_density_mul,
+                    active_area_lighting.volumetrics_default ? 1 : 0,
+                    active_scene_look_tuning.exposureFactor,
+                    active_render_color_profile.contrast,
+                    active_terrain_render_tuning.tiling_mul,
+                    active_terrain_render_tuning.macro_strength_mul,
+                    active_terrain_render_tuning.height_blend_slop);
+                if (renderer_ready) {
+                    const std::string path = ResolveIblPathFromAreaConfig(pending_area_skybox_hdr);
+                    engine.LoadEnvironment(path);
+                    pending_area_skybox_hdr.clear();
+                }
                 break;
             }
 
@@ -1942,40 +1997,41 @@ int main() {
                 engine.Init(ecfg);
                 engine.LoadEnvironment("assets/ibl/default.hdr");
                 pipeline = std::make_unique<rco::renderer::Pipeline>(engine);
-                pipeline->SetCharacterReadability(character_readability_tuning);
-                pipeline->SetSceneLook(scene_look_tuning);
+                pipeline->SetCharacterReadability(active_character_readability_tuning);
+                pipeline->SetSceneLook(active_scene_look_tuning);
                 pipeline->SetColorGrading(
-                    render_color_profile.contrast,
-                    render_color_profile.saturation,
-                    render_color_profile.vibrance,
-                    render_color_profile.black_point,
-                    render_color_profile.vignette_strength,
-                    render_color_profile.vignette_softness);
+                    active_render_color_profile.contrast,
+                    active_render_color_profile.saturation,
+                    active_render_color_profile.vibrance,
+                    active_render_color_profile.black_point,
+                    active_render_color_profile.vignette_strength,
+                    active_render_color_profile.vignette_softness);
                 std::fprintf(stderr,
                     "[render-look] ibl=%.2f sky=%.2f shadow_lift=%.2f direct=%.2f ambient=%.2f flat=%.2f min_ndotl=%.2f albedo_min=%.2f albedo_lift=%.2f spec=%.2f exposure=%.2f sun=%.2f\n",
-                    scene_look_tuning.iblIntensity,
-                    scene_look_tuning.skyIntensity,
-                    scene_look_tuning.worldShadowLift,
-                    scene_look_tuning.directScale,
-                    scene_look_tuning.ambientScale,
-                    scene_look_tuning.flatAmbient,
-                    scene_look_tuning.worldMinNdotL,
-                    scene_look_tuning.albedoMinLuma,
-                    scene_look_tuning.albedoLiftStrength,
-                    scene_look_tuning.specularScale,
-                    scene_look_tuning.exposureFactor,
-                    scene_look_tuning.sunIntensity);
+                    active_scene_look_tuning.iblIntensity,
+                    active_scene_look_tuning.skyIntensity,
+                    active_scene_look_tuning.worldShadowLift,
+                    active_scene_look_tuning.directScale,
+                    active_scene_look_tuning.ambientScale,
+                    active_scene_look_tuning.flatAmbient,
+                    active_scene_look_tuning.worldMinNdotL,
+                    active_scene_look_tuning.albedoMinLuma,
+                    active_scene_look_tuning.albedoLiftStrength,
+                    active_scene_look_tuning.specularScale,
+                    active_scene_look_tuning.exposureFactor,
+                    active_scene_look_tuning.sunIntensity);
                 std::fprintf(stderr,
                     "[render-color] contrast=%.2f saturation=%.2f vibrance=%.2f black_point=%.3f vignette=%.2f softness=%.2f\n",
-                    render_color_profile.contrast,
-                    render_color_profile.saturation,
-                    render_color_profile.vibrance,
-                    render_color_profile.black_point,
-                    render_color_profile.vignette_strength,
-                    render_color_profile.vignette_softness);
+                    active_render_color_profile.contrast,
+                    active_render_color_profile.saturation,
+                    active_render_color_profile.vibrance,
+                    active_render_color_profile.black_point,
+                    active_render_color_profile.vignette_strength,
+                    active_render_color_profile.vignette_softness);
                 std::fprintf(stderr, "[engine] init ok\n");
 
                 if (terrain.Init()) {
+                    terrain.SetRenderTuning(active_terrain_render_tuning);
                     // Use the appearance from the actor def if already received,
                     // otherwise fall back to the default placeholder model.
                     const char* player_model = !player_meshes.empty()
@@ -2047,12 +2103,38 @@ int main() {
             }
 
             if (renderer_ready) {
-                if (area_lighting_profile_pending) {
-                    const auto lp = ResolveAreaLightingProfile(player.areaName);
+                if (area_environment_pending_apply) {
                     auto cfg = pipeline->Features();
-                    cfg.volumetrics = lp.volumetrics_default;
+                    cfg.volumetrics = active_area_lighting.volumetrics_default;
                     pipeline->SetFeatures(cfg);
-                    area_lighting_profile_pending = false;
+                    pipeline->SetCharacterReadability(active_character_readability_tuning);
+                    terrain.SetRenderTuning(active_terrain_render_tuning);
+                    pipeline->SetColorGrading(
+                        active_render_color_profile.contrast,
+                        active_render_color_profile.saturation,
+                        active_render_color_profile.vibrance,
+                        active_render_color_profile.black_point,
+                        active_render_color_profile.vignette_strength,
+                        active_render_color_profile.vignette_softness);
+                    const std::string path = ResolveIblPathFromAreaConfig(pending_area_skybox_hdr);
+                    engine.LoadEnvironment(path);
+                    pending_area_skybox_hdr.clear();
+                    if (SceneDebugLogsEnabled()) {
+                        std::fprintf(stderr,
+                            "[area-light] area='%s' preset='%s' sun_mul=%.2f sky_mul=%.2f fog_mul=%.2f volumetrics=%d exposure=%.2f contrast=%.2f terrain_tiling=%.2f terrain_macro=%.2f terrain_slop=%.2f\n",
+                            player.areaName.c_str(),
+                            active_area_lighting.preset_name.c_str(),
+                            active_area_lighting.sun_intensity_mul,
+                            active_area_lighting.sky_intensity_mul,
+                            active_area_lighting.fog_density_mul,
+                            active_area_lighting.volumetrics_default ? 1 : 0,
+                            active_scene_look_tuning.exposureFactor,
+                            active_render_color_profile.contrast,
+                            active_terrain_render_tuning.tiling_mul,
+                            active_terrain_render_tuning.macro_strength_mul,
+                            active_terrain_render_tuning.height_blend_slop);
+                    }
+                    area_environment_pending_apply = false;
                 }
 
                 // Character-entry loading gate:
@@ -2478,7 +2560,7 @@ int main() {
                 glm::mat4 proj = camera.Projection(aspect);
                 view_mat = view;
                 proj_mat = proj;
-                const auto area_light = ResolveAreaLightingProfile(player.areaName);
+                const auto area_light = active_area_lighting;
                 glm::vec3 sun  = area_light.sun_dir;
 
 
@@ -2507,7 +2589,14 @@ int main() {
 
                 // --- New pipeline: begin frame, submit all scene geometry, end writes to framebuffer 0 ---
                 pipeline->Begin(view, proj, camera.Position(), static_cast<float>(dt));
-                pipeline->SetSun(-sun, area_light.sun_color * scene_look_tuning.sunIntensity);
+                auto area_scene_look = active_scene_look_tuning;
+                area_scene_look.sunIntensity =
+                    glm::clamp(active_scene_look_tuning.sunIntensity * area_light.sun_intensity_mul, 0.0f, 2.0f);
+                area_scene_look.skyIntensity =
+                    glm::clamp(active_scene_look_tuning.skyIntensity * area_light.sky_intensity_mul, 0.0f, 2.0f);
+                pipeline->SetSceneLook(area_scene_look);
+                pipeline->SetAtmosphereFog(area_light.fog_color, area_light.fog_density_mul);
+                pipeline->SetSun(-sun, area_light.sun_color * area_scene_look.sunIntensity);
                 terrain.Submit(*pipeline, camera.Position());
 
                 // Render local player

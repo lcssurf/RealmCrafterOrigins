@@ -22,6 +22,7 @@ uniform vec2  u_terrainSize;
 uniform vec3  u_cameraPos;          // world-space camera position
 uniform sampler2D u_macroVariation; // single-channel, covers full terrain
 uniform float u_macroStrength;           // 0 = off, 0.3 = subtle, 1 = full
+uniform float u_heightBlendSlop;         // feather width for height-blend transitions
 uniform float u_mat0_normal_strength;    // per-material normal map intensity
 uniform float u_mat1_normal_strength;
 uniform float u_mat2_normal_strength;
@@ -192,7 +193,7 @@ void main() {
     float h1 = triplanarR(wp, bw, u_mat1_height, eff.y);
     float h2 = triplanarR(wp, bw, u_mat2_height, eff.z);
     float h3 = triplanarR(wp, bw, u_mat3_height, eff.w);
-    vec4  W  = heightBlendWeights(ws, vec4(h0, h1, h2, h3), 0.2);
+    vec4  W  = heightBlendWeights(ws, vec4(h0, h1, h2, h3), u_heightBlendSlop);
 
     // Albedo — stochastic triplanar (histogram-preserving, no visible repetition).
     vec3 alb = triplanar(wp, bw, u_mat0_albedo, eff.x) * W.r

@@ -78,6 +78,7 @@ struct TerrainChunkSubmission {
     glm::vec4 tilings               = glm::vec4(4.0f);           // per-layer tiling (xyzw = layers 0-3)
     GLuint    macro_variation        = 0;                         // grayscale texture covering full terrain
     float     macro_strength         = 0.0f;
+    float     height_blend_slop      = 0.20f;                     // larger = smoother transitions between material layers
     float     mat_normal_strength[4] = {2.5f, 2.5f, 2.5f, 2.5f}; // per-material normal intensity
     glm::vec2 terrain_origin = glm::vec2(0.0f);
     glm::vec2 terrain_size   = glm::vec2(1.0f);
@@ -139,6 +140,7 @@ public:
                          float blackPoint,
                          float vignetteStrength,
                          float vignetteSoftness);
+    void SetAtmosphereFog(const glm::vec3& fogColor, float densityScale);
 
     // Debug visualisation. 0=full lighting (default).
     // 1=albedo, 2=normal, 3=depth, 4=AO, 5=shadow, 6=irradiance,
@@ -311,6 +313,11 @@ private:
         float directScale  = 0.88f;
         float ambientScale = 1.00f;
     } lightBalance_{};
+
+    struct AtmosphereFogTuning {
+        glm::vec3 color = glm::vec3(0.70f, 0.80f, 0.93f);
+        float densityScale = 1.00f;
+    } atmosphereFog_{};
 
     CharacterReadabilityTuning characterReadability_{};
     SceneLookTuning sceneLook_{};

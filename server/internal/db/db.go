@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver for database/sql
-	_ "modernc.org/sqlite"              // SQLite — pure Go, no CGo needed
+	_ "modernc.org/sqlite"             // SQLite — pure Go, no CGo needed
 )
 
 // ---------------------------------------------------------------------------
@@ -30,11 +30,11 @@ type Account struct {
 type ItemTemplate struct {
 	ID           int
 	Name         string
-	ItemType     uint8  // 0=weapon 1=armor 2=consumable 3=misc
-	SlotType     uint8  // equip slot: 0=weapon 1=shield 2=hat 3=chest 4=hands 5=belt 6=legs 7=feet 8=ring 9=amulet 255=backpack-only
+	ItemType     uint8 // 0=weapon 1=armor 2=consumable 3=misc
+	SlotType     uint8 // equip slot: 0=weapon 1=shield 2=hat 3=chest 4=hands 5=belt 6=legs 7=feet 8=ring 9=amulet 255=backpack-only
 	WeaponDamage int16
 	ArmorLevel   int16
-	WeaponType   uint8  // 1=one-hand 2=two-hand 3=ranged
+	WeaponType   uint8 // 1=one-hand 2=two-hand 3=ranged
 	MaxStack     uint8
 	ItemValue    int32
 	Stackable    bool
@@ -56,28 +56,28 @@ type CharacterItem struct {
 
 // Character mirrors the characters table.
 type Character struct {
-	ID          string
-	AccountID   string
-	Slot        int
-	Name        string
-	Race        string
-	Class       string
-	Gender      int
-	Level       int
-	XP          int64
-	Gold        int64
-	AreaName    string
-	X, Y, Z     float32
-	Yaw         float32
-	FaceTex     int
-	Hair        int
-	Beard       int
-	BodyTex     int
-	Health      int32
-	HealthMax   int32
-	Energy      int32
-	EnergyMax   int32
-	ActorDefID  int
+	ID         string
+	AccountID  string
+	Slot       int
+	Name       string
+	Race       string
+	Class      string
+	Gender     int
+	Level      int
+	XP         int64
+	Gold       int64
+	AreaName   string
+	X, Y, Z    float32
+	Yaw        float32
+	FaceTex    int
+	Hair       int
+	Beard      int
+	BodyTex    int
+	Health     int32
+	HealthMax  int32
+	Energy     int32
+	EnergyMax  int32
+	ActorDefID int
 }
 
 // PlayableDef is a minimal view of media_actor_defs used for the character-
@@ -396,9 +396,9 @@ func (d *DB) migrateV4(ctx context.Context) {
 
 	// Seed default spells (ignore errors if they already exist).
 	seeds := []struct {
-		name                         string
-		stype, dmin, dmax, ep, cd    int
-		rng                          float64
+		name                      string
+		stype, dmin, dmax, ep, cd int
+		rng                       float64
 	}{
 		{"Fireball", 0, 20, 35, 20, 2000, 25.0},
 		{"Heal", 1, 30, 50, 15, 3000, 0.0},
@@ -568,16 +568,16 @@ func (d *DB) SeedDefaultItems(ctx context.Context) error {
 		itemValue    int
 		stackable    int
 	}{
-		{"Rusty Sword",       0,   0, 15,  0, 1, 1, 10, 0},
-		{"Old Shield",        1,   1,  0,  5, 0, 1, 8,  0},
-		{"Leather Tunic",     1,   3,  0,  8, 0, 1, 15, 0},
-		{"Leather Hat",       1,   2,  0,  3, 0, 1, 5,  0},
-		{"Leather Gloves",    1,   4,  0,  2, 0, 1, 4,  0},
-		{"Leather Belt",      1,   5,  0,  2, 0, 1, 3,  0},
-		{"Leather Leggings",  1,   6,  0,  5, 0, 1, 10, 0},
-		{"Traveller's Boots", 1,   7,  0,  3, 0, 1, 6,  0},
-		{"Health Potion",     2, 255,  0,  0, 0, 10, 50, 1},
-		{"Iron Ring",         3,   8,  0,  0, 0, 1, 20, 0},
+		{"Rusty Sword", 0, 0, 15, 0, 1, 1, 10, 0},
+		{"Old Shield", 1, 1, 0, 5, 0, 1, 8, 0},
+		{"Leather Tunic", 1, 3, 0, 8, 0, 1, 15, 0},
+		{"Leather Hat", 1, 2, 0, 3, 0, 1, 5, 0},
+		{"Leather Gloves", 1, 4, 0, 2, 0, 1, 4, 0},
+		{"Leather Belt", 1, 5, 0, 2, 0, 1, 3, 0},
+		{"Leather Leggings", 1, 6, 0, 5, 0, 1, 10, 0},
+		{"Traveller's Boots", 1, 7, 0, 3, 0, 1, 6, 0},
+		{"Health Potion", 2, 255, 0, 0, 0, 10, 50, 1},
+		{"Iron Ring", 3, 8, 0, 0, 0, 1, 20, 0},
 	}
 	for _, it := range items {
 		_, err := d.db.ExecContext(ctx,
@@ -893,7 +893,7 @@ type NpcSpawn struct {
 	Class            string
 	Level            int
 	AreaName         string
-	X, Y, Z, Yaw    float32
+	X, Y, Z, Yaw     float32
 	Aggressiveness   int
 	AggressiveRange  float32
 	AttackRange      float32
@@ -987,33 +987,33 @@ func (d *DB) migrateV6(ctx context.Context) {
 	}
 
 	type seed struct {
-		name                    string
-		race, class             string
-		level                   int
-		area                    string
-		x, y, z, yaw            float64
-		agg                     int
-		aggRange, attackRange   float64
-		respawnMs               int64
+		name                  string
+		race, class           string
+		level                 int
+		area                  string
+		x, y, z, yaw          float64
+		agg                   int
+		aggRange, attackRange float64
+		respawnMs             int64
 	}
 	// Coords are 0-indexed to match the GUE / client (terrain [0, W*cs]).
 	// Starter Zone = 1024×1024 → center is (512, 512); seeds cluster there.
 	seeds := []seed{
 		// Starter Zone — dialog NPCs (aggressiveness=3)
-		{"Guard",     "Human", "Warrior",  5, "Starter Zone",  517, 0, 512,   0, 3,  8, 2, 30000},
-		{"Merchant",  "Elf",   "Mage",     3, "Starter Zone",  504, 0, 515, 180, 3,  8, 2, 30000},
-		{"Innkeeper", "Dwarf", "Warrior", 10, "Starter Zone",  524, 0, 507, 270, 3,  8, 2, 30000},
+		{"Guard", "Human", "Warrior", 5, "Starter Zone", 517, 0, 512, 0, 3, 8, 2, 30000},
+		{"Merchant", "Elf", "Mage", 3, "Starter Zone", 504, 0, 515, 180, 3, 8, 2, 30000},
+		{"Innkeeper", "Dwarf", "Warrior", 10, "Starter Zone", 524, 0, 507, 270, 3, 8, 2, 30000},
 		// Starter Zone — combat mobs (aggressiveness=2)
-		{"Goblin",       "Beast", "Warrior", 2, "Starter Zone", 527, 0, 520,   0, 2,  8, 2, 30000},
-		{"Goblin",       "Beast", "Warrior", 2, "Starter Zone", 532, 0, 506,  90, 2,  8, 2, 30000},
-		{"Goblin Scout", "Beast", "Rogue",   3, "Starter Zone", 522, 0, 530, 180, 2,  8, 2, 30000},
-		{"Slime",        "Beast", "Beast",   1, "Starter Zone", 497, 0, 522,   0, 2,  8, 2, 30000},
-		{"Slime",        "Beast", "Beast",   1, "Starter Zone", 494, 0, 508,   0, 2,  8, 2, 30000},
+		{"Goblin", "Beast", "Warrior", 2, "Starter Zone", 527, 0, 520, 0, 2, 8, 2, 30000},
+		{"Goblin", "Beast", "Warrior", 2, "Starter Zone", 532, 0, 506, 90, 2, 8, 2, 30000},
+		{"Goblin Scout", "Beast", "Rogue", 3, "Starter Zone", 522, 0, 530, 180, 2, 8, 2, 30000},
+		{"Slime", "Beast", "Beast", 1, "Starter Zone", 497, 0, 522, 0, 2, 8, 2, 30000},
+		{"Slime", "Beast", "Beast", 1, "Starter Zone", 494, 0, 508, 0, 2, 8, 2, 30000},
 		// Forest — combat mobs
-		{"Wolf",         "Beast", "Beast",  4, "Forest", 520, 0, 524,   0, 2, 10, 2, 30000},
-		{"Wolf",         "Beast", "Beast",  4, "Forest", 526, 0, 518,  90, 2, 10, 2, 30000},
-		{"Forest Troll", "Beast", "Beast",  8, "Forest", 507, 0, 520,  90, 2, 10, 2, 30000},
-		{"Forest Troll", "Beast", "Beast",  8, "Forest", 502, 0, 528, 270, 2, 10, 2, 30000},
+		{"Wolf", "Beast", "Beast", 4, "Forest", 520, 0, 524, 0, 2, 10, 2, 30000},
+		{"Wolf", "Beast", "Beast", 4, "Forest", 526, 0, 518, 90, 2, 10, 2, 30000},
+		{"Forest Troll", "Beast", "Beast", 8, "Forest", 507, 0, 520, 90, 2, 10, 2, 30000},
+		{"Forest Troll", "Beast", "Beast", 8, "Forest", 502, 0, 528, 270, 2, 10, 2, 30000},
 	}
 	ins := d.q(`INSERT INTO npc_spawns
 		(name,race,class,level,area_name,x,y,z,yaw,aggressiveness,aggressive_range,attack_range,respawn_delay_ms)
@@ -1306,20 +1306,20 @@ func (d *DB) migrateV11(ctx context.Context) {
 
 		// Seed default input mappings
 		seeds := [][9]string{
-			{"1","gameplay","W","","axis","MoveForward","1.0","1","1"},
-			{"1","gameplay","S","","axis","MoveBack","-1.0","1","1"},
-			{"1","gameplay","A","","axis","MoveLeft","-1.0","1","1"},
-			{"1","gameplay","D","","axis","MoveRight","1.0","1","1"},
-			{"1","gameplay","Space","","press","Jump","1.0","1","1"},
-			{"1","gameplay","Mouse1","","press","Attack","1.0","1","1"},
-			{"1","gameplay","Mouse2","","hold","Block","1.0","1","1"},
-			{"1","gameplay","F","","press","Interact","1.0","1","0"},
-			{"1","gameplay","I","","press","OpenInventory","1.0","1","0"},
-			{"1","gameplay","C","","press","OpenCharacter","1.0","1","0"},
-			{"1","gameplay","Escape","","press","CloseUI","1.0","1","0"},
-			{"1","gameplay","1","","press","UseSpell1","1.0","1","1"},
-			{"1","gameplay","2","","press","UseSpell2","1.0","1","1"},
-			{"1","gameplay","3","","press","UseSpell3","1.0","1","1"},
+			{"1", "gameplay", "W", "", "axis", "MoveForward", "1.0", "1", "1"},
+			{"1", "gameplay", "S", "", "axis", "MoveBack", "-1.0", "1", "1"},
+			{"1", "gameplay", "A", "", "axis", "MoveLeft", "-1.0", "1", "1"},
+			{"1", "gameplay", "D", "", "axis", "MoveRight", "1.0", "1", "1"},
+			{"1", "gameplay", "Space", "", "press", "Jump", "1.0", "1", "1"},
+			{"1", "gameplay", "Mouse1", "", "press", "Attack", "1.0", "1", "1"},
+			{"1", "gameplay", "Mouse2", "", "hold", "Block", "1.0", "1", "1"},
+			{"1", "gameplay", "F", "", "press", "Interact", "1.0", "1", "0"},
+			{"1", "gameplay", "I", "", "press", "OpenInventory", "1.0", "1", "0"},
+			{"1", "gameplay", "C", "", "press", "OpenCharacter", "1.0", "1", "0"},
+			{"1", "gameplay", "Escape", "", "press", "CloseUI", "1.0", "1", "0"},
+			{"1", "gameplay", "1", "", "press", "UseSpell1", "1.0", "1", "1"},
+			{"1", "gameplay", "2", "", "press", "UseSpell2", "1.0", "1", "1"},
+			{"1", "gameplay", "3", "", "press", "UseSpell3", "1.0", "1", "1"},
 		}
 		for _, s := range seeds {
 			_, _ = d.db.ExecContext(ctx,
@@ -1384,20 +1384,20 @@ func (d *DB) migrateV11(ctx context.Context) {
 
 		// Seed default input mappings
 		seeds := [][8]string{
-			{"gameplay","W","","axis","MoveForward","1.0","1","1"},
-			{"gameplay","S","","axis","MoveBack","-1.0","1","1"},
-			{"gameplay","A","","axis","MoveLeft","-1.0","1","1"},
-			{"gameplay","D","","axis","MoveRight","1.0","1","1"},
-			{"gameplay","Space","","press","Jump","1.0","1","1"},
-			{"gameplay","Mouse1","","press","Attack","1.0","1","1"},
-			{"gameplay","Mouse2","","hold","Block","1.0","1","1"},
-			{"gameplay","F","","press","Interact","1.0","1","0"},
-			{"gameplay","I","","press","OpenInventory","1.0","1","0"},
-			{"gameplay","C","","press","OpenCharacter","1.0","1","0"},
-			{"gameplay","Escape","","press","CloseUI","1.0","1","0"},
-			{"gameplay","1","","press","UseSpell1","1.0","1","1"},
-			{"gameplay","2","","press","UseSpell2","1.0","1","1"},
-			{"gameplay","3","","press","UseSpell3","1.0","1","1"},
+			{"gameplay", "W", "", "axis", "MoveForward", "1.0", "1", "1"},
+			{"gameplay", "S", "", "axis", "MoveBack", "-1.0", "1", "1"},
+			{"gameplay", "A", "", "axis", "MoveLeft", "-1.0", "1", "1"},
+			{"gameplay", "D", "", "axis", "MoveRight", "1.0", "1", "1"},
+			{"gameplay", "Space", "", "press", "Jump", "1.0", "1", "1"},
+			{"gameplay", "Mouse1", "", "press", "Attack", "1.0", "1", "1"},
+			{"gameplay", "Mouse2", "", "hold", "Block", "1.0", "1", "1"},
+			{"gameplay", "F", "", "press", "Interact", "1.0", "1", "0"},
+			{"gameplay", "I", "", "press", "OpenInventory", "1.0", "1", "0"},
+			{"gameplay", "C", "", "press", "OpenCharacter", "1.0", "1", "0"},
+			{"gameplay", "Escape", "", "press", "CloseUI", "1.0", "1", "0"},
+			{"gameplay", "1", "", "press", "UseSpell1", "1.0", "1", "1"},
+			{"gameplay", "2", "", "press", "UseSpell2", "1.0", "1", "1"},
+			{"gameplay", "3", "", "press", "UseSpell3", "1.0", "1", "1"},
 		}
 		for _, s := range seeds {
 			_, _ = d.db.ExecContext(ctx,
@@ -1498,11 +1498,11 @@ type InputBinding struct {
 
 // ActorDefMesh mirrors one row in media_actor_meshes.
 type ActorDefMesh struct {
-	ID          int
-	ActorDefID  int
-	Slot        int
-	ModelID     int
-	MaterialID  int
+	ID         int
+	ActorDefID int
+	Slot       int
+	ModelID    int
+	MaterialID int
 }
 
 // ActorDefAnim mirrors one row in media_actor_anims.
@@ -1544,8 +1544,8 @@ type ActorDef struct {
 	IsMountable           bool
 	IsInteractive         bool
 
-	Meshes   []ActorDefMesh
-	Anims    []ActorDefAnim
+	Meshes []ActorDefMesh
+	Anims  []ActorDefAnim
 }
 
 // LoadActorDef resolves a single actor def (id > 0) with its meshes + anims.
@@ -1574,8 +1574,8 @@ func (d *DB) LoadActorDef(ctx context.Context, id int) (*ActorDef, error) {
 	if err != nil {
 		return nil, nil // missing / not found
 	}
-	out.IsPlayable    = playable    != 0
-	out.IsMountable   = mountable   != 0
+	out.IsPlayable = playable != 0
+	out.IsMountable = mountable != 0
 	out.IsInteractive = interactive != 0
 	if out.Scale <= 0 {
 		out.Scale = 1.0 // guard against rows from before this migration
@@ -2119,12 +2119,12 @@ type AreaConfig struct {
 	FogDensity float32
 
 	// Environment
-	IsOutdoor  bool
-	FogNear    float32
-	FogFar     float32
-	FogR, FogG, FogB float32 // 0.0–1.0
+	IsOutdoor                    bool
+	FogNear                      float32
+	FogFar                       float32
+	FogR, FogG, FogB             float32 // 0.0–1.0
 	AmbientR, AmbientG, AmbientB uint8
-	Gravity    float32 // 1.0 = normal
+	Gravity                      float32 // 1.0 = normal
 
 	// Gameplay
 	PvPEnabled  bool
@@ -2140,6 +2140,48 @@ type AreaConfig struct {
 
 	// Skybox — filename relative to assets/ibl/ (e.g. "forest.hdr"). Empty = use default.hdr.
 	SkyboxHdr string
+
+	// Authoritative render tuning (sent to clients through PAreaConfig).
+	SunDirX, SunDirY, SunDirZ       float32
+	SunColorR, SunColorG, SunColorB float32
+	SunIntensityMul                 float32
+	SkyIntensityMul                 float32
+	FogDensityMul                   float32
+	Volumetrics                     bool
+
+	// Character readability tuning.
+	CharShadowLift   float32
+	CharRimStrength  float32
+	CharRimExponent  float32
+	CharMinNdotL     float32
+	CharAmbientBoost float32
+
+	// Scene look tuning.
+	SceneIblIntensity       float32
+	SceneSkyIntensity       float32
+	SceneWorldShadowLift    float32
+	SceneDirectScale        float32
+	SceneAmbientScale       float32
+	SceneFlatAmbient        float32
+	SceneWorldMinNdotL      float32
+	SceneAlbedoMinLuma      float32
+	SceneAlbedoLiftStrength float32
+	SceneSpecularScale      float32
+	SceneExposureFactor     float32
+	SceneSunIntensity       float32
+
+	// Post tonemap color grading.
+	ColorContrast         float32
+	ColorSaturation       float32
+	ColorVibrance         float32
+	ColorBlackPoint       float32
+	ColorVignetteStrength float32
+	ColorVignetteSoftness float32
+
+	// Terrain shading tuning (authoritative).
+	TerrainTilingMul        float32
+	TerrainMacroStrengthMul float32
+	TerrainHeightBlendSlop  float32
 }
 
 // AreaTrigger is a script-trigger volume in an area (XZ cylinder).
@@ -2166,10 +2208,10 @@ type AreaSoundZone struct {
 
 // AreaPortal holds a portal definition loaded from area_portals.
 type AreaPortal struct {
-	AreaName   string
-	X, Z       float32
-	Radius     float32
-	TargetArea string
+	AreaName                     string
+	X, Z                         float32
+	Radius                       float32
+	TargetArea                   string
 	DestX, DestY, DestZ, DestYaw float32
 }
 
@@ -2204,9 +2246,203 @@ func (d *DB) LoadAreaConfigs(ctx context.Context) ([]*AreaConfig, error) {
 		`ALTER TABLE area_config ADD COLUMN weather_storm INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE area_config ADD COLUMN weather_wind  INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE area_config ADD COLUMN skybox_hdr    TEXT    NOT NULL DEFAULT ''`,
+		`ALTER TABLE area_config ADD COLUMN sun_dir_x      REAL    NOT NULL DEFAULT 0.18`,
+		`ALTER TABLE area_config ADD COLUMN sun_dir_y      REAL    NOT NULL DEFAULT 0.96`,
+		`ALTER TABLE area_config ADD COLUMN sun_dir_z      REAL    NOT NULL DEFAULT 0.20`,
+		`ALTER TABLE area_config ADD COLUMN sun_color_r    REAL    NOT NULL DEFAULT 1.14`,
+		`ALTER TABLE area_config ADD COLUMN sun_color_g    REAL    NOT NULL DEFAULT 1.12`,
+		`ALTER TABLE area_config ADD COLUMN sun_color_b    REAL    NOT NULL DEFAULT 1.05`,
+		`ALTER TABLE area_config ADD COLUMN sun_intensity_mul REAL NOT NULL DEFAULT 1.00`,
+		`ALTER TABLE area_config ADD COLUMN sky_intensity_mul REAL NOT NULL DEFAULT 1.00`,
+		`ALTER TABLE area_config ADD COLUMN fog_density_mul REAL NOT NULL DEFAULT 0.92`,
+		`ALTER TABLE area_config ADD COLUMN volumetrics     INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE area_config ADD COLUMN char_shadow_lift   REAL NOT NULL DEFAULT 0.30`,
+		`ALTER TABLE area_config ADD COLUMN char_rim_strength  REAL NOT NULL DEFAULT 0.18`,
+		`ALTER TABLE area_config ADD COLUMN char_rim_exponent  REAL NOT NULL DEFAULT 2.40`,
+		`ALTER TABLE area_config ADD COLUMN char_min_ndotl     REAL NOT NULL DEFAULT 0.10`,
+		`ALTER TABLE area_config ADD COLUMN char_ambient_boost REAL NOT NULL DEFAULT 0.12`,
+		`ALTER TABLE area_config ADD COLUMN scene_ibl_intensity        REAL NOT NULL DEFAULT 1.00`,
+		`ALTER TABLE area_config ADD COLUMN scene_sky_intensity        REAL NOT NULL DEFAULT 1.16`,
+		`ALTER TABLE area_config ADD COLUMN scene_world_shadow_lift    REAL NOT NULL DEFAULT 0.10`,
+		`ALTER TABLE area_config ADD COLUMN scene_direct_scale         REAL NOT NULL DEFAULT 1.32`,
+		`ALTER TABLE area_config ADD COLUMN scene_ambient_scale        REAL NOT NULL DEFAULT 0.88`,
+		`ALTER TABLE area_config ADD COLUMN scene_flat_ambient         REAL NOT NULL DEFAULT 0.03`,
+		`ALTER TABLE area_config ADD COLUMN scene_world_min_ndotl      REAL NOT NULL DEFAULT 0.05`,
+		`ALTER TABLE area_config ADD COLUMN scene_albedo_min_luma      REAL NOT NULL DEFAULT 0.18`,
+		`ALTER TABLE area_config ADD COLUMN scene_albedo_lift_strength REAL NOT NULL DEFAULT 0.00`,
+		`ALTER TABLE area_config ADD COLUMN scene_specular_scale       REAL NOT NULL DEFAULT 0.88`,
+		`ALTER TABLE area_config ADD COLUMN scene_exposure_factor      REAL NOT NULL DEFAULT 1.10`,
+		`ALTER TABLE area_config ADD COLUMN scene_sun_intensity        REAL NOT NULL DEFAULT 1.36`,
+		`ALTER TABLE area_config ADD COLUMN color_contrast          REAL NOT NULL DEFAULT 1.08`,
+		`ALTER TABLE area_config ADD COLUMN color_saturation        REAL NOT NULL DEFAULT 1.08`,
+		`ALTER TABLE area_config ADD COLUMN color_vibrance          REAL NOT NULL DEFAULT 0.20`,
+		`ALTER TABLE area_config ADD COLUMN color_black_point       REAL NOT NULL DEFAULT 0.010`,
+		`ALTER TABLE area_config ADD COLUMN color_vignette_strength REAL NOT NULL DEFAULT 0.04`,
+		`ALTER TABLE area_config ADD COLUMN color_vignette_softness REAL NOT NULL DEFAULT 0.55`,
+		`ALTER TABLE area_config ADD COLUMN terrain_tiling_mul         REAL NOT NULL DEFAULT 1.00`,
+		`ALTER TABLE area_config ADD COLUMN terrain_macro_strength_mul REAL NOT NULL DEFAULT 1.00`,
+		`ALTER TABLE area_config ADD COLUMN terrain_height_blend_slop  REAL NOT NULL DEFAULT 0.20`,
 	}
 	for _, m := range migs {
 		d.db.ExecContext(ctx, d.q(m))
+	}
+
+	// Seed authoritative render/environment presets for core areas.
+	// INSERT OR IGNORE preserves designer-authored rows if they already exist.
+	type areaCfgSeed struct {
+		name                                                                                                         string
+		musicTrack                                                                                                   int
+		fogDensity                                                                                                   float32
+		isOutdoor, pvpEnabled                                                                                        int
+		fogNear, fogFar                                                                                              float32
+		fogR, fogG, fogB                                                                                             float32
+		ambientR, ambientG, ambientB                                                                                 int
+		gravity                                                                                                      float32
+		weatherRain, weatherSnow                                                                                     int
+		weatherFog, weatherStorm, weatherWind                                                                        int
+		skyboxHdr                                                                                                    string
+		sunDirX, sunDirY, sunDirZ                                                                                    float32
+		sunColorR, sunColorG, sunColorB                                                                              float32
+		sunIntensityMul, skyIntensityMul                                                                             float32
+		fogDensityMul                                                                                                float32
+		volumetrics                                                                                                  int
+		charShadowLift, charRimStrength, charRimExponent, charMinNdotL, charAmbientBoost                             float32
+		sceneIblIntensity, sceneSkyIntensity, sceneWorldShadowLift, sceneDirectScale, sceneAmbientScale              float32
+		sceneFlatAmbient, sceneWorldMinNdotL, sceneAlbedoMinLuma, sceneAlbedoLiftStrength                            float32
+		sceneSpecularScale, sceneExposureFactor, sceneSunIntensity                                                   float32
+		colorContrast, colorSaturation, colorVibrance, colorBlackPoint, colorVignetteStrength, colorVignetteSoftness float32
+		terrainTilingMul, terrainMacroStrengthMul, terrainHeightBlendSlop                                            float32
+	}
+	seeds := []areaCfgSeed{
+		{
+			name:       "Training Camp",
+			musicTrack: 1,
+			fogDensity: 0.0,
+			isOutdoor:  1, pvpEnabled: 0,
+			fogNear: 260.0, fogFar: 680.0,
+			fogR: 0.70, fogG: 0.80, fogB: 0.93,
+			ambientR: 96, ambientG: 102, ambientB: 114,
+			gravity:     1.0,
+			weatherRain: 0, weatherSnow: 0, weatherFog: 0, weatherStorm: 0, weatherWind: 0,
+			skyboxHdr: "default.hdr",
+			sunDirX:   0.18, sunDirY: 0.96, sunDirZ: 0.20,
+			sunColorR: 1.14, sunColorG: 1.12, sunColorB: 1.05,
+			sunIntensityMul: 1.00, skyIntensityMul: 1.00, fogDensityMul: 0.92,
+			volumetrics:    1,
+			charShadowLift: 0.30, charRimStrength: 0.18, charRimExponent: 2.40, charMinNdotL: 0.10, charAmbientBoost: 0.12,
+			sceneIblIntensity: 1.00, sceneSkyIntensity: 1.16, sceneWorldShadowLift: 0.10, sceneDirectScale: 1.32, sceneAmbientScale: 0.88,
+			sceneFlatAmbient: 0.03, sceneWorldMinNdotL: 0.05, sceneAlbedoMinLuma: 0.18, sceneAlbedoLiftStrength: 0.00,
+			sceneSpecularScale: 0.88, sceneExposureFactor: 1.10, sceneSunIntensity: 1.36,
+			colorContrast: 1.08, colorSaturation: 1.08, colorVibrance: 0.20, colorBlackPoint: 0.010, colorVignetteStrength: 0.04, colorVignetteSoftness: 0.55,
+			terrainTilingMul: 1.10, terrainMacroStrengthMul: 1.20, terrainHeightBlendSlop: 0.24,
+		},
+		{
+			name:       "Starter Zone",
+			musicTrack: 1,
+			fogDensity: 0.0,
+			isOutdoor:  1, pvpEnabled: 0,
+			fogNear: 240.0, fogFar: 620.0,
+			fogR: 0.72, fogG: 0.80, fogB: 0.90,
+			ambientR: 90, ambientG: 96, ambientB: 108,
+			gravity:     1.0,
+			weatherRain: 0, weatherSnow: 0, weatherFog: 0, weatherStorm: 0, weatherWind: 0,
+			skyboxHdr: "default.hdr",
+			sunDirX:   0.20, sunDirY: 0.95, sunDirZ: 0.23,
+			sunColorR: 1.08, sunColorG: 1.08, sunColorB: 1.04,
+			sunIntensityMul: 0.95, skyIntensityMul: 1.00, fogDensityMul: 1.00,
+			volumetrics:    1,
+			charShadowLift: 0.30, charRimStrength: 0.18, charRimExponent: 2.40, charMinNdotL: 0.10, charAmbientBoost: 0.12,
+			sceneIblIntensity: 1.00, sceneSkyIntensity: 1.16, sceneWorldShadowLift: 0.10, sceneDirectScale: 1.32, sceneAmbientScale: 0.88,
+			sceneFlatAmbient: 0.03, sceneWorldMinNdotL: 0.05, sceneAlbedoMinLuma: 0.18, sceneAlbedoLiftStrength: 0.00,
+			sceneSpecularScale: 0.88, sceneExposureFactor: 1.10, sceneSunIntensity: 1.36,
+			colorContrast: 1.08, colorSaturation: 1.08, colorVibrance: 0.20, colorBlackPoint: 0.010, colorVignetteStrength: 0.04, colorVignetteSoftness: 0.55,
+			terrainTilingMul: 1.00, terrainMacroStrengthMul: 1.00, terrainHeightBlendSlop: 0.20,
+		},
+	}
+	for _, s := range seeds {
+		_, _ = d.db.ExecContext(ctx, d.q(`
+			INSERT OR IGNORE INTO area_config (
+				name, music_track, fog_density,
+				is_outdoor, pvp_enabled,
+				fog_near, fog_far, fog_r, fog_g, fog_b,
+				ambient_r, ambient_g, ambient_b,
+				gravity, entry_script, exit_script,
+				weather_rain, weather_snow, weather_fog, weather_storm, weather_wind,
+				skybox_hdr,
+				sun_dir_x, sun_dir_y, sun_dir_z,
+				sun_color_r, sun_color_g, sun_color_b,
+				sun_intensity_mul, sky_intensity_mul, fog_density_mul,
+				volumetrics,
+				char_shadow_lift, char_rim_strength, char_rim_exponent, char_min_ndotl, char_ambient_boost,
+				scene_ibl_intensity, scene_sky_intensity, scene_world_shadow_lift, scene_direct_scale, scene_ambient_scale,
+				scene_flat_ambient, scene_world_min_ndotl, scene_albedo_min_luma, scene_albedo_lift_strength,
+				scene_specular_scale, scene_exposure_factor, scene_sun_intensity,
+				color_contrast, color_saturation, color_vibrance, color_black_point, color_vignette_strength, color_vignette_softness,
+				terrain_tiling_mul, terrain_macro_strength_mul, terrain_height_blend_slop
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`),
+			s.name, s.musicTrack, s.fogDensity,
+			s.isOutdoor, s.pvpEnabled,
+			s.fogNear, s.fogFar, s.fogR, s.fogG, s.fogB,
+			s.ambientR, s.ambientG, s.ambientB,
+			s.gravity,
+			s.weatherRain, s.weatherSnow, s.weatherFog, s.weatherStorm, s.weatherWind,
+			s.skyboxHdr,
+			s.sunDirX, s.sunDirY, s.sunDirZ,
+			s.sunColorR, s.sunColorG, s.sunColorB,
+			s.sunIntensityMul, s.skyIntensityMul, s.fogDensityMul,
+			s.volumetrics,
+			s.charShadowLift, s.charRimStrength, s.charRimExponent, s.charMinNdotL, s.charAmbientBoost,
+			s.sceneIblIntensity, s.sceneSkyIntensity, s.sceneWorldShadowLift, s.sceneDirectScale, s.sceneAmbientScale,
+			s.sceneFlatAmbient, s.sceneWorldMinNdotL, s.sceneAlbedoMinLuma, s.sceneAlbedoLiftStrength,
+			s.sceneSpecularScale, s.sceneExposureFactor, s.sceneSunIntensity,
+			s.colorContrast, s.colorSaturation, s.colorVibrance, s.colorBlackPoint, s.colorVignetteStrength, s.colorVignetteSoftness,
+			s.terrainTilingMul, s.terrainMacroStrengthMul, s.terrainHeightBlendSlop,
+		)
+
+		// Apply canonical render/environment preset to existing rows too.
+		// Keeps gameplay/script fields untouched.
+		_, _ = d.db.ExecContext(ctx, d.q(`
+			UPDATE area_config
+			   SET music_track = ?,
+			       fog_density = ?,
+			       is_outdoor = ?,
+			       fog_near = ?, fog_far = ?,
+			       fog_r = ?, fog_g = ?, fog_b = ?,
+			       ambient_r = ?, ambient_g = ?, ambient_b = ?,
+			       skybox_hdr = ?,
+			       sun_dir_x = ?, sun_dir_y = ?, sun_dir_z = ?,
+			       sun_color_r = ?, sun_color_g = ?, sun_color_b = ?,
+			       sun_intensity_mul = ?, sky_intensity_mul = ?, fog_density_mul = ?,
+			       volumetrics = ?,
+			       char_shadow_lift = ?, char_rim_strength = ?, char_rim_exponent = ?, char_min_ndotl = ?, char_ambient_boost = ?,
+			       scene_ibl_intensity = ?, scene_sky_intensity = ?, scene_world_shadow_lift = ?, scene_direct_scale = ?, scene_ambient_scale = ?,
+			       scene_flat_ambient = ?, scene_world_min_ndotl = ?, scene_albedo_min_luma = ?, scene_albedo_lift_strength = ?,
+			       scene_specular_scale = ?, scene_exposure_factor = ?, scene_sun_intensity = ?,
+			       color_contrast = ?, color_saturation = ?, color_vibrance = ?, color_black_point = ?, color_vignette_strength = ?, color_vignette_softness = ?,
+			       terrain_tiling_mul = ?, terrain_macro_strength_mul = ?, terrain_height_blend_slop = ?
+			 WHERE name = ?
+		`),
+			s.musicTrack,
+			s.fogDensity,
+			s.isOutdoor,
+			s.fogNear, s.fogFar,
+			s.fogR, s.fogG, s.fogB,
+			s.ambientR, s.ambientG, s.ambientB,
+			s.skyboxHdr,
+			s.sunDirX, s.sunDirY, s.sunDirZ,
+			s.sunColorR, s.sunColorG, s.sunColorB,
+			s.sunIntensityMul, s.skyIntensityMul, s.fogDensityMul,
+			s.volumetrics,
+			s.charShadowLift, s.charRimStrength, s.charRimExponent, s.charMinNdotL, s.charAmbientBoost,
+			s.sceneIblIntensity, s.sceneSkyIntensity, s.sceneWorldShadowLift, s.sceneDirectScale, s.sceneAmbientScale,
+			s.sceneFlatAmbient, s.sceneWorldMinNdotL, s.sceneAlbedoMinLuma, s.sceneAlbedoLiftStrength,
+			s.sceneSpecularScale, s.sceneExposureFactor, s.sceneSunIntensity,
+			s.colorContrast, s.colorSaturation, s.colorVibrance, s.colorBlackPoint, s.colorVignetteStrength, s.colorVignetteSoftness,
+			s.terrainTilingMul, s.terrainMacroStrengthMul, s.terrainHeightBlendSlop,
+			s.name,
+		)
 	}
 
 	rows, err := d.db.QueryContext(ctx, d.q(`
@@ -2216,7 +2452,17 @@ func (d *DB) LoadAreaConfigs(ctx context.Context) ([]*AreaConfig, error) {
 		       ambient_r, ambient_g, ambient_b,
 		       gravity, entry_script, exit_script,
 		       weather_rain, weather_snow, weather_fog, weather_storm, weather_wind,
-		       skybox_hdr
+		       skybox_hdr,
+		       sun_dir_x, sun_dir_y, sun_dir_z,
+		       sun_color_r, sun_color_g, sun_color_b,
+		       sun_intensity_mul, sky_intensity_mul, fog_density_mul,
+		       volumetrics,
+		       char_shadow_lift, char_rim_strength, char_rim_exponent, char_min_ndotl, char_ambient_boost,
+		       scene_ibl_intensity, scene_sky_intensity, scene_world_shadow_lift, scene_direct_scale, scene_ambient_scale,
+		       scene_flat_ambient, scene_world_min_ndotl, scene_albedo_min_luma, scene_albedo_lift_strength,
+		       scene_specular_scale, scene_exposure_factor, scene_sun_intensity,
+		       color_contrast, color_saturation, color_vibrance, color_black_point, color_vignette_strength, color_vignette_softness,
+		       terrain_tiling_mul, terrain_macro_strength_mul, terrain_height_blend_slop
 		FROM area_config ORDER BY name`))
 	if err != nil {
 		return nil, err
@@ -2230,6 +2476,7 @@ func (d *DB) LoadAreaConfigs(ctx context.Context) ([]*AreaConfig, error) {
 			track, outdoor, pvp             int
 			ambR, ambG, ambB                int
 			wRain, wSnow, wFog, wStr, wWind int
+			volumetrics                     int
 		)
 		_ = rows.Scan(
 			&c.Name, &track, &c.FogDensity,
@@ -2239,6 +2486,16 @@ func (d *DB) LoadAreaConfigs(ctx context.Context) ([]*AreaConfig, error) {
 			&c.Gravity, &c.EntryScript, &c.ExitScript,
 			&wRain, &wSnow, &wFog, &wStr, &wWind,
 			&c.SkyboxHdr,
+			&c.SunDirX, &c.SunDirY, &c.SunDirZ,
+			&c.SunColorR, &c.SunColorG, &c.SunColorB,
+			&c.SunIntensityMul, &c.SkyIntensityMul, &c.FogDensityMul,
+			&volumetrics,
+			&c.CharShadowLift, &c.CharRimStrength, &c.CharRimExponent, &c.CharMinNdotL, &c.CharAmbientBoost,
+			&c.SceneIblIntensity, &c.SceneSkyIntensity, &c.SceneWorldShadowLift, &c.SceneDirectScale, &c.SceneAmbientScale,
+			&c.SceneFlatAmbient, &c.SceneWorldMinNdotL, &c.SceneAlbedoMinLuma, &c.SceneAlbedoLiftStrength,
+			&c.SceneSpecularScale, &c.SceneExposureFactor, &c.SceneSunIntensity,
+			&c.ColorContrast, &c.ColorSaturation, &c.ColorVibrance, &c.ColorBlackPoint, &c.ColorVignetteStrength, &c.ColorVignetteSoftness,
+			&c.TerrainTilingMul, &c.TerrainMacroStrengthMul, &c.TerrainHeightBlendSlop,
 		)
 		c.MusicTrack = uint8(track)
 		c.IsOutdoor = outdoor != 0
@@ -2246,6 +2503,7 @@ func (d *DB) LoadAreaConfigs(ctx context.Context) ([]*AreaConfig, error) {
 		c.AmbientR, c.AmbientG, c.AmbientB = uint8(ambR), uint8(ambG), uint8(ambB)
 		c.WeatherRain, c.WeatherSnow = uint8(wRain), uint8(wSnow)
 		c.WeatherFog, c.WeatherStorm, c.WeatherWind = uint8(wFog), uint8(wStr), uint8(wWind)
+		c.Volumetrics = volumetrics != 0
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -2544,11 +2802,11 @@ func (d *DB) migrateV16(ctx context.Context) {
 // MediaModelShape mirrors one row in media_model_shapes.
 // Type: 0 = box (size_x/y/z = full W/H/D), 1 = sphere (size_x = radius).
 type MediaModelShape struct {
-	ID                    int
-	ModelID               int
-	Type                  int
+	ID                        int
+	ModelID                   int
+	Type                      int
 	OffsetX, OffsetY, OffsetZ float32
-	SizeX, SizeY, SizeZ   float32
+	SizeX, SizeY, SizeZ       float32
 }
 
 // LoadModelShapes returns all collision shapes for the given model ID.

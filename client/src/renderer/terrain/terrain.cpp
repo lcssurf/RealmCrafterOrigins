@@ -615,6 +615,12 @@ void Terrain::GenerateProcedural() {
 // ---------------------------------------------------------------------------
 // Render
 // ---------------------------------------------------------------------------
+void Terrain::SetRenderTuning(const TerrainRenderTuning& tuning) {
+    render_tuning_.tiling_mul = glm::clamp(tuning.tiling_mul, 0.50f, 2.50f);
+    render_tuning_.macro_strength_mul = glm::clamp(tuning.macro_strength_mul, 0.00f, 3.00f);
+    render_tuning_.height_blend_slop = glm::clamp(tuning.height_blend_slop, 0.02f, 0.70f);
+}
+
 void Terrain::Submit(Pipeline& pipeline, const glm::vec3& cam_pos) const {
     TerrainChunkSubmission base{};
     for (int i = 0; i < 4; ++i) {
@@ -638,9 +644,12 @@ void Terrain::Submit(Pipeline& pipeline, const glm::vec3& cam_pos) const {
         materials_.size() > 0 ? materials_[0].tiling : 4.0f,
         materials_.size() > 1 ? materials_[1].tiling : 4.0f,
         materials_.size() > 2 ? materials_[2].tiling : 4.0f,
-        materials_.size() > 3 ? materials_[3].tiling : 4.0f);
+        materials_.size() > 3 ? materials_[3].tiling : 4.0f) * render_tuning_.tiling_mul;
     base.macro_variation = macro_tex_ ? macro_tex_ : def_macro_;
-    base.macro_strength  = macro_strength_;
+    base.macro_strength  = glm::clamp(
+        macro_strength_ * render_tuning_.macro_strength_mul,
+        0.0f, 1.0f);
+    base.height_blend_slop = render_tuning_.height_blend_slop;
     base.splatmap        = splatmap_tex_;
     base.terrain_origin  = { hmap_origin_x_, hmap_origin_z_ };
     base.terrain_size    = { hmap_size_x_,   hmap_size_z_   };

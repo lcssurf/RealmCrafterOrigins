@@ -1,16 +1,16 @@
-# Graph Report - RealmCrafterOrigins  (2026-05-06)
+# Graph Report - RealmCrafterOrigins  (2026-05-12)
 
 ## Corpus Check
-- 2487 files · ~10,438,219 words
+- 2492 files · ~10,470,270 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 16675 nodes · 31013 edges · 859 communities detected
-- Extraction: 88% EXTRACTED · 12% INFERRED · 0% AMBIGUOUS · INFERRED: 3680 edges (avg confidence: 0.8)
+- 16762 nodes · 31213 edges · 855 communities detected
+- Extraction: 88% EXTRACTED · 12% INFERRED · 0% AMBIGUOUS · INFERRED: 3742 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `22388678`
+- Built from commit: `718402d4`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -111,7 +111,7 @@
 - [[_COMMUNITY_Community 94|Community 94]]
 - [[_COMMUNITY_Community 95|Community 95]]
 - [[_COMMUNITY_Community 96|Community 96]]
-- [[_COMMUNITY_Community 97|Community 97]]
+- [[_COMMUNITY_Community 98|Community 98]]
 - [[_COMMUNITY_Community 99|Community 99]]
 - [[_COMMUNITY_Community 100|Community 100]]
 - [[_COMMUNITY_Community 101|Community 101]]
@@ -343,7 +343,6 @@
 - [[_COMMUNITY_Community 327|Community 327]]
 - [[_COMMUNITY_Community 328|Community 328]]
 - [[_COMMUNITY_Community 329|Community 329]]
-- [[_COMMUNITY_Community 330|Community 330]]
 - [[_COMMUNITY_Community 331|Community 331]]
 - [[_COMMUNITY_Community 332|Community 332]]
 - [[_COMMUNITY_Community 333|Community 333]]
@@ -388,6 +387,7 @@
 - [[_COMMUNITY_Community 372|Community 372]]
 - [[_COMMUNITY_Community 373|Community 373]]
 - [[_COMMUNITY_Community 374|Community 374]]
+- [[_COMMUNITY_Community 375|Community 375]]
 - [[_COMMUNITY_Community 376|Community 376]]
 - [[_COMMUNITY_Community 377|Community 377]]
 - [[_COMMUNITY_Community 378|Community 378]]
@@ -398,7 +398,6 @@
 - [[_COMMUNITY_Community 383|Community 383]]
 - [[_COMMUNITY_Community 384|Community 384]]
 - [[_COMMUNITY_Community 385|Community 385]]
-- [[_COMMUNITY_Community 386|Community 386]]
 - [[_COMMUNITY_Community 387|Community 387]]
 - [[_COMMUNITY_Community 388|Community 388]]
 - [[_COMMUNITY_Community 389|Community 389]]
@@ -406,8 +405,8 @@
 - [[_COMMUNITY_Community 391|Community 391]]
 - [[_COMMUNITY_Community 392|Community 392]]
 - [[_COMMUNITY_Community 393|Community 393]]
-- [[_COMMUNITY_Community 394|Community 394]]
 - [[_COMMUNITY_Community 395|Community 395]]
+- [[_COMMUNITY_Community 396|Community 396]]
 - [[_COMMUNITY_Community 397|Community 397]]
 - [[_COMMUNITY_Community 398|Community 398]]
 - [[_COMMUNITY_Community 399|Community 399]]
@@ -415,6 +414,7 @@
 - [[_COMMUNITY_Community 401|Community 401]]
 - [[_COMMUNITY_Community 402|Community 402]]
 - [[_COMMUNITY_Community 403|Community 403]]
+- [[_COMMUNITY_Community 404|Community 404]]
 - [[_COMMUNITY_Community 405|Community 405]]
 - [[_COMMUNITY_Community 406|Community 406]]
 - [[_COMMUNITY_Community 407|Community 407]]
@@ -447,8 +447,8 @@
 - [[_COMMUNITY_Community 434|Community 434]]
 - [[_COMMUNITY_Community 435|Community 435]]
 - [[_COMMUNITY_Community 436|Community 436]]
+- [[_COMMUNITY_Community 437|Community 437]]
 - [[_COMMUNITY_Community 438|Community 438]]
-- [[_COMMUNITY_Community 439|Community 439]]
 - [[_COMMUNITY_Community 440|Community 440]]
 - [[_COMMUNITY_Community 441|Community 441]]
 - [[_COMMUNITY_Community 442|Community 442]]
@@ -462,11 +462,11 @@
 - [[_COMMUNITY_Community 450|Community 450]]
 - [[_COMMUNITY_Community 451|Community 451]]
 - [[_COMMUNITY_Community 452|Community 452]]
+- [[_COMMUNITY_Community 453|Community 453]]
 - [[_COMMUNITY_Community 454|Community 454]]
 - [[_COMMUNITY_Community 455|Community 455]]
 - [[_COMMUNITY_Community 456|Community 456]]
 - [[_COMMUNITY_Community 457|Community 457]]
-- [[_COMMUNITY_Community 458|Community 458]]
 - [[_COMMUNITY_Community 459|Community 459]]
 - [[_COMMUNITY_Community 460|Community 460]]
 - [[_COMMUNITY_Community 461|Community 461]]
@@ -476,30 +476,32 @@
 - [[_COMMUNITY_Community 465|Community 465]]
 - [[_COMMUNITY_Community 466|Community 466]]
 - [[_COMMUNITY_Community 467|Community 467]]
+- [[_COMMUNITY_Community 468|Community 468]]
 - [[_COMMUNITY_Community 469|Community 469]]
 - [[_COMMUNITY_Community 470|Community 470]]
 - [[_COMMUNITY_Community 471|Community 471]]
 - [[_COMMUNITY_Community 472|Community 472]]
-- [[_COMMUNITY_Community 473|Community 473]]
-- [[_COMMUNITY_Community 474|Community 474]]
 - [[_COMMUNITY_Community 475|Community 475]]
-- [[_COMMUNITY_Community 476|Community 476]]
 - [[_COMMUNITY_Community 477|Community 477]]
 - [[_COMMUNITY_Community 478|Community 478]]
 - [[_COMMUNITY_Community 479|Community 479]]
 - [[_COMMUNITY_Community 480|Community 480]]
+- [[_COMMUNITY_Community 481|Community 481]]
+- [[_COMMUNITY_Community 482|Community 482]]
 - [[_COMMUNITY_Community 483|Community 483]]
 - [[_COMMUNITY_Community 484|Community 484]]
 - [[_COMMUNITY_Community 485|Community 485]]
 - [[_COMMUNITY_Community 486|Community 486]]
 - [[_COMMUNITY_Community 487|Community 487]]
-- [[_COMMUNITY_Community 489|Community 489]]
+- [[_COMMUNITY_Community 488|Community 488]]
 - [[_COMMUNITY_Community 490|Community 490]]
 - [[_COMMUNITY_Community 491|Community 491]]
 - [[_COMMUNITY_Community 492|Community 492]]
 - [[_COMMUNITY_Community 493|Community 493]]
 - [[_COMMUNITY_Community 494|Community 494]]
+- [[_COMMUNITY_Community 495|Community 495]]
 - [[_COMMUNITY_Community 496|Community 496]]
+- [[_COMMUNITY_Community 497|Community 497]]
 - [[_COMMUNITY_Community 498|Community 498]]
 - [[_COMMUNITY_Community 499|Community 499]]
 - [[_COMMUNITY_Community 500|Community 500]]
@@ -518,16 +520,16 @@
 - [[_COMMUNITY_Community 513|Community 513]]
 - [[_COMMUNITY_Community 514|Community 514]]
 - [[_COMMUNITY_Community 515|Community 515]]
-- [[_COMMUNITY_Community 516|Community 516]]
 - [[_COMMUNITY_Community 517|Community 517]]
 - [[_COMMUNITY_Community 518|Community 518]]
 - [[_COMMUNITY_Community 519|Community 519]]
-- [[_COMMUNITY_Community 520|Community 520]]
 - [[_COMMUNITY_Community 521|Community 521]]
+- [[_COMMUNITY_Community 522|Community 522]]
 - [[_COMMUNITY_Community 523|Community 523]]
 - [[_COMMUNITY_Community 524|Community 524]]
 - [[_COMMUNITY_Community 525|Community 525]]
 - [[_COMMUNITY_Community 526|Community 526]]
+- [[_COMMUNITY_Community 527|Community 527]]
 - [[_COMMUNITY_Community 528|Community 528]]
 - [[_COMMUNITY_Community 529|Community 529]]
 - [[_COMMUNITY_Community 530|Community 530]]
@@ -539,12 +541,12 @@
 - [[_COMMUNITY_Community 536|Community 536]]
 - [[_COMMUNITY_Community 537|Community 537]]
 - [[_COMMUNITY_Community 538|Community 538]]
-- [[_COMMUNITY_Community 539|Community 539]]
 - [[_COMMUNITY_Community 540|Community 540]]
-- [[_COMMUNITY_Community 541|Community 541]]
-- [[_COMMUNITY_Community 542|Community 542]]
 - [[_COMMUNITY_Community 543|Community 543]]
+- [[_COMMUNITY_Community 544|Community 544]]
 - [[_COMMUNITY_Community 545|Community 545]]
+- [[_COMMUNITY_Community 546|Community 546]]
+- [[_COMMUNITY_Community 547|Community 547]]
 - [[_COMMUNITY_Community 548|Community 548]]
 - [[_COMMUNITY_Community 549|Community 549]]
 - [[_COMMUNITY_Community 550|Community 550]]
@@ -552,43 +554,45 @@
 - [[_COMMUNITY_Community 552|Community 552]]
 - [[_COMMUNITY_Community 553|Community 553]]
 - [[_COMMUNITY_Community 554|Community 554]]
-- [[_COMMUNITY_Community 557|Community 557]]
-- [[_COMMUNITY_Community 558|Community 558]]
-- [[_COMMUNITY_Community 559|Community 559]]
+- [[_COMMUNITY_Community 555|Community 555]]
 - [[_COMMUNITY_Community 560|Community 560]]
 - [[_COMMUNITY_Community 561|Community 561]]
 - [[_COMMUNITY_Community 562|Community 562]]
-- [[_COMMUNITY_Community 563|Community 563]]
-- [[_COMMUNITY_Community 564|Community 564]]
+- [[_COMMUNITY_Community 566|Community 566]]
+- [[_COMMUNITY_Community 567|Community 567]]
+- [[_COMMUNITY_Community 568|Community 568]]
 - [[_COMMUNITY_Community 569|Community 569]]
 - [[_COMMUNITY_Community 570|Community 570]]
 - [[_COMMUNITY_Community 571|Community 571]]
 - [[_COMMUNITY_Community 572|Community 572]]
+- [[_COMMUNITY_Community 573|Community 573]]
+- [[_COMMUNITY_Community 574|Community 574]]
+- [[_COMMUNITY_Community 575|Community 575]]
 - [[_COMMUNITY_Community 576|Community 576]]
 - [[_COMMUNITY_Community 577|Community 577]]
 - [[_COMMUNITY_Community 578|Community 578]]
-- [[_COMMUNITY_Community 579|Community 579]]
 - [[_COMMUNITY_Community 580|Community 580]]
 - [[_COMMUNITY_Community 581|Community 581]]
 - [[_COMMUNITY_Community 582|Community 582]]
 - [[_COMMUNITY_Community 583|Community 583]]
-- [[_COMMUNITY_Community 584|Community 584]]
 - [[_COMMUNITY_Community 585|Community 585]]
 - [[_COMMUNITY_Community 586|Community 586]]
 - [[_COMMUNITY_Community 587|Community 587]]
+- [[_COMMUNITY_Community 588|Community 588]]
 - [[_COMMUNITY_Community 589|Community 589]]
 - [[_COMMUNITY_Community 590|Community 590]]
 - [[_COMMUNITY_Community 591|Community 591]]
 - [[_COMMUNITY_Community 592|Community 592]]
+- [[_COMMUNITY_Community 593|Community 593]]
 - [[_COMMUNITY_Community 594|Community 594]]
 - [[_COMMUNITY_Community 595|Community 595]]
 - [[_COMMUNITY_Community 596|Community 596]]
 - [[_COMMUNITY_Community 597|Community 597]]
+- [[_COMMUNITY_Community 598|Community 598]]
 - [[_COMMUNITY_Community 599|Community 599]]
 - [[_COMMUNITY_Community 600|Community 600]]
 - [[_COMMUNITY_Community 601|Community 601]]
 - [[_COMMUNITY_Community 602|Community 602]]
-- [[_COMMUNITY_Community 603|Community 603]]
 - [[_COMMUNITY_Community 604|Community 604]]
 - [[_COMMUNITY_Community 605|Community 605]]
 - [[_COMMUNITY_Community 606|Community 606]]
@@ -596,26 +600,26 @@
 - [[_COMMUNITY_Community 608|Community 608]]
 - [[_COMMUNITY_Community 609|Community 609]]
 - [[_COMMUNITY_Community 610|Community 610]]
-- [[_COMMUNITY_Community 611|Community 611]]
 - [[_COMMUNITY_Community 612|Community 612]]
 - [[_COMMUNITY_Community 613|Community 613]]
 - [[_COMMUNITY_Community 614|Community 614]]
 - [[_COMMUNITY_Community 615|Community 615]]
+- [[_COMMUNITY_Community 616|Community 616]]
 - [[_COMMUNITY_Community 617|Community 617]]
-- [[_COMMUNITY_Community 618|Community 618]]
 - [[_COMMUNITY_Community 619|Community 619]]
 - [[_COMMUNITY_Community 620|Community 620]]
 - [[_COMMUNITY_Community 621|Community 621]]
 - [[_COMMUNITY_Community 622|Community 622]]
+- [[_COMMUNITY_Community 623|Community 623]]
 - [[_COMMUNITY_Community 624|Community 624]]
 - [[_COMMUNITY_Community 625|Community 625]]
 - [[_COMMUNITY_Community 626|Community 626]]
 - [[_COMMUNITY_Community 627|Community 627]]
 - [[_COMMUNITY_Community 628|Community 628]]
 - [[_COMMUNITY_Community 629|Community 629]]
+- [[_COMMUNITY_Community 630|Community 630]]
 - [[_COMMUNITY_Community 631|Community 631]]
 - [[_COMMUNITY_Community 632|Community 632]]
-- [[_COMMUNITY_Community 633|Community 633]]
 - [[_COMMUNITY_Community 634|Community 634]]
 - [[_COMMUNITY_Community 635|Community 635]]
 - [[_COMMUNITY_Community 636|Community 636]]
@@ -627,6 +631,7 @@
 - [[_COMMUNITY_Community 642|Community 642]]
 - [[_COMMUNITY_Community 643|Community 643]]
 - [[_COMMUNITY_Community 644|Community 644]]
+- [[_COMMUNITY_Community 645|Community 645]]
 - [[_COMMUNITY_Community 646|Community 646]]
 - [[_COMMUNITY_Community 647|Community 647]]
 - [[_COMMUNITY_Community 648|Community 648]]
@@ -636,7 +641,6 @@
 - [[_COMMUNITY_Community 652|Community 652]]
 - [[_COMMUNITY_Community 653|Community 653]]
 - [[_COMMUNITY_Community 654|Community 654]]
-- [[_COMMUNITY_Community 655|Community 655]]
 - [[_COMMUNITY_Community 656|Community 656]]
 - [[_COMMUNITY_Community 657|Community 657]]
 - [[_COMMUNITY_Community 658|Community 658]]
@@ -647,7 +651,6 @@
 - [[_COMMUNITY_Community 663|Community 663]]
 - [[_COMMUNITY_Community 664|Community 664]]
 - [[_COMMUNITY_Community 665|Community 665]]
-- [[_COMMUNITY_Community 667|Community 667]]
 - [[_COMMUNITY_Community 668|Community 668]]
 - [[_COMMUNITY_Community 669|Community 669]]
 - [[_COMMUNITY_Community 670|Community 670]]
@@ -657,36 +660,38 @@
 - [[_COMMUNITY_Community 674|Community 674]]
 - [[_COMMUNITY_Community 675|Community 675]]
 - [[_COMMUNITY_Community 676|Community 676]]
+- [[_COMMUNITY_Community 677|Community 677]]
+- [[_COMMUNITY_Community 678|Community 678]]
 - [[_COMMUNITY_Community 679|Community 679]]
 - [[_COMMUNITY_Community 680|Community 680]]
-- [[_COMMUNITY_Community 681|Community 681]]
 - [[_COMMUNITY_Community 682|Community 682]]
 - [[_COMMUNITY_Community 683|Community 683]]
-- [[_COMMUNITY_Community 684|Community 684]]
-- [[_COMMUNITY_Community 685|Community 685]]
-- [[_COMMUNITY_Community 686|Community 686]]
-- [[_COMMUNITY_Community 687|Community 687]]
-- [[_COMMUNITY_Community 688|Community 688]]
 - [[_COMMUNITY_Community 689|Community 689]]
 - [[_COMMUNITY_Community 690|Community 690]]
 - [[_COMMUNITY_Community 691|Community 691]]
 - [[_COMMUNITY_Community 693|Community 693]]
 - [[_COMMUNITY_Community 694|Community 694]]
+- [[_COMMUNITY_Community 695|Community 695]]
+- [[_COMMUNITY_Community 697|Community 697]]
+- [[_COMMUNITY_Community 698|Community 698]]
+- [[_COMMUNITY_Community 699|Community 699]]
 - [[_COMMUNITY_Community 700|Community 700]]
 - [[_COMMUNITY_Community 701|Community 701]]
+- [[_COMMUNITY_Community 702|Community 702]]
 - [[_COMMUNITY_Community 703|Community 703]]
-- [[_COMMUNITY_Community 704|Community 704]]
 - [[_COMMUNITY_Community 705|Community 705]]
+- [[_COMMUNITY_Community 706|Community 706]]
 - [[_COMMUNITY_Community 707|Community 707]]
-- [[_COMMUNITY_Community 708|Community 708]]
-- [[_COMMUNITY_Community 709|Community 709]]
-- [[_COMMUNITY_Community 710|Community 710]]
 - [[_COMMUNITY_Community 711|Community 711]]
 - [[_COMMUNITY_Community 712|Community 712]]
 - [[_COMMUNITY_Community 713|Community 713]]
+- [[_COMMUNITY_Community 714|Community 714]]
 - [[_COMMUNITY_Community 715|Community 715]]
 - [[_COMMUNITY_Community 716|Community 716]]
 - [[_COMMUNITY_Community 717|Community 717]]
+- [[_COMMUNITY_Community 718|Community 718]]
+- [[_COMMUNITY_Community 719|Community 719]]
+- [[_COMMUNITY_Community 720|Community 720]]
 - [[_COMMUNITY_Community 721|Community 721]]
 - [[_COMMUNITY_Community 722|Community 722]]
 - [[_COMMUNITY_Community 723|Community 723]]
@@ -696,16 +701,16 @@
 - [[_COMMUNITY_Community 727|Community 727]]
 - [[_COMMUNITY_Community 728|Community 728]]
 - [[_COMMUNITY_Community 729|Community 729]]
-- [[_COMMUNITY_Community 730|Community 730]]
-- [[_COMMUNITY_Community 731|Community 731]]
 - [[_COMMUNITY_Community 732|Community 732]]
-- [[_COMMUNITY_Community 733|Community 733]]
-- [[_COMMUNITY_Community 734|Community 734]]
 - [[_COMMUNITY_Community 735|Community 735]]
 - [[_COMMUNITY_Community 736|Community 736]]
 - [[_COMMUNITY_Community 737|Community 737]]
 - [[_COMMUNITY_Community 738|Community 738]]
 - [[_COMMUNITY_Community 739|Community 739]]
+- [[_COMMUNITY_Community 740|Community 740]]
+- [[_COMMUNITY_Community 741|Community 741]]
+- [[_COMMUNITY_Community 742|Community 742]]
+- [[_COMMUNITY_Community 743|Community 743]]
 - [[_COMMUNITY_Community 744|Community 744]]
 - [[_COMMUNITY_Community 745|Community 745]]
 - [[_COMMUNITY_Community 746|Community 746]]
@@ -718,23 +723,21 @@
 - [[_COMMUNITY_Community 753|Community 753]]
 - [[_COMMUNITY_Community 754|Community 754]]
 - [[_COMMUNITY_Community 755|Community 755]]
-- [[_COMMUNITY_Community 756|Community 756]]
-- [[_COMMUNITY_Community 757|Community 757]]
-- [[_COMMUNITY_Community 758|Community 758]]
-- [[_COMMUNITY_Community 759|Community 759]]
-- [[_COMMUNITY_Community 760|Community 760]]
-- [[_COMMUNITY_Community 761|Community 761]]
-- [[_COMMUNITY_Community 762|Community 762]]
-- [[_COMMUNITY_Community 763|Community 763]]
-- [[_COMMUNITY_Community 764|Community 764]]
-- [[_COMMUNITY_Community 780|Community 780]]
-- [[_COMMUNITY_Community 785|Community 785]]
-- [[_COMMUNITY_Community 786|Community 786]]
-- [[_COMMUNITY_Community 788|Community 788]]
-- [[_COMMUNITY_Community 791|Community 791]]
-- [[_COMMUNITY_Community 794|Community 794]]
-- [[_COMMUNITY_Community 795|Community 795]]
+- [[_COMMUNITY_Community 773|Community 773]]
+- [[_COMMUNITY_Community 778|Community 778]]
+- [[_COMMUNITY_Community 779|Community 779]]
+- [[_COMMUNITY_Community 781|Community 781]]
+- [[_COMMUNITY_Community 784|Community 784]]
+- [[_COMMUNITY_Community 787|Community 787]]
+- [[_COMMUNITY_Community 789|Community 789]]
+- [[_COMMUNITY_Community 790|Community 790]]
+- [[_COMMUNITY_Community 796|Community 796]]
+- [[_COMMUNITY_Community 801|Community 801]]
 - [[_COMMUNITY_Community 802|Community 802]]
+- [[_COMMUNITY_Community 803|Community 803]]
+- [[_COMMUNITY_Community 804|Community 804]]
+- [[_COMMUNITY_Community 805|Community 805]]
+- [[_COMMUNITY_Community 806|Community 806]]
 - [[_COMMUNITY_Community 807|Community 807]]
 - [[_COMMUNITY_Community 808|Community 808]]
 - [[_COMMUNITY_Community 809|Community 809]]
@@ -791,12 +794,12 @@
 - [[_COMMUNITY_Community 860|Community 860]]
 - [[_COMMUNITY_Community 861|Community 861]]
 - [[_COMMUNITY_Community 862|Community 862]]
-- [[_COMMUNITY_Community 863|Community 863]]
 - [[_COMMUNITY_Community 864|Community 864]]
 - [[_COMMUNITY_Community 865|Community 865]]
 - [[_COMMUNITY_Community 866|Community 866]]
 - [[_COMMUNITY_Community 867|Community 867]]
 - [[_COMMUNITY_Community 868|Community 868]]
+- [[_COMMUNITY_Community 869|Community 869]]
 - [[_COMMUNITY_Community 870|Community 870]]
 - [[_COMMUNITY_Community 871|Community 871]]
 - [[_COMMUNITY_Community 872|Community 872]]
@@ -824,56 +827,49 @@
 - [[_COMMUNITY_Community 894|Community 894]]
 - [[_COMMUNITY_Community 895|Community 895]]
 - [[_COMMUNITY_Community 896|Community 896]]
-- [[_COMMUNITY_Community 897|Community 897]]
 - [[_COMMUNITY_Community 898|Community 898]]
 - [[_COMMUNITY_Community 899|Community 899]]
 - [[_COMMUNITY_Community 900|Community 900]]
 - [[_COMMUNITY_Community 901|Community 901]]
 - [[_COMMUNITY_Community 902|Community 902]]
+- [[_COMMUNITY_Community 903|Community 903]]
 - [[_COMMUNITY_Community 904|Community 904]]
 - [[_COMMUNITY_Community 905|Community 905]]
-- [[_COMMUNITY_Community 906|Community 906]]
-- [[_COMMUNITY_Community 907|Community 907]]
-- [[_COMMUNITY_Community 908|Community 908]]
-- [[_COMMUNITY_Community 909|Community 909]]
-- [[_COMMUNITY_Community 910|Community 910]]
-- [[_COMMUNITY_Community 911|Community 911]]
-- [[_COMMUNITY_Community 977|Community 977]]
-- [[_COMMUNITY_Community 1115|Community 1115]]
-- [[_COMMUNITY_Community 1160|Community 1160]]
-- [[_COMMUNITY_Community 1162|Community 1162]]
-- [[_COMMUNITY_Community 1165|Community 1165]]
-- [[_COMMUNITY_Community 1166|Community 1166]]
-- [[_COMMUNITY_Community 1167|Community 1167]]
-- [[_COMMUNITY_Community 1168|Community 1168]]
-- [[_COMMUNITY_Community 1169|Community 1169]]
-- [[_COMMUNITY_Community 1170|Community 1170]]
-- [[_COMMUNITY_Community 1171|Community 1171]]
-- [[_COMMUNITY_Community 1172|Community 1172]]
-- [[_COMMUNITY_Community 1173|Community 1173]]
-- [[_COMMUNITY_Community 1174|Community 1174]]
-- [[_COMMUNITY_Community 1175|Community 1175]]
-- [[_COMMUNITY_Community 1176|Community 1176]]
-- [[_COMMUNITY_Community 1177|Community 1177]]
+- [[_COMMUNITY_Community 971|Community 971]]
+- [[_COMMUNITY_Community 1066|Community 1066]]
+- [[_COMMUNITY_Community 1067|Community 1067]]
+- [[_COMMUNITY_Community 1068|Community 1068]]
+- [[_COMMUNITY_Community 1069|Community 1069]]
+- [[_COMMUNITY_Community 1070|Community 1070]]
+- [[_COMMUNITY_Community 1071|Community 1071]]
+- [[_COMMUNITY_Community 1072|Community 1072]]
+- [[_COMMUNITY_Community 1073|Community 1073]]
+- [[_COMMUNITY_Community 1074|Community 1074]]
+- [[_COMMUNITY_Community 1075|Community 1075]]
+- [[_COMMUNITY_Community 1076|Community 1076]]
+- [[_COMMUNITY_Community 1077|Community 1077]]
+- [[_COMMUNITY_Community 1078|Community 1078]]
+- [[_COMMUNITY_Community 1079|Community 1079]]
+- [[_COMMUNITY_Community 1080|Community 1080]]
+- [[_COMMUNITY_Community 1081|Community 1081]]
+- [[_COMMUNITY_Community 1082|Community 1082]]
+- [[_COMMUNITY_Community 1083|Community 1083]]
+- [[_COMMUNITY_Community 1084|Community 1084]]
+- [[_COMMUNITY_Community 1085|Community 1085]]
+- [[_COMMUNITY_Community 1086|Community 1086]]
+- [[_COMMUNITY_Community 1087|Community 1087]]
+- [[_COMMUNITY_Community 1088|Community 1088]]
+- [[_COMMUNITY_Community 1089|Community 1089]]
+- [[_COMMUNITY_Community 1090|Community 1090]]
+- [[_COMMUNITY_Community 1091|Community 1091]]
 - [[_COMMUNITY_Community 1178|Community 1178]]
-- [[_COMMUNITY_Community 1179|Community 1179]]
 - [[_COMMUNITY_Community 1180|Community 1180]]
-- [[_COMMUNITY_Community 1181|Community 1181]]
-- [[_COMMUNITY_Community 1182|Community 1182]]
-- [[_COMMUNITY_Community 1183|Community 1183]]
-- [[_COMMUNITY_Community 1184|Community 1184]]
-- [[_COMMUNITY_Community 1185|Community 1185]]
-- [[_COMMUNITY_Community 1186|Community 1186]]
-- [[_COMMUNITY_Community 1187|Community 1187]]
-- [[_COMMUNITY_Community 1188|Community 1188]]
-- [[_COMMUNITY_Community 1189|Community 1189]]
-- [[_COMMUNITY_Community 1190|Community 1190]]
-- [[_COMMUNITY_Community 1249|Community 1249]]
-- [[_COMMUNITY_Community 1748|Community 1748]]
-- [[_COMMUNITY_Community 1749|Community 1749]]
-- [[_COMMUNITY_Community 1750|Community 1750]]
-- [[_COMMUNITY_Community 1879|Community 1879]]
-- [[_COMMUNITY_Community 1880|Community 1880]]
+- [[_COMMUNITY_Community 1241|Community 1241]]
+- [[_COMMUNITY_Community 1741|Community 1741]]
+- [[_COMMUNITY_Community 1742|Community 1742]]
+- [[_COMMUNITY_Community 1743|Community 1743]]
+- [[_COMMUNITY_Community 1871|Community 1871]]
+- [[_COMMUNITY_Community 1872|Community 1872]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `Assert()` - 287 edges
@@ -884,2382 +880,2370 @@
 6. `nk_strlen()` - 64 edges
 7. `AiMesh` - 59 edges
 8. `main()` - 54 edges
-9. `nk_vec2()` - 50 edges
-10. `ClientConn` - 49 edges
+9. `ClientConn` - 51 edges
+10. `nk_vec2()` - 50 edges
 
 ## Surprising Connections (you probably didn't know these)
+- `handleEvents()` --calls--> `Poll()`  [INFERRED]
+  SkeletalAnimation-master/lib/glfw/src/wl_window.c → client/src/net/connection.cpp
 - `Update()` --calls--> `glfwPollEvents()`  [INFERRED]
   glRenderer/Input.cpp → SkeletalAnimation-master/lib/glfw/src/window.c
 - `PushStyleVar()` --calls--> `ImGuiStyleMod()`  [INFERRED]
   OpenGL-PBR-Renderer-master/dependencies/imgui/imgui.cpp → glRenderer/lib/imgui/imgui_internal.h
 - `NavUpdate()` --calls--> `IsNavInputPressedAnyOfTwo()`  [INFERRED]
   OpenGL-PBR-Renderer-master/dependencies/imgui/imgui.cpp → glRenderer/lib/imgui/imgui_internal.h
-- `ImGui_ImplGlfw_Init()` --calls--> `glfwGetWin32Window()`  [INFERRED]
-  OpenGL-PBR-Renderer-master/dependencies/imgui/imgui_impl_glfw.cpp → SkeletalAnimation-master/lib/glfw/src/win32_window.c
-- `ColorPicker4()` --calls--> `ImAtan2()`  [INFERRED]
-  OpenGL-PBR-Renderer-master/dependencies/imgui/imgui_widgets.cpp → glRenderer/lib/imgui/imgui_internal.h
+- `PathArcTo()` --calls--> `ImCeil()`  [INFERRED]
+  OpenGL-PBR-Renderer-master/dependencies/imgui/imgui_draw.cpp → glRenderer/lib/imgui/imgui_internal.h
 
 ## Hyperedges (group relationships)
 - **rco_renderer shared by both rco_client and rco_gue** — target_rco_client, target_rco_gue, target_rco_renderer [EXTRACTED 1.00]
 - **rco_client vcpkg dependencies** — target_rco_client, dep_glfw3, dep_glm, dep_imgui, dep_assimp, dep_stb, dep_msquic [EXTRACTED 1.00]
 - **rco_gue vcpkg dependencies** — target_rco_gue, dep_glfw3, dep_glm, dep_imgui, dep_sqlite3, dep_stb [EXTRACTED 1.00]
 
-## Communities (2230 total, 274 thin omitted)
+## Communities (2223 total, 273 thin omitted)
 
 ### Community 0 - "Community 0"
 Cohesion: 0.02
-Nodes (132): nk_adler32(), nk_button_symbol_label(), nk_button_symbol_text(), nk_chart_add_slot(), nk_chart_add_slot_colored(), nk_check_flags_label(), nk_check_flags_text(), nk_checkbox_flags_label() (+124 more)
+Nodes (127): nk_button_label_styled(), nk_button_text(), nk_button_text_styled(), nk_chart_add_slot(), nk_chart_add_slot_colored(), nk_color_cf(), nk_color_d(), nk_color_dv() (+119 more)
 
 ### Community 1 - "Community 1"
-Cohesion: 0.01
-Nodes (168): vec<2, T, Q> wy(), vec<2, T, Q> yx(), vec<2, T, Q> yz(), vec<2, T, Q> zw(), vec<3, T, Q> wwx(), vec<3, T, Q> wwy(), vec<3, T, Q> wwz(), vec<3, T, Q> wxw() (+160 more)
+Cohesion: 0.03
+Nodes (154): ActivateItem(), AddDrawListToDrawData(), AddInputCharacter(), AddInputCharactersUTF8(), AddRootWindowToDrawData(), AddWindowToDrawData(), BeginGroup(), BringWindowToDisplayBack() (+146 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.01
-Nodes (168): vec<2, T, Q> ww(), vec<2, T, Q> wx(), vec<2, T, Q> wz(), vec<2, T, Q> xw(), vec<2, T, Q> xx(), vec<2, T, Q> xy(), vec<2, T, Q> xz(), vec<2, T, Q> yw() (+160 more)
+Nodes (168): vec<2, T, Q> ww(), vec<2, T, Q> wz(), vec<2, T, Q> xx(), vec<2, T, Q> xy(), vec<2, T, Q> yy(), vec<2, T, Q> yz(), vec<2, T, Q> zx(), vec<2, T, Q> zy() (+160 more)
 
 ### Community 3 - "Community 3"
-Cohesion: 0.03
-Nodes (148): ActivateItem(), AddInputCharacter(), AddInputCharactersUTF8(), BeginGroup(), BringWindowToDisplayBack(), Build(), BuildSortByKey(), CalcItemSize() (+140 more)
+Cohesion: 0.01
+Nodes (168): vec<2, T, Q> wx(), vec<2, T, Q> wy(), vec<2, T, Q> xw(), vec<2, T, Q> xz(), vec<2, T, Q> yw(), vec<2, T, Q> yx(), vec<2, T, Q> zw(), vec<2, T, Q> zz() (+160 more)
 
 ### Community 4 - "Community 4"
 Cohesion: 0.02
-Nodes (97): dump(), getBool(), getDouble(), getFloat(), getInt16(), getInt32(), getInt64(), getInt8() (+89 more)
+Nodes (98): dump(), getBool(), getDouble(), getFloat(), getInt16(), getInt32(), getInt64(), getInt8() (+90 more)
 
 ### Community 5 - "Community 5"
 Cohesion: 0.06
 Nodes (131): equal(), main(), my_stbtt_initfont(), my_stbtt_print(), stbrp_init_target(), stbrp_pack_rects(), stbtt__add_point(), stbtt_BakeFontBitmap() (+123 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.02
-Nodes (83): CalculateOptimalEdits(), CreateUnifiedDiff(), TestCase(), AddFailureHelper(), AddFatalFailure(), AddNonfatalFailure(), AnotherSubClassOfTest, AssertionResult (+75 more)
+Cohesion: 0.04
+Nodes (111): GetInputTextState(), AlignTextToFramePadding(), BeginMainMenuBar(), BeginMenuBar(), BeginViewportSideBar(), Bullet(), BulletText(), BulletTextV() (+103 more)
 
 ### Community 7 - "Community 7"
-Cohesion: 0.08
-Nodes (85): BeginFrame(), EndFrame(), ShouldClose(), Window(), getopt(), mat4x4_ortho(), mat4x4_rotate_Z(), thrd_create() (+77 more)
+Cohesion: 0.03
+Nodes (93): AddTestInfo(), AddTestPartResult(), Append(), AppendUserMessage(), ArrayAsVector(), ChopLowBits(), Clear(), ClearResult() (+85 more)
 
 ### Community 8 - "Community 8"
-Cohesion: 0.03
-Nodes (72): AlwaysTrue(), Append(), ChopLowBits(), ClassUniqueToAlwaysTrue, Clear(), ClearResult(), ClearTestPartResults(), CodePointToUtf8() (+64 more)
+Cohesion: 0.06
+Nodes (96): BeginFrame(), EndFrame(), ShouldClose(), Window(), getopt(), mat4x4_identity(), mat4x4_mul(), mat4x4_ortho() (+88 more)
 
 ### Community 9 - "Community 9"
 Cohesion: 0.03
-Nodes (60): Add(), Clear(), ClearFreeMemory(), ClipWith(), ClipWithFull(), Contains(), DebugStartItemPicker(), Expand() (+52 more)
+Nodes (91): ApplyHorizontalMove(), Update(), UpdateVertical(), SetTitle(), nk_glfw3_device_upload_atlas(), nk_glfw3_font_stash_begin(), nk_glfw3_font_stash_end(), nk_glfw3_mouse_button_callback() (+83 more)
 
 ### Community 10 - "Community 10"
 Cohesion: 0.03
-Nodes (66): Poll(), _glfwInputFramebufferSize(), _glfwInputWindowCloseRequest(), _glfwInputWindowContentScale(), _glfwInputWindowDamage(), _glfwInputWindowMonitor(), _glfwInputWindowSize(), checkScaleChange() (+58 more)
+Nodes (84): _glfw_strdup(), _glfwInputError(), _glfwInputKey(), _glfwPlatformSetClipboardString(), _glfwCreateContextOSMesa(), glfwGetOSMesaColorBuffer(), glfwGetOSMesaContext(), glfwGetOSMesaDepthBuffer() (+76 more)
 
 ### Community 11 - "Community 11"
-Cohesion: 0.05
-Nodes (83): aiCreateAnimMesh(), ConvertAnimations(), ConvertAnimationStack(), ConvertCamera(), ConvertCameras(), ConvertCluster(), ConvertGlobalSettings(), ConvertLight() (+75 more)
+Cohesion: 0.02
+Nodes (83): CalculateOptimalEdits(), CreateUnifiedDiff(), TestCase(), AddFailureHelper(), AddFatalFailure(), AddNonfatalFailure(), AnotherSubClassOfTest, AssertionResult (+75 more)
 
 ### Community 12 - "Community 12"
-Cohesion: 0.04
-Nodes (77): nk_glfw3_clipboard_copy(), nk_glfw3_clipboard_paste(), nk_glfw3_device_upload_atlas(), nk_glfw3_font_stash_end(), nk_glfw3_init(), nk_glfw3_render(), nk_glfw3_shutdown(), nk_buffer_free() (+69 more)
+Cohesion: 0.05
+Nodes (103): nk_button_behavior(), nk_button_color(), nk_button_image(), nk_button_image_styled(), nk_button_symbol(), nk_button_symbol_styled(), nk_button_symbol_text_styled(), nk_chart_begin_colored() (+95 more)
 
 ### Community 13 - "Community 13"
-Cohesion: 0.05
-Nodes (71): AMFImporter, CanRead(), Clear(), Find_ConvertedMaterial(), Find_ConvertedNode(), Find_NodeElement(), ParseNode_Coordinates(), ParseNode_Mesh() (+63 more)
+Cohesion: 0.03
+Nodes (61): Add(), Clear(), ClearFreeMemory(), ClipWith(), ClipWithFull(), Contains(), DebugStartItemPicker(), Expand() (+53 more)
 
 ### Community 14 - "Community 14"
 Cohesion: 0.05
-Nodes (65): _glfwInputDrop(), _glfwPlatformGetMonitorWorkarea(), _glfwRestoreVideoModeX11(), acquireMonitor(), convertLatin1toUTF8(), decodeUTF8(), disableCursor(), disableRawMouseMotion() (+57 more)
+Nodes (67): _glfwRestoreVideoModeX11(), acquireMonitor(), convertLatin1toUTF8(), createNativeWindow(), decodeUTF8(), disableCursor(), disableRawMouseMotion(), enableCursor() (+59 more)
 
 ### Community 15 - "Community 15"
-Cohesion: 0.04
-Nodes (82): nk_add_value(), nk__begin(), nk_begin_titled(), nk_build(), nk_button_image_label(), nk_button_image_label_styled(), nk_button_image_text(), nk_button_image_text_styled() (+74 more)
+Cohesion: 0.05
+Nodes (57): Interpolate(), operator ++(), Begin(), CreateTestFactory(), End(), Advance(), BaseGenerator(), Begin() (+49 more)
 
 ### Community 16 - "Community 16"
-Cohesion: 0.04
-Nodes (57): glfwGetProcAddress(), _glfwStringInExtensionString(), chooseEGLConfig(), extensionSupportedEGL(), getEGLConfigAttrib(), getEGLErrorString(), _glfwChooseVisualEGL(), glfwGetEGLContext() (+49 more)
+Cohesion: 0.05
+Nodes (68): inflateBack9(), makefixed9(), inflate_table9(), check_match(), deflate(), deflate_fast(), deflate_huff(), deflate_rle() (+60 more)
 
 ### Community 17 - "Community 17"
 Cohesion: 0.07
-Nodes (77): nk_button_behavior(), nk_button_color(), nk_button_image(), nk_button_image_styled(), nk_button_label_styled(), nk_button_symbol(), nk_button_symbol_styled(), nk_button_symbol_text_styled() (+69 more)
+Nodes (76): DeleteSelected(), Draw(), DrawFloatingToolbar(), DrawInspector(), DrawPanelColBox(), DrawPanelColSphere(), DrawPanelEmitters(), DrawPanelEnviro() (+68 more)
 
 ### Community 18 - "Community 18"
 Cohesion: 0.05
-Nodes (58): SetTitle(), nk_glfw3_font_stash_begin(), nk_font_atlas_begin(), nk_font_atlas_init_default(), nk_layout_row_begin(), nk_layout_row_end(), nk_layout_row_push(), nk_layout_space_to_screen() (+50 more)
+Nodes (68): nk_glfw3_clipboard_copy(), nk_glfw3_clipboard_paste(), nk_glfw3_init(), adjust_grid(), calc_grid(), cursor_position_callback(), draw_scene(), framebuffer_size_callback() (+60 more)
 
 ### Community 19 - "Community 19"
-Cohesion: 0.05
-Nodes (54): GetKeyState(), _glfwRestoreVideoModeWin32(), acquireMonitor(), applyAspectRatio(), chooseImage(), createIcon(), createNativeWindow(), cursorInContentArea() (+46 more)
+Cohesion: 0.04
+Nodes (76): nk_add_value(), nk__begin(), nk_begin_titled(), nk_build(), nk_button_image_label(), nk_button_image_label_styled(), nk_button_image_text(), nk_button_image_text_styled() (+68 more)
 
 ### Community 20 - "Community 20"
 Cohesion: 0.05
-Nodes (54): AssertHelper(), GTEST_10_TYPENAMES_(), GTEST_1_TYPENAMES_(), GTEST_2_TYPENAMES_(), GTEST_3_TYPENAMES_(), GTEST_4_TYPENAMES_(), GTEST_5_TYPENAMES_(), GTEST_6_TYPENAMES_() (+46 more)
+Nodes (53): GetKeyState(), _glfwInputDrop(), _glfwRestoreVideoModeWin32(), acquireMonitor(), applyAspectRatio(), chooseImage(), createIcon(), createNativeWindow() (+45 more)
 
 ### Community 21 - "Community 21"
-Cohesion: 0.06
-Nodes (61): Clear(), FindNodeElement(), FindNodeElement_FromNode(), FindNodeElement_FromRoot(), GeometryHelper_CoordIdxStr2FacesArr(), GeometryHelper_MakeMesh(), ParseNode_Grouping_Group(), ParseNode_Grouping_GroupEnd() (+53 more)
+Cohesion: 0.05
+Nodes (53): stbi__clamp(), stbi__convert_16_to_8(), stbi__convert_8_to_16(), stbi__cpuid3(), stbi__do_zlib(), stbi__float_postprocess(), stbi__fopen(), stbi__idct_block() (+45 more)
 
 ### Community 22 - "Community 22"
-Cohesion: 0.05
-Nodes (46): stbi__clamp(), stbi__convert_16_to_8(), stbi__convert_8_to_16(), stbi__cpuid3(), stbi__float_postprocess(), stbi__fopen(), stbi__idct_block(), stbi_info() (+38 more)
+Cohesion: 0.06
+Nodes (58): Clear(), FindNodeElement(), FindNodeElement_FromNode(), FindNodeElement_FromRoot(), GeometryHelper_CoordIdxStr2FacesArr(), GeometryHelper_MakeMesh(), ParseNode_Grouping_Group(), ParseNode_Grouping_GroupEnd() (+50 more)
 
 ### Community 23 - "Community 23"
-Cohesion: 0.05
-Nodes (35): count_deformers(), count_images(), count_nodes(), count_textures(), ExportAscii(), ExportBinary(), ExportSceneFBX(), ExportSceneFBXA() (+27 more)
+Cohesion: 0.13
+Nodes (65): ColladaParser(), CopyVertex(), ExtractDataObjectFromChannel(), GetAttribute(), GetTextContent(), GetTypeForSemantic(), PostProcessControllers(), PostProcessRootAnimations() (+57 more)
 
 ### Community 24 - "Community 24"
-Cohesion: 0.04
-Nodes (63): Abs(), clip_matrix(), compose_matrix(), concatenate_matrices(), decompose_matrix(), euler_matrix(), identity_matrix(), inverse_matrix() (+55 more)
+Cohesion: 0.05
+Nodes (45): CanRead(), CanRead(), CanRead(), CanRead(), CanRead(), CanRead(), CanRead(), CanRead() (+37 more)
 
 ### Community 25 - "Community 25"
-Cohesion: 0.07
-Nodes (64): BuildFilter(), gue(), ImportAbsolutePath(), PickAndImportAsset(), PickFolder(), PickMultipleFiles(), Widen(), BuildORM() (+56 more)
+Cohesion: 0.05
+Nodes (66): nk_draw_list_add_text(), nk_input_char(), nk_input_glyph(), nk_input_unicode(), nk_is_word_boundary(), nk_str_append_str_char(), nk_str_append_str_runes(), nk_str_append_str_utf8() (+58 more)
 
 ### Community 26 - "Community 26"
-Cohesion: 0.06
-Nodes (49): Assimp(), CopyAndAdvance(), GetF4(), GetPtr(), GetU1(), GetU2(), GetU4(), SetCurrentPos() (+41 more)
+Cohesion: 0.05
+Nodes (43): ApplyTonemapping(), Cleanup(), CreateFramebuffers(), CreateVAO(), DrawPbrSphereGrid(), DrawUI(), InitGL(), InitImGui() (+35 more)
 
 ### Community 27 - "Community 27"
 Cohesion: 0.06
-Nodes (64): nk_do_edit(), nk_input_char(), nk_input_glyph(), nk_input_unicode(), nk_is_word_boundary(), nk_str_append_str_char(), nk_str_append_str_runes(), nk_str_append_str_utf8() (+56 more)
+Nodes (48): CopyAndAdvance(), GetF4(), GetPtr(), GetU1(), GetU2(), GetU4(), SetCurrentPos(), SetPtr() (+40 more)
 
 ### Community 28 - "Community 28"
 Cohesion: 0.06
-Nodes (61): AddBezierCurve(), AddCustomRectFontGlyph(), AddCustomRectRegular(), AddFont(), AddFontDefault(), AddFontFromFileTTF(), AddFontFromMemoryCompressedBase85TTF(), AddFontFromMemoryCompressedTTF() (+53 more)
+Nodes (52): def_free_func(), mz_adler32(), mz_compress(), mz_compress2(), mz_compressBound(), mz_crc32(), mz_deflate(), mz_deflateBound() (+44 more)
 
 ### Community 29 - "Community 29"
-Cohesion: 0.06
-Nodes (62): ArrayAsVector(), ColoredPrintf(), current_test_result(), disabled_test_count(), elapsed_time(), Failed(), failed_test_count(), FormatCountableNoun() (+54 more)
+Cohesion: 0.1
+Nodes (11): now(), buildFramedPacket(), isClosedErr(), musicForArea(), resultMessage(), ClientConn, NewReader(), ProcessXP() (+3 more)
 
 ### Community 30 - "Community 30"
+Cohesion: 0.04
+Nodes (24): _glfwInputMonitorWindow(), acquireMonitor(), applySizeLimits(), createNativeWindow(), fitToMonitor(), _glfwPlatformCreateWindow(), _glfwPlatformDestroyWindow(), _glfwPlatformFocusWindow() (+16 more)
+
+### Community 31 - "Community 31"
 Cohesion: 0.05
 Nodes (37): GTestFilterUnitTest, InvokeWithModifiedEnv(), Sets the env variable to 'value'; unsets it when 'value' is None., Runs the test program and returns its output., Runs the test program and returns its exit code and a list of tests run., Runs the given function and arguments in a modified environment., Runs a test program shard and returns exit code and a list of tests run., Tests the env variable or the command line flag to filter tests. (+29 more)
 
-### Community 31 - "Community 31"
-Cohesion: 0.1
-Nodes (12): now(), buildFramedPacket(), isClosedErr(), musicForArea(), resultMessage(), ClientConn, NewReader(), ProcessAttack() (+4 more)
-
-### Community 32 - "Community 32"
-Cohesion: 0.06
-Nodes (49): def_free_func(), mz_adler32(), mz_compress(), mz_compress2(), mz_compressBound(), mz_deflate(), mz_deflateBound(), mz_deflateEnd() (+41 more)
-
 ### Community 33 - "Community 33"
-Cohesion: 0.04
-Nodes (21): _glfwInputMonitorWindow(), acquireMonitor(), applySizeLimits(), createNativeWindow(), fitToMonitor(), _glfwPlatformCreateWindow(), _glfwPlatformDestroyWindow(), _glfwPlatformFocusWindow() (+13 more)
+Cohesion: 0.08
+Nodes (59): AddBoundsToLML(), AddPolygon(), AddPolygons(), AppendPolygon(), Area(), BuildResult(), BuildResultEx(), CheckHoleLinkages1() (+51 more)
 
 ### Community 34 - "Community 34"
-Cohesion: 0.06
-Nodes (41): ApplyTonemapping(), CreateFramebuffers(), CreateVAO(), DrawPbrSphereGrid(), DrawUI(), InitGL(), InitImGui(), InitScene() (+33 more)
+Cohesion: 0.04
+Nodes (58): clip_matrix(), compose_matrix(), concatenate_matrices(), euler_from_matrix(), euler_from_quaternion(), euler_matrix(), identity_matrix(), inverse_matrix() (+50 more)
 
 ### Community 35 - "Community 35"
-Cohesion: 0.07
-Nodes (59): BeginChildEx(), BringWindowToDisplayFront(), BringWindowToFocusFront(), ClearActiveID(), CloseCurrentPopup(), ClosePopupsOverWindow(), ClosePopupToLevel(), ErrorCheckNewFrameSanityChecks() (+51 more)
+Cohesion: 0.05
+Nodes (45): Realloc(), _glfwAllocGammaArrays(), _glfwAllocMonitor(), _glfwChooseVideoMode(), _glfwFreeGammaArrays(), _glfwFreeMonitor(), glfwGetGammaRamp(), glfwGetMonitorContentScale() (+37 more)
 
 ### Community 36 - "Community 36"
+Cohesion: 0.07
+Nodes (50): AMFImporter, Clear(), Find_ConvertedMaterial(), Find_ConvertedNode(), Find_NodeElement(), ParseNode_Coordinates(), ParseNode_Mesh(), ParseNode_Triangle() (+42 more)
+
+### Community 37 - "Community 37"
 Cohesion: 0.06
 Nodes (34): Begin(), Empty(), End(), EndArray(), EndObject(), Erase(), EraseMember(), FindMember() (+26 more)
 
-### Community 37 - "Community 37"
-Cohesion: 0.08
-Nodes (57): nk_buffer_align(), nk_buffer_alloc(), nk_buffer_mark(), nk_buffer_memory(), nk_buffer_push(), nk_buffer_realloc(), nk_buffer_reset(), nk_buffer_total() (+49 more)
-
 ### Community 38 - "Community 38"
-Cohesion: 0.05
-Nodes (32): CanRead(), CanRead(), CanRead(), CanRead(), CanRead(), CanRead(), CheckMagicToken(), GetExtension() (+24 more)
+Cohesion: 0.07
+Nodes (59): nk_buffer_align(), nk_buffer_alloc(), nk_buffer_mark(), nk_buffer_memory(), nk_buffer_push(), nk_buffer_realloc(), nk_buffer_reset(), nk_buffer_total() (+51 more)
 
 ### Community 39 - "Community 39"
-Cohesion: 0.1
-Nodes (50): ParseNode_Geometry2D_Arc2D(), ParseNode_Geometry2D_ArcClose2D(), ParseNode_Geometry2D_Circle2D(), ParseNode_Geometry2D_Disk2D(), ParseNode_Geometry2D_Polyline2D(), ParseNode_Geometry2D_Polypoint2D(), ParseNode_Geometry2D_Rectangle2D(), ParseNode_Geometry2D_TriangleSet2D() (+42 more)
+Cohesion: 0.06
+Nodes (58): BeginChild(), BeginChildFrame(), BeginDragDropTargetCustom(), CalcResizePosSizeFromAnyCorner(), ClearActiveID(), ClearIniSettings(), ColorConvertRGBtoHSV(), ColorConvertU32ToFloat4() (+50 more)
 
 ### Community 40 - "Community 40"
-Cohesion: 0.05
-Nodes (49): BulletText(), BulletTextV(), DeleteChars(), EndMainMenuBar(), EndMenu(), EndMenuBar(), GetTreeNodeToLabelSpacing(), Image() (+41 more)
+Cohesion: 0.07
+Nodes (57): BeginChildEx(), BringWindowToDisplayFront(), BringWindowToFocusFront(), CloseCurrentPopup(), ClosePopupsOverWindow(), ClosePopupToLevel(), ErrorCheckNewFrameSanityChecks(), FindHoveredWindow() (+49 more)
 
 ### Community 41 - "Community 41"
-Cohesion: 0.07
-Nodes (42): AddChild(), AddVertexMapping(), Animation(), AssociatedVertexData(), BoneAssignmentsForVertex(), BoneById(), BoneByName(), CalculateWorldMatrixAndDefaultPose() (+34 more)
+Cohesion: 0.06
+Nodes (36): LoadThreadProc(), aiApplyCustomizedPostProcessing(), aiApplyPostProcessing(), aiAttachLogStream(), aiDetachAllLogStreams(), aiEnableVerboseLogging(), aiGetErrorString(), aiGetMemoryRequirements() (+28 more)
 
 ### Community 42 - "Community 42"
 Cohesion: 0.06
-Nodes (41): renderer(), CompileAllShaders(), createFramebuffers_(), createVAO_(), destroyFramebuffers_(), EndStaticScene(), ~Engine(), Init() (+33 more)
+Nodes (43): renderer(), CompileAllShaders(), ComputeHdrLumaStats(), ComputeIblClamp(), createFramebuffers_(), createVAO_(), destroyFramebuffers_(), EndStaticScene() (+35 more)
 
 ### Community 43 - "Community 43"
-Cohesion: 0.05
-Nodes (21): Extract(), get(), Implement::Implement(), Implement::MapArchive(), Implement::OpenFile(), Implement::SimplifyFilename(), IOSystem2Unzip, isOpen() (+13 more)
+Cohesion: 0.1
+Nodes (50): ParseNode_Geometry2D_Arc2D(), ParseNode_Geometry2D_ArcClose2D(), ParseNode_Geometry2D_Circle2D(), ParseNode_Geometry2D_Disk2D(), ParseNode_Geometry2D_Polyline2D(), ParseNode_Geometry2D_Polypoint2D(), ParseNode_Geometry2D_Rectangle2D(), ParseNode_Geometry2D_TriangleSet2D() (+42 more)
 
 ### Community 44 - "Community 44"
-Cohesion: 0.08
-Nodes (51): BeginChild(), BeginChildFrame(), BeginColumns(), BeginPopup(), BeginPopupContextItem(), BeginPopupContextVoid(), BeginPopupContextWindow(), BeginPopupEx() (+43 more)
+Cohesion: 0.07
+Nodes (46): AssertHeld(), AtomMatchesChar(), AutoHandle(), BoolFromGTestEnv(), CapturedStream, CaptureStderr(), CaptureStdout(), CaptureStream() (+38 more)
 
 ### Community 45 - "Community 45"
 Cohesion: 0.07
-Nodes (43): AddBezierCubic(), AddBezierQuadratic(), AddConvexPolyFilled(), AddGlyph(), AddPolyline(), AddRectFilled(), AddRectFilledMultiColor(), AddRemapChar() (+35 more)
+Nodes (42): AddChild(), AddVertexMapping(), Animation(), AssociatedVertexData(), BoneAssignmentsForVertex(), BoneById(), BoneByName(), CalculateWorldMatrixAndDefaultPose() (+34 more)
 
 ### Community 46 - "Community 46"
-Cohesion: 0.08
-Nodes (41): copyCameras(), copyColor4DArray(), copyLights(), copyMaterials(), copyMeshes(), copyVectorArray(), createNodeTree(), fillColor4() (+33 more)
+Cohesion: 0.06
+Nodes (43): BaseException, AssimpLib, call_init(), _convert_assimp_string(), decompose_matrix(), export(), export_blob(), _finalize_mesh() (+35 more)
 
 ### Community 47 - "Community 47"
-Cohesion: 0.08
-Nodes (40): AssertHeld(), AtomMatchesChar(), AutoHandle(), BoolFromGTestEnv(), CapturedStream, CaptureStderr(), CaptureStdout(), CaptureStream() (+32 more)
+Cohesion: 0.07
+Nodes (47): nk_malloc(), thrd_exit(), _thrd_wrapper_function(), unzRepair(), bythirds(), load(), main(), AddChunk() (+39 more)
 
 ### Community 48 - "Community 48"
-Cohesion: 0.11
-Nodes (45): DeleteAsset(), DeleteAssetData(), AddTextureMem(), ChooseBGColor(), ClearBG(), ClearHistory(), DisplayColorDialog(), DisplayMemoryConsumption() (+37 more)
+Cohesion: 0.08
+Nodes (52): resample_row_1(), stbi__clamp(), stbi__convert_16_to_8(), stbi__convert_8_to_16(), stbi_convert_iphone_png_to_rgb(), stbi__float_postprocess(), stbi__fopen(), stbi__hdr_test() (+44 more)
 
 ### Community 49 - "Community 49"
 Cohesion: 0.05
-Nodes (29): main(), ApplyHorizontalMove(), Update(), UpdateVertical(), nk_glfw3_mouse_button_callback(), nk_glfw3_new_frame(), nk_input_button(), nk_input_end() (+21 more)
+Nodes (21): Extract(), get(), Implement::Implement(), Implement::MapArchive(), Implement::OpenFile(), Implement::SimplifyFilename(), IOSystem2Unzip, isOpen() (+13 more)
 
 ### Community 50 - "Community 50"
-Cohesion: 0.08
-Nodes (42): animate(), draw(), gear(), init(), key(), reshape(), glfwCreateCursor(), glfwGetKeyName() (+34 more)
+Cohesion: 0.09
+Nodes (50): ConvertAnimations(), ConvertAnimationStack(), ConvertCamera(), ConvertCameras(), ConvertGlobalSettings(), ConvertLight(), ConvertLights(), ConvertMaterial() (+42 more)
 
 ### Community 51 - "Community 51"
-Cohesion: 0.08
-Nodes (34): clear(), createDataArrayList(), createDDLNode(), createPropertyWithData(), dumpId(), isIntegerType(), isUnsignedIntegerType(), logInvalidTokenError() (+26 more)
+Cohesion: 0.07
+Nodes (42): Current(), copyCameras(), copyColor4DArray(), copyLights(), copyMaterials(), copyMeshes(), copyVectorArray(), createNodeTree() (+34 more)
 
 ### Community 52 - "Community 52"
-Cohesion: 0.09
-Nodes (24): Area, broadcastNPCPosition(), endChase(), leashNPC(), moveNPCToward(), pickWanderTarget(), postChaseMode(), startWander() (+16 more)
+Cohesion: 0.07
+Nodes (49): load_jpeg_image(), stbi__addsizes_valid(), stbi__bit_reverse(), stbi__bitcount(), stbi__bitreverse16(), stbi__blinn_8x8(), stbi__cleanup_jpeg(), stbi__compute_y() (+41 more)
 
 ### Community 53 - "Community 53"
-Cohesion: 0.1
-Nodes (45): AddBoundsToLML(), AddPolygon(), AppendPolygon(), Area(), CheckHoleLinkages1(), CheckHoleLinkages2(), ClearHorzJoins(), ClearJoins() (+37 more)
+Cohesion: 0.09
+Nodes (25): Area, broadcastNPCPosition(), endChase(), leashNPC(), moveNPCToward(), pickWanderTarget(), postChaseMode(), startWander() (+17 more)
 
 ### Community 54 - "Community 54"
-Cohesion: 0.06
-Nodes (41): _glfw_fminf(), _glfwAllocGammaArrays(), _glfwAllocMonitor(), _glfwChooseVideoMode(), _glfwFreeGammaArrays(), _glfwFreeMonitor(), glfwGetGammaRamp(), glfwGetMonitorContentScale() (+33 more)
+Cohesion: 0.11
+Nodes (45): DeleteAsset(), DeleteAssetData(), AddTextureMem(), ChooseBGColor(), ClearBG(), ClearHistory(), DisplayColorDialog(), DisplayMemoryConsumption() (+37 more)
 
 ### Community 55 - "Community 55"
 Cohesion: 0.07
-Nodes (39): AlignTextToFramePadding(), BeginMainMenuBar(), BeginMenuBar(), BeginViewportSideBar(), Bullet(), CalcExtraSpace(), DragFloat2(), DragFloat3() (+31 more)
+Nodes (48): ApplyWindowSettings(), begin(), CalcSizeAfterConstraint(), CalcSizeAutoFit(), CalcSizeContents(), CalcTextSize(), CalcWindowAutoFitSize(), CalcWindowContentSizes() (+40 more)
 
 ### Community 56 - "Community 56"
-Cohesion: 0.09
-Nodes (44): resample_row_1(), stbi__convert_16_to_8(), stbi__convert_8_to_16(), stbi__do_zlib(), stbi__float_postprocess(), stbi__idct_simd(), stbi_info_from_callbacks(), stbi_info_from_memory() (+36 more)
+Cohesion: 0.08
+Nodes (34): clear(), createDataArrayList(), createDDLNode(), createPropertyWithData(), dumpId(), isIntegerType(), isUnsignedIntegerType(), logInvalidTokenError() (+26 more)
 
 ### Community 57 - "Community 57"
-Cohesion: 0.14
-Nodes (40): AtEnd(), ImportMesh(), ImportSkeleton(), NormalizeBoneWeights(), OpenReader(), ReadAnimation(), ReadAnimationKeyFrames(), ReadAnimations() (+32 more)
+Cohesion: 0.09
+Nodes (44): AddMeshToDisplayList(), AddNodeToDisplayList(), ClearDisplayList(), DrawHUD(), EnableAnimTools(), ExpandTree(), FillAnimList(), FillDefaultStatistics() (+36 more)
 
 ### Community 58 - "Community 58"
+Cohesion: 0.06
+Nodes (48): nk_combo(), nk_combo_begin_label(), nk_combo_callback(), nk_combo_end(), nk_combo_item_label(), nk_combobox(), nk_combobox_callback(), nk_contextual_begin() (+40 more)
+
+### Community 59 - "Community 59"
+Cohesion: 0.08
+Nodes (41): animate(), draw(), gear(), init(), key(), reshape(), glfwCreateCursor(), glfwGetKeyName() (+33 more)
+
+### Community 60 - "Community 60"
 Cohesion: 0.08
 Nodes (34): Double(), Int(), Int64(), Null(), RawValue(), StartArray(), StartObject(), Uint() (+26 more)
 
-### Community 59 - "Community 59"
-Cohesion: 0.07
-Nodes (30): mat4x4_add(), mat4x4_arcball(), mat4x4_dup(), mat4x4_from_vec3_mul_outer(), mat4x4_identity(), mat4x4_look_at(), mat4x4_mul(), mat4x4_orthonormalize() (+22 more)
-
-### Community 61 - "Community 61"
+### Community 62 - "Community 62"
 Cohesion: 0.14
 Nodes (41): ColladaExporter(), findBone(), findBoneNode(), findSkeletonRootNode(), isalnum_C(), PopTag(), PushTag(), ReadMaterialSurface() (+33 more)
 
-### Community 62 - "Community 62"
-Cohesion: 0.07
-Nodes (46): nk_font_atlas_bake(), nk_font_bake(), nk_font_bake_convert(), nk_font_bake_custom_data(), nk_font_bake_pack(), nk_font_baker(), nk_font_baker_memory(), nk_font_default_glyph_ranges() (+38 more)
-
 ### Community 63 - "Community 63"
-Cohesion: 0.11
-Nodes (44): DeleteSelected(), Draw(), DrawFloatingToolbar(), DrawInspector(), DrawPanelColBox(), DrawPanelColSphere(), DrawPanelEmitters(), DrawPanelEnviro() (+36 more)
+Cohesion: 0.06
+Nodes (22): main(), GetType(), restructure(), Structify(), Agent, aNode, aPQ, NavMesh (+14 more)
 
 ### Community 64 - "Community 64"
-Cohesion: 0.19
-Nodes (43): ColladaParser(), GetAttribute(), GetTypeForSemantic(), PostProcessControllers(), PostProcessRootAnimations(), ReadAccessor(), ReadAnimation(), ReadAnimationClipLibrary() (+35 more)
+Cohesion: 0.07
+Nodes (46): nk_font_atlas_bake(), nk_font_bake(), nk_font_bake_convert(), nk_font_bake_custom_data(), nk_font_bake_pack(), nk_font_baker(), nk_font_baker_memory(), nk_font_find_glyph() (+38 more)
 
 ### Community 65 - "Community 65"
 Cohesion: 0.05
-Nodes (45): nk_chart_begin(), nk_chart_end(), nk_chart_push(), nk_chart_push_column(), nk_chart_push_line(), nk_chart_push_slot(), nk_color_pick(), nk_color_picker() (+37 more)
+Nodes (26): _glfwInputChar(), _glfwInputCursorEnter(), _glfwInputCursorPos(), _glfwInputMouseClick(), _glfwInputScroll(), _glfwPlatformInit(), _glfwPlatformTerminate(), _glfwTerminateOSMesa() (+18 more)
 
 ### Community 67 - "Community 67"
+Cohesion: 0.08
+Nodes (36): equal(), my_stbtt_initfont(), my_stbtt_print(), stbrp_init_target(), stbtt__add_point(), stbtt_BakeFontBitmap(), stbtt__compute_crossings_x(), stbtt__cuberoot() (+28 more)
+
+### Community 68 - "Community 68"
 Cohesion: 0.11
 Nodes (37): Allocate(), Clear(), DynamicBuffer(), Free(), FreeOldest(), maybeMerge(), stateChanged(), close_gl() (+29 more)
 
-### Community 68 - "Community 68"
-Cohesion: 0.09
-Nodes (29): ConvertMaterial(), ConvertObjectSection(), GetNextLine(), InternReadFile(), LoadObjectSection(), TextFileToBuffer(), InternReadFile(), BuildGraph() (+21 more)
-
 ### Community 69 - "Community 69"
-Cohesion: 0.08
-Nodes (29): main(), GetType(), restructure(), Structify(), aNode, aPQ, NavMesh, centroid() (+21 more)
+Cohesion: 0.1
+Nodes (34): D3MFOpcPackage(), OpcPackageRelationshipReader, ReadPackageRootRelationship(), CanRead(), fitsIntoUI16(), InternReadFile(), Read(), ReadBinaryAnim() (+26 more)
 
 ### Community 70 - "Community 70"
-Cohesion: 0.07
-Nodes (26): cnd_init(), cnd_signal(), cnd_timedwait(), _cnd_timedwait_win32(), cnd_wait(), mtx_init(), mtx_lock(), mtx_unlock() (+18 more)
+Cohesion: 0.06
+Nodes (17): a(), a5(), az(), b(), bF(), bj(), bv(), C() (+9 more)
 
 ### Community 71 - "Community 71"
 Cohesion: 0.09
-Nodes (40): nk_malloc(), thrd_exit(), _thrd_wrapper_function(), unzRepair(), Malloc(), dbgFunc(), demo_check_layers(), demo_cleanup() (+32 more)
+Nodes (41): main(), print_bits(), print_value(), test_F2x11_1x10(), test_F3x9_E1x5(), test_Half1x16(), test_Half4x16(), test_I3x10_1x2() (+33 more)
 
 ### Community 72 - "Community 72"
-Cohesion: 0.09
-Nodes (41): main(), print_bits(), print_value(), test_F2x11_1x10(), test_F3x9_E1x5(), test_Half1x16(), test_Half4x16(), test_I3x10_1x2() (+33 more)
+Cohesion: 0.07
+Nodes (26): cnd_init(), cnd_signal(), cnd_timedwait(), _cnd_timedwait_win32(), cnd_wait(), mtx_init(), mtx_lock(), mtx_unlock() (+18 more)
 
 ### Community 73 - "Community 73"
 Cohesion: 0.09
 Nodes (15): DefaultCamera, _get_parent_chain(), get_rgb_from_colorid(), get_world_transform(), main(), prepare_gl_buffers(), PyAssimp3DViewer, Orbiting the camera is implemented the following way:          - the rotation is (+7 more)
 
 ### Community 74 - "Community 74"
+Cohesion: 0.07
+Nodes (26): mat4x4_add(), mat4x4_arcball(), mat4x4_dup(), mat4x4_from_vec3_mul_outer(), mat4x4_look_at(), mat4x4_orthonormalize(), mat4x4_perspective(), mat4x4_rotate() (+18 more)
+
+### Community 75 - "Community 75"
 Cohesion: 0.06
 Nodes (28): AdHocTest(), ATypedDeathTest, ATypeParamDeathTest, BarEnvironment, DeathTestAndMultiThreadsTest, ExpectFailureTest, ExpectFailureWithThreadsTest, FailingParamTest (+20 more)
 
-### Community 75 - "Community 75"
+### Community 76 - "Community 76"
 Cohesion: 0.09
 Nodes (14): DefaultCamera, _get_parent_chain(), get_rgb_from_colorid(), get_world_transform(), main(), prepare_gl_buffers(), PyAssimp3DViewer, # TODO: alpha blending does not work... (+6 more)
-
-### Community 76 - "Community 76"
-Cohesion: 0.07
-Nodes (23): LoadThreadProc(), aiApplyCustomizedPostProcessing(), aiApplyPostProcessing(), aiAttachLogStream(), aiDetachAllLogStreams(), aiEnableVerboseLogging(), aiGetErrorString(), aiGetMemoryRequirements() (+15 more)
 
 ### Community 77 - "Community 77"
 Cohesion: 0.05
 Nodes (42): GLFWContentView, -acceptsFirstMouse, -acceptsFirstResponder, -attributedSubstringForProposedRangeactualRange, -canBecomeKeyView, -characterIndexForPoint, -cursorUpdate, -dealloc (+34 more)
 
 ### Community 78 - "Community 78"
+Cohesion: 0.12
+Nodes (34): Assimp(), fast_atof(), BuildNodes(), chunk_guard, ConvertTexture(), InternReadFile(), ReadAsciiFile(), ReadBasicNodeInfo_Ascii() (+26 more)
+
+### Community 79 - "Community 79"
 Cohesion: 0.22
 Nodes (38): CheckForClosingBrace(), CheckForSemicolon(), CheckForSeparator(), FilterHierarchy(), FindNextNoneWhiteSpace(), GetNextToken(), GetNextTokenAsString(), ParseDataObjectAnimation() (+30 more)
 
-### Community 79 - "Community 79"
+### Community 80 - "Community 80"
 Cohesion: 0.08
 Nodes (32): FlushInfoLog(), Abort(), AddArguments(), Arguments, AssumeRole(), Create(), DeathTest(), DeathTestAbort() (+24 more)
 
-### Community 80 - "Community 80"
+### Community 81 - "Community 81"
 Cohesion: 0.1
 Nodes (24): call(), callStaticObject(), callv(), copyBuffer(), copyBufferArray(), createInstance(), getField(), getStaticField() (+16 more)
 
-### Community 81 - "Community 81"
-Cohesion: 0.09
-Nodes (39): stbi__at_eof(), stbi__clamp(), stbi_convert_iphone_png_to_rgb(), stbi__copyval(), stbi__cpuid3(), stbi_failure_reason(), stbi__fopen(), stbi__hdr_gettoken() (+31 more)
-
 ### Community 82 - "Community 82"
+Cohesion: 0.06
+Nodes (41): nk_chart_begin(), nk_chart_end(), nk_chart_push(), nk_chart_push_column(), nk_chart_push_line(), nk_chart_push_slot(), nk_color_pick(), nk_color_picker() (+33 more)
+
+### Community 83 - "Community 83"
+Cohesion: 0.09
+Nodes (32): AlwaysTrue(), ClassUniqueToAlwaysTrue, InDeathTestChild(), IsTrue(), AssertDebugDeathHelper(), ChangeToRootDir(), DeathTestSubroutine(), DieIf() (+24 more)
+
+### Community 84 - "Community 84"
 Cohesion: 0.06
 Nodes (24): CommentTest, CustomFunctionNamingTest, CustomFunctorNamingTest, CustomIntegerNamingTest, CustomLambdaNamingTest, CustomStructNamingTest, DogAdder, ExternalGeneratorTest (+16 more)
 
-### Community 83 - "Community 83"
+### Community 85 - "Community 85"
+Cohesion: 0.09
+Nodes (29): BeautifyCode(), CodeNode, ElseNode, ExpNode, ForNode, IfNode, IsHeaderGuardIncludeOrOneLineIWYUPragma(), IsInPreprocessorDirective() (+21 more)
+
+### Community 86 - "Community 86"
 Cohesion: 0.1
 Nodes (31): unz64local_CheckCurrentFileCoherencyHeader(), unz64local_DosDateToTmuDate(), unz64local_getByte(), unz64local_GetCurrentFileInfoInternal(), unz64local_getLong(), unz64local_getLong64(), unz64local_getShort(), unz64local_SearchCentralDir() (+23 more)
 
-### Community 84 - "Community 84"
-Cohesion: 0.07
-Nodes (40): nk_color_picker_behavior(), nk_command_buffer_reset(), nk_contextual_begin(), nk_do_progress(), nk_do_scrollbarh(), nk_do_scrollbarv(), nk_drag_behavior(), nk_finish() (+32 more)
-
-### Community 86 - "Community 86"
-Cohesion: 0.07
-Nodes (13): a(), a5(), b(), bF(), bj(), bv(), C(), G() (+5 more)
-
 ### Community 87 - "Community 87"
+Cohesion: 0.09
+Nodes (38): AddEdgeToSEL(), AddHorzJoin(), AddJoin(), AddLocalMaxPoly(), AddLocalMinPoly(), AddOutPt(), ClipperBase, clipperException (+30 more)
+
+### Community 89 - "Community 89"
 Cohesion: 0.1
 Nodes (30): fill_fopen64_filefunc(), add_data_in_datablock(), allocate_new_datablock(), free_datablock(), free_linkedlist(), init_linkedlist(), LoadCentralDirectoryRecord(), Write_EndOfCentralDirectoryRecord() (+22 more)
 
-### Community 88 - "Community 88"
-Cohesion: 0.09
-Nodes (30): BaseException, call_init(), _convert_assimp_string(), decompose_matrix(), export(), export_blob(), _finalize_mesh(), _finalize_metadata() (+22 more)
-
-### Community 89 - "Community 89"
-Cohesion: 0.07
-Nodes (39): nk_buffer_clear(), nk_buffer_init(), nk_buffer_init_fixed(), nk_clear(), nk_edit_buffer(), nk_edit_string(), nk_edit_string_zero_terminated(), nk_free_page_element() (+31 more)
-
 ### Community 90 - "Community 90"
+Cohesion: 0.07
+Nodes (39): nk_buffer_clear(), nk_buffer_init(), nk_buffer_init_fixed(), nk_clear(), nk_edit_string(), nk_edit_string_zero_terminated(), nk_free(), nk_free_page_element() (+31 more)
+
+### Community 91 - "Community 91"
 Cohesion: 0.08
 Nodes (27): _glfwChooseFBConfig(), choosePixelFormat(), extensionSupportedWGL(), findPixelFormatAttribValue(), _glfwCreateContextWGL(), glfwGetWGLContext(), _glfwInitWGL(), _glfwTerminateWGL() (+19 more)
 
-### Community 91 - "Community 91"
-Cohesion: 0.09
-Nodes (38): FocusableItemRegister(), FocusableItemUnregister(), TempInputIsActive(), IsMouseDragPastThreshold(), DataTypeApplyOp(), DataTypeApplyOpFromText(), DataTypeClamp(), DataTypeCompare() (+30 more)
-
 ### Community 92 - "Community 92"
-Cohesion: 0.19
-Nodes (37): LogInfo(), LogWarning(), Parse(), ParseLV1MaterialListBlock(), ParseLV1ObjectBlock(), ParseLV1SceneBlock(), ParseLV1SoftSkinBlock(), ParseLV2AnimationBlock() (+29 more)
+Cohesion: 0.08
+Nodes (31): chooseGLXFBConfig(), createLegacyContextGLX(), extensionSupportedGLX(), getGLXFBConfigAttrib(), getProcAddressGLX(), _glfwChooseVisualGLX(), _glfwCreateContextGLX(), glfwGetGLXContext() (+23 more)
 
 ### Community 93 - "Community 93"
 Cohesion: 0.11
 Nodes (33): AddAnimationBoneTrafoKey_3DGS_MDL7(), AddBonesToNodeGraph_3DGS_MDL7(), BuildOutputAnims_3DGS_MDL7(), CalcAbsBoneMatrices_3DGS_MDL7(), CalculateUVCoordinates_MDL5(), CopyMaterials_3DGS_MDL7(), FlipQuakeHeader(), GenerateOutputMeshes_3DGS_MDL7() (+25 more)
 
 ### Community 94 - "Community 94"
-Cohesion: 0.09
-Nodes (36): Compare(), internal(), FormatForComparisonFailureMessage(), AssertionFailure(), AssertionResult(), AssertionSuccess(), CaseInsensitiveCStringEquals(), CmpHelperEQ() (+28 more)
+Cohesion: 0.08
+Nodes (21): ConvertMaterial(), ConvertObjectSection(), GetNextLine(), InternReadFile(), LoadObjectSection(), TextFileToBuffer(), InternReadFile(), CanRead() (+13 more)
 
 ### Community 95 - "Community 95"
-Cohesion: 0.11
-Nodes (33): stbi__end_write_file(), stbi__start_write_callbacks(), stbi__start_write_file(), stbi_write_bmp(), stbi_write_bmp_core(), stbi_write_bmp_to_func(), stbi_write_hdr(), stbi_write_hdr_core() (+25 more)
+Cohesion: 0.08
+Nodes (36): CaseInsensitiveCStringEquals(), ColoredPrintf(), CStringEquals(), EndsWithCaseInsensitive(), FilterTests(), FormatCountableNoun(), FormatTestCaseCount(), FormatTestCount() (+28 more)
 
 ### Community 96 - "Community 96"
-Cohesion: 0.08
-Nodes (37): ApplyWindowSettings(), begin(), CalcListClipping(), CalcSizeAfterConstraint(), CalcSizeAutoFit(), CalcSizeContents(), CalcWindowAutoFitSize(), CalcWindowContentSizes() (+29 more)
+Cohesion: 0.1
+Nodes (28): FindNode(), InverseNodeSearch(), ParseCameraChunk(), ParseChunk(), ParseColorChunk(), ParseEditorChunk(), ParseFaceChunk(), ParseHierarchyChunk() (+20 more)
 
-### Community 97 - "Community 97"
-Cohesion: 0.14
-Nodes (32): BuildNodes(), chunk_guard, ConvertTexture(), InternReadFile(), ReadAsciiFile(), ReadBasicNodeInfo_Ascii(), ReadBasicNodeInfo_Binary(), ReadBinaryFile() (+24 more)
+### Community 98 - "Community 98"
+Cohesion: 0.2
+Nodes (36): LogInfo(), LogWarning(), Parse(), ParseLV1MaterialListBlock(), ParseLV1ObjectBlock(), ParseLV1SceneBlock(), ParseLV1SoftSkinBlock(), ParseLV2AnimationBlock() (+28 more)
 
 ### Community 99 - "Community 99"
-Cohesion: 0.09
-Nodes (25): Assimp_CompareDump(), CheckHeader(), cmp(), cmp<aiVectorKey >(), cmp<double>(), cmp<float>(), compare_fails_exception, CompareOnTheFly() (+17 more)
-
-### Community 100 - "Community 100"
-Cohesion: 0.1
-Nodes (29): InDeathTestChild(), AssertDebugDeathHelper(), ChangeToRootDir(), DeathTestSubroutine(), DieIf(), DieIfLessThan(), DieInDebugElse12(), DieInside() (+21 more)
-
-### Community 101 - "Community 101"
 Cohesion: 0.1
 Nodes (29): Bool(), Consume(), Default(), Double(), EndArray(), EndObject(), Int(), Int64() (+21 more)
 
-### Community 102 - "Community 102"
-Cohesion: 0.07
-Nodes (23): _glfwInputChar(), _glfwInputCursorEnter(), _glfwInputCursorPos(), _glfwInputKey(), _glfwInputMouseClick(), _glfwPlatformHideWindow(), _glfwInputWindowFocus(), composeSymbol() (+15 more)
-
-### Community 103 - "Community 103"
+### Community 100 - "Community 100"
 Cohesion: 0.12
 Nodes (30): bitCount_bitfield(), bitCount_if(), bitCount_vec(), bitfieldReverseLoop(), bitfieldReverseOps(), findLSB_095(), findLSB_branchfree(), findLSB_intrinsic() (+22 more)
 
-### Community 104 - "Community 104"
+### Community 101 - "Community 101"
 Cohesion: 0.1
-Nodes (36): AddEdgeToSEL(), AddHorzJoin(), AddJoin(), AddLocalMaxPoly(), AddLocalMinPoly(), AddOutPt(), DeleteFromAEL(), DoBothEdges() (+28 more)
+Nodes (36): FocusableItemRegister(), FocusableItemUnregister(), ImAtof(), TempInputIsActive(), LogSetNextTextDecoration(), ButtonEx(), DataTypeApplyOpFromText(), DataTypeClamp() (+28 more)
+
+### Community 102 - "Community 102"
+Cohesion: 0.07
+Nodes (22): SimpleExtensionCheck(), CanRead(), CreateDataFromImport(), CreateMaterial(), CreateMesh(), InternReadFile(), addTextureMappingModeProperty(), appendChildToParentNode() (+14 more)
+
+### Community 103 - "Community 103"
+Cohesion: 0.09
+Nodes (25): AppendToken(), AssignIfExist(), BeginValue(), CreateSchema(), CreateSchemaRecursive(), CreateSchemaValidator(), DestroryHasher(), DestroySchemaValidator() (+17 more)
+
+### Community 104 - "Community 104"
+Cohesion: 0.07
+Nodes (29): dir(), BuildAppearance(), SetAreaConfigMap(), SetAreaMusicMap(), Config, MovementValidationConfig, Server, generateSelfSignedCert() (+21 more)
 
 ### Community 105 - "Community 105"
-Cohesion: 0.12
-Nodes (33): AddMeshToDisplayList(), AddNodeToDisplayList(), ClearDisplayList(), DrawHUD(), EnableAnimTools(), ExpandTree(), FillAnimList(), FillDefaultStatistics() (+25 more)
+Cohesion: 0.09
+Nodes (24): Assimp_CompareDump(), CheckHeader(), cmp(), cmp<double>(), cmp<float>(), compare_fails_exception, CompareOnTheFly(), CompareOnTheFlyAnimation() (+16 more)
 
 ### Community 106 - "Community 106"
-Cohesion: 0.07
-Nodes (36): nk_combo(), nk_combo_begin_label(), nk_combo_callback(), nk_combo_close(), nk_combo_end(), nk_combo_item_image_label(), nk_combo_item_image_text(), nk_combo_item_label() (+28 more)
+Cohesion: 0.13
+Nodes (35): ActorSlotName(), colText(), ComboId(), DeleteActorDef(), DeleteAnimClip(), DeleteAnimEvent(), DeleteAnimMap(), DeleteMeshSlot() (+27 more)
 
 ### Community 107 - "Community 107"
-Cohesion: 0.1
-Nodes (27): equal(), my_stbtt_initfont(), my_stbtt_print(), stbrp_init_target(), stbrp_pack_rects(), stbtt__add_point(), stbtt_BakeFontBitmap(), stbtt__compute_crossings_x() (+19 more)
-
-### Community 108 - "Community 108"
 Cohesion: 0.06
 Nodes (9): CX3DImporter_NodeElement, CX3DImporter_NodeElement_ElevationGrid, CX3DImporter_NodeElement_Geometry2D, CX3DImporter_NodeElement_Geometry3D, CX3DImporter_NodeElement_Group, CX3DImporter_NodeElement_IndexedSet, CX3DImporter_NodeElement_Material, CX3DImporter_NodeElement_Meta (+1 more)
 
-### Community 109 - "Community 109"
-Cohesion: 0.07
-Nodes (17): Index(), glTF(), GTEST_API_(), TestProperty(), AddTestPattern(), Begin(), CreateTestFactory(), End() (+9 more)
+### Community 108 - "Community 108"
+Cohesion: 0.12
+Nodes (31): stbi__end_write_file(), stbi__start_write_callbacks(), stbi__start_write_file(), stbi_write_bmp(), stbi_write_bmp_core(), stbi_write_bmp_to_func(), stbi_write_hdr(), stbi_write_hdr_core() (+23 more)
 
-### Community 110 - "Community 110"
+### Community 109 - "Community 109"
 Cohesion: 0.07
 Nodes (35): assimp (vcpkg), GLAD (vendored, bindless, GL 4.6 + GL_ARB_bindless_texture), glfw3 (vcpkg), glm (vcpkg), imgui (vcpkg), miniaudio (header-only), msquic (vcpkg/raw lib), opengl32 (Windows GL) (+27 more)
 
-### Community 111 - "Community 111"
+### Community 110 - "Community 110"
 Cohesion: 0.09
-Nodes (12): BaseDialog, log(), This class is used to create the info dialog., This class is used to create the setup dialog., This class is used to create a simplified user interface for running the regress, Constructs the dialog, you can define which executable shal be used.         @pa, This function is used to log info, warnings and errors., Helper base class for dialogs used in the UI. (+4 more)
+Nodes (34): append(), appendf(), BeginDragDropTarget(), CreateNewWindowSettings(), FindOrCreateWindowSettings(), FindSettingsHandler(), FindWindowSettings(), GetIDFromRectangle() (+26 more)
 
-### Community 112 - "Community 112"
+### Community 111 - "Community 111"
 Cohesion: 0.08
 Nodes (12): AddNodeWeight(), ApplyCustomizedPostProcessing(), ApplyPostProcessing(), FreeScene(), GetMemoryRequirements(), GetPropertyInteger(), ReadFile(), ReadFileFromMemory() (+4 more)
 
+### Community 112 - "Community 112"
+Cohesion: 0.16
+Nodes (34): stbi__bmp_load(), stbi__bmp_parse_header(), stbi__bmp_test(), stbi__bmp_test_raw(), stbi__convert_format(), stbi__get16le(), stbi__get32le(), stbi__get8() (+26 more)
+
 ### Community 113 - "Community 113"
-Cohesion: 0.09
-Nodes (25): _glfwPlatformInit(), _glfwPlatformTerminate(), _glfwTerminateOSMesa(), _glfwInitTimerPOSIX(), createHelperWindow(), createHiddenCursor(), createKeyTables(), detectEWMH() (+17 more)
+Cohesion: 0.22
+Nodes (32): base_name(), strrpl(), zip_close(), zip_create(), zip_entry_close(), zip_entry_crc32(), zip_entry_extract(), zip_entry_fwrite() (+24 more)
 
 ### Community 114 - "Community 114"
-Cohesion: 0.14
-Nodes (26): ReadNodeTransformation(), AddBoneChildren(), CreateOutputAnimation(), CreateOutputAnimations(), CreateOutputMaterials(), CreateOutputMeshes(), CreateOutputNodes(), FixTimeValues() (+18 more)
+Cohesion: 0.09
+Nodes (12): BaseDialog, log(), This class is used to create the info dialog., This class is used to create the setup dialog., This class is used to create a simplified user interface for running the regress, Constructs the dialog, you can define which executable shal be used.         @pa, This function is used to log info, warnings and errors., Helper base class for dialogs used in the UI. (+4 more)
 
 ### Community 115 - "Community 115"
-Cohesion: 0.24
-Nodes (31): exportContentTyp(), writeModelToArchive(), writeRelInfoToFile(), strrpl(), zip_close(), zip_entry_close(), zip_entry_crc32(), zip_entry_extract() (+23 more)
+Cohesion: 0.1
+Nodes (21): compareVideoModes(), _glfwCompareVideoModes(), _glfwSplitBPP(), createMonitor(), _glfwGetMonitorContentScaleWin32(), _glfwPlatformGetMonitorContentScale(), _glfwPlatformGetVideoMode(), _glfwPlatformGetVideoModes() (+13 more)
 
 ### Community 116 - "Community 116"
+Cohesion: 0.08
+Nodes (31): AddBezierCurve(), AddLine(), AddQuad(), AddQuadFilled(), AddRanges(), AddTriangle(), ChannelsMerge(), ChannelsSetCurrent() (+23 more)
+
+### Community 117 - "Community 117"
+Cohesion: 0.06
+Nodes (3): Node::WritePropertyNode(), Node::WritePropertyNodeAscii(), Node::WritePropertyNodeBinary()
+
+### Community 118 - "Community 118"
 Cohesion: 0.14
 Nodes (30): Draw(), EditTableColumnsFlags(), EditTableSizingFlags(), ExampleAppDocuments(), HelpMarker(), MyDocument(), NotifyOfDocumentsClosedElsewhere(), PopStyleCompact() (+22 more)
 
-### Community 117 - "Community 117"
+### Community 119 - "Community 119"
 Cohesion: 0.07
-Nodes (14): back(), c_str(), delete(), erase(), erase_unsorted(), find(), find_erase(), find_erase_unsorted() (+6 more)
+Nodes (18): AddChar(), c_str(), contains(), front(), GetBit(), ImDrawList(), ImGuiListClipper(), index_from_ptr() (+10 more)
 
-### Community 118 - "Community 118"
+### Community 120 - "Community 120"
 Cohesion: 0.19
 Nodes (31): imstb_textedit.h, is_word_boundary(), stb_text_create_undo_record(), stb_text_createundo(), stb_text_locate_coord(), stb_text_makeundo_delete(), stb_text_makeundo_insert(), stb_text_makeundo_replace() (+23 more)
 
-### Community 119 - "Community 119"
-Cohesion: 0.14
-Nodes (27): Assimp(), fast_atof(), copyNextWord(), createMesh(), createObject(), getComment(), getFace(), getGroupName() (+19 more)
+### Community 121 - "Community 121"
+Cohesion: 0.11
+Nodes (32): main(), stbrp_pack_rects(), stbtt_BakeFontBitmap_internal(), stbtt_FindGlyphIndex(), stbtt_FindMatchingFont(), stbtt_FindMatchingFont_internal(), stbtt_GetCodepointBitmapBox(), stbtt_GetCodepointBitmapBoxSubpixel() (+24 more)
 
-### Community 120 - "Community 120"
+### Community 122 - "Community 122"
 Cohesion: 0.1
 Nodes (21): AssertVertexCount(), Assimp(), Blender(), BlenderTessellatorGL(), Copy3DVertices(), FindLargestMatrixElem(), FindLLSQPlane(), GenerateLoopVerts() (+13 more)
 
-### Community 121 - "Community 121"
+### Community 123 - "Community 123"
+Cohesion: 0.11
+Nodes (32): Compare(), internal(), FormatForComparisonFailureMessage(), AssertionFailure(), AssertionResult(), AssertionSuccess(), CmpHelperEQ(), CmpHelperSTRCASENE() (+24 more)
+
+### Community 124 - "Community 124"
+Cohesion: 0.12
+Nodes (31): disabled_test_count(), elapsed_time(), Failed(), failed_test_count(), FormatTimeInMillisAsSeconds(), GetTestCase(), GetTestInfo(), OnTestEnd() (+23 more)
+
+### Community 125 - "Community 125"
 Cohesion: 0.06
 Nodes (18): LeakChecker, main(), Water, main(), TersePrinter, InitGoogleTest(), EnvironmentInvocationCatcher, EventRecordingListener (+10 more)
 
-### Community 122 - "Community 122"
+### Community 126 - "Community 126"
 Cohesion: 0.13
 Nodes (29): Angle(), AngleExceeds90Degrees(), AngleExceedsPlus90DegreesOrIsNegative(), BasinAngle(), EdgeEvent(), Fill(), FillAdvancingFront(), FillBasin() (+21 more)
-
-### Community 123 - "Community 123"
-Cohesion: 0.07
-Nodes (32): nk_draw_text(), nk_label(), nk_label_colored(), nk_label_colored_wrap(), nk_label_wrap(), nk_labelf_colored(), nk_labelf_colored_wrap(), nk_labelf_wrap() (+24 more)
-
-### Community 124 - "Community 124"
-Cohesion: 0.09
-Nodes (31): append(), appendf(), CreateNewWindowSettings(), FindOrCreateWindowSettings(), FindSettingsHandler(), FindWindowSettings(), GetIDNoKeepAlive(), GetIDWithSeed() (+23 more)
-
-### Community 125 - "Community 125"
-Cohesion: 0.07
-Nodes (17): AddChar(), contains(), GetBit(), GetCustomRectByIndex(), ImGuiListClipper(), index_from_ptr(), IsActive(), operator() (+9 more)
-
-### Community 126 - "Community 126"
-Cohesion: 0.1
-Nodes (31): stbi__bmp_info(), stbi__bmp_test(), stbi__check_png_header(), stbi__gif_info(), stbi__gif_info_raw(), stbi__gif_load(), stbi__gif_test(), stbi__gif_test_raw() (+23 more)
 
 ### Community 127 - "Community 127"
 Cohesion: 0.12
 Nodes (22): unzClose(), unzCloseCurrentFile(), unzGetCurrentFileInfo(), unzGoToFilePos(), unzGoToFirstFile(), unzGoToNextFile(), unzlocal_CheckCurrentFileCoherencyHeader(), unzlocal_DosDateToTmuDate() (+14 more)
 
 ### Community 128 - "Community 128"
-Cohesion: 0.08
-Nodes (24): BuildAppearance(), SetAreaConfigMap(), SetAreaMusicMap(), Config, Server, generateSelfSignedCert(), NewServer(), config (+16 more)
+Cohesion: 0.15
+Nodes (26): AddBoneChildren(), CreateOutputAnimation(), CreateOutputAnimations(), CreateOutputMaterials(), CreateOutputMeshes(), CreateOutputNodes(), FixTimeValues(), GetTextureIndex() (+18 more)
 
 ### Community 129 - "Community 129"
+Cohesion: 0.06
+Nodes (3): Assimp(), Assimp(), Stream
+
+### Community 130 - "Community 130"
 Cohesion: 0.09
 Nodes (10): luaIntField(), luaNumField(), luaStrField(), callCtx, DialogPending, Registry, nowMs(), SpellTypeIndex() (+2 more)
 
-### Community 130 - "Community 130"
-Cohesion: 0.1
-Nodes (18): compareVideoModes(), _glfwCompareVideoModes(), _glfwSplitBPP(), createMonitor(), _glfwGetMonitorContentScaleWin32(), _glfwPlatformGetMonitorContentScale(), _glfwPlatformGetVideoMode(), _glfwPlatformGetVideoModes() (+10 more)
-
 ### Community 131 - "Community 131"
+Cohesion: 0.08
+Nodes (31): nk_draw_text(), nk_label(), nk_label_colored(), nk_label_colored_wrap(), nk_label_wrap(), nk_labelf_colored(), nk_labelf_colored_wrap(), nk_labelf_wrap() (+23 more)
+
+### Community 132 - "Community 132"
+Cohesion: 0.12
+Nodes (24): _glfwAllocJoystick(), _glfwFreeJoystick(), _glfwInputJoystick(), _glfwInputJoystickAxis(), _glfwInputJoystickButton(), _glfwInputJoystickHat(), closeJoystick(), _glfwDetectJoystickConnectionLinux() (+16 more)
+
+### Community 133 - "Community 133"
+Cohesion: 0.12
+Nodes (27): getopt_long(), glfwGetVersion(), glfwGetVersionString(), glfwCreateWindowSurface(), glfwGetInstanceProcAddress(), glfwGetPhysicalDevicePresentationSupport(), glfwGetRequiredInstanceExtensions(), _glfwInitVulkan() (+19 more)
+
+### Community 134 - "Community 134"
 Cohesion: 0.24
 Nodes (27): glm_ivec4_abs(), glm_vec1_add(), glm_vec1_div(), glm_vec1_fma(), glm_vec1_mul(), glm_vec1_sub(), glm_vec4_abs(), glm_vec4_add() (+19 more)
 
-### Community 132 - "Community 132"
+### Community 135 - "Community 135"
+Cohesion: 0.08
+Nodes (12): delete(), erase(), erase_unsorted(), find(), find_erase(), find_erase_unsorted(), GetCustomRectByIndex(), ImU32() (+4 more)
+
+### Community 136 - "Community 136"
 Cohesion: 0.13
 Nodes (27): close_gl(), find_coreGL(), find_extensionsGL(), free_exts(), get_exts(), gladLoadGL(), gladLoadGLLoader(), load_GL_VERSION_1_0() (+19 more)
 
-### Community 133 - "Community 133"
-Cohesion: 0.23
-Nodes (26): ChunkSize(), DeleteAllBarePointers(), ExitChunk(), Fail(), InternReadFile(), Oops(), ReadANIM(), ReadBB3D() (+18 more)
-
-### Community 134 - "Community 134"
-Cohesion: 0.17
-Nodes (29): check_match(), deflate(), deflate_fast(), deflate_huff(), deflate_rle(), deflate_slow(), deflate_stored(), deflateBound() (+21 more)
-
-### Community 135 - "Community 135"
+### Community 137 - "Community 137"
 Cohesion: 0.11
 Nodes (9): CodecBase, Deflater, DotZLib, DotZLib, Inflater, unzReadCurrentFile(), unzReadCurrentFile(), uncompress() (+1 more)
-
-### Community 136 - "Community 136"
-Cohesion: 0.12
-Nodes (16): ErrorExit(), GitVCS, GuessVCS(), Print an error message to stderr and exit., Helper to guess the version control system.    This examines the current directo, Executes a command and returns the output from stdout and the return code.    Ar, Implementation of the VersionControlSystem interface for Subversion., Wrapper for _GuessBase. (+8 more)
-
-### Community 137 - "Community 137"
-Cohesion: 0.1
-Nodes (27): GetCommandOutput(), GetOutputOfAllCommands(), GetShellCommandOutput(), GTestOutputTest, NormalizeOutput(), NormalizeToCurrentPlatform(), Removes all stack traces from a Google Test program's output., Removes all traces of stack traces from a Google Test program's output. (+19 more)
 
 ### Community 138 - "Community 138"
 Cohesion: 0.07
 Nodes (6): Export(), Exporter(), ExportToBlob(), FreeBlob(), GetExportFormatCount(), GetExportFormatDescription()
 
 ### Community 139 - "Community 139"
-Cohesion: 0.12
-Nodes (23): _glfwFreeJoystick(), _glfwInputJoystick(), _glfwInputJoystickAxis(), _glfwInputJoystickButton(), _glfwInputJoystickHat(), closeJoystick(), _glfwDetectJoystickConnectionLinux(), _glfwPlatformInitJoysticks() (+15 more)
+Cohesion: 0.1
+Nodes (27): GetCommandOutput(), GetOutputOfAllCommands(), GetShellCommandOutput(), GTestOutputTest, NormalizeOutput(), NormalizeToCurrentPlatform(), Removes all stack traces from a Google Test program's output., Removes all traces of stack traces from a Google Test program's output. (+19 more)
 
 ### Community 140 - "Community 140"
+Cohesion: 0.12
+Nodes (16): ErrorExit(), GitVCS, GuessVCS(), Print an error message to stderr and exit., Helper to guess the version control system.    This examines the current directo, Executes a command and returns the output from stdout and the return code.    Ar, Implementation of the VersionControlSystem interface for Subversion., Wrapper for _GuessBase. (+8 more)
+
+### Community 141 - "Community 141"
+Cohesion: 0.23
+Nodes (26): ChunkSize(), DeleteAllBarePointers(), ExitChunk(), Fail(), InternReadFile(), Oops(), ReadANIM(), ReadBB3D() (+18 more)
+
+### Community 142 - "Community 142"
 Cohesion: 0.11
 Nodes (21): fastBitfieldInterleave(), interleaveBitfieldInterleave(), main(), mask_half(), mask_loop(), mask_mix(), mask_zero(), perf() (+13 more)
 
-### Community 141 - "Community 141"
-Cohesion: 0.13
-Nodes (29): main(), stbtt_BakeFontBitmap_internal(), stbtt_FindGlyphIndex(), stbtt_GetCodepointBitmapBox(), stbtt_GetCodepointBitmapBoxSubpixel(), stbtt_GetCodepointBox(), stbtt_GetCodepointHMetrics(), stbtt_GetFontOffsetForIndex() (+21 more)
+### Community 143 - "Community 143"
+Cohesion: 0.14
+Nodes (25): BuildFBO(), BuildPrimitiveVAOs(), CompileShader(), DestroyFBO(), DrawBox(), DrawCircleXZ(), DrawForwardOverlays_(), DrawLine() (+17 more)
 
-### Community 142 - "Community 142"
+### Community 144 - "Community 144"
+Cohesion: 0.09
+Nodes (29): ImAtan2(), Button(), ButtonBehavior(), Checkbox(), CheckboxFlags(), CheckboxFlagsT(), CollapseButton(), ColorButton() (+21 more)
+
+### Community 145 - "Community 145"
+Cohesion: 0.1
+Nodes (21): AddBezierCubic(), AddBezierQuadratic(), AddCustomRectFontGlyph(), AddTriangleFilled(), Build(), BuildRanges(), GetGlyphRangesKorean(), GetTexDataAsAlpha8() (+13 more)
+
+### Community 146 - "Community 146"
 Cohesion: 0.09
 Nodes (18): ImStrSkipBlank(), SetNextWindowScroll(), BeginTable(), BeginTableEx(), GetColumnOffsetFromNorm(), GetColumnWidth(), GetColumnWidthEx(), TableBeginApplyRequests() (+10 more)
 
-### Community 143 - "Community 143"
-Cohesion: 0.2
-Nodes (24): LogError(), Assimp(), GetElementName(), InternReadFile(), ReadCol3(), ReadDirectionalLight(), ReadElement(), ReadElementUpToClosing() (+16 more)
-
-### Community 144 - "Community 144"
+### Community 147 - "Community 147"
 Cohesion: 0.12
 Nodes (24): AddTexture(), ApplyVertexToEffectSemanticMapping(), BuildCamerasForNode(), BuildHierarchy(), BuildLightsForNode(), BuildMaterials(), BuildMeshesForNode(), ColladaLoader() (+16 more)
 
-### Community 145 - "Community 145"
+### Community 148 - "Community 148"
 Cohesion: 0.07
 Nodes (12): AtomicCounterWithMutex, Base, Castable, ConstAndNonConstCastable, ConstCastable, Derived, DestructorCall, DestructorTracker (+4 more)
 
-### Community 146 - "Community 146"
+### Community 149 - "Community 149"
 Cohesion: 0.12
 Nodes (15): AlsoRunDisabledTestsFlag(), CalculateTestLists(), FilterFlag(), GetTestCases(), GetTestsForAllIterations(), GTestShuffleUnitTest, RandomSeedFlag(), Returns a list of test cases in the given full test names.    Args:     tests: a (+7 more)
 
-### Community 148 - "Community 148"
+### Community 150 - "Community 150"
+Cohesion: 0.2
+Nodes (24): LogError(), Assimp(), GetElementName(), InternReadFile(), ReadCol3(), ReadDirectionalLight(), ReadElement(), ReadElementUpToClosing() (+16 more)
+
+### Community 152 - "Community 152"
 Cohesion: 0.12
 Nodes (28): Arity(), GenerateFile(), GenerateHeader(), GenerateUnitTest(), HeaderPostamble(), HeaderPreamble(), ImplementationForArity(), Iter() (+20 more)
 
-### Community 149 - "Community 149"
-Cohesion: 0.14
-Nodes (24): BuildFBO(), BuildPrimitiveVAOs(), CompileShader(), DestroyFBO(), DrawBox(), DrawCircleXZ(), DrawForwardOverlays_(), DrawLine() (+16 more)
-
-### Community 150 - "Community 150"
+### Community 153 - "Community 153"
 Cohesion: 0.07
 Nodes (27): Account, ActorDef, ActorDefAnim, ActorDefMesh, AreaConfig, AreaPortal, AreaSoundZone, AreaTrigger (+19 more)
 
-### Community 151 - "Community 151"
-Cohesion: 0.16
-Nodes (25): Assimp(), CalculateNormals(), CalculateVertexNormal(), CheckVersion(), ConnectFaces(), InternReadFile(), ReadAxis(), ReadChunk() (+17 more)
-
-### Community 152 - "Community 152"
-Cohesion: 0.09
-Nodes (17): Bool(), PredFormatFunction1(), PredFormatFunction2(), PredFormatFunction3(), PredFormatFunction4(), PredFormatFunction5(), PredFunction1(), PredFunction2() (+9 more)
-
-### Community 153 - "Community 153"
-Cohesion: 0.17
-Nodes (25): AC_Error(), Adaptive_Bit_Model(), Adaptive_Data_Model(), Arithmetic_Codec(), decode(), encode(), get_bit(), get_bits() (+17 more)
-
 ### Community 154 - "Community 154"
-Cohesion: 0.16
-Nodes (27): stbi__bitcount(), stbi__bmp_load(), stbi__bmp_parse_header(), stbi__bmp_test_raw(), stbi__convert_format(), stbi__get16le(), stbi__get32le(), stbi__get8() (+19 more)
+Cohesion: 0.15
+Nodes (25): AppendAnimationsFrom(), ApplyMaterialsByName(), BindPoseRS(), BuildNodeTree(), BuildTextureCandidates(), ComputeBlendedBones(), ComputeBones(), Destroy() (+17 more)
 
 ### Community 155 - "Community 155"
 Cohesion: 0.12
-Nodes (27): stbi__bmp_info(), stbi__bmp_test(), stbi__check_png_header(), stbi__gif_info(), stbi__gif_info_raw(), stbi__gif_test(), stbi__gif_test_raw(), stbi__hdr_gettoken() (+19 more)
+Nodes (28): load_jpeg_image(), stbi__addsizes_valid(), stbi__blinn_8x8(), stbi__cleanup_jpeg(), stbi__compute_y(), stbi__convert_format(), stbi__create_png_image(), stbi__create_png_image_raw() (+20 more)
 
 ### Community 156 - "Community 156"
-Cohesion: 0.11
-Nodes (27): LogSetNextTextDecoration(), BeginCombo(), BeginComboPopup(), BeginMenu(), Button(), ButtonBehavior(), ButtonEx(), CalcMaxPopupHeightFromItemCount() (+19 more)
+Cohesion: 0.17
+Nodes (25): copyNextWord(), createMesh(), createObject(), getComment(), getFace(), getGroupName(), getGroupNumber(), getGroupNumberAndResolution() (+17 more)
 
 ### Community 157 - "Community 157"
-Cohesion: 0.19
-Nodes (23): AttrHelper_Col3DArrToString(), AttrHelper_Col4DArrToString(), AttrHelper_Color3ToAttrList(), AttrHelper_FloatToAttrList(), AttrHelper_FloatToString(), AttrHelper_Vec2DArrToString(), AttrHelper_Vec3DArrToString(), AttrHelper_Vec3DAsVec2fArrToString() (+15 more)
+Cohesion: 0.16
+Nodes (25): Assimp(), CalculateNormals(), CalculateVertexNormal(), CheckVersion(), ConnectFaces(), InternReadFile(), ReadAxis(), ReadChunk() (+17 more)
 
 ### Community 158 - "Community 158"
-Cohesion: 0.1
-Nodes (16): CopyVector(), SetFileScale(), CanRead(), InternReadFile(), CanRead(), CheckValidFacesIndices(), ImportCameras(), ImportEmbeddedTextures() (+8 more)
+Cohesion: 0.09
+Nodes (17): Bool(), PredFormatFunction1(), PredFormatFunction2(), PredFormatFunction3(), PredFormatFunction4(), PredFormatFunction5(), PredFunction1(), PredFunction2() (+9 more)
 
 ### Community 159 - "Community 159"
 Cohesion: 0.17
-Nodes (15): CreateAnimation(), GetNextToken(), GetNextTokenAsFloat(), InternReadFile(), ReadEndSite(), ReadHierarchy(), ReadMotion(), ReadNode() (+7 more)
+Nodes (25): AC_Error(), Adaptive_Bit_Model(), Adaptive_Data_Model(), Arithmetic_Codec(), decode(), encode(), get_bit(), get_bits() (+17 more)
+
+### Community 160 - "Community 160"
+Cohesion: 0.08
+Nodes (7): createIrrXMLReader(), CFIReaderImpl, create(), CXMLReaderImpl, parseMagic(), parseUTF16String(), readFile()
 
 ### Community 161 - "Community 161"
+Cohesion: 0.17
+Nodes (15): CreateAnimation(), GetNextToken(), GetNextTokenAsFloat(), InternReadFile(), ReadEndSite(), ReadHierarchy(), ReadMotion(), ReadNode() (+7 more)
+
+### Community 162 - "Community 162"
 Cohesion: 0.11
 Nodes (24): EncodeMultipartFormData(), GetContentType(), GetEmail(), GetRpcServer(), main(), # NOTE: for proper handling of moved/copied files, we have to use, # HACK: strip error message about missing file/directory if it isn't in, # NOTE: The SplitPatch function is duplicated in engine.py, keep them in sync. (+16 more)
 
-### Community 162 - "Community 162"
+### Community 163 - "Community 163"
+Cohesion: 0.19
+Nodes (23): AttrHelper_Col3DArrToString(), AttrHelper_Col4DArrToString(), AttrHelper_Color3ToAttrList(), AttrHelper_FloatToAttrList(), AttrHelper_FloatToString(), AttrHelper_Vec2DArrToString(), AttrHelper_Vec3DArrToString(), AttrHelper_Vec3DAsVec2fArrToString() (+15 more)
+
+### Community 164 - "Community 164"
+Cohesion: 0.15
+Nodes (25): count_deformers(), count_images(), count_nodes(), count_textures(), ExportAscii(), ExportBinary(), ExportSceneFBX(), ExportSceneFBXA() (+17 more)
+
+### Community 165 - "Community 165"
 Cohesion: 0.17
 Nodes (24): AddSampler(), CopyValue(), ExportAnimations(), ExportData(), ExportMaterials(), ExportMeshes(), ExportNode(), ExportNodeHierarchy() (+16 more)
 
-### Community 163 - "Community 163"
-Cohesion: 0.11
-Nodes (26): BeginDragDropSource(), BeginDragDropTarget(), BeginTooltip(), BeginTooltipEx(), ClearDragDrop(), DebugNodeFont(), EndDragDropSource(), EndTooltip() (+18 more)
-
-### Community 164 - "Community 164"
-Cohesion: 0.16
-Nodes (22): HasAttribute(), ImportMesh(), ImportSkeleton(), OpenReader(), ReadAnimationKeyFrames(), ReadAnimations(), ReadAnimationTracks(), ReadAttribute<bool>() (+14 more)
-
-### Community 165 - "Community 165"
-Cohesion: 0.1
-Nodes (16): AllowsGenericStreaming, AllowsGenericStreamingAndImplicitConversionTemplate, AllowsGenericStreamingTemplate, Big(), BiggestIntConvertible, HasPrefix(), Print(), PrintableViaPrintToTemplate (+8 more)
-
 ### Community 166 - "Community 166"
-Cohesion: 0.08
-Nodes (13): CxxExceptionInConstructorTest, CxxExceptionInDestructorTest, CxxExceptionInSetUpTest, CxxExceptionInSetUpTestCaseTest, CxxExceptionInTearDownTest, CxxExceptionInTearDownTestCaseTest, CxxExceptionInTestBodyTest, SehExceptionInConstructorTest (+5 more)
-
-### Community 167 - "Community 167"
-Cohesion: 0.12
-Nodes (26): mz_crc32(), mz_zip_dos_to_time_t(), mz_zip_reader_extract_file_to_callback(), mz_zip_reader_extract_file_to_file(), mz_zip_reader_extract_file_to_heap(), mz_zip_reader_extract_file_to_mem(), mz_zip_reader_extract_file_to_mem_no_alloc(), mz_zip_reader_extract_to_callback() (+18 more)
-
-### Community 168 - "Community 168"
-Cohesion: 0.09
-Nodes (19): Arcball, arcball_constrain_to_axis(), arcball_map_to_sphere(), arcball_nearest_axis(), quaternion_from_matrix(), quaternion_multiply(), Return quaternion from rotation matrix.      >>> R = rotation_matrix(0.123, (1,, Return multiplication of two quaternions.      >>> q = quaternion_multiply([1, - (+11 more)
-
-### Community 169 - "Community 169"
 Cohesion: 0.16
 Nodes (25): DerivePlaneCoordinateSpace(), BoundingBoxesAdjacent(), BoundingBoxesOverlapping(), CleanupOuterContour(), CleanupWindowContour(), CleanupWindowContours(), CloseWindows(), ExtractVerticesFromClipper() (+17 more)
 
+### Community 167 - "Community 167"
+Cohesion: 0.11
+Nodes (15): CopyVector(), SetFileScale(), InternReadFile(), CanRead(), CheckValidFacesIndices(), ImportCameras(), ImportEmbeddedTextures(), ImportLights() (+7 more)
+
+### Community 168 - "Community 168"
+Cohesion: 0.11
+Nodes (14): AddLoadRequest(), ConvertToUTF8(), LoadAll(), LoadRequest(), ReadFile(), SetupProperties(), UpdateImporterScale(), CanRead() (+6 more)
+
+### Community 169 - "Community 169"
+Cohesion: 0.16
+Nodes (22): HasAttribute(), ImportMesh(), ImportSkeleton(), OpenReader(), ReadAnimationKeyFrames(), ReadAnimations(), ReadAnimationTracks(), ReadAttribute<bool>() (+14 more)
+
 ### Community 170 - "Community 170"
-Cohesion: 0.15
-Nodes (21): ConsolidateMeshes(), AppendAnimationsFrom(), ApplyMaterialsByName(), BindPoseRS(), BuildNodeTree(), ComputeBlendedBones(), ComputeBones(), Destroy() (+13 more)
+Cohesion: 0.08
+Nodes (13): CxxExceptionInConstructorTest, CxxExceptionInDestructorTest, CxxExceptionInSetUpTest, CxxExceptionInSetUpTestCaseTest, CxxExceptionInTearDownTest, CxxExceptionInTearDownTestCaseTest, CxxExceptionInTestBodyTest, SehExceptionInConstructorTest (+5 more)
 
 ### Community 171 - "Community 171"
-Cohesion: 0.12
-Nodes (25): ColorButton(), ColorEdit3(), ColorEdit4(), ColorPicker3(), ColorPicker4(), ColorTooltip(), DragInt(), DragIntRange2() (+17 more)
+Cohesion: 0.08
+Nodes (3): ArrayList, AiBone, AiScene
 
 ### Community 172 - "Community 172"
-Cohesion: 0.14
-Nodes (25): load_jpeg_image(), stbi__addsizes_valid(), stbi__blinn_8x8(), stbi__cleanup_jpeg(), stbi__compute_y(), stbi__convert_format(), stbi__create_png_image(), stbi__create_png_image_raw() (+17 more)
+Cohesion: 0.09
+Nodes (9): Peek4(), Take(), Cursor, Eof(), Returns a copy of self., Returns the special cursor to denote the end-of-file., Returns a substring in lines., Represents a position (line and column) in a text file. (+1 more)
 
 ### Community 173 - "Community 173"
-Cohesion: 0.16
-Nodes (25): stbi__bit_reverse(), stbi__bitreverse16(), stbi__build_fast_ac(), stbi__build_huffman(), stbi__compute_huffman_codes(), stbi__decode_jpeg_header(), stbi__decode_jpeg_image(), stbi__err() (+17 more)
+Cohesion: 0.09
+Nodes (19): Arcball, arcball_constrain_to_axis(), arcball_map_to_sphere(), arcball_nearest_axis(), quaternion_from_matrix(), quaternion_multiply(), Return quaternion from rotation matrix.      >>> R = rotation_matrix(0.123, (1,, Return multiplication of two quaternions.      >>> q = quaternion_multiply([1, - (+11 more)
 
 ### Community 174 - "Community 174"
-Cohesion: 0.18
-Nodes (22): DOM::ParseElementInstanceLists(), DOM::ParseElementInstanceListsBinary(), DOM::ParseHeader(), DOM::SkipComments(), DOM::SkipLine(), DOM::SkipSpaces(), DOM::SkipSpacesAndLineEnd(), DOM::TokenMatch() (+14 more)
+Cohesion: 0.12
+Nodes (17): h(), Dispatch(), jsonEscape(), jsonGetString(), LoadBindings(), LoadLocalOverrides(), OnKeyDown(), OnKeyUp() (+9 more)
 
 ### Community 175 - "Community 175"
-Cohesion: 0.18
-Nodes (20): BlendShapeChannel(), Cluster(), Deformer(), Skin(), LayeredTexture(), AdvanceToNextToken(), CurrentToken(), Element() (+12 more)
+Cohesion: 0.13
+Nodes (25): AcceptDragDropPayload(), BeginColumns(), Columns(), Draw(), EndColumns(), FindOrAddColumnsSet(), GetColumnOffset(), GetColumnsRectHalfWidth() (+17 more)
 
 ### Community 176 - "Community 176"
 Cohesion: 0.15
-Nodes (16): CodeNode, ExpNode, ForNode, IfNode, LiteralDollarNode, ParseAtomicCodeNode(), ParseCodeNode(), ParseElseNode() (+8 more)
+Nodes (25): BeginPopup(), BeginPopupContextItem(), BeginPopupContextVoid(), BeginPopupContextWindow(), BeginPopupEx(), BeginPopupModal(), EndPopup(), FindBestWindowPosForPopup() (+17 more)
 
 ### Community 177 - "Community 177"
-Cohesion: 0.13
-Nodes (19): AddBlendParams(), AddSentinelTexture(), Assimp(), BlenderImporter(), BuildDefaultMaterial(), BuildMaterials(), CanRead(), CheckActualType() (+11 more)
+Cohesion: 0.15
+Nodes (21): BuildVertexWeightMapping(), CanRead(), CheckValidFacesIndices(), ConvertWrappingMode(), CreateNodeAnim(), GatherSamplers(), GetNodeName(), GetNodeTransform() (+13 more)
 
 ### Community 178 - "Community 178"
 Cohesion: 0.13
 Nodes (17): Assimp(), attachStream(), create(), createDefaultStream(), debug(), error(), GetThreadID(), info() (+9 more)
 
 ### Community 179 - "Community 179"
-Cohesion: 0.16
-Nodes (19): LoadTex(), ApplyBrush(), BuildChunk(), ClearMaterialSlot(), DestroyChunks(), DestroyMaterials(), ~EditableTerrain(), EnsureDefaultTextures() (+11 more)
+Cohesion: 0.11
+Nodes (15): AllowsGenericStreaming, AllowsGenericStreamingAndImplicitConversionTemplate, AllowsGenericStreamingTemplate, Big(), BiggestIntConvertible, Print(), PrintableViaPrintToTemplate, PrintArrayHelper() (+7 more)
 
 ### Community 180 - "Community 180"
-Cohesion: 0.17
-Nodes (24): stbi__bit_reverse(), stbi__bitreverse16(), stbi__build_fast_ac(), stbi__build_huffman(), stbi__compute_huffman_codes(), stbi__decode_jpeg_header(), stbi__decode_jpeg_image(), stbi__err() (+16 more)
+Cohesion: 0.18
+Nodes (22): DOM::ParseElementInstanceLists(), DOM::ParseElementInstanceListsBinary(), DOM::ParseHeader(), DOM::SkipComments(), DOM::SkipLine(), DOM::SkipSpaces(), DOM::SkipSpacesAndLineEnd(), DOM::TokenMatch() (+14 more)
 
 ### Community 181 - "Community 181"
+Cohesion: 0.12
+Nodes (25): mz_zip_dos_to_time_t(), mz_zip_reader_extract_file_to_callback(), mz_zip_reader_extract_file_to_file(), mz_zip_reader_extract_file_to_heap(), mz_zip_reader_extract_file_to_mem(), mz_zip_reader_extract_file_to_mem_no_alloc(), mz_zip_reader_extract_to_callback(), mz_zip_reader_extract_to_file() (+17 more)
+
+### Community 182 - "Community 182"
+Cohesion: 0.16
+Nodes (24): CalcListClipping(), CompareWithCurrentState(), end(), GetBool(), GetBoolRef(), GetCursorPosY(), GetFloat(), GetFloatRef() (+16 more)
+
+### Community 183 - "Community 183"
+Cohesion: 0.13
+Nodes (24): stbi__bmp_info(), stbi__bmp_test(), stbi__gif_info(), stbi__gif_info_raw(), stbi__gif_test(), stbi__gif_test_raw(), stbi__hdr_gettoken(), stbi__hdr_info() (+16 more)
+
+### Community 184 - "Community 184"
 Cohesion: 0.1
 Nodes (9): Clear(), ClearNeighbor(), ClearNeighbors(), Legalize(), MarkNeighbor(), OppositePoint(), PointCCW(), PointCW() (+1 more)
 
-### Community 182 - "Community 182"
-Cohesion: 0.13
-Nodes (16): InternReadFile(), Assimp(), CanRead(), InternReadFile(), IRRMeshImporter(), releaseMaterial(), releaseMesh(), ConvertMappingMode() (+8 more)
-
-### Community 183 - "Community 183"
-Cohesion: 0.09
-Nodes (14): SimpleExtensionCheck(), CanRead(), CreateDataFromImport(), CreateMaterial(), CreateMesh(), InternReadFile(), CanRead(), CanRead() (+6 more)
-
-### Community 184 - "Community 184"
-Cohesion: 0.16
-Nodes (19): FindNode(), InverseNodeSearch(), ParseCameraChunk(), ParseChunk(), ParseColorChunk(), ParseEditorChunk(), ParseFaceChunk(), ParseHierarchyChunk() (+11 more)
-
 ### Community 185 - "Community 185"
-Cohesion: 0.09
-Nodes (18): FormatWordList(), RecordProperty(), ValidateTestProperty(), ValidateTestPropertyName(), PropertyOne, TEST_F(), PropertyTwo, TEST_F() (+10 more)
+Cohesion: 0.14
+Nodes (18): AddBlendParams(), AddSentinelTexture(), Assimp(), BlenderImporter(), BuildDefaultMaterial(), BuildMaterials(), CheckActualType(), ConvertBlendFile() (+10 more)
 
 ### Community 186 - "Community 186"
 Cohesion: 0.16
 Nodes (22): glad_gl_find_core_gl(), glad_gl_find_extensions_gl(), glad_gl_free_extensions(), glad_gl_get_extensions(), glad_gl_has_extension(), glad_gl_load_GL_ARB_multisample(), glad_gl_load_GL_ARB_robustness(), glad_gl_load_GL_KHR_debug() (+14 more)
 
 ### Community 187 - "Community 187"
-Cohesion: 0.15
-Nodes (20): getopt_long(), glfwGetError(), glfwGetVersion(), glfwGetVersionString(), glfwInitHint(), get_api_name(), get_device_type_name(), get_profile_name_gl() (+12 more)
+Cohesion: 0.17
+Nodes (18): ApplyBrush(), BuildChunk(), ClearMaterialSlot(), DestroyChunks(), DestroyMaterials(), ~EditableTerrain(), EnsureDefaultTextures(), GenerateMacro() (+10 more)
 
 ### Community 188 - "Community 188"
-Cohesion: 0.18
-Nodes (22): FilterPolygon(), IntersectsBoundaryProfile(), IntersectSegmentPlane(), PointInPoly(), ProcessBoolean(), ProcessBooleanExtrudedAreaSolidDifference(), ProcessBooleanHalfSpaceDifference(), ProcessPolygonalBoundedBooleanHalfSpaceDifference() (+14 more)
+Cohesion: 0.15
+Nodes (19): ApplyMaterialsFromMedia(), ClosestPtSeg2D(), ClosestPtTri2D(), Destroy(), GenerateProcedural(), GuessRole(), Init(), IsImg() (+11 more)
 
 ### Community 189 - "Community 189"
 Cohesion: 0.13
-Nodes (18): AssignAddedMeshes(), CanRead(), ConvertUnit(), InternReadFile(), MakeTreeRelative(), ProcessMappedItem(), ProcessMetadata(), ProcessProductRepresentation() (+10 more)
+Nodes (23): BeginDragDropSource(), BeginTooltip(), BeginTooltipEx(), ClearDragDrop(), DebugNodeFont(), EndDragDropSource(), EndTooltip(), GetCursorScreenPos() (+15 more)
 
 ### Community 190 - "Community 190"
-Cohesion: 0.14
-Nodes (23): CalcTextSize(), ColorConvertFloat4ToU32(), DebugRenderViewportThumbnail(), FindRenderedTextEnd(), GetColorU32(), GetResizeBorderRect(), GetWindowBgColorIdxFromFlags(), ImStreolRange() (+15 more)
+Cohesion: 0.19
+Nodes (23): stbi__bitcount(), stbi__bmp_load(), stbi__bmp_parse_header(), stbi__bmp_test_raw(), stbi__get16le(), stbi__get32le(), stbi__get8(), stbi__gif_header() (+15 more)
 
 ### Community 191 - "Community 191"
-Cohesion: 0.09
-Nodes (6): CFIReaderImpl, create(), CXMLReaderImpl, parseMagic(), parseUTF16String(), readFile()
+Cohesion: 0.19
+Nodes (18): BlendShapeChannel(), Cluster(), Deformer(), Skin(), AdvanceToNextToken(), CurrentToken(), Element(), LastToken() (+10 more)
 
 ### Community 192 - "Community 192"
-Cohesion: 0.13
-Nodes (13): perf(), perf_cos(), perf_fastCosDeterminisctic(), perf_fastCosOld(), perf_fastCosRef(), perf_taylorCosA(), perf_taylorCosB(), perf_taylorCosC() (+5 more)
+Cohesion: 0.14
+Nodes (17): AssignAddedMeshes(), ConvertUnit(), InternReadFile(), MakeTreeRelative(), ProcessMappedItem(), ProcessMetadata(), ProcessProductRepresentation(), ProcessSpatialStructure() (+9 more)
 
-### Community 194 - "Community 194"
-Cohesion: 0.13
-Nodes (23): mz_fopen(), mz_freopen(), mz_zip_add_mem_to_archive_file_in_place(), mz_zip_array_clear(), mz_zip_extract_archive_file_to_heap(), mz_zip_reader_end(), mz_zip_reader_filename_less(), mz_zip_reader_init() (+15 more)
-
-### Community 195 - "Community 195"
-Cohesion: 0.16
-Nodes (21): deflatePrime(), bi_flush(), bi_reverse(), bi_windup(), build_bl_tree(), build_tree(), compress_block(), gen_bitlen() (+13 more)
-
-### Community 196 - "Community 196"
-Cohesion: 0.11
-Nodes (15): object, AssimpLib, AbstractRpcServer, ClientLoginError, HttpRpcServer, Raised to indicate there was an error authenticating with ClientLogin., Provides a common interface for a simple RPC server., Creates a new HttpRpcServer.      Args:       host: The host to send requests to (+7 more)
-
-### Community 197 - "Community 197"
+### Community 193 - "Community 193"
 Cohesion: 0.1
 Nodes (13): MercurialVCS, Implementation of the VersionControlSystem interface for Mercurial., Get relative path of a file according to the current directory,     given its lo, Return a list of files unknown to the VCS., Abstract base class providing an interface to the VCS., Constructor.      Args:       options: Command line options., Return the current diff as a string.      Args:       args: Extra arguments to p, Return a list of files unknown to the VCS. (+5 more)
 
+### Community 195 - "Community 195"
+Cohesion: 0.13
+Nodes (23): stbi__bmp_info(), stbi__get32be(), stbi__get_chunk_header(), stbi__gif_info(), stbi__gif_info_raw(), stbi__hdr_gettoken(), stbi__hdr_info(), stbi__info_main() (+15 more)
+
+### Community 196 - "Community 196"
+Cohesion: 0.13
+Nodes (13): perf(), perf_cos(), perf_fastCosDeterminisctic(), perf_fastCosOld(), perf_fastCosRef(), perf_taylorCosA(), perf_taylorCosB(), perf_taylorCosC() (+5 more)
+
+### Community 197 - "Community 197"
+Cohesion: 0.18
+Nodes (22): stbi__bit_reverse(), stbi__bitreverse16(), stbi__build_fast_ac(), stbi__build_huffman(), stbi__compute_huffman_codes(), stbi__decode_jpeg_header(), stbi__decode_jpeg_image(), stbi__err() (+14 more)
+
 ### Community 198 - "Community 198"
-Cohesion: 0.11
-Nodes (23): nk_do_property(), nk_dtoa(), nk_ifloord(), nk_input_is_key_pressed(), nk_itoa(), nk_log10(), nk_pow(), nk_property() (+15 more)
+Cohesion: 0.15
+Nodes (16): renderer(), ComposeTRS(), DecomposeTRS(), EnsureBoneSSBOs_(), FillBlendedBones_(), FindClip(), Init(), PlayAnim() (+8 more)
 
 ### Community 199 - "Community 199"
-Cohesion: 0.16
-Nodes (19): ApplyMaterialsFromMedia(), ClosestPtSeg2D(), ClosestPtTri2D(), Destroy(), GenerateProcedural(), GuessRole(), Init(), IsImg() (+11 more)
-
-### Community 200 - "Community 200"
-Cohesion: 0.12
-Nodes (22): AddDrawListToDrawData(), AddRootWindowToDrawData(), AddWindowToDrawData(), appendfv(), CallContextHooks(), DestroyContext(), FlattenIntoSingleLayer(), ImFileClose() (+14 more)
-
-### Community 201 - "Community 201"
-Cohesion: 0.13
-Nodes (22): AddCircle(), AddCircleFilled(), AddNgon(), AddNgonFilled(), _CalcCircleAutoSegmentCount(), ImAcos01(), ImDrawListSharedData(), PathArcTo() (+14 more)
-
-### Community 202 - "Community 202"
 Cohesion: 0.17
 Nodes (19): countData(), countFaces(), countTriangles(), CreateDataFromImport(), createKey(), createMaterialMap(), createMaterials(), CreateNodes() (+11 more)
 
-### Community 203 - "Community 203"
-Cohesion: 0.09
-Nodes (8): ApplicationException, ChecksumGenerator, Codec, DotZLib, Info, ZLibException, DeflateInflateTests, uint
+### Community 200 - "Community 200"
+Cohesion: 0.11
+Nodes (14): object, AbstractRpcServer, ClientLoginError, HttpRpcServer, Raised to indicate there was an error authenticating with ClientLogin., Provides a common interface for a simple RPC server., Creates a new HttpRpcServer.      Args:       host: The host to send requests to, Returns an OpenerDirector for making HTTP requests.      Returns:       A urllib (+6 more)
 
-### Community 205 - "Community 205"
+### Community 201 - "Community 201"
 Cohesion: 0.11
 Nodes (19): GetBuildDir(), GetExitStatus(), GetFlag(), GetSourceDir(), GetTempDir(), GetTestExecutablePath(), Main(), _ParseAndStripGTestFlags() (+11 more)
 
-### Community 206 - "Community 206"
+### Community 202 - "Community 202"
 Cohesion: 0.17
 Nodes (17): exportGroupsToShape(), InitMaterial(), InitTexOpt(), JoinPath(), LoadMtl(), LoadObj(), LoadObjWithCallback(), operator() (+9 more)
 
-### Community 207 - "Community 207"
-Cohesion: 0.1
-Nodes (10): bool, byte, Codec, CircularBuffer, DotZLib, CodecBase, DotZLib, GCHandle (+2 more)
+### Community 204 - "Community 204"
+Cohesion: 0.2
+Nodes (22): stbi__build_fast_ac(), stbi__build_huffman(), stbi__compute_huffman_codes(), stbi__decode_jpeg_header(), stbi__decode_jpeg_image(), stbi__err(), stbi__fill_bits(), stbi__get16be() (+14 more)
 
-### Community 208 - "Community 208"
+### Community 205 - "Community 205"
+Cohesion: 0.16
+Nodes (22): mz_write_le16(), mz_write_le32(), mz_zip_add_mem_to_archive_file_in_place(), mz_zip_array_ensure_capacity(), mz_zip_array_ensure_room(), mz_zip_array_push_back(), mz_zip_array_reserve(), mz_zip_array_resize() (+14 more)
+
+### Community 206 - "Community 206"
 Cohesion: 0.12
 Nodes (4): ReadPacket(), WritePacket(), Reader, Writer
 
-### Community 209 - "Community 209"
-Cohesion: 0.17
-Nodes (18): main(), Assimp_Dump(), ConvertName(), encodeXML(), TextureTypeToString(), WriteBinaryDump(), WriteDump(), WriteNode() (+10 more)
+### Community 207 - "Community 207"
+Cohesion: 0.12
+Nodes (22): nk_do_property(), nk_dtoa(), nk_ifloord(), nk_itoa(), nk_log10(), nk_pow(), nk_property(), nk_property_double() (+14 more)
 
-### Community 210 - "Community 210"
+### Community 208 - "Community 208"
 Cohesion: 0.18
 Nodes (21): main(), test_mat2x2_col_set(), test_mat2x2_row_set(), test_mat2x3_col_set(), test_mat2x3_row_set(), test_mat2x4_col_set(), test_mat2x4_row_set(), test_mat3x2_col_set() (+13 more)
 
-### Community 211 - "Community 211"
-Cohesion: 0.11
-Nodes (21): BeginDragDropTargetCustom(), ColorConvertRGBtoHSV(), EndChild(), EndChildFrame(), EndGroup(), ErrorCheckEndFrameRecover(), GetStyleColorName(), ImGetDirQuadrantFromDelta() (+13 more)
-
-### Community 212 - "Community 212"
-Cohesion: 0.13
-Nodes (21): AcceptDragDropPayload(), Columns(), EndColumns(), GetBackgroundDrawList(), GetColumnOffset(), GetColumnsRectHalfWidth(), GetColumnWidth(), GetColumnWidthEx() (+13 more)
-
-### Community 213 - "Community 213"
-Cohesion: 0.13
-Nodes (21): AddWindowToSortBuffer(), EndFrame(), ErrorCheckEndFrameSanityChecks(), FindWindowNavFocusable(), GetFallbackWindowNameForWindowingList(), GetMergedKeyModFlags(), GetStyleVarInfo(), IsWindowNavFocusable() (+13 more)
-
-### Community 215 - "Community 215"
+### Community 209 - "Community 209"
 Cohesion: 0.13
 Nodes (21): ArrowButton(), ArrowButtonEx(), EndTabBar(), GetTabBarFromTabBarRef(), SetTabItemClosed(), ShrinkWidths(), TabBarCalcMaxTabWidth(), TabBarCalcTabID() (+13 more)
 
-### Community 216 - "Community 216"
-Cohesion: 0.1
-Nodes (3): ArrayList, AiAnimation, AiBone
-
-### Community 218 - "Community 218"
+### Community 210 - "Community 210"
 Cohesion: 0.16
-Nodes (21): mz_write_le16(), mz_write_le32(), mz_zip_array_ensure_capacity(), mz_zip_array_ensure_room(), mz_zip_array_push_back(), mz_zip_array_reserve(), mz_zip_array_resize(), mz_zip_get_file_modified_time() (+13 more)
+Nodes (21): stbtt__close_shape(), stbtt__find_table(), stbtt_GetCodepointBox(), stbtt_GetCodepointKernAdvance(), stbtt__GetCoverageIndex(), stbtt_GetFontBoundingBox(), stbtt_GetFontNameString(), stbtt_GetFontVMetricsOS2() (+13 more)
 
-### Community 219 - "Community 219"
-Cohesion: 0.15
-Nodes (17): Assimp(), ChangeDirectory(), Close(), ComparePaths(), CreateDirectory(), CurrentDirectory(), DeleteFile(), Flush() (+9 more)
+### Community 212 - "Community 212"
+Cohesion: 0.17
+Nodes (15): Geometry(), LineGeometry(), MeshGeometry(), ReadLayer(), ReadLayerElement(), ReadVertexData(), ReadVertexDataBinormals(), ReadVertexDataColors() (+7 more)
 
-### Community 220 - "Community 220"
+### Community 213 - "Community 213"
+Cohesion: 0.1
+Nodes (15): RecordProperty(), PropertyOne, TEST_F(), PropertyTwo, TEST_F(), DisabledTest, ExternalUtilityThatCallsRecordProperty(), FailedTest (+7 more)
+
+### Community 214 - "Community 214"
 Cohesion: 0.14
 Nodes (7): GLRenderer, Compute a scale factor and a translation to fit and center          the whole ge, Apply an OpenGL, using one OpenGL display list per material to cache          th, Main recursive rendering method., GLUT callback to redraw OpenGL surface, :param autofit: if true, scale the scene to fit the whole geometry         in th, Creates 3 buffer objets for each mesh,          to store the vertices, the norma
 
-### Community 221 - "Community 221"
-Cohesion: 0.11
-Nodes (18): AddPolygons(), BuildResult(), BuildResultEx(), Clear(), Clipper, ClipperBase, clipperException, DisposeLocalMinimaList() (+10 more)
+### Community 215 - "Community 215"
+Cohesion: 0.12
+Nodes (18): Abs(), decompose_matrix(), projection_from_matrix(), quaternion_about_axis(), Return quaternion for rotation about axis.      >>> q = quaternion_about_axis(0., Return length, i.e. eucledian norm, of ndarray along axis.      >>> v = numpy.ra, Return mirror plane point and normal vector from reflection matrix.      >>> v0, Return scaling factor, origin and direction from scaling matrix.      >>> factor (+10 more)
 
-### Community 222 - "Community 222"
+### Community 216 - "Community 216"
 Cohesion: 0.17
 Nodes (15): determineTextureType(), getTextureFromModel(), getTextureIndex(), Load(), loadMaterialTextures(), ModelLoader(), processMesh(), processNode() (+7 more)
 
-### Community 223 - "Community 223"
+### Community 217 - "Community 217"
+Cohesion: 0.29
+Nodes (19): ChangeInteger(), ConvertName(), encodeXML(), TextureTypeToString(), WriteBinaryAnim(), WriteBinaryBone(), WriteBinaryCamera(), WriteBinaryLight() (+11 more)
+
+### Community 218 - "Community 218"
 Cohesion: 0.13
 Nodes (13): Element(), ExportAssimp2Json(), JSONWriter, SimpleValue(), Write(), WriteFormatInfo(), aiCopyScene(), aiExportScene() (+5 more)
 
-### Community 224 - "Community 224"
+### Community 219 - "Community 219"
 Cohesion: 0.2
 Nodes (20): abortGLInit(), apply_material(), color4_to_float4(), Color4f(), createAILogger(), CreateGLWindow(), destroyAILogger(), drawAiScene() (+12 more)
 
-### Community 225 - "Community 225"
-Cohesion: 0.15
-Nodes (14): Circle, CompositeCurve, Conic, Convert(), Ellipse, EstimateSampleCount(), GetParametricRangeDelta(), InRange() (+6 more)
-
-### Community 226 - "Community 226"
+### Community 220 - "Community 220"
 Cohesion: 0.18
 Nodes (20): highestBitValue(), main(), nextMultipleFloat(), nextMultipleMod(), nextMultipleNeg(), nextMultipleUFloat(), nextPowerOfTwo_loop(), perf() (+12 more)
 
-### Community 227 - "Community 227"
-Cohesion: 0.17
-Nodes (13): ComputeBoxMapping(), ComputeCylinderMapping(), ComputePlaneMapping(), ComputeSphereMapping(), ComputeUVMappingProcess(), Execute(), FindEmptyUVChannel(), RemoveUVSeams() (+5 more)
+### Community 221 - "Community 221"
+Cohesion: 0.11
+Nodes (10): bool, byte, Codec, CircularBuffer, DotZLib, CodecBase, DotZLib, GCHandle (+2 more)
 
-### Community 228 - "Community 228"
-Cohesion: 0.13
-Nodes (10): Advance(), BaseGenerator(), Begin(), Clone(), ComputeCurrentValue(), Current(), End(), Equals() (+2 more)
+### Community 222 - "Community 222"
+Cohesion: 0.16
+Nodes (13): Circle, CompositeCurve, Conic, Ellipse, EstimateSampleCount(), GetParametricRangeDelta(), InRange(), IsClosed() (+5 more)
 
-### Community 229 - "Community 229"
-Cohesion: 0.13
-Nodes (10): BeautifyCode(), ConvertFromPumpSource(), Env, main(), Output, Strip meta comments from each line in the given string., Return the text generated from the given Pump source text., RunAtomicCode() (+2 more)
-
-### Community 230 - "Community 230"
+### Community 223 - "Community 223"
 Cohesion: 0.16
 Nodes (14): Print(), PrintTo(), IsPrintableAscii(), PrintAsCharLiteralTo(), PrintAsStringLiteralTo(), PrintByteSegmentInObjectTo(), PrintBytesInObjectTo(), PrintBytesInObjectToImpl() (+6 more)
 
-### Community 231 - "Community 231"
-Cohesion: 0.15
-Nodes (15): AddMaterialToDisplayList(), AddTextureToDisplayList(), MergeMaterials(), AddBinaryProperty(), AddProperty(), aiGetMaterialColor(), aiGetMaterialFloatArray(), aiGetMaterialIntegerArray() (+7 more)
+### Community 224 - "Community 224"
+Cohesion: 0.19
+Nodes (18): export3DModel(), exportArchive(), exportContentTyp(), exportContentTypes(), exportRelations(), ExportScene3MF(), validate(), writeBaseMaterials() (+10 more)
 
-### Community 232 - "Community 232"
+### Community 225 - "Community 225"
+Cohesion: 0.12
+Nodes (13): cmp<aiQuatKey >(), cmp<aiVectorKey >(), Process(), areVerticesEqual(), Assimp(), Execute(), JoinVerticesProcess(), ProcessMesh() (+5 more)
+
+### Community 226 - "Community 226"
 Cohesion: 0.21
 Nodes (17): CopyValue(), ExportAnimations(), ExportData(), ExportMaterials(), ExportMeshes(), ExportNode(), ExportNodeHierarchy(), ExportScene() (+9 more)
 
-### Community 233 - "Community 233"
+### Community 227 - "Community 227"
+Cohesion: 0.15
+Nodes (15): AddMaterialToDisplayList(), AddTextureToDisplayList(), MergeMaterials(), AddBinaryProperty(), AddProperty(), aiGetMaterialColor(), aiGetMaterialFloatArray(), aiGetMaterialIntegerArray() (+7 more)
+
+### Community 228 - "Community 228"
+Cohesion: 0.16
+Nodes (16): Assimp(), ChangeDirectory(), Close(), ComparePaths(), CreateDirectory(), CurrentDirectory(), DeleteFile(), Flush() (+8 more)
+
+### Community 229 - "Community 229"
 Cohesion: 0.19
 Nodes (18): error(), main(), nlz(), ntz1(), ntz10(), ntz2(), ntz3(), ntz4() (+10 more)
 
-### Community 234 - "Community 234"
-Cohesion: 0.17
-Nodes (15): renderer(), ComposeTRS(), DecomposeTRS(), EnsureBoneSSBOs_(), FillBlendedBones_(), FindClip(), Init(), PlayAnim() (+7 more)
-
-### Community 235 - "Community 235"
-Cohesion: 0.21
-Nodes (19): CompareWithCurrentState(), end(), GetBool(), GetBoolRef(), GetFloat(), GetFloatRef(), GetInt(), GetIntRef() (+11 more)
-
-### Community 236 - "Community 236"
-Cohesion: 0.18
-Nodes (19): stbtt__close_shape(), stbtt__find_table(), stbtt_GetCodepointKernAdvance(), stbtt__GetCoverageIndex(), stbtt_GetFontBoundingBox(), stbtt_GetFontNameString(), stbtt_GetFontVMetricsOS2(), stbtt__GetGlyfOffset() (+11 more)
-
-### Community 237 - "Community 237"
+### Community 230 - "Community 230"
 Cohesion: 0.32
 Nodes (19): stbtt__buf_get(), stbtt__buf_get8(), stbtt__buf_peek8(), stbtt__buf_range(), stbtt__buf_seek(), stbtt__buf_skip(), stbtt__cff_get_index(), stbtt__cff_index_count() (+11 more)
 
-### Community 239 - "Community 239"
-Cohesion: 0.17
-Nodes (14): BaseImporter(), ConvertPath(), ConvertShaderToMaterial(), InternReadFile(), LoadShader(), LoadSkin(), MD3Importer(), ReadMultipartFile() (+6 more)
-
-### Community 240 - "Community 240"
-Cohesion: 0.19
-Nodes (13): Geometry(), MeshGeometry(), ReadLayer(), ReadLayerElement(), ReadVertexData(), ReadVertexDataBinormals(), ReadVertexDataColors(), ReadVertexDataMaterials() (+5 more)
-
-### Community 241 - "Community 241"
-Cohesion: 0.15
-Nodes (16): FindFirst(), FindFirstInLine(), MakeToken(), ParseExpTokenInParens(), ParseToken(), Represents a token in a Pump source file., Returns a copy of self., Finds the first occurrence of any string in strings in lines. (+8 more)
-
-### Community 242 - "Community 242"
-Cohesion: 0.22
-Nodes (16): ConcatPaths(), CreateDirectoriesRecursively(), CreateFolder(), DirectoryExists(), FileOrDirectoryExists(), FindLastPathSeparator(), GenerateUniqueFileName(), IsAbsolutePath() (+8 more)
-
-### Community 243 - "Community 243"
-Cohesion: 0.16
-Nodes (8): GTestHelpTest, Verifies correct behavior when help flag is specified.      The right message mu, Verifies correct behavior when no help flag is specified.      Verifies that whe, Verifies that when no help flag is specified, the tests are run     and the help, Verifies that the tests are run and no help message is printed when     a flag s, Runs gtest_help_test_ with the given flag.    Returns:     the exit code and the, Tests the --help flag and its equivalent forms., RunWithFlag()
-
-### Community 244 - "Community 244"
-Cohesion: 0.12
-Nodes (6): irr(), set_used(), append(), operator(), reallocate(), reserve()
-
-### Community 245 - "Community 245"
+### Community 232 - "Community 232"
 Cohesion: 0.14
 Nodes (3): DotZLib, GZipStream, IntPtr
 
-### Community 246 - "Community 246"
+### Community 233 - "Community 233"
+Cohesion: 0.21
+Nodes (15): DestinationObject(), Document(), Get(), GetConnectionsByDestinationSequenced(), GetConnectionsBySourceSequenced(), GetConnectionsSequenced(), GetObject(), ReadConnections() (+7 more)
+
+### Community 234 - "Community 234"
+Cohesion: 0.21
+Nodes (17): FilterPolygon(), IntersectsBoundaryProfile(), IntersectSegmentPlane(), PointInPoly(), ProcessBoolean(), ProcessBooleanExtrudedAreaSolidDifference(), ProcessBooleanHalfSpaceDifference(), ProcessPolygonalBoundedBooleanHalfSpaceDifference() (+9 more)
+
+### Community 235 - "Community 235"
+Cohesion: 0.17
+Nodes (14): BaseImporter(), ConvertPath(), ConvertShaderToMaterial(), InternReadFile(), LoadShader(), LoadSkin(), MD3Importer(), ReadMultipartFile() (+6 more)
+
+### Community 236 - "Community 236"
+Cohesion: 0.22
+Nodes (16): ConcatPaths(), CreateDirectoriesRecursively(), CreateFolder(), DirectoryExists(), FileOrDirectoryExists(), FindLastPathSeparator(), GenerateUniqueFileName(), IsAbsolutePath() (+8 more)
+
+### Community 237 - "Community 237"
+Cohesion: 0.16
+Nodes (8): GTestHelpTest, Verifies correct behavior when help flag is specified.      The right message mu, Verifies correct behavior when no help flag is specified.      Verifies that whe, Verifies that when no help flag is specified, the tests are run     and the help, Verifies that the tests are run and no help message is printed when     a flag s, Runs gtest_help_test_ with the given flag.    Returns:     the exit code and the, Tests the --help flag and its equivalent forms., RunWithFlag()
+
+### Community 238 - "Community 238"
+Cohesion: 0.12
+Nodes (6): irr(), set_used(), append(), operator(), reallocate(), reserve()
+
+### Community 239 - "Community 239"
+Cohesion: 0.13
+Nodes (9): ConvertFromPumpSource(), Env, main(), Output, Strip meta comments from each line in the given string., Return the text generated from the given Pump source text., RunAtomicCode(), RunCode() (+1 more)
+
+### Community 240 - "Community 240"
 Cohesion: 0.18
 Nodes (11): MySetFilePointerEx(), win32_build_iowin(), win32_open64_file_func(), win32_open64_file_funcA(), win32_open64_file_funcW(), win32_open_file_func(), win32_seek64_file_func(), win32_seek_file_func() (+3 more)
 
-### Community 247 - "Community 247"
+### Community 241 - "Community 241"
 Cohesion: 0.16
 Nodes (12): del_folder_with_contents(), getEnvVar(), prepare_output_dir(), process_dir(), Handle formatting of results, Init, given a ZIPed database, Report failure of a sub-test          File f failed a test for pp config pp, fai, Report success of a sub-test          File f passed the test, msg is a happy suc (+4 more)
 
-### Community 248 - "Community 248"
-Cohesion: 0.16
-Nodes (18): stbi__addsizes_valid(), stbi__create_png_image(), stbi__create_png_image_raw(), stbi__expand_png_palette(), stbi__getn(), stbi__hdr_convert(), stbi__hdr_load(), stbi__hdr_to_ldr() (+10 more)
+### Community 242 - "Community 242"
+Cohesion: 0.15
+Nodes (14): _glfwStringInExtensionString(), chooseEGLConfig(), extensionSupportedEGL(), getEGLConfigAttrib(), getEGLErrorString(), _glfwChooseVisualEGL(), glfwGetEGLContext(), glfwGetEGLSurface() (+6 more)
 
-### Community 249 - "Community 249"
+### Community 243 - "Community 243"
 Cohesion: 0.2
-Nodes (14): AddMeshes(), AddNodes(), BuildAnimations(), BuildCameras(), BuildLights(), BuildMaterialIndices(), BuildNodes(), BuildUniqueRepresentation() (+6 more)
+Nodes (12): ComputeBoxMapping(), ComputeCylinderMapping(), ComputePlaneMapping(), ComputeSphereMapping(), Execute(), FindEmptyUVChannel(), RemoveUVSeams(), FindAABBTransformed() (+4 more)
 
-### Community 250 - "Community 250"
-Cohesion: 0.21
-Nodes (15): CanRead(), ConvertMeshes(), ExpandBlockReferences(), GenerateHierarchy(), GenerateMaterials(), InternReadFile(), Parse3DFace(), ParseBlock() (+7 more)
-
-### Community 251 - "Community 251"
-Cohesion: 0.22
-Nodes (15): AnimationCurve(), AnimationCurveNode(), AnimationLayer(), AnimationStack(), Nodes(), ReadGlobalSettings(), DOMError(), DOMWarning() (+7 more)
-
-### Community 252 - "Community 252"
-Cohesion: 0.16
-Nodes (18): AddTestPartResult(), AppendUserMessage(), FilterTests(), FormatCxxExceptionMessage(), FormatSehExceptionMessage(), GetBoolAssertionFailureMessage(), GetInstance(), GetString() (+10 more)
-
-### Community 253 - "Community 253"
-Cohesion: 0.16
-Nodes (11): GTestBreakOnFailureUnitTest, Runs gtest_break_on_failure_unittest_ and verifies that it does     (or does not, Tests the behavior of the default mode., Tests using the GTEST_BREAK_ON_FAILURE environment variable., Tests using the --gtest_break_on_failure flag., Tests that the flag overrides the environment variable., Tests that gtest_break_on_failure overrides gtest_throw_on_failure., Runs a command; returns 1 if it was killed by a signal, or 0 otherwise. (+3 more)
-
-### Community 254 - "Community 254"
-Cohesion: 0.18
-Nodes (14): gz_open(), gz_reset(), gzclearerr(), gzdopen(), gzoffset(), gzoffset64(), gzopen(), gzopen64() (+6 more)
-
-### Community 255 - "Community 255"
-Cohesion: 0.22
-Nodes (14): attach(), close(), fillbuf(), flushbuf(), gzfilebuf(), gzfilestream_common(), gzifstream(), gzofstream() (+6 more)
-
-### Community 256 - "Community 256"
-Cohesion: 0.11
-Nodes (3): fill_zlib_filefunc64_32_def_from_filefunc32(), unzOpen2(), zipOpen2()
-
-### Community 257 - "Community 257"
-Cohesion: 0.16
-Nodes (17): FuseGTest(), FuseGTestAllCc(), FuseGTestAllCcToFile(), FuseGTestH(), main(), Makes sure gtest_root points to a valid gtest root directory.    The function ab, Verifies that the given output file path is valid.    relative_path is relative, Makes sure output_dir points to a valid output directory.    The function aborts (+9 more)
-
-### Community 258 - "Community 258"
-Cohesion: 0.14
-Nodes (10): GTestXMLOutputUnitTest, Unit test for Google Test's XML output functionality., Verifies XML output for a Google Test binary without actual tests.      Runs a t, Checks whether the timestamp attribute in the XML output is valid.      Runs a t, Confirms that Google Test produces an XML output file with the expected     defa, Tests that no XML file is generated if the default XML listener is     shut down, Verifies XML output when a filter is applied.      Runs a test program that exec, Returns the xml output generated by running the program gtest_prog_name.     Fur (+2 more)
-
-### Community 259 - "Community 259"
-Cohesion: 0.18
-Nodes (14): CalculateBounds(), CreateAssetData(), CreateDevice(), CreateHUDTexture(), GenerateNormalsAsLineList(), LoadAsset(), SafeRelease(), ScaleAsset() (+6 more)
-
-### Community 260 - "Community 260"
+### Community 244 - "Community 244"
 Cohesion: 0.12
 Nodes (10): AssbinChunkWriter, AssbinExport, Write(), WriteBounds(), RemoveAdjacentDuplicates(), ArrayBounds(), Assimp(), Execute() (+2 more)
 
-### Community 261 - "Community 261"
+### Community 245 - "Community 245"
+Cohesion: 0.2
+Nodes (14): AddMeshes(), AddNodes(), BuildAnimations(), BuildCameras(), BuildLights(), BuildMaterialIndices(), BuildNodes(), BuildUniqueRepresentation() (+6 more)
+
+### Community 246 - "Community 246"
+Cohesion: 0.21
+Nodes (15): CanRead(), ConvertMeshes(), ExpandBlockReferences(), GenerateHierarchy(), GenerateMaterials(), InternReadFile(), Parse3DFace(), ParseBlock() (+7 more)
+
+### Community 247 - "Community 247"
+Cohesion: 0.16
+Nodes (11): GTestBreakOnFailureUnitTest, Runs gtest_break_on_failure_unittest_ and verifies that it does     (or does not, Tests the behavior of the default mode., Tests using the GTEST_BREAK_ON_FAILURE environment variable., Tests using the --gtest_break_on_failure flag., Tests that the flag overrides the environment variable., Tests that gtest_break_on_failure overrides gtest_throw_on_failure., Runs a command; returns 1 if it was killed by a signal, or 0 otherwise. (+3 more)
+
+### Community 248 - "Community 248"
+Cohesion: 0.18
+Nodes (14): gz_open(), gz_reset(), gzclearerr(), gzdopen(), gzoffset(), gzoffset64(), gzopen(), gzopen64() (+6 more)
+
+### Community 249 - "Community 249"
+Cohesion: 0.22
+Nodes (14): attach(), close(), fillbuf(), flushbuf(), gzfilebuf(), gzfilestream_common(), gzifstream(), gzofstream() (+6 more)
+
+### Community 250 - "Community 250"
+Cohesion: 0.11
+Nodes (3): fill_zlib_filefunc64_32_def_from_filefunc32(), unzOpen2(), zipOpen2()
+
+### Community 251 - "Community 251"
+Cohesion: 0.16
+Nodes (17): FuseGTest(), FuseGTestAllCc(), FuseGTestAllCcToFile(), FuseGTestH(), main(), Makes sure gtest_root points to a valid gtest root directory.    The function ab, Verifies that the given output file path is valid.    relative_path is relative, Makes sure output_dir points to a valid output directory.    The function aborts (+9 more)
+
+### Community 252 - "Community 252"
+Cohesion: 0.14
+Nodes (10): GTestXMLOutputUnitTest, Unit test for Google Test's XML output functionality., Verifies XML output for a Google Test binary without actual tests.      Runs a t, Checks whether the timestamp attribute in the XML output is valid.      Runs a t, Confirms that Google Test produces an XML output file with the expected     defa, Tests that no XML file is generated if the default XML listener is     shut down, Verifies XML output when a filter is applied.      Runs a test program that exec, Returns the xml output generated by running the program gtest_prog_name.     Fur (+2 more)
+
+### Community 253 - "Community 253"
+Cohesion: 0.22
+Nodes (14): main(), Assimp_Dump(), WriteBinaryDump(), aiGetBranchName(), aiGetCompileFlags(), aiGetVersionMajor(), aiGetVersionMinor(), aiGetVersionRevision() (+6 more)
+
+### Community 254 - "Community 254"
+Cohesion: 0.18
+Nodes (14): CalculateBounds(), CreateAssetData(), CreateDevice(), CreateHUDTexture(), GenerateNormalsAsLineList(), LoadAsset(), SafeRelease(), ScaleAsset() (+6 more)
+
+### Community 255 - "Community 255"
 Cohesion: 0.31
 Nodes (17): main(), min_int(), min_tern(), perf(), perf_linear(), perf_linear_cal(), perf_rand(), sign_alu1() (+9 more)
 
-### Community 262 - "Community 262"
+### Community 256 - "Community 256"
 Cohesion: 0.22
 Nodes (17): error(), main(), nlz1(), nlz10(), nlz10a(), nlz10b(), nlz1a(), nlz2() (+9 more)
 
-### Community 263 - "Community 263"
+### Community 257 - "Community 257"
 Cohesion: 0.22
 Nodes (17): DeleteArea(), DeletePortal(), DeleteWaypoint(), DeleteWorldObject(), Draw(), DrawAreaFields(), DrawPortalFields(), DrawWaypointFields() (+9 more)
 
-### Community 264 - "Community 264"
+### Community 258 - "Community 258"
+Cohesion: 0.17
+Nodes (17): AddWindowToSortBuffer(), EndFrame(), ErrorCheckEndFrameSanityChecks(), GetFallbackWindowNameForWindowingList(), GetMergedKeyModFlags(), GetStyleVarInfo(), IsWindowNavFocusable(), NavEndFrame() (+9 more)
+
+### Community 259 - "Community 259"
+Cohesion: 0.19
+Nodes (17): AddCircle(), AddCircleFilled(), AddNgon(), AddNgonFilled(), _CalcCircleAutoSegmentCount(), ImAcos01(), ImDrawListSharedData(), PathArcTo() (+9 more)
+
+### Community 260 - "Community 260"
 Cohesion: 0.18
 Nodes (17): TableBeginCell(), TableBeginRow(), TableEndCell(), TableEndRow(), TableGetCellBgRect(), TableGetColumnCount(), TableGetColumnFlags(), TableGetColumnName() (+9 more)
 
-### Community 265 - "Community 265"
-Cohesion: 0.26
-Nodes (17): stbi__bitcount(), stbi__bmp_load(), stbi__bmp_parse_header(), stbi__bmp_test_raw(), stbi__get16le(), stbi__get32le(), stbi__get8(), stbi__gif_header() (+9 more)
-
-### Community 266 - "Community 266"
-Cohesion: 0.16
-Nodes (17): stbi__compute_transparency(), stbi__compute_transparency16(), stbi__compute_y_16(), stbi__convert_format16(), stbi__de_iphone(), stbi__do_png(), stbi__expand_png_palette(), stbi__get16be() (+9 more)
-
-### Community 267 - "Community 267"
-Cohesion: 0.15
-Nodes (7): MaterialManager(), appendName_(), GetLinearBindless(), GetLinearMaterials(), GetMaterial(), MakeResidentHandle_(), RegisterFromHandles()
-
-### Community 268 - "Community 268"
+### Community 261 - "Community 261"
 Cohesion: 0.26
 Nodes (14): ChunkWriter, CollectMeshes(), CollectTrafos(), Discreet3DSExporter(), GetMaterialName(), GetMeshName(), WriteColor(), WriteFaceMaterialChunk() (+6 more)
 
-### Community 269 - "Community 269"
-Cohesion: 0.21
-Nodes (13): DestinationObject(), Document(), Get(), GetConnectionsByDestinationSequenced(), GetConnectionsBySourceSequenced(), GetConnectionsSequenced(), GetObject(), ReadConnections() (+5 more)
-
-### Community 270 - "Community 270"
-Cohesion: 0.14
-Nodes (10): cmp<aiQuatKey >(), areVerticesEqual(), Assimp(), Execute(), JoinVerticesProcess(), ProcessMesh(), updateXMeshVertices(), aiQuatKey() (+2 more)
-
-### Community 271 - "Community 271"
+### Community 262 - "Community 262"
 Cohesion: 0.21
 Nodes (13): ApplyTransform(), Assimp(), BuildMeshRefCountArray(), BuildWCSMeshes(), CollectData(), ComputeAbsoluteTransform(), CountNodes(), CountVerticesAndFaces() (+5 more)
 
-### Community 272 - "Community 272"
+### Community 263 - "Community 263"
 Cohesion: 0.12
-Nodes (7): Cursor, ParseToAST(), Returns a copy of self., A generator that yields the tokens in the given string., Convert the given Pump source text into an AST., Represents a position (line and column) in a text file., Tokenize()
+Nodes (8): Index(), glTF(), GTEST_API_(), TestProperty(), AddTestPattern(), testing(), value_(), TestInfo()
 
-### Community 273 - "Community 273"
+### Community 264 - "Community 264"
 Cohesion: 0.13
 Nodes (4): CatchCxxExceptionsTest, CatchSehExceptionsTest, Tests C++ exception-catching behavior.       Tests in this test case verify that, Tests exception-catching behavior.
 
-### Community 274 - "Community 274"
+### Community 265 - "Community 265"
 Cohesion: 0.16
 Nodes (11): Tests the behavior of the default mode., Tests using the GTEST_THROW_ON_FAILURE environment variable., Tests using the --gtest_throw_on_failure flag., Tests that --gtest_throw_on_failure overrides GTEST_THROW_ON_FAILURE., Sets an environment variable to a given value; unsets it when the   given value, Runs a command; returns True/False if its exit code is/isn't 0., Tests the throw-on-failure mode., Runs gtest_throw_on_failure_test_ and verifies that it does     (or does not) ex (+3 more)
 
-### Community 275 - "Community 275"
+### Community 266 - "Community 266"
 Cohesion: 0.28
 Nodes (15): gzclose(), gz_error(), gz_avail(), gz_decomp(), gz_fetch(), gz_load(), gz_look(), gz_read() (+7 more)
 
-### Community 276 - "Community 276"
+### Community 267 - "Community 267"
 Cohesion: 0.26
 Nodes (13): attach(), close(), disable_buffer(), enable_buffer(), gzfilebuf(), gzifstream(), gzofstream(), open() (+5 more)
 
-### Community 277 - "Community 277"
+### Community 268 - "Community 268"
+Cohesion: 0.16
+Nodes (14): FindFirst(), FindFirstInLine(), MakeToken(), ParseExpTokenInParens(), ParseToken(), Represents a token in a Pump source file., Returns a copy of self., Finds the first occurrence of any string in strings in lines. (+6 more)
+
+### Community 269 - "Community 269"
 Cohesion: 0.31
 Nodes (7): main(), recur_node(), AppearanceBytes(), appendAnimBindings(), NewActorPayload(), WorldObjectsPayload(), pb
 
-### Community 278 - "Community 278"
+### Community 270 - "Community 270"
 Cohesion: 0.24
 Nodes (16): AddNodeHashes(), AddNodePrefixes(), AddNodePrefixesChecked(), AttachToGraph(), BuildUniqueBoneList(), Copy(), CopyPtrArray(), CopyScene() (+8 more)
 
-### Community 279 - "Community 279"
-Cohesion: 0.16
-Nodes (10): Line, Center(), ComputeLastPolygonNormal(), ComputePolygonNormal(), ComputePolygonNormals(), ConvertVector(), FindVector(), FixupFaceOrientation() (+2 more)
+### Community 271 - "Community 271"
+Cohesion: 0.14
+Nodes (17): nk_adler32(), nk_decode_85(), nk_decode_85_byte(), nk_decompress(), nk_decompress_length(), nk_decompress_token(), nk_file_load(), nk_font_atlas_add() (+9 more)
 
-### Community 281 - "Community 281"
+### Community 273 - "Community 273"
 Cohesion: 0.33
 Nodes (13): glm_mat4_add(), glm_mat4_determinant(), glm_mat4_determinant_highp(), glm_mat4_determinant_lowp(), glm_mat4_inverse(), glm_mat4_inverse_lowp(), glm_mat4_matrixCompMult(), glm_mat4_mul() (+5 more)
+
+### Community 274 - "Community 274"
+Cohesion: 0.17
+Nodes (16): stbi__check_png_header(), stbi__compute_transparency(), stbi__compute_transparency16(), stbi__compute_y_16(), stbi__convert_format16(), stbi__de_iphone(), stbi__do_png(), stbi__get16be() (+8 more)
+
+### Community 275 - "Community 275"
+Cohesion: 0.14
+Nodes (16): AddConvexPolyFilled(), AddPolyline(), AddRectFilledMultiColor(), AddRemapChar(), AddText(), BuildLookupTable(), CalcTextSizeA(), CalcWordWrapPositionA() (+8 more)
+
+### Community 276 - "Community 276"
+Cohesion: 0.25
+Nodes (13): AnimationCurve(), AnimationCurveNode(), AnimationLayer(), AnimationStack(), Nodes(), DOMWarning(), GetPropertyTable(), fillTexture() (+5 more)
+
+### Community 277 - "Community 277"
+Cohesion: 0.13
+Nodes (11): CommonTest, DerivedTest, GetTestName(), NumericTest, TrimmedTest, TYPED_TEST_P(), TypedTest1, TypedTest2 (+3 more)
+
+### Community 278 - "Community 278"
+Cohesion: 0.17
+Nodes (10): GTestColorTest, Tests the case when there are both GTEST_COLOR and --gtest_color., Tests using aliases in specifying --gtest_color., Sets the env variable to 'value'; unsets it when 'value' is None., Runs gtest_color_test_ and returns its exit code., Tests the case when there's neither GTEST_COLOR nor --gtest_color., Tests the case when there's --gtest_color but not GTEST_COLOR., Tests the case when there's GTEST_COLOR but not --gtest_color. (+2 more)
+
+### Community 279 - "Community 279"
+Cohesion: 0.12
+Nodes (7): FooTest, MyArray, MyType, TypedTest, TypeParamTest, ValueParamTest, VeryLoooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooogName
+
+### Community 280 - "Community 280"
+Cohesion: 0.17
+Nodes (9): Assimp(), C4DImporter(), CanRead(), InternReadFile(), ReadMaterials(), ReadMesh(), ReadShader(), RecurseHierarchy() (+1 more)
+
+### Community 281 - "Community 281"
+Cohesion: 0.21
+Nodes (12): al(), handleNode(), OpenDDLExport(), writeLineEnd(), writeNode(), writeNodeHeader(), writeProperties(), writeToStream() (+4 more)
 
 ### Community 282 - "Community 282"
 Cohesion: 0.19
 Nodes (11): StringToUTF8(), AddLineNumber(), DataType::Parse(), getIdFromToken(), handleSkippedDepthFromToken(), IsEntityDef(), LazyObject::LazyInit(), LazyObject::LazyObject() (+3 more)
 
 ### Community 283 - "Community 283"
-Cohesion: 0.16
-Nodes (7): AddLoadRequest(), ConvertToUTF8(), LoadAll(), LoadRequest(), ReadFile(), SetupProperties(), UpdateImporterScale()
+Cohesion: 0.13
+Nodes (5): Destroy(), RAPIDJSON_DIAG_OFF(), Assimp(), if(), tinyobj()
 
 ### Community 284 - "Community 284"
-Cohesion: 0.17
-Nodes (9): Assimp(), C4DImporter(), CanRead(), InternReadFile(), ReadMaterials(), ReadMesh(), ReadShader(), RecurseHierarchy() (+1 more)
-
-### Community 285 - "Community 285"
-Cohesion: 0.13
-Nodes (6): ChecksumTests, CircBufferTests, DotZLibTests, GZipStreamTests, InfoTests, Utils
-
-### Community 286 - "Community 286"
-Cohesion: 0.12
-Nodes (9): AutoHandle(), LogToStderr(), Get(), Join(), Notification(), Notify(), OnThreadLocalDestroyed(), ThreadWithParamBase() (+1 more)
-
-### Community 287 - "Community 287"
-Cohesion: 0.13
-Nodes (11): CommonTest, DerivedTest, GetTestName(), NumericTest, TrimmedTest, TYPED_TEST_P(), TypedTest1, TypedTest2 (+3 more)
-
-### Community 288 - "Community 288"
-Cohesion: 0.17
-Nodes (10): GTestColorTest, Tests the case when there are both GTEST_COLOR and --gtest_color., Tests using aliases in specifying --gtest_color., Sets the env variable to 'value'; unsets it when 'value' is None., Runs gtest_color_test_ and returns its exit code., Tests the case when there's neither GTEST_COLOR nor --gtest_color., Tests the case when there's --gtest_color but not GTEST_COLOR., Tests the case when there's GTEST_COLOR but not --gtest_color. (+2 more)
-
-### Community 289 - "Community 289"
-Cohesion: 0.12
-Nodes (7): FooTest, MyArray, MyType, TypedTest, TypeParamTest, ValueParamTest, VeryLoooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooogName
-
-### Community 290 - "Community 290"
-Cohesion: 0.21
-Nodes (12): al(), handleNode(), OpenDDLExport(), writeLineEnd(), writeNode(), writeNodeHeader(), writeProperties(), writeToStream() (+4 more)
-
-### Community 291 - "Community 291"
-Cohesion: 0.18
-Nodes (11): h(), Dispatch(), jsonEscape(), jsonGetString(), LoadBindings(), LoadLocalOverrides(), OnKeyDown(), OnKeyUp() (+3 more)
-
-### Community 292 - "Community 292"
-Cohesion: 0.23
-Nodes (14): export3DModel(), exportArchive(), exportContentTypes(), exportRelations(), ExportScene3MF(), validate(), writeBaseMaterials(), writeBuild() (+6 more)
-
-### Community 293 - "Community 293"
 Cohesion: 0.16
 Nodes (4): ai_rgba2hex(), main(), AiQuaternion, ZStream
 
-### Community 294 - "Community 294"
+### Community 285 - "Community 285"
 Cohesion: 0.24
 Nodes (15): fill_win32_filefunc64A(), change_file_date(), Display64BitsSize(), do_banner(), do_extract(), do_extract_currentfile(), do_extract_onefile(), do_help() (+7 more)
 
-### Community 295 - "Community 295"
-Cohesion: 0.42
-Nodes (14): ChangeInteger(), WriteBinaryAnim(), WriteBinaryBone(), WriteBinaryCamera(), WriteBinaryLight(), WriteBinaryMaterial(), WriteBinaryMaterialProperty(), WriteBinaryMesh() (+6 more)
-
-### Community 296 - "Community 296"
+### Community 286 - "Community 286"
 Cohesion: 0.23
 Nodes (13): Assimp_Export(), GetMatchingFormat(), Assimp_Extract(), DoExport(), SaveAsBMP(), SaveAsTGA(), Assimp_TestBatchLoad(), ExportModel() (+5 more)
 
-### Community 297 - "Community 297"
-Cohesion: 0.25
-Nodes (14): bits(), codes(), construct(), decode(), dynamic(), fixed(), puff(), stored() (+6 more)
-
-### Community 298 - "Community 298"
+### Community 287 - "Community 287"
 Cohesion: 0.24
 Nodes (15): main(), test_mat2x2_ctor(), test_mat2x3_ctor(), test_mat2x4_ctor(), test_mat3x2_ctor(), test_mat3x3_ctor(), test_mat3x4_ctor(), test_mat4x2_ctor() (+7 more)
 
-### Community 299 - "Community 299"
+### Community 288 - "Community 288"
 Cohesion: 0.24
 Nodes (15): main(), test(), test_bvec4_ctor(), test_constexpr(), test_equal(), test_inheritance(), test_operator_increment(), test_operators() (+7 more)
 
-### Community 300 - "Community 300"
+### Community 289 - "Community 289"
 Cohesion: 0.24
 Nodes (15): main(), test_dmat_size(), test_dvec_precision(), test_fmat_size(), test_fvec_conversion(), test_fvec_precision(), test_fvec_size(), test_ivec_precision() (+7 more)
 
-### Community 301 - "Community 301"
+### Community 290 - "Community 290"
+Cohesion: 0.19
+Nodes (15): BeginCombo(), BeginComboPopup(), BeginListBox(), BeginMenu(), CalcMaxPopupHeightFromItemCount(), Combo(), DeclColumns(), EndCombo() (+7 more)
+
+### Community 291 - "Community 291"
+Cohesion: 0.17
+Nodes (15): AddFont(), AddFontDefault(), AddFontFromFileTTF(), AddFontFromMemoryCompressedBase85TTF(), AddFontFromMemoryCompressedTTF(), AddFontFromMemoryTTF(), ClearTexData(), Decode85() (+7 more)
+
+### Community 292 - "Community 292"
 Cohesion: 0.21
 Nodes (15): AddImage(), AddImageQuad(), AddImageRounded(), AddRect(), FixRectCornerFlags(), GetMouseCursorTexData(), _OnChangedTextureID(), PathRect() (+7 more)
 
-### Community 302 - "Community 302"
-Cohesion: 0.16
-Nodes (15): GetOverlayDrawList(), EndTable(), TableDrawBorders(), TableFixColumnSortDirection(), TableGetColumnAvailSortDirection(), TableGetColumnNextSortDirection(), TableGetColumnWidthAuto(), TableGetSortSpecs() (+7 more)
-
-### Community 303 - "Community 303"
-Cohesion: 0.24
-Nodes (11): Assimp(), BuildSingleQuadMesh(), BuildSkybox(), CanRead(), ClampSpline(), ComputeAnimations(), CopyMaterial(), FindSuitableMultiple() (+3 more)
-
-### Community 304 - "Community 304"
-Cohesion: 0.16
-Nodes (7): D3MFOpcPackage(), OpcPackageRelationshipReader, ReadPackageRootRelationship(), BuildVertex(), InternReadFile(), ValidateHeader(), ValidateSurfaceHeader()
-
-### Community 305 - "Community 305"
-Cohesion: 0.3
-Nodes (15): GetTextContent(), ReadAssetInfo(), ReadBoolFromTextContent(), ReadContributorInfo(), ReadEffectColor(), ReadEffectFloat(), ReadEffectProfileCommon(), ReadFloatFromTextContent() (+7 more)
-
-### Community 306 - "Community 306"
+### Community 293 - "Community 293"
 Cohesion: 0.21
 Nodes (11): AllIdentical(), Assimp(), EpsilonCompare(), Execute(), FindInvalidDataProcess(), ProcessAnimation(), ProcessAnimationChannel(), ProcessArray() (+3 more)
 
-### Community 307 - "Community 307"
+### Community 294 - "Community 294"
 Cohesion: 0.24
 Nodes (11): AssertEq(), GetFlag(), GTestEnvVarTest, Tests that $XML_OUTPUT_FILE affects the output flag., Tests that $XML_OUTPUT_FILE is overridden by $GTEST_OUTPUT, Sets the env variable to 'value'; unsets it when 'value' is None., Runs gtest_env_var_test_ and returns its output., Verifies that the given flag is affected by the corresponding env var. (+3 more)
 
-### Community 308 - "Community 308"
+### Community 295 - "Community 295"
 Cohesion: 0.18
 Nodes (9): GTestListTestsUnitTest, Runs gtest_list_tests_unittest_ and returns the list of tests printed., Tests using the --gtest_list_tests flag to list all tests., Runs gtest_list_tests_unittest_ and verifies that it prints     the correct test, Tests the behavior of the default mode., Tests using the --gtest_list_tests flag., Tests that --gtest_list_tests overrides the non-filter flags., Tests that --gtest_list_tests takes into account the     --gtest_filter flag. (+1 more)
 
-### Community 309 - "Community 309"
+### Community 296 - "Community 296"
 Cohesion: 0.25
 Nodes (14): Load(), LoadBinAC(), LoadBinData(), LoadIntACEGC(), LoadIntData(), LoadUIntAC(), LoadUIntData(), Save() (+6 more)
 
-### Community 310 - "Community 310"
+### Community 297 - "Community 297"
+Cohesion: 0.2
+Nodes (15): mz_fopen(), mz_freopen(), mz_zip_array_clear(), mz_zip_extract_archive_file_to_heap(), mz_zip_reader_end(), mz_zip_reader_init(), mz_zip_reader_init_file(), mz_zip_reader_init_internal() (+7 more)
+
+### Community 298 - "Community 298"
 Cohesion: 0.35
 Nodes (14): gz_comp(), gz_init(), gz_write(), gz_zero(), gzclose_w(), gzflush(), gzfwrite(), gzprintf() (+6 more)
 
-### Community 311 - "Community 311"
+### Community 299 - "Community 299"
 Cohesion: 0.28
 Nodes (14): error(), ExprMatch(), getoct(), help(), main(), makedir(), matchname(), push_attr() (+6 more)
 
-### Community 313 - "Community 313"
-Cohesion: 0.2
-Nodes (13): aiIdentityMatrix4(), aiMultiplyMatrix4(), aiTransformVecByMatrix4(), aiTransposeMatrix4(), apply_material(), color4_to_float4(), display(), do_motion() (+5 more)
+### Community 301 - "Community 301"
+Cohesion: 0.29
+Nodes (14): count_args_up(), gen_converter(), gen_type_struct(), generate_fields(), get_base_classes(), get_cpp_type(), get_derived(), get_hierarchy() (+6 more)
 
-### Community 314 - "Community 314"
+### Community 302 - "Community 302"
+Cohesion: 0.15
+Nodes (15): AddIntersectNode(), BuildArc(), BuildIntersectList(), CopyAELToSEL(), DisposeIntersectNodes(), FixupIntersections(), IntersectPoint(), ProcessIntersections() (+7 more)
+
+### Community 303 - "Community 303"
 Cohesion: 0.14
 Nodes (10): Assimp(), clean(), extract_zip(), gen_db(), make_zip(), process_dir(), Zip the contents of ./<settings.database_name>     to <settings.database_name>.z, Unzip <settings.database_name>.zip to     ./<settings.database_name> (+2 more)
 
-### Community 315 - "Community 315"
+### Community 304 - "Community 304"
+Cohesion: 0.24
+Nodes (14): stbi_write_png(), BuildORM(), CopyFileTo(), DetectRole(), ExtractPrefix(), FlipNormalGChannel(), IFindIn(), ImportTextureGroup() (+6 more)
+
+### Community 305 - "Community 305"
 Cohesion: 0.26
 Nodes (14): BounceBall(), cos_deg(), CrossProduct(), cursor_position_callback(), deg2rad(), display(), DrawBoingBall(), DrawBoingBallBand() (+6 more)
 
-### Community 316 - "Community 316"
+### Community 306 - "Community 306"
 Cohesion: 0.26
 Nodes (14): error(), main(), pop0(), pop1(), pop2(), pop3(), pop4(), pop5() (+6 more)
 
-### Community 317 - "Community 317"
+### Community 307 - "Community 307"
 Cohesion: 0.25
 Nodes (13): main(), test_bvec3_ctor(), test_constexpr(), test_operator_increment(), test_swizzle(), test_vec3_ctor(), test_vec3_operators(), test_vec3_size() (+5 more)
 
-### Community 318 - "Community 318"
-Cohesion: 0.26
-Nodes (12): BaseImporter, BaseProcess, BatchLoader, GetExtensionList(), Importer, ImporterPimpl, IOStream, IOSystem (+4 more)
+### Community 308 - "Community 308"
+Cohesion: 0.19
+Nodes (14): appendfv(), CallContextHooks(), DestroyContext(), ImFileClose(), ImFileWrite(), ImFormatStringV(), LogFinish(), LogText() (+6 more)
 
-### Community 319 - "Community 319"
+### Community 309 - "Community 309"
 Cohesion: 0.26
 Nodes (12): ASSIMP_API, ChangeDirectory(), ComparePaths(), CreateDirectory(), DeleteFile(), Exists(), IOStream, ~IOSystem() (+4 more)
 
-### Community 320 - "Community 320"
-Cohesion: 0.26
-Nodes (10): AttachChilds_Anim(), AttachChilds_Mesh(), CanRead(), InternReadFile(), LoadFileIntoMemory(), LoadMD5AnimFile(), LoadMD5CameraFile(), LoadMD5MeshFile() (+2 more)
+### Community 310 - "Community 310"
+Cohesion: 0.18
+Nodes (14): GetOverlayDrawList(), EndTable(), TableDrawBorders(), TableDrawContextMenu(), TableGetColumnResizeID(), TableGetColumnWidthAuto(), TableGetSortSpecs(), TableMergeDrawChannels() (+6 more)
 
-### Community 321 - "Community 321"
+### Community 311 - "Community 311"
 Cohesion: 0.2
 Nodes (9): MD5AnimParser(), MD5CameraParser(), MD5MeshParser(), MD5Parser(), ParseHeader(), ParseSection(), ReportError(), ReportWarning() (+1 more)
 
-### Community 322 - "Community 322"
+### Community 312 - "Community 312"
+Cohesion: 0.21
+Nodes (8): Center(), ComputeLastPolygonNormal(), ComputePolygonNormal(), ComputePolygonNormals(), FindVector(), FixupFaceOrientation(), RemoveDegenerates(), Swap()
+
+### Community 313 - "Community 313"
 Cohesion: 0.26
 Nodes (12): countLumps(), getEntities(), getFaces(), getIndices(), getLightMaps(), getLumps(), getTextures(), getVertices() (+4 more)
 
-### Community 324 - "Community 324"
+### Community 314 - "Community 314"
 Cohesion: 0.29
 Nodes (10): CheckCounts(), main(), MyEnvironment, MyParamTest, ResetCounts(), TestRepeat(), TestRepeatUnspecified(), TestRepeatWithEmptyFilter() (+2 more)
 
-### Community 325 - "Community 325"
+### Community 316 - "Community 316"
+Cohesion: 0.19
+Nodes (8): AssertHelper(), gtest_internal(), ComputeUVMappingProcess(), Entity, Field, read(), Schema, Type
+
+### Community 317 - "Community 317"
+Cohesion: 0.26
+Nodes (10): Assimp(), BuildSingleQuadMesh(), BuildSkybox(), ClampSpline(), ComputeAnimations(), CopyMaterial(), FindSuitableMultiple(), GenerateGraph() (+2 more)
+
+### Community 318 - "Community 318"
+Cohesion: 0.26
+Nodes (12): GTEST_10_TYPENAMES_(), GTEST_1_TYPENAMES_(), GTEST_2_TYPENAMES_(), GTEST_3_TYPENAMES_(), GTEST_4_TYPENAMES_(), GTEST_5_TYPENAMES_(), GTEST_6_TYPENAMES_(), GTEST_7_TYPENAMES_() (+4 more)
+
+### Community 319 - "Community 319"
 Cohesion: 0.23
 Nodes (9): close(), flush(), fp(), izstream(), m_fp(), open(), os_flush(), ozstream() (+1 more)
 
-### Community 326 - "Community 326"
-Cohesion: 0.18
-Nodes (12): get_bounding_box(), get_bounding_box_for_node(), hasattr_silent(), Try to bind to aiImportFile and aiReleaseImport      Arguments     ---------, Loads the assimp library.     Throws exception AssimpError if no library_path is, Calls hasttr() with the given parameters and preserves the legacy (pre-Python 3., Converts a VECTOR3D to a Tuple, Apply a transformation matrix on a 3D vector.      :param vector3: array with 3 (+4 more)
+### Community 320 - "Community 320"
+Cohesion: 0.26
+Nodes (12): BaseImporter, BaseProcess, BatchLoader, GetExtensionList(), Importer, ImporterPimpl, IOStream, IOSystem (+4 more)
 
-### Community 327 - "Community 327"
-Cohesion: 0.14
-Nodes (13): euler_from_matrix(), euler_from_quaternion(), quaternion_matrix(), random_quaternion(), random_rotation_matrix(), Return Euler angles from rotation matrix for specified axis sequence.      axes, Return Euler angles from quaternion for specified axis sequence.      >>> angles, Return homogeneous rotation matrix from quaternion.      >>> R = quaternion_matr (+5 more)
-
-### Community 328 - "Community 328"
+### Community 321 - "Community 321"
 Cohesion: 0.14
 Nodes (13): MyDocument, -close, -createGLResourcesInContext, -deleteGLResourcesInContext, -displayLinkRenderCallback, -drawMeshesInContext, -getBoundingBoxForNodeminVectormaxVectormatrix, -getBoundingBoxWithMinVectormaxVectr (+5 more)
 
-### Community 329 - "Community 329"
+### Community 322 - "Community 322"
 Cohesion: 0.26
 Nodes (12): glad_vk_find_core_vulkan(), glad_vk_find_extensions_vulkan(), glad_vk_free_extensions(), glad_vk_get_extensions(), glad_vk_has_extension(), glad_vk_load_VK_EXT_debug_report(), glad_vk_load_VK_KHR_surface(), glad_vk_load_VK_KHR_swapchain() (+4 more)
 
-### Community 330 - "Community 330"
+### Community 323 - "Community 323"
+Cohesion: 0.14
+Nodes (3): keypress_cb(), mouse_button_cb(), Update()
+
+### Community 324 - "Community 324"
 Cohesion: 0.21
 Nodes (7): main(), test_clamp(), test_iround(), test_mirrorClamp(), test_mirrorRepeat(), test_repeat(), test_uround()
 
-### Community 331 - "Community 331"
+### Community 325 - "Community 325"
+Cohesion: 0.27
+Nodes (13): main(), test_acot(), test_acoth(), test_acsc(), test_acsch(), test_asec(), test_asech(), test_cot() (+5 more)
+
+### Community 326 - "Community 326"
 Cohesion: 0.21
 Nodes (7): main(), test_clamp(), test_iround(), test_mirrorClamp(), test_mirrorRepeat(), test_repeat(), test_uround()
 
-### Community 332 - "Community 332"
+### Community 327 - "Community 327"
 Cohesion: 0.27
 Nodes (13): main(), test_acot(), test_acoth(), test_acsc(), test_acsch(), test_asec(), test_asech(), test_cot() (+5 more)
 
-### Community 333 - "Community 333"
-Cohesion: 0.27
-Nodes (13): main(), test_acot(), test_acoth(), test_acsc(), test_acsch(), test_asec(), test_asech(), test_cot() (+5 more)
-
-### Community 334 - "Community 334"
+### Community 328 - "Community 328"
 Cohesion: 0.23
 Nodes (7): Model(), loadMaterialTexture(), loadModel(), Model, ProcessMesh(), ProcessNode(), textureFromFile()
 
-### Community 335 - "Community 335"
+### Community 329 - "Community 329"
 Cohesion: 0.36
 Nodes (11): CheckProgram(), CheckShader(), ImGui_ImplOpenGL3_CreateDeviceObjects(), ImGui_ImplOpenGL3_CreateFontsTexture(), ImGui_ImplOpenGL3_DestroyDeviceObjects(), ImGui_ImplOpenGL3_DestroyFontsTexture(), ImGui_ImplOpenGL3_Init(), ImGui_ImplOpenGL3_NewFrame() (+3 more)
 
-### Community 336 - "Community 336"
-Cohesion: 0.19
-Nodes (13): AddCallback(), AddDrawCmd(), ChannelsMerge(), ChannelsSetCurrent(), Merge(), _OnChangedClipRect(), _OnChangedVtxOffset(), PopClipRect() (+5 more)
-
-### Community 337 - "Community 337"
-Cohesion: 0.18
-Nodes (13): load_jpeg_image(), stbi__blinn_8x8(), stbi__cleanup_jpeg(), stbi__compute_y(), stbi__do_zlib(), stbi__free_jpeg_components(), stbi__malloc(), stbi_zlib_decode_buffer() (+5 more)
-
-### Community 338 - "Community 338"
-Cohesion: 0.19
-Nodes (13): stbtt_CompareUTF8toUTF16_bigendian(), stbtt_CompareUTF8toUTF16_bigendian_internal(), stbtt__CompareUTF8toUTF16_bigendian_prefix(), stbtt_FindMatchingFont(), stbtt_FindMatchingFont_internal(), stbtt_GetFontOffsetForIndex_internal(), stbtt_GetNumberOfFonts(), stbtt_GetNumberOfFonts_internal() (+5 more)
-
-### Community 339 - "Community 339"
+### Community 331 - "Community 331"
 Cohesion: 0.32
 Nodes (11): ASSIMP_API, debug(), error(), formatMessage(), getLogSeverity(), info(), Logger(), LogStream (+3 more)
 
-### Community 340 - "Community 340"
-Cohesion: 0.33
-Nodes (10): CreateMaterial(), CreateOutputFaceList(), GenerateTextureCoords(), InternReadFile(), InternReadFile_HMP4(), InternReadFile_HMP5(), InternReadFile_HMP7(), ReadFirstSkin() (+2 more)
+### Community 332 - "Community 332"
+Cohesion: 0.18
+Nodes (13): AddCustomRectRegular(), AddGlyph(), CalcCustomRectUV(), ImFontAtlasBuildFinish(), ImFontAtlasBuildInit(), ImFontAtlasBuildMultiplyCalcLookupTable(), ImFontAtlasBuildMultiplyRectAlpha8(), ImFontAtlasBuildPackCustomRects() (+5 more)
 
-### Community 342 - "Community 342"
-Cohesion: 0.23
-Nodes (11): cmp<aiVertexWeight >(), ComputeVertexBoneWeightTable(), Execute(), SplitMesh(), UpdateNode(), CreateGeometry(), CreateMaterial(), CreateMesh() (+3 more)
-
-### Community 343 - "Community 343"
-Cohesion: 0.22
-Nodes (8): Assimp(), calculateAreaOfTriangle(), Execute(), ExecuteOnMesh(), FindDegeneratesProcess(), heron(), removeMesh(), updateSceneGraph()
-
-### Community 344 - "Community 344"
+### Community 333 - "Community 333"
 Cohesion: 0.26
 Nodes (12): AddNodeToGraph(), CheckIndices(), ConvertMaterial(), ConvertMeshes(), ConvertScene(), CopyTexture(), CountTracks(), GenerateNodeGraph() (+4 more)
 
-### Community 345 - "Community 345"
-Cohesion: 0.23
-Nodes (9): ai_real(), CalculateResultTransform(), MakeCone(), MakeDodecahedron(), MakeHexahedron(), MakeIcosahedron(), MakeSphere(), MakeTetrahedron() (+1 more)
+### Community 334 - "Community 334"
+Cohesion: 0.24
+Nodes (12): aiCreateAnimMesh(), ConvertCluster(), ConvertLine(), ConvertMaterialForMesh(), ConvertMesh(), ConvertMeshMultiMaterial(), ConvertMeshSingleMaterial(), ConvertModel() (+4 more)
 
-### Community 346 - "Community 346"
+### Community 336 - "Community 336"
+Cohesion: 0.22
+Nodes (8): Assimp(), calculateAreaOfTriangle(), Execute(), ExecuteOnMesh(), FindDegeneratesProcess(), heron(), removeMesh(), updateSceneGraph()
+
+### Community 337 - "Community 337"
+Cohesion: 0.29
+Nodes (9): AttachChilds_Anim(), AttachChilds_Mesh(), InternReadFile(), LoadFileIntoMemory(), LoadMD5AnimFile(), LoadMD5CameraFile(), LoadMD5MeshFile(), MakeDataUnique() (+1 more)
+
+### Community 338 - "Community 338"
+Cohesion: 0.33
+Nodes (10): CreateMaterial(), CreateOutputFaceList(), GenerateTextureCoords(), InternReadFile(), InternReadFile_HMP4(), InternReadFile_HMP5(), InternReadFile_HMP7(), ReadFirstSkin() (+2 more)
+
+### Community 339 - "Community 339"
 Cohesion: 0.21
 Nodes (13): HasGoogleTestFlagPrefix(), LoadFlagsFromFile(), ParseBoolFlag(), ParseFlagValue(), ParseGoogleTestFlag(), ParseGoogleTestFlagsOnlyImpl(), ParseInt32Flag(), ParseStringFlag() (+5 more)
 
-### Community 347 - "Community 347"
+### Community 340 - "Community 340"
 Cohesion: 0.15
 Nodes (5): v(), tvec3(), vec(), tvec4(), vec()
 
-### Community 348 - "Community 348"
+### Community 341 - "Community 341"
 Cohesion: 0.21
 Nodes (6): AddHole(), CreateAdvancingFront(), GetPoint(), InitEdges(), MapTriangleToNodes(), SweepContext()
 
-### Community 350 - "Community 350"
+### Community 343 - "Community 343"
+Cohesion: 0.28
+Nodes (11): main(), NormalizeLightingKey(), ResolveAreaLightingConfig(), ResolveAreaLightingProfile(), ResolveCharacterReadabilityTuning(), ResolveIblPathFromAreaConfig(), ResolveLoadingPreset(), ResolveRenderColorProfile() (+3 more)
+
+### Community 344 - "Community 344"
 Cohesion: 0.15
 Nodes (7): Actor, NewActor(), AiMaterial, AnimBinding, AnimEvent, Appearance, MeshSlot
 
-### Community 351 - "Community 351"
-Cohesion: 0.18
-Nodes (13): AddIntersectNode(), BuildArc(), BuildIntersectList(), CopyAELToSEL(), DisposeIntersectNodes(), FixupIntersections(), IntersectPoint(), ProcessIntersections() (+5 more)
+### Community 345 - "Community 345"
+Cohesion: 0.23
+Nodes (11): cmp<aiVertexWeight >(), ComputeVertexBoneWeightTable(), Execute(), SplitMesh(), UpdateNode(), CreateGeometry(), CreateMaterial(), CreateMesh() (+3 more)
 
-### Community 352 - "Community 352"
-Cohesion: 0.26
-Nodes (9): CreateMaterial(), DeleteMaterial(), FindValidPath(), HasAlphaPixels(), HMtoNMIfNecessary(), LoadTexture(), SetDefaultTexture(), TryLongerPath() (+1 more)
-
-### Community 353 - "Community 353"
+### Community 346 - "Community 346"
 Cohesion: 0.32
 Nodes (12): Assimp_Info(), CountAnimChannels(), CountBones(), CountFaces(), CountNodes(), CountVertices(), FindPTypes(), FindSpecialPoints() (+4 more)
 
-### Community 354 - "Community 354"
+### Community 347 - "Community 347"
+Cohesion: 0.26
+Nodes (9): CreateMaterial(), DeleteMaterial(), FindValidPath(), HasAlphaPixels(), HMtoNMIfNecessary(), LoadTexture(), SetDefaultTexture(), TryLongerPath() (+1 more)
+
+### Community 348 - "Community 348"
 Cohesion: 0.27
 Nodes (10): Encode(), EncodeAC(), EncodeHeader(), EncodePayload(), Predict(), Quantize(), Split(), Transform() (+2 more)
 
-### Community 355 - "Community 355"
+### Community 349 - "Community 349"
 Cohesion: 0.29
 Nodes (12): main(), test_compute_glm(), test_compute_gtx(), test_detA(), test_detB(), test_detC(), test_detD(), test_invA() (+4 more)
 
-### Community 356 - "Community 356"
+### Community 350 - "Community 350"
 Cohesion: 0.32
 Nodes (9): canEquipInSlot(), drawEquipSlot(), drawEquipSlotContent(), drawSilhouette(), drawTooltip(), pushSlotColors(), Render(), RenderBag() (+1 more)
 
-### Community 357 - "Community 357"
+### Community 351 - "Community 351"
 Cohesion: 0.5
 Nodes (9): glm_vec1_dot(), glm_vec4_cross(), glm_vec4_distance(), glm_vec4_dot(), glm_vec4_faceforward(), glm_vec4_length(), glm_vec4_normalize(), glm_vec4_reflect() (+1 more)
 
-### Community 359 - "Community 359"
+### Community 353 - "Community 353"
 Cohesion: 0.24
 Nodes (7): Dot(), main(), test_qr(), test_rq(), D_GGX(), G_SchlickGGX(), G_Smith()
 
-### Community 360 - "Community 360"
+### Community 354 - "Community 354"
 Cohesion: 0.2
 Nodes (12): DebugNodeTable(), DebugNodeTableGetSizingPolicyDesc(), DebugNodeTableSettings(), TableGcCompactSettings(), TableGetBoundSettings(), TableLoadSettings(), TableSaveSettings(), TableSettingsCalcChunkSize() (+4 more)
 
-### Community 361 - "Community 361"
+### Community 355 - "Community 355"
 Cohesion: 0.23
 Nodes (6): drawDebugPanel(), getAspectRatio(), getDirection(), getProjectionMatrix(), getViewMatrix(), processActions()
 
-### Community 362 - "Community 362"
-Cohesion: 0.41
-Nodes (9): DoValidation(), DoValidationEx(), DoValidationWithNameCheck(), Execute(), HasNameMatch(), ReportError(), ReportWarning(), SearchForInvalidTextures() (+1 more)
-
-### Community 363 - "Community 363"
-Cohesion: 0.27
-Nodes (8): addTextureMappingModeProperty(), appendChildToParentNode(), CreateDataFromImport(), createMaterials(), createNodes(), createTopology(), createVertexArray(), InternReadFile()
-
-### Community 364 - "Community 364"
+### Community 356 - "Community 356"
 Cohesion: 0.3
 Nodes (10): AddFace(), AddTFace(), AssertValidMesh(), AssertValidSizes(), BlenderBMeshConverter(), ContainsBMesh(), ConvertPolyToFaces(), DestroyTriMesh() (+2 more)
 
-### Community 365 - "Community 365"
-Cohesion: 0.26
-Nodes (8): ComparePaths(), completeBaseName(), Exists(), fileName(), MakeAbsolutePath(), Open(), Utf8ToWide(), WideToUtf8()
-
-### Community 366 - "Community 366"
-Cohesion: 0.27
-Nodes (9): aiString(), Append(), Assimp(), C_Str(), Clear(), dir(), Set(), _import_module() (+1 more)
-
-### Community 367 - "Community 367"
-Cohesion: 0.24
-Nodes (5): ChecksumGenerator, AdlerChecksum, ChecksumGeneratorBase, CRC32Checksum, DotZLib
-
-### Community 368 - "Community 368"
-Cohesion: 0.18
-Nodes (5): Service, testing(), Abort(), FormatFileLocation(), GTestLog()
-
-### Community 369 - "Community 369"
-Cohesion: 0.21
-Nodes (5): DetectType(), is(), os(), PutBOM(), Take()
-
-### Community 370 - "Community 370"
-Cohesion: 0.21
-Nodes (11): IsHeaderGuardIncludeOrOneLineIWYUPragma(), IsInPreprocessorDirective(), IsMultiLineIWYUPragma(), IsSingleLineComment(), Returns True iff the given position in lines starts with 'string'., StartsWith(), WrapCode(), WrapComment() (+3 more)
-
-### Community 371 - "Community 371"
-Cohesion: 0.23
-Nodes (6): clear(), Context(), operator ==(), set(), size(), ~Text()
-
-### Community 372 - "Community 372"
+### Community 357 - "Community 357"
 Cohesion: 0.32
 Nodes (11): crc32(), crc32_big(), crc32_combine_(), crc32_combine64(), crc32_little(), crc32_z(), get_crc_table(), gf2_matrix_square() (+3 more)
 
-### Community 377 - "Community 377"
-Cohesion: 0.17
-Nodes (10): MeshHelper, -ambientColor, -diffuseColor, -emissiveColor, -init, -setAmbientColor, -setDiffuseColor, -setEmissiveColor (+2 more)
+### Community 358 - "Community 358"
+Cohesion: 0.26
+Nodes (8): ComparePaths(), completeBaseName(), Exists(), fileName(), MakeAbsolutePath(), Open(), Utf8ToWide(), WideToUtf8()
 
-### Community 378 - "Community 378"
+### Community 359 - "Community 359"
 Cohesion: 0.2
 Nodes (8): aiGetImporterDesc(), ExporterPimpl, Importer(), DeleteImporterInstanceList(), GetImporterInstanceList(), GetPostProcessingStepInstanceList(), AssimpAPITest, TEST_F()
 
-### Community 379 - "Community 379"
+### Community 360 - "Community 360"
+Cohesion: 0.21
+Nodes (8): ConvertBlobToStructure(), DNA(), ErrorPolicy_Fail(), ErrorPolicy_Warn(), operator(), SectionParser(), Structure(), Convert()
+
+### Community 361 - "Community 361"
+Cohesion: 0.41
+Nodes (9): DoValidation(), DoValidationEx(), DoValidationWithNameCheck(), Execute(), HasNameMatch(), ReportError(), ReportWarning(), SearchForInvalidTextures() (+1 more)
+
+### Community 362 - "Community 362"
+Cohesion: 0.18
+Nodes (5): CatmullClarkSubdivider, Edge(), InternSubdivide(), Subdivide(), InternReadFile()
+
+### Community 363 - "Community 363"
+Cohesion: 0.18
+Nodes (5): Service, testing(), Abort(), FormatFileLocation(), GTestLog()
+
+### Community 364 - "Community 364"
+Cohesion: 0.24
+Nodes (10): Connect(), Connection(), Disconnect(), OnData(), Poll(), ProcessFrames(), SendPacket(), SendRaw() (+2 more)
+
+### Community 365 - "Community 365"
+Cohesion: 0.23
+Nodes (6): clear(), Context(), operator ==(), set(), size(), ~Text()
+
+### Community 366 - "Community 366"
+Cohesion: 0.24
+Nodes (8): BuildGraph(), CanRead(), Element::Parse(), FindLWOFile(), InternReadFile(), ReadEnvelope(), ReadEnvelope_Old(), SetupNodeName()
+
+### Community 367 - "Community 367"
+Cohesion: 0.21
+Nodes (5): DetectType(), is(), os(), PutBOM(), Take()
+
+### Community 368 - "Community 368"
+Cohesion: 0.24
+Nodes (5): ChecksumGenerator, AdlerChecksum, ChecksumGeneratorBase, CRC32Checksum, DotZLib
+
+### Community 369 - "Community 369"
+Cohesion: 0.17
+Nodes (6): ApplicationException, ChecksumGenerator, DotZLib, Info, ZLibException, uint
+
+### Community 373 - "Community 373"
+Cohesion: 0.17
+Nodes (10): MeshHelper, -ambientColor, -diffuseColor, -emissiveColor, -init, -setAmbientColor, -setDiffuseColor, -setEmissiveColor (+2 more)
+
+### Community 374 - "Community 374"
 Cohesion: 0.23
 Nodes (7): GetCameraMatrix(), OnPostRender(), RecreateNativeResource(), RemoveSBDeps(), SetColor(), SetCubeMapBG(), SetTextureBG()
 
-### Community 380 - "Community 380"
-Cohesion: 0.29
-Nodes (11): HandleInput(), HandleInputEmptyScene(), HandleInputTextureView(), HandleKeyboardInputFPS(), HandleKeyboardInputTextureView(), HandleMouseInputFPS(), HandleMouseInputLightIntensityAndColor(), HandleMouseInputLightRotate() (+3 more)
-
-### Community 381 - "Community 381"
-Cohesion: 0.33
-Nodes (10): AddMesh(), AddNode(), ExportSceneObj(), GetMaterialLibFileName(), GetMaterialLibName(), GetMaterialName(), ObjExporter(), WriteGeometryFile() (+2 more)
-
-### Community 382 - "Community 382"
-Cohesion: 0.29
-Nodes (9): adjust_grid(), calc_grid(), draw_scene(), framebuffer_size_callback(), init_grid(), init_opengl(), init_vertices(), key_callback() (+1 more)
-
-### Community 383 - "Community 383"
+### Community 375 - "Community 375"
 Cohesion: 0.32
 Nodes (11): main(), test_identity(), test_mul(), test_quat_angle(), test_quat_angleAxis(), test_quat_euler(), test_quat_mix(), test_quat_mul_vec() (+3 more)
 
-### Community 384 - "Community 384"
+### Community 376 - "Community 376"
 Cohesion: 0.32
 Nodes (11): ceilPowerOfTwo_loop(), highestBitValue(), main(), perf(), test(), test_float(), test_int(), test_int16() (+3 more)
 
-### Community 385 - "Community 385"
+### Community 377 - "Community 377"
 Cohesion: 0.32
 Nodes (11): main(), test_make_pointer_mat(), test_make_pointer_vec(), test_make_vec1(), test_make_vec2(), test_make_vec3(), test_make_vec4(), test_value_ptr_mat() (+3 more)
 
-### Community 386 - "Community 386"
+### Community 378 - "Community 378"
 Cohesion: 0.38
 Nodes (11): BuildActionSuggestions(), colStr(), DeleteBinding(), DeletePreset(), Draw(), DrawKeyCapture(), EnsureTables(), FetchAll() (+3 more)
 
-### Community 387 - "Community 387"
-Cohesion: 0.24
-Nodes (11): clear(), clear_delete(), clear_destruct(), ShowAboutWindow(), ShowStyleEditor(), ImDrawData(), ImGui(), ImVec2() (+3 more)
+### Community 379 - "Community 379"
+Cohesion: 0.31
+Nodes (8): Clear(), DrawImGui(), EnsureSimpleFbo_(), FitCameraToModel(), Init(), LoadModel(), ReloadCurrent(), RenderToEngineFrame_()
 
-### Community 388 - "Community 388"
-Cohesion: 0.4
-Nodes (10): imstb_rectpack.h, rect_height_compare(), rect_original_order(), stbrp_init_target(), stbrp_pack_rects(), stbrp_setup_allow_out_of_mem(), stbrp_setup_heuristic(), stbrp__skyline_find_best_pos() (+2 more)
-
-### Community 389 - "Community 389"
-Cohesion: 0.2
-Nodes (11): stbi__compute_transparency(), stbi__compute_transparency16(), stbi__compute_y_16(), stbi__convert_format16(), stbi__de_iphone(), stbi__do_png(), stbi__get32be(), stbi__get_chunk_header() (+3 more)
-
-### Community 390 - "Community 390"
-Cohesion: 0.18
-Nodes (11): stbtt__cuberoot(), stbtt_GetCodepointBitmap(), stbtt_GetCodepointBitmapSubpixel(), stbtt_GetCodepointSDF(), stbtt_GetCodepointShape(), stbtt_GetGlyphBitmap(), stbtt_GetGlyphBitmapSubpixel(), stbtt_GetGlyphSDF() (+3 more)
-
-### Community 392 - "Community 392"
+### Community 381 - "Community 381"
 Cohesion: 0.33
 Nodes (6): Add(), Alloc(), Dealloc(), Get(), GetAiType(), Set()
 
-### Community 393 - "Community 393"
+### Community 382 - "Community 382"
 Cohesion: 0.24
 Nodes (11): BeginColumns(), Columns(), EndColumns(), FindOrCreateColumns(), GetColumnNormFromOffset(), GetColumnOffset(), GetColumnsID(), GetDraggedColumnOffset() (+3 more)
 
-### Community 394 - "Community 394"
-Cohesion: 0.22
-Nodes (11): CloseButton(), CollapsingHeader(), TabItemLabelAndCloseButton(), TreeNode(), TreeNodeBehavior(), TreeNodeBehaviorIsOpen(), TreeNodeEx(), TreeNodeExV() (+3 more)
+### Community 383 - "Community 383"
+Cohesion: 0.4
+Nodes (10): imstb_rectpack.h, rect_height_compare(), rect_original_order(), stbrp_init_target(), stbrp_pack_rects(), stbrp_setup_allow_out_of_mem(), stbrp_setup_heuristic(), stbrp__skyline_find_best_pos() (+2 more)
 
-### Community 395 - "Community 395"
-Cohesion: 0.29
-Nodes (7): DoInterpolation(), DoInterpolation2(), ExtractAnimChannel(), GetKeys(), InterpolateTrack(), SubsampleAnimTrack(), UpdateAnimRangeSetup()
-
-### Community 397 - "Community 397"
-Cohesion: 0.27
-Nodes (6): Execute(), flipUVs(), ProcessAnimation(), ProcessMaterial(), ProcessMesh(), ProcessNode()
-
-### Community 398 - "Community 398"
-Cohesion: 0.22
-Nodes (5): applyScaling(), Assimp(), Execute(), ScaleProcess(), traverseNodes()
-
-### Community 401 - "Community 401"
-Cohesion: 0.25
-Nodes (7): CanRead(), GetMaterialColor(), InternReadFile(), LoadFace(), LoadMaterial(), LoadVertex(), NormalizeColorValue()
-
-### Community 402 - "Community 402"
-Cohesion: 0.2
-Nodes (4): Peek4(), Take(), Eof(), Returns the special cursor to denote the end-of-file.
-
-### Community 403 - "Community 403"
-Cohesion: 0.35
-Nodes (8): AssertNoFatalFailureIgnoresFailuresInOtherThreads(), CheckTestFailureCount(), ExpectKeyAndValueWereRecordedForId(), GenerateFatalFailureInAnotherThread(), IdToKey(), IdToString(), ManyAsserts(), TEST()
-
-### Community 405 - "Community 405"
-Cohesion: 0.24
-Nodes (8): capture(), depart(), testing(), Assimp(), NextAfterNewLine(), SkipLine(), if(), tinyobj()
-
-### Community 406 - "Community 406"
-Cohesion: 0.33
-Nodes (9): ai_snprintf(), ai_str_toupper(), ai_strtof(), ai_tolower(), ai_toupper(), ai_trim(), ai_trim_left(), ai_trim_right() (+1 more)
-
-### Community 408 - "Community 408"
-Cohesion: 0.22
-Nodes (5): JaiDebug, AddChunk(), Capacity(), Clear(), Free()
-
-### Community 410 - "Community 410"
-Cohesion: 0.27
-Nodes (6): DropWikiSuffix(), main(), Returns a list of .wiki file names that need to be branched., Branches the .wiki files needed to be branched., Removes the .wiki suffix (if any) from the given filename., WikiBrancher
-
-### Community 411 - "Community 411"
-Cohesion: 0.18
-Nodes (10): Material, Matrix3x3, MeshAnim, Node, See 'matrix3x3.h' for details., See 'scene.h' for details., See 'material.h' for details., See 'anim.h' for details. (+2 more)
-
-### Community 412 - "Community 412"
-Cohesion: 0.18
-Nodes (11): ExportDataBlob, Light, MeshMorphAnim, Quaternion, See 'cexport.h' for details.      Note that the '_fields_' definition is outside, See 'quaternion.h' for details., See 'light.h' for details., See 'texture.h' for details. (+3 more)
-
-### Community 413 - "Community 413"
-Cohesion: 0.31
-Nodes (7): addDiff(), compareFace(), compareMaterial(), compareMesh(), dumpFace(), dumpVector3(), isEqual()
-
-### Community 414 - "Community 414"
-Cohesion: 0.27
-Nodes (8): DecodeHeader(), DecodePlayload(), IPredict(), IQuantize(), ITransform(), IUpdate(), Merge(), o3dgc()
-
-### Community 415 - "Community 415"
+### Community 384 - "Community 384"
 Cohesion: 0.35
 Nodes (10): PopulateMeshCache(), ProcessConnectedFaceSet(), ProcessGeometricItem(), ProcessPolygonBoundaries(), ProcessPolyloop(), ProcessRepresentationItem(), ProcessRevolvedAreaSolid(), ProcessSweptAreaSolid() (+2 more)
 
-### Community 416 - "Community 416"
-Cohesion: 0.24
-Nodes (7): ConvertBlobToStructure(), DNA(), ErrorPolicy_Fail(), ErrorPolicy_Warn(), operator(), SectionParser(), Structure()
+### Community 385 - "Community 385"
+Cohesion: 0.29
+Nodes (7): DoInterpolation(), DoInterpolation2(), ExtractAnimChannel(), GetKeys(), InterpolateTrack(), SubsampleAnimTrack(), UpdateAnimRangeSetup()
 
-### Community 417 - "Community 417"
+### Community 387 - "Community 387"
+Cohesion: 0.18
+Nodes (10): ExportDataBlob, Material, Mesh, Node, See 'cexport.h' for details.      Note that the '_fields_' definition is outside, See 'scene.h' for details., See 'material.h' for details., See 'mesh.h' for details. (+2 more)
+
+### Community 388 - "Community 388"
+Cohesion: 0.18
+Nodes (11): Metadata, MetadataEntry, See 'aiScene.h' for details., See 'metadata.h' for details, See 'metadata.h' for details, See 'texture.h' for details., See 'types.h' for details., Ray (+3 more)
+
+### Community 389 - "Community 389"
 Cohesion: 0.27
-Nodes (9): Connect(), Connection(), Disconnect(), OnData(), ProcessFrames(), SendPacket(), SendRaw(), StreamCallback() (+1 more)
+Nodes (6): Execute(), flipUVs(), ProcessAnimation(), ProcessMaterial(), ProcessMesh(), ProcessNode()
 
-### Community 418 - "Community 418"
+### Community 390 - "Community 390"
+Cohesion: 0.22
+Nodes (5): applyScaling(), Assimp(), Execute(), ScaleProcess(), traverseNodes()
+
+### Community 392 - "Community 392"
+Cohesion: 0.35
+Nodes (8): AssertNoFatalFailureIgnoresFailuresInOtherThreads(), CheckTestFailureCount(), ExpectKeyAndValueWereRecordedForId(), GenerateFatalFailureInAnotherThread(), IdToKey(), IdToString(), ManyAsserts(), TEST()
+
+### Community 395 - "Community 395"
+Cohesion: 0.33
+Nodes (9): ai_snprintf(), ai_str_toupper(), ai_strtof(), ai_tolower(), ai_toupper(), ai_trim(), ai_trim_left(), ai_trim_right() (+1 more)
+
+### Community 396 - "Community 396"
+Cohesion: 0.2
+Nodes (5): CircBufferTests, DotZLibTests, GZipStreamTests, InfoTests, Utils
+
+### Community 399 - "Community 399"
+Cohesion: 0.31
+Nodes (7): addDiff(), compareFace(), compareMaterial(), compareMesh(), dumpFace(), dumpVector3(), isEqual()
+
+### Community 400 - "Community 400"
+Cohesion: 0.35
+Nodes (9): AddMesh(), AddNode(), ExportSceneObj(), GetMaterialLibFileName(), GetMaterialLibName(), GetMaterialName(), ObjExporter(), WriteGeometryFile() (+1 more)
+
+### Community 401 - "Community 401"
+Cohesion: 0.25
+Nodes (11): ClassifyAsset(), DeleteMaterial(), Draw(), DrawMaterials(), ImportFilesBatch(), ImportFolderTree(), LowerExt(), SaveMaterial() (+3 more)
+
+### Community 402 - "Community 402"
+Cohesion: 0.27
+Nodes (8): DecodeHeader(), DecodePlayload(), IPredict(), IQuantize(), ITransform(), IUpdate(), Merge(), o3dgc()
+
+### Community 403 - "Community 403"
 Cohesion: 0.35
 Nodes (10): main(), test_all(), test_any(), test_equal(), test_greaterThan(), test_greaterThanEqual(), test_lessThan(), test_lessThanEqual() (+2 more)
 
-### Community 419 - "Community 419"
+### Community 404 - "Community 404"
 Cohesion: 0.2
 Nodes (3): Get(), SampleWorld(), UploadRegion()
 
-### Community 420 - "Community 420"
+### Community 405 - "Community 405"
 Cohesion: 0.31
 Nodes (5): FindChar(), Render(), RenderCharDetail(), RenderCreateForm(), RenderSlotGrid()
 
-### Community 421 - "Community 421"
+### Community 406 - "Community 406"
+Cohesion: 0.27
+Nodes (10): back(), ShowAboutWindow(), ShowStyleEditor(), GetCenter(), GetClipRectMin(), ImGui(), ImVec2(), ImVec4() (+2 more)
+
+### Community 407 - "Community 407"
+Cohesion: 0.47
+Nodes (10): stbi__extend_receive(), stbi__grow_buffer_unsafe(), stbi__jpeg_decode_block(), stbi__jpeg_decode_block_prog_ac(), stbi__jpeg_decode_block_prog_dc(), stbi__jpeg_get_bit(), stbi__jpeg_get_bits(), stbi__jpeg_huff_decode() (+2 more)
+
+### Community 408 - "Community 408"
 Cohesion: 0.27
 Nodes (10): stbi__at_eof(), stbi__copyval(), stbi__pic_load(), stbi__pic_load_core(), stbi__pnm_getinteger(), stbi__pnm_info(), stbi__pnm_isdigit(), stbi__pnm_isspace() (+2 more)
 
-### Community 422 - "Community 422"
-Cohesion: 0.47
-Nodes (10): stbi__extend_receive(), stbi__grow_buffer_unsafe(), stbi__jpeg_decode_block(), stbi__jpeg_decode_block_prog_ac(), stbi__jpeg_decode_block_prog_dc(), stbi__jpeg_get_bit(), stbi__jpeg_get_bits(), stbi__jpeg_huff_decode() (+2 more)
+### Community 409 - "Community 409"
+Cohesion: 0.24
+Nodes (10): stbtt_CompareUTF8toUTF16_bigendian(), stbtt_CompareUTF8toUTF16_bigendian_internal(), stbtt__CompareUTF8toUTF16_bigendian_prefix(), stbtt_GetFontOffsetForIndex_internal(), stbtt_GetNumberOfFonts(), stbtt_GetNumberOfFonts_internal(), stbtt__isfont(), stbtt__matches() (+2 more)
 
-### Community 423 - "Community 423"
+### Community 410 - "Community 410"
 Cohesion: 0.2
 Nodes (6): test_inverse_perf(), Entity(), RotatingCamera(), NavPoly, Vec3, fresnelSchlickRoughness()
 
-### Community 424 - "Community 424"
+### Community 411 - "Community 411"
+Cohesion: 0.29
+Nodes (7): MaterialManager(), appendName_(), GetLinearBindless(), GetLinearMaterials(), GetMaterial(), MakeResidentHandle_(), RegisterFromHandles()
+
+### Community 412 - "Community 412"
 Cohesion: 0.36
 Nodes (8): ASSIMP_API, Export(), Exporter(), ExporterPimpl, ExportProperties(), ExportToBlob(), IOSystem, ProgressHandler
 
-### Community 425 - "Community 425"
-Cohesion: 0.47
-Nodes (10): stbi__extend_receive(), stbi__grow_buffer_unsafe(), stbi__jpeg_decode_block(), stbi__jpeg_decode_block_prog_ac(), stbi__jpeg_decode_block_prog_dc(), stbi__jpeg_get_bit(), stbi__jpeg_get_bits(), stbi__jpeg_huff_decode() (+2 more)
-
-### Community 426 - "Community 426"
-Cohesion: 0.29
-Nodes (7): CanRead(), CollectChildJoints(), inrange(), InternReadFile(), ReadColor(), ReadComments(), ReadVector()
-
-### Community 427 - "Community 427"
-Cohesion: 0.38
-Nodes (9): Postprocess_BuildLight(), Postprocess_BuildMaterial(), Postprocess_BuildNode(), Postprocess_BuildShape(), Postprocess_CollectMetadata(), PostprocessHelper_CollectMetadata(), PostprocessHelper_ElementIsMesh(), PostprocessHelper_ElementIsMetadata() (+1 more)
-
-### Community 428 - "Community 428"
-Cohesion: 0.27
-Nodes (6): Assimp(), Execute(), SplitLargeMeshesProcess_Triangle(), SplitLargeMeshesProcess_Vertex(), SplitMesh(), UpdateNode()
-
-### Community 429 - "Community 429"
+### Community 413 - "Community 413"
 Cohesion: 0.29
 Nodes (6): ApplyTransform(), ConsiderMesh(), Execute(), SplitMesh(), UpdateNode(), MakeSubmesh()
 
-### Community 430 - "Community 430"
+### Community 414 - "Community 414"
 Cohesion: 0.27
 Nodes (5): ArrayDelete(), Assimp(), Execute(), ProcessMesh(), RemoveVCProcess()
 
-### Community 431 - "Community 431"
+### Community 415 - "Community 415"
 Cohesion: 0.2
 Nodes (6): Factorial(), TEST(), IntegerFunctionTest, QueueTest, QuickTest, TEST_F()
 
-### Community 432 - "Community 432"
-Cohesion: 0.33
-Nodes (6): Bind(), DispatchEvents(), RequestState(), RequestStateByName(), RequestStateImpl_(), Update()
+### Community 416 - "Community 416"
+Cohesion: 0.2
+Nodes (3): AutoHandle(), LogToStderr(), OnThreadLocalDestroyed()
 
-### Community 433 - "Community 433"
-Cohesion: 0.4
-Nodes (9): fixedtables(), inflateInit_(), inflateInit2_(), inflatePrime(), inflateReset(), inflateReset2(), inflateResetKeep(), inflateStateCheck() (+1 more)
+### Community 417 - "Community 417"
+Cohesion: 0.29
+Nodes (6): GetMaterialColor(), InternReadFile(), LoadFace(), LoadMaterial(), LoadVertex(), NormalizeColorValue()
 
-### Community 434 - "Community 434"
+### Community 418 - "Community 418"
+Cohesion: 0.29
+Nodes (10): CheckDoubleMaximum(), CheckDoubleMinimum(), CheckDoubleMultipleOf(), CheckInt(), CheckUint(), Double(), Int(), Int64() (+2 more)
+
+### Community 419 - "Community 419"
+Cohesion: 0.42
+Nodes (9): InternReadFile(), ConvertMappingMode(), ParseMaterial(), ReadBoolProperty(), ReadFloatProperty(), ReadHexProperty(), ReadIntProperty(), ReadStringProperty() (+1 more)
+
+### Community 420 - "Community 420"
+Cohesion: 0.47
+Nodes (10): stbi__extend_receive(), stbi__grow_buffer_unsafe(), stbi__jpeg_decode_block(), stbi__jpeg_decode_block_prog_ac(), stbi__jpeg_decode_block_prog_dc(), stbi__jpeg_get_bit(), stbi__jpeg_get_bits(), stbi__jpeg_huff_decode() (+2 more)
+
+### Community 421 - "Community 421"
 Cohesion: 0.29
 Nodes (5): attachStream(), NullLogger(), OnError(), OnInfo(), OnWarn()
 
-### Community 435 - "Community 435"
+### Community 422 - "Community 422"
 Cohesion: 0.31
 Nodes (7): AndroidActivityInit(), AndroidExtractAsset(), AndroidJNIIOSystem(), Assimp(), Exists(), mkpath(), Open()
 
-### Community 436 - "Community 436"
+### Community 423 - "Community 423"
 Cohesion: 0.27
 Nodes (4): AiIOStream, AiInputStreamIOStream, ByteBufferOutputStream, OutputStream
 
-### Community 438 - "Community 438"
-Cohesion: 0.38
-Nodes (8): CleanD3D(), CompileShaderFromFile(), InitD3D(), InitGraphics(), InitPipeline(), RenderFrame(), Throwanerror(), WinMain()
+### Community 424 - "Community 424"
+Cohesion: 0.27
+Nodes (6): Assimp(), Execute(), SplitLargeMeshesProcess_Triangle(), SplitLargeMeshesProcess_Vertex(), SplitMesh(), UpdateNode()
 
-### Community 439 - "Community 439"
+### Community 425 - "Community 425"
 Cohesion: 0.31
 Nodes (6): PlyExporter(), type_of(), WriteMeshIndices(), WriteMeshIndicesBinary(), WriteMeshVerts(), WriteMeshVertsBinary()
 
-### Community 440 - "Community 440"
+### Community 426 - "Community 426"
+Cohesion: 0.38
+Nodes (8): CleanD3D(), CompileShaderFromFile(), InitD3D(), InitGraphics(), InitPipeline(), RenderFrame(), Throwanerror(), WinMain()
+
+### Community 427 - "Community 427"
 Cohesion: 0.24
 Nodes (8): generate_heightmap__circle(), init_map(), key_callback(), make_mesh(), make_shader(), make_shader_program(), update_map(), update_mesh()
 
-### Community 441 - "Community 441"
+### Community 428 - "Community 428"
 Cohesion: 0.2
 Nodes (9): GLFWApplicationDelegate, -applicationDidChangeScreenParameters, -applicationDidFinishLaunching, -applicationDidHide, -applicationShouldTerminate, -applicationWillFinishLaunching, GLFWHelper, -doNothing (+1 more)
 
-### Community 442 - "Community 442"
+### Community 429 - "Community 429"
 Cohesion: 0.2
 Nodes (10): GLFWWindowDelegate, -initWithGlfwWindow, -windowDidBecomeKey, -windowDidChangeOcclusionState, -windowDidDeminiaturize, -windowDidMiniaturize, -windowDidMove, -windowDidResignKey (+2 more)
 
-### Community 443 - "Community 443"
+### Community 430 - "Community 430"
 Cohesion: 0.31
 Nodes (8): convertToId(), createResults(), getXPos(), getYPos(), SearchBox(), SearchResults(), setClassAttr(), setKeyActions()
 
-### Community 444 - "Community 444"
+### Community 431 - "Community 431"
 Cohesion: 0.38
 Nodes (9): main(), test_bvec4_ctor(), test_operator_increment(), test_vec4_ctor(), test_vec4_equal(), test_vec4_operators(), test_vec4_simd(), test_vec4_size() (+1 more)
 
-### Community 445 - "Community 445"
+### Community 432 - "Community 432"
 Cohesion: 0.36
 Nodes (8): main(), test(), test_constexpr(), test_ctr(), test_inverse(), test_mat3x3(), test_operators(), test_size()
 
-### Community 446 - "Community 446"
+### Community 433 - "Community 433"
 Cohesion: 0.4
 Nodes (9): main(), myfrand(), myrand(), test_dquat_type(), test_dual_quat_ctr(), test_inverse(), test_mul(), test_scalars() (+1 more)
 
-### Community 447 - "Community 447"
+### Community 434 - "Community 434"
 Cohesion: 0.33
 Nodes (5): frand(), SpawnEmitter(), spawnInterval(), spawnParticle(), Update()
 
-### Community 448 - "Community 448"
-Cohesion: 0.33
-Nodes (5): DrawImGui(), FitCameraToModel(), Init(), LoadModel(), RenderToEngineFrame_()
-
-### Community 449 - "Community 449"
+### Community 435 - "Community 435"
 Cohesion: 0.42
 Nodes (8): checkLinkStatus(), compileShader(), IncludeHandler, initUniforms(), loadFile(), preprocessShader(), Shader(), spvPreprocessAndCompile()
 
-### Community 450 - "Community 450"
-Cohesion: 0.25
-Nodes (9): CalcTypematicPressedRepeatAmount(), CalcTypematicRepeatAmount(), ColorConvertHSVtoRGB(), GetKeyPressedAmount(), GetNavInputAmount(), ImFmod(), IsItemClicked(), IsKeyPressed() (+1 more)
+### Community 436 - "Community 436"
+Cohesion: 0.22
+Nodes (9): CalcNextScrollFromScrollTargetAndClamp(), CalcScrollEdgeSnap(), GetScrollMaxX(), GetScrollMaxY(), GetWindowScrollMaxX(), GetWindowScrollMaxY(), ScrollToBringRectIntoView(), SetScrollFromPosX() (+1 more)
 
-### Community 451 - "Community 451"
+### Community 437 - "Community 437"
 Cohesion: 0.22
 Nodes (4): CompilationResult, CompileOptions, Compiler, IncluderInterface
 
-### Community 454 - "Community 454"
+### Community 438 - "Community 438"
+Cohesion: 0.22
+Nodes (9): Clear(), ClearFonts(), _ClearFreeMemory(), ClearInputData(), ClearOutputData(), ImFont(), ImFontAtlas(), ImFontAtlasBuildSetupFont() (+1 more)
+
+### Community 440 - "Community 440"
 Cohesion: 0.28
 Nodes (3): drawDebugPanel(), getAspectRatio(), getProjectionMatrix()
 
-### Community 455 - "Community 455"
+### Community 442 - "Community 442"
 Cohesion: 0.36
 Nodes (4): corsMiddleware(), jsonError(), jsonOK(), Server
 
-### Community 456 - "Community 456"
-Cohesion: 0.42
-Nodes (8): createMaterial(), getColorRGBA(), getFloatValue(), getIlluminationModel(), getTexture(), getTextureOption(), load(), ObjFileMtlImporter()
-
-### Community 457 - "Community 457"
-Cohesion: 0.42
-Nodes (6): ConvertMaterials(), CreateAnimations(), CreateDataRepresentationFromImport(), CreateMeshes(), CreateNodes(), InternReadFile()
-
-### Community 458 - "Community 458"
-Cohesion: 0.33
-Nodes (6): Append(), Fill(), Finalize(), FindIdenticalPositions(), SpatialSort(), ToBinary()
-
-### Community 460 - "Community 460"
-Cohesion: 0.28
-Nodes (4): AddTokenText(), EncodeBase64(), EncodeByteBlock(), TokenTypeString()
-
-### Community 461 - "Community 461"
+### Community 443 - "Community 443"
 Cohesion: 0.31
 Nodes (5): CanJoin(), Execute(), FindInstancedMeshes(), ProcessNode(), GetMeshVFormatUnique()
 
-### Community 463 - "Community 463"
-Cohesion: 0.33
-Nodes (8): GetCommandOutput(), GetSvnInfo(), GetSvnTrunk(), IsInGMockSvn(), IsInGTestSvn(), Runs the shell command and returns its stdout as a list of lines., Returns the project name and the current SVN workspace's root path., Returns the current SVN workspace's trunk root path.
-
-### Community 464 - "Community 464"
-Cohesion: 0.28
-Nodes (5): namespace(), Check(), main(), MyEnvironment, RunAllTests()
-
-### Community 466 - "Community 466"
-Cohesion: 0.22
-Nodes (5): a0(), A, B, LinkedPtrTest, TEST_F()
-
-### Community 467 - "Community 467"
-Cohesion: 0.25
-Nodes (5): az(), E(), Clear(), Dequeue(), next()
-
-### Community 469 - "Community 469"
-Cohesion: 0.36
-Nodes (6): bits(), blast(), construct(), decode(), decomp(), main()
-
-### Community 470 - "Community 470"
-Cohesion: 0.47
-Nodes (8): BeginCountPerfCounter(), BeginCountRdtsc(), GetMsecSincePerfCounter(), GetResRdtsc(), main(), MyDoMinus64(), myGetRDTSC32(), ReadFileMemory()
-
-### Community 471 - "Community 471"
-Cohesion: 0.39
-Nodes (8): check_exist_file(), do_banner(), do_help(), filetime(), getFileCrc(), isLargeFile(), main(), zipOpenNewFileInZip3_64()
-
-### Community 472 - "Community 472"
-Cohesion: 0.25
-Nodes (5): GTestXMLTestCase, Fetches all of the child nodes of element, a DOM Element object.     Returns the, Normalizes Google Test's XML output to eliminate references to transient     inf, Base class for tests of Google Test's XML output functionality., Asserts that actual_node (a DOM node object) is equivalent to     expected_node
-
-### Community 473 - "Community 473"
+### Community 444 - "Community 444"
 Cohesion: 0.22
 Nodes (5): ComputeMaterialHash(), ConvertListToStrings(), Assimp(), Execute(), RemoveRedundantMatsProcess()
 
-### Community 474 - "Community 474"
+### Community 445 - "Community 445"
+Cohesion: 0.47
+Nodes (8): BeginCountPerfCounter(), BeginCountRdtsc(), GetMsecSincePerfCounter(), GetResRdtsc(), main(), MyDoMinus64(), myGetRDTSC32(), ReadFileMemory()
+
+### Community 446 - "Community 446"
+Cohesion: 0.42
+Nodes (8): createMaterial(), getColorRGBA(), getFloatValue(), getIlluminationModel(), getTexture(), getTextureOption(), load(), ObjFileMtlImporter()
+
+### Community 447 - "Community 447"
+Cohesion: 0.33
+Nodes (6): Append(), Fill(), Finalize(), FindIdenticalPositions(), SpatialSort(), ToBinary()
+
+### Community 449 - "Community 449"
+Cohesion: 0.28
+Nodes (4): AddTokenText(), EncodeBase64(), EncodeByteBlock(), TokenTypeString()
+
+### Community 450 - "Community 450"
+Cohesion: 0.33
+Nodes (6): CollectChildJoints(), inrange(), InternReadFile(), ReadColor(), ReadComments(), ReadVector()
+
+### Community 451 - "Community 451"
+Cohesion: 0.33
+Nodes (8): GetCommandOutput(), GetSvnInfo(), GetSvnTrunk(), IsInGMockSvn(), IsInGTestSvn(), Runs the shell command and returns its stdout as a list of lines., Returns the project name and the current SVN workspace's root path., Returns the current SVN workspace's trunk root path.
+
+### Community 452 - "Community 452"
+Cohesion: 0.28
+Nodes (5): namespace(), Check(), main(), MyEnvironment, RunAllTests()
+
+### Community 454 - "Community 454"
+Cohesion: 0.22
+Nodes (5): a0(), A, B, LinkedPtrTest, TEST_F()
+
+### Community 456 - "Community 456"
+Cohesion: 0.22
+Nodes (9): stbi__check_png_header(), stbi__compute_transparency(), stbi__compute_transparency16(), stbi__create_png_image(), stbi__create_png_image_raw(), stbi__de_iphone(), stbi__paeth(), stbi__parse_png_file() (+1 more)
+
+### Community 457 - "Community 457"
+Cohesion: 0.28
+Nodes (9): stbi__at_eof(), stbi__copyval(), stbi__pic_load_core(), stbi__pnm_getinteger(), stbi__pnm_info(), stbi__pnm_isdigit(), stbi__pnm_isspace(), stbi__pnm_skip_whitespace() (+1 more)
+
+### Community 459 - "Community 459"
+Cohesion: 0.36
+Nodes (6): bits(), blast(), construct(), decode(), decomp(), main()
+
+### Community 460 - "Community 460"
+Cohesion: 0.39
+Nodes (8): check_exist_file(), do_banner(), do_help(), filetime(), getFileCrc(), isLargeFile(), main(), zipOpenNewFileInZip3_64()
+
+### Community 461 - "Community 461"
+Cohesion: 0.58
+Nodes (8): bits(), codes(), construct(), decode(), dynamic(), fixed(), puff(), stored()
+
+### Community 462 - "Community 462"
+Cohesion: 0.42
+Nodes (6): aiString(), Append(), Assimp(), C_Str(), Clear(), Set()
+
+### Community 463 - "Community 463"
+Cohesion: 0.25
+Nodes (5): GTestXMLTestCase, Fetches all of the child nodes of element, a DOM Element object.     Returns the, Normalizes Google Test's XML output to eliminate references to transient     inf, Base class for tests of Google Test's XML output functionality., Asserts that actual_node (a DOM node object) is equivalent to     expected_node
+
+### Community 464 - "Community 464"
 Cohesion: 0.31
 Nodes (5): Clear(), Show(), Update(), write(), WriteLine()
 
-### Community 475 - "Community 475"
+### Community 465 - "Community 465"
+Cohesion: 0.39
+Nodes (7): BuildFilter(), gue(), ImportAbsolutePath(), PickAndImportAsset(), PickFolder(), PickMultipleFiles(), Widen()
+
+### Community 466 - "Community 466"
+Cohesion: 0.33
+Nodes (7): CacheDir(), CachePath(), Destroy(), Get(), Init(), LoadFromDisk(), WorkerLoop_()
+
+### Community 467 - "Community 467"
 Cohesion: 0.42
 Nodes (8): main(), test_exp(), test_exp2(), test_inversesqrt(), test_log(), test_log2(), test_pow(), test_sqrt()
 
-### Community 476 - "Community 476"
+### Community 468 - "Community 468"
 Cohesion: 0.39
 Nodes (7): main(), test(), test_constexpr(), test_ctr(), test_inverse(), test_operators(), test_size()
 
-### Community 477 - "Community 477"
+### Community 469 - "Community 469"
 Cohesion: 0.33
 Nodes (6): AppendBox(), AppendSphere(), AppendTris(), EnsureTables(), LoadFromDB(), RebuildColVis()
 
-### Community 478 - "Community 478"
+### Community 470 - "Community 470"
 Cohesion: 0.36
 Nodes (4): AudioSystem(), PlayMusic(), Shutdown(), StopMusic()
 
-### Community 479 - "Community 479"
+### Community 471 - "Community 471"
 Cohesion: 0.36
 Nodes (8): _grow_capacity(), insert(), PathLineTo(), PathLineToMergeDuplicate(), push_back(), push_front(), reserve(), resize()
 
-### Community 480 - "Community 480"
+### Community 472 - "Community 472"
 Cohesion: 0.46
 Nodes (7): main(), test_determinant(), test_inverse(), test_inverse_simd(), test_matrixCompMult(), test_outerProduct(), test_transpose()
 
-### Community 484 - "Community 484"
-Cohesion: 0.29
-Nodes (5): CatmullClarkSubdivider, Edge(), InternSubdivide(), Subdivide(), InternReadFile()
+### Community 477 - "Community 477"
+Cohesion: 0.46
+Nodes (7): ProcessExtrudedAreaSolid(), ProcessClosedProfile(), ProcessCurve(), ProcessOpenProfile(), ProcessParametrizedProfile(), ProcessPolyLine(), ProcessProfile()
 
-### Community 485 - "Community 485"
-Cohesion: 0.29
-Nodes (4): Assimp(), CalcTangentsProcess(), Execute(), ProcessMesh()
-
-### Community 486 - "Community 486"
-Cohesion: 0.39
-Nodes (6): AddPrimitiveStructures(), DumpToFile(), ExtractArraySize(), match4(), Next(), Parse()
-
-### Community 487 - "Community 487"
-Cohesion: 0.29
-Nodes (4): Assimp(), Execute(), GenMeshVertexNormals(), GenVertexNormalsProcess()
-
-### Community 489 - "Community 489"
-Cohesion: 0.29
-Nodes (4): Assimp(), Execute(), LimitBoneWeightsProcess(), ProcessMesh()
-
-### Community 490 - "Community 490"
-Cohesion: 0.29
-Nodes (4): Assimp(), Execute(), SortByPTypeProcess(), UpdateNodes()
-
-### Community 491 - "Community 491"
+### Community 478 - "Community 478"
 Cohesion: 0.29
 Nodes (4): addTexture(), Assimp(), EmbedTexturesProcess(), Execute()
 
-### Community 492 - "Community 492"
+### Community 479 - "Community 479"
 Cohesion: 0.32
 Nodes (6): Assimp(), Execute(), IsMeshInVerboseFormat(), IsVerboseFormat(), MakeVerboseFormat(), MakeVerboseFormatProcess()
 
-### Community 493 - "Community 493"
+### Community 480 - "Community 480"
 Cohesion: 0.36
 Nodes (4): Execute(), MappingModeToChar(), PreProcessUVTransform(), UpdateUVIndex()
 
-### Community 494 - "Community 494"
+### Community 481 - "Community 481"
+Cohesion: 0.39
+Nodes (6): AddPrimitiveStructures(), DumpToFile(), ExtractArraySize(), match4(), Next(), Parse()
+
+### Community 482 - "Community 482"
 Cohesion: 0.29
-Nodes (3): Interpolate(), operator ++(), Process()
+Nodes (4): Assimp(), CalcTangentsProcess(), Execute(), ProcessMesh()
 
-### Community 496 - "Community 496"
-Cohesion: 0.32
-Nodes (3): Flush(), Put(), PutN()
+### Community 483 - "Community 483"
+Cohesion: 0.29
+Nodes (4): Assimp(), Execute(), GenMeshVertexNormals(), GenVertexNormalsProcess()
 
-### Community 500 - "Community 500"
-Cohesion: 0.5
-Nodes (7): trim(), AssignMaterials(), ReadMaterial(), ReadMaterials(), ReadPass(), ReadTechnique(), ReadTextureUnit()
-
-### Community 501 - "Community 501"
+### Community 484 - "Community 484"
 Cohesion: 0.36
 Nodes (6): dict, failed(), passed(), read_results_csv(), run(), Uploads the base files (and if necessary, the current ones as well).
 
-### Community 502 - "Community 502"
+### Community 485 - "Community 485"
+Cohesion: 0.5
+Nodes (7): trim(), AssignMaterials(), ReadMaterial(), ReadMaterials(), ReadPass(), ReadTechnique(), ReadTextureUnit()
+
+### Community 487 - "Community 487"
+Cohesion: 0.32
+Nodes (5): Assimp(), InternReadFile(), IRRMeshImporter(), releaseMaterial(), releaseMesh()
+
+### Community 490 - "Community 490"
+Cohesion: 0.32
+Nodes (3): Flush(), Put(), PutN()
+
+### Community 491 - "Community 491"
 Cohesion: 0.25
 Nodes (5): MakeTmpFile(), TEST_F(), utDefaultIOStream, IOStreamBufferTest, TEST_F()
 
-### Community 503 - "Community 503"
+### Community 492 - "Community 492"
 Cohesion: 0.32
 Nodes (4): CheckIfOnly(), MakeDummyAnimation(), ScenePreprocessorTest, TEST_F()
 
-### Community 504 - "Community 504"
+### Community 493 - "Community 493"
+Cohesion: 0.29
+Nodes (4): Assimp(), Execute(), SortByPTypeProcess(), UpdateNodes()
+
+### Community 494 - "Community 494"
+Cohesion: 0.29
+Nodes (4): Assimp(), Execute(), LimitBoneWeightsProcess(), ProcessMesh()
+
+### Community 495 - "Community 495"
+Cohesion: 0.43
+Nodes (7): WriteModelNode(), WriteModelNodes(), Node::Dump(), DumpAscii(), DumpBinary(), FBXExportProperty(), size()
+
+### Community 496 - "Community 496"
 Cohesion: 0.46
 Nodes (7): main(), test_mat2x2(), test_quat(), test_vec1(), test_vec2(), test_vec3(), test_vec4()
 
-### Community 505 - "Community 505"
+### Community 497 - "Community 497"
 Cohesion: 0.43
 Nodes (6): main(), test(), test_constexpr(), test_ctr(), test_operators(), test_size()
 
-### Community 506 - "Community 506"
+### Community 498 - "Community 498"
 Cohesion: 0.43
 Nodes (6): main(), test(), test_constexpr(), test_ctr(), test_operators(), test_size()
 
-### Community 507 - "Community 507"
+### Community 499 - "Community 499"
 Cohesion: 0.43
 Nodes (6): main(), test(), test_constexpr(), test_ctr(), test_operators(), test_size()
 
-### Community 508 - "Community 508"
+### Community 500 - "Community 500"
 Cohesion: 0.43
 Nodes (6): main(), test(), test_constexpr(), test_ctr(), test_operators(), test_size()
 
-### Community 509 - "Community 509"
+### Community 501 - "Community 501"
 Cohesion: 0.43
 Nodes (6): main(), test(), test_constexpr(), test_ctr(), test_operators(), test_size()
 
-### Community 510 - "Community 510"
+### Community 502 - "Community 502"
 Cohesion: 0.43
 Nodes (6): main(), test(), test_constexpr(), test_ctr(), test_operators(), test_size()
 
-### Community 511 - "Community 511"
+### Community 503 - "Community 503"
 Cohesion: 0.39
 Nodes (5): main(), test_constexpr(), test_ctr(), test_member_alloc_bug(), test_size()
 
-### Community 512 - "Community 512"
+### Community 504 - "Community 504"
 Cohesion: 0.46
 Nodes (7): main(), test_constexpr(), test_swizzle(), test_vec1_ctor(), test_vec1_operator_increment(), test_vec1_operators(), test_vec1_size()
 
-### Community 513 - "Community 513"
+### Community 505 - "Community 505"
 Cohesion: 0.46
 Nodes (7): main(), test_constexpr(), test_ctor(), test_operator_increment(), test_operators(), test_size(), test_swizzle()
 
-### Community 514 - "Community 514"
+### Community 506 - "Community 506"
 Cohesion: 0.46
 Nodes (7): main(), test_bvec1_ctor(), test_constexpr(), test_vec1_ctor(), test_vec1_operator_increment(), test_vec1_operators(), test_vec1_size()
 
-### Community 515 - "Community 515"
+### Community 507 - "Community 507"
 Cohesion: 0.29
 Nodes (3): main(), run(), test()
 
-### Community 516 - "Community 516"
+### Community 508 - "Community 508"
 Cohesion: 0.46
 Nodes (7): main(), test_perlin_double(), test_perlin_float(), test_perlin_pedioric_double(), test_perlin_pedioric_float(), test_simplex_double(), test_simplex_float()
 
-### Community 517 - "Community 517"
+### Community 509 - "Community 509"
 Cohesion: 0.46
 Nodes (7): DeleteMob(), DeletePoint(), Draw(), EnsureTables(), FetchAll(), SaveMob(), SavePoint()
 
-### Community 518 - "Community 518"
+### Community 510 - "Community 510"
 Cohesion: 0.62
 Nodes (4): fade(), mod289(), permute(), taylorInvSqrt()
 
-### Community 519 - "Community 519"
+### Community 511 - "Community 511"
+Cohesion: 0.29
+Nodes (7): ImGuiPtrOrIndex(), ImGuiTabBarRef(), PushOverrideID(), BeginTabBar(), BeginTabBarEx(), BeginTabItem(), GetTabBarRefFromTabBar()
+
+### Community 512 - "Community 512"
 Cohesion: 0.43
 Nodes (4): Assimp(), BlobIOSystem(), Close(), GetBlobChain()
 
-### Community 520 - "Community 520"
+### Community 513 - "Community 513"
+Cohesion: 0.29
+Nodes (7): TableFixColumnSortDirection(), TableGetColumnAvailSortDirection(), TableGetColumnNextSortDirection(), TableSetColumnSortDirection(), TableSetupColumn(), TableSetupColumnFlags(), TableSortSpecsSanitize()
+
+### Community 514 - "Community 514"
 Cohesion: 0.33
 Nodes (7): NextColumn(), PopColumnsBackground(), PushColumnsBackground(), SetWindowClipRectBeforeSetChannel(), TablePopBackgroundChannel(), TablePushBackgroundChannel(), SeparatorEx()
 
 ### Community 521 - "Community 521"
-Cohesion: 0.33
-Nodes (7): GetCenter(), ListBoxFooter(), BeginListBox(), EndListBox(), ListBox(), ListBoxFooter(), ListBoxHeader()
-
-### Community 528 - "Community 528"
-Cohesion: 0.33
-Nodes (4): Assimp(), DropFaceNormalsProcess(), DropMeshFaceNormals(), Execute()
-
-### Community 529 - "Community 529"
-Cohesion: 0.38
-Nodes (3): CollectNewChildren(), Execute(), FindInstancedMeshes()
-
-### Community 530 - "Community 530"
-Cohesion: 0.33
-Nodes (4): Assimp(), Execute(), GenFaceNormalsProcess(), GenMeshFaceNormals()
-
-### Community 531 - "Community 531"
-Cohesion: 0.38
-Nodes (3): CompareBones(), Execute(), UpdateMeshIndices()
-
-### Community 532 - "Community 532"
 Cohesion: 0.62
 Nodes (6): ConvertName(), encodeXML(), ExportSceneAssxml(), ioprintf(), WriteDump(), WriteNode()
 
-### Community 533 - "Community 533"
-Cohesion: 0.38
-Nodes (3): Execute(), SplitMesh(), UpdateNode()
-
-### Community 534 - "Community 534"
-Cohesion: 0.29
-Nodes (4): Assimp(), CPUSupportsSSE2(), TEST_F(), utSimd
-
-### Community 536 - "Community 536"
-Cohesion: 0.43
-Nodes (5): Get(), GetUnparsedProperties(), PeekPropertyName(), PropertyTable(), ReadTypedProperty()
-
-### Community 537 - "Community 537"
-Cohesion: 0.33
-Nodes (4): Assimp(), checkMesh(), Execute(), GenBoundingBoxesProcess()
-
-### Community 538 - "Community 538"
-Cohesion: 0.43
-Nodes (4): STLExporter(), WriteMesh(), WriteMeshBinary(), WritePointCloud()
-
-### Community 541 - "Community 541"
-Cohesion: 0.33
-Nodes (3): ArrayEq(), CopyArray(), InitCopy()
-
-### Community 545 - "Community 545"
-Cohesion: 0.33
-Nodes (4): AdvancingFront(), FindSearchNode(), LocatePoint(), p2t()
-
-### Community 550 - "Community 550"
-Cohesion: 0.38
-Nodes (3): fixedtables(), inflateBack(), inflate_table()
-
-### Community 551 - "Community 551"
-Cohesion: 0.33
-Nodes (3): inflateBack9(), makefixed9(), inflate_table9()
-
-### Community 552 - "Community 552"
+### Community 522 - "Community 522"
 Cohesion: 0.43
 Nodes (5): getCustomDataLayer(), getCustomDataLayerData(), isValidCustomDataType(), read(), readCustomData()
 
-### Community 558 - "Community 558"
-Cohesion: 0.43
-Nodes (5): getUniqueMaterial1(), getUniqueMaterial2(), getUniqueMaterial3(), RemoveRedundantMatsTest, SetUp()
+### Community 523 - "Community 523"
+Cohesion: 0.38
+Nodes (3): Execute(), SplitMesh(), UpdateNode()
 
-### Community 559 - "Community 559"
+### Community 524 - "Community 524"
+Cohesion: 0.29
+Nodes (4): Assimp(), CPUSupportsSSE2(), TEST_F(), utSimd
+
+### Community 525 - "Community 525"
+Cohesion: 0.43
+Nodes (5): Get(), GetUnparsedProperties(), PeekPropertyName(), PropertyTable(), ReadTypedProperty()
+
+### Community 527 - "Community 527"
+Cohesion: 0.33
+Nodes (4): Assimp(), checkMesh(), Execute(), GenBoundingBoxesProcess()
+
+### Community 528 - "Community 528"
+Cohesion: 0.43
+Nodes (4): STLExporter(), WriteMesh(), WriteMeshBinary(), WritePointCloud()
+
+### Community 529 - "Community 529"
+Cohesion: 0.33
+Nodes (4): Assimp(), DropFaceNormalsProcess(), DropMeshFaceNormals(), Execute()
+
+### Community 530 - "Community 530"
+Cohesion: 0.38
+Nodes (3): CollectNewChildren(), Execute(), FindInstancedMeshes()
+
+### Community 531 - "Community 531"
+Cohesion: 0.33
+Nodes (4): Assimp(), Execute(), GenFaceNormalsProcess(), GenMeshFaceNormals()
+
+### Community 532 - "Community 532"
+Cohesion: 0.38
+Nodes (3): CompareBones(), Execute(), UpdateMeshIndices()
+
+### Community 535 - "Community 535"
+Cohesion: 0.33
+Nodes (3): ArrayEq(), CopyArray(), InitCopy()
+
+### Community 538 - "Community 538"
+Cohesion: 0.33
+Nodes (3): Clear(), Dequeue(), next()
+
+### Community 540 - "Community 540"
+Cohesion: 0.33
+Nodes (4): AdvancingFront(), FindSearchNode(), LocatePoint(), p2t()
+
+### Community 548 - "Community 548"
 Cohesion: 0.33
 Nodes (3): AddNodes(), PretransformVerticesTest, SetUp()
 
-### Community 560 - "Community 560"
+### Community 549 - "Community 549"
 Cohesion: 0.43
 Nodes (5): CompressBinaryDump(), main(), compress(), compress2(), compressBound()
 
-### Community 561 - "Community 561"
+### Community 550 - "Community 550"
+Cohesion: 0.43
+Nodes (5): getUniqueMaterial1(), getUniqueMaterial2(), getUniqueMaterial3(), RemoveRedundantMatsTest, SetUp()
+
+### Community 551 - "Community 551"
 Cohesion: 0.52
 Nodes (6): Calculate(), CalculateGlobalTransform(), CreateNodeTree(), SceneAnimator(), SetAnimIndex(), UpdateTransforms()
 
-### Community 562 - "Community 562"
-Cohesion: 0.52
-Nodes (6): main(), test_compiler(), test_cpp_version(), test_instruction_set(), test_model(), test_operators()
-
-### Community 563 - "Community 563"
-Cohesion: 0.52
-Nodes (6): main(), test_constexpr(), test_ctr(), test_precision(), test_size(), test_two_axis_ctr()
-
-### Community 564 - "Community 564"
-Cohesion: 0.52
-Nodes (6): main(), test_equal_epsilon(), test_equal_sign(), test_equal_ulps(), test_notEqual_epsilon(), test_notEqual_ulps()
-
-### Community 569 - "Community 569"
+### Community 552 - "Community 552"
 Cohesion: 0.43
 Nodes (5): main(), test(), test_closeBounded(), test_isdenormal(), test_openBounded()
 
-### Community 570 - "Community 570"
+### Community 553 - "Community 553"
+Cohesion: 0.52
+Nodes (6): main(), test_compiler(), test_cpp_version(), test_instruction_set(), test_model(), test_operators()
+
+### Community 554 - "Community 554"
+Cohesion: 0.52
+Nodes (6): main(), test_constexpr(), test_ctr(), test_precision(), test_size(), test_two_axis_ctr()
+
+### Community 555 - "Community 555"
+Cohesion: 0.52
+Nodes (6): main(), test_equal_epsilon(), test_equal_sign(), test_equal_ulps(), test_notEqual_epsilon(), test_notEqual_ulps()
+
+### Community 560 - "Community 560"
 Cohesion: 0.52
 Nodes (6): main(), test_log(), test_orientation(), test_quat_fastMix(), test_quat_shortMix(), test_rotation()
 
-### Community 571 - "Community 571"
+### Community 561 - "Community 561"
 Cohesion: 0.52
 Nodes (6): main(), test_orientation(), test_rotate(), test_rotateX(), test_rotateY(), test_rotateZ()
 
-### Community 572 - "Community 572"
+### Community 562 - "Community 562"
 Cohesion: 0.52
 Nodes (6): main(), test_areCollinear(), test_areOrthogonal(), test_areOrthonormal(), test_isNormalized(), test_isNull()
 
-### Community 576 - "Community 576"
+### Community 566 - "Community 566"
 Cohesion: 0.52
 Nodes (6): Delete(), Draw(), DrawFields(), EnsureTable(), Fetch(), Save()
 
-### Community 579 - "Community 579"
-Cohesion: 0.6
-Nodes (3): toMat3(), toMat4(), toQuat()
-
-### Community 580 - "Community 580"
-Cohesion: 0.73
-Nodes (3): begin(), components(), end()
-
-### Community 581 - "Community 581"
-Cohesion: 0.4
-Nodes (6): stbtt__csctx_close_shape(), stbtt__csctx_rccurve_to(), stbtt__csctx_rline_to(), stbtt__csctx_rmove_to(), stbtt__csctx_v(), stbtt__track_vertex()
-
-### Community 582 - "Community 582"
-Cohesion: 0.53
-Nodes (4): ASSIMP_API, UpdateFileRead(), UpdateFileWrite(), UpdatePostProcess()
-
-### Community 583 - "Community 583"
-Cohesion: 0.6
-Nodes (4): get_qnan(), is_not_qnan(), is_qnan(), is_special_float()
-
-### Community 584 - "Community 584"
-Cohesion: 0.6
-Nodes (4): aiNode(), GetEmbeddedTexture(), GetShortFilename(), HasMaterials()
-
-### Community 585 - "Community 585"
+### Community 569 - "Community 569"
 Cohesion: 0.6
 Nodes (3): atan2(), lerp(), saturate()
 
-### Community 586 - "Community 586"
+### Community 570 - "Community 570"
 Cohesion: 0.6
 Nodes (3): basic_format_saver, basic_state_saver, format_punct
 
-### Community 587 - "Community 587"
-Cohesion: 0.33
-Nodes (6): TableDrawContextMenu(), TableGetColumnResizeID(), TableSetColumnSortDirection(), TableSetColumnWidthAutoAll(), TableSetColumnWidthAutoSingle(), TableUpdateBorders()
+### Community 571 - "Community 571"
+Cohesion: 0.73
+Nodes (3): begin(), components(), end()
 
-### Community 589 - "Community 589"
+### Community 572 - "Community 572"
+Cohesion: 0.4
+Nodes (6): stbtt__csctx_close_shape(), stbtt__csctx_rccurve_to(), stbtt__csctx_rline_to(), stbtt__csctx_rmove_to(), stbtt__csctx_v(), stbtt__track_vertex()
+
+### Community 573 - "Community 573"
+Cohesion: 0.53
+Nodes (4): ASSIMP_API, UpdateFileRead(), UpdateFileWrite(), UpdatePostProcess()
+
+### Community 574 - "Community 574"
+Cohesion: 0.6
+Nodes (4): get_qnan(), is_not_qnan(), is_qnan(), is_special_float()
+
+### Community 575 - "Community 575"
+Cohesion: 0.6
+Nodes (4): aiNode(), GetEmbeddedTexture(), GetShortFilename(), HasMaterials()
+
+### Community 576 - "Community 576"
+Cohesion: 0.6
+Nodes (3): toMat3(), toMat4(), toQuat()
+
+### Community 577 - "Community 577"
+Cohesion: 0.4
+Nodes (6): AddCallback(), AddDrawCmd(), Merge(), _OnChangedVtxOffset(), _PopUnusedDrawCmd(), SetCurrentChannel()
+
+### Community 578 - "Community 578"
+Cohesion: 0.33
+Nodes (6): AddRectFilled(), PrimRect(), RenderColorRectWithAlphaCheckerboard(), RenderPixelEllipsis(), RenderRectFilledWithHole(), ImAlphaBlendColors()
+
+### Community 580 - "Community 580"
 Cohesion: 0.67
 Nodes (5): Copy(), Save(), WriteData(), WriteDIB(), WriteHeader()
 
-### Community 591 - "Community 591"
+### Community 582 - "Community 582"
 Cohesion: 0.53
 Nodes (4): CollectMeshes(), CollectTrafos(), StepExporter(), WriteFile()
 
-### Community 595 - "Community 595"
+### Community 586 - "Community 586"
 Cohesion: 0.47
 Nodes (5): GetCurrentExecutableName(), GetAbsolutePathOf(), TEST(), TEST_F(), XmlOutputChangeDirTest
 
+### Community 598 - "Community 598"
+Cohesion: 0.47
+Nodes (3): toggleFolder(), toggleLevel(), updateStripes()
+
 ### Community 599 - "Community 599"
-Cohesion: 0.33
-Nodes (3): ZLIB_INTERNAL(), zmemcmp(), zmemzero()
+Cohesion: 0.6
+Nodes (5): main(), test_ivec2_swizzle(), test_ivec3_swizzle(), test_ivec4_swizzle(), test_vec4_swizzle()
+
+### Community 600 - "Community 600"
+Cohesion: 0.6
+Nodes (5): main(), test_equal(), test_greater(), test_less(), test_not()
+
+### Community 601 - "Community 601"
+Cohesion: 0.6
+Nodes (5): main(), test_std_copy(), test_vec2_cast(), test_vec3_cast(), test_vec4_cast()
+
+### Community 602 - "Community 602"
+Cohesion: 0.6
+Nodes (5): main(), test_determinant(), test_matrixCompMult(), test_outerProduct(), test_transpose()
+
+### Community 604 - "Community 604"
+Cohesion: 0.6
+Nodes (5): main(), test_cross(), test_dot(), test_length(), test_normalize()
+
+### Community 605 - "Community 605"
+Cohesion: 0.6
+Nodes (5): main(), test_ulp_double_dist(), test_ulp_double_step(), test_ulp_float_dist(), test_ulp_float_step()
+
+### Community 606 - "Community 606"
+Cohesion: 0.6
+Nodes (5): main(), test_ulp_double_dist(), test_ulp_double_step(), test_ulp_float_dist(), test_ulp_float_step()
+
+### Community 607 - "Community 607"
+Cohesion: 0.6
+Nodes (5): main(), test_perspective(), test_pick(), test_translate(), test_tweakedInfinitePerspective()
+
+### Community 608 - "Community 608"
+Cohesion: 0.6
+Nodes (5): main(), test_aligned_ivec4(), test_aligned_mat4(), test_copy(), test_ctor()
+
+### Community 609 - "Community 609"
+Cohesion: 0.6
+Nodes (5): main(), test_ulp_double_dist(), test_ulp_double_step(), test_ulp_float_dist(), test_ulp_float_step()
 
 ### Community 610 - "Community 610"
 Cohesion: 0.6
 Nodes (5): main(), test_log2(), test_nlz(), test_pow_int(), test_pow_uint()
 
-### Community 611 - "Community 611"
-Cohesion: 0.47
-Nodes (3): toggleFolder(), toggleLevel(), updateStripes()
-
 ### Community 612 - "Community 612"
-Cohesion: 0.6
-Nodes (5): main(), test_ivec2_swizzle(), test_ivec3_swizzle(), test_ivec4_swizzle(), test_vec4_swizzle()
-
-### Community 613 - "Community 613"
-Cohesion: 0.6
-Nodes (5): main(), test_equal(), test_greater(), test_less(), test_not()
-
-### Community 614 - "Community 614"
-Cohesion: 0.6
-Nodes (5): main(), test_std_copy(), test_vec2_cast(), test_vec3_cast(), test_vec4_cast()
-
-### Community 615 - "Community 615"
-Cohesion: 0.6
-Nodes (5): main(), test_determinant(), test_matrixCompMult(), test_outerProduct(), test_transpose()
-
-### Community 617 - "Community 617"
-Cohesion: 0.6
-Nodes (5): main(), test_cross(), test_dot(), test_length(), test_normalize()
-
-### Community 618 - "Community 618"
-Cohesion: 0.6
-Nodes (5): main(), test_ulp_double_dist(), test_ulp_double_step(), test_ulp_float_dist(), test_ulp_float_step()
-
-### Community 619 - "Community 619"
-Cohesion: 0.6
-Nodes (5): main(), test_ulp_double_dist(), test_ulp_double_step(), test_ulp_float_dist(), test_ulp_float_step()
-
-### Community 620 - "Community 620"
-Cohesion: 0.6
-Nodes (5): main(), test_perspective(), test_pick(), test_translate(), test_tweakedInfinitePerspective()
-
-### Community 621 - "Community 621"
-Cohesion: 0.6
-Nodes (5): main(), test_aligned_ivec4(), test_aligned_mat4(), test_copy(), test_ctor()
-
-### Community 622 - "Community 622"
-Cohesion: 0.6
-Nodes (5): main(), test_ulp_double_dist(), test_ulp_double_step(), test_ulp_float_dist(), test_ulp_float_step()
-
-### Community 624 - "Community 624"
 Cohesion: 0.6
 Nodes (5): main(), test_axisAngle(), test_axisAngle2(), test_rotate(), testForAxisAngle()
 
-### Community 625 - "Community 625"
+### Community 613 - "Community 613"
 Cohesion: 0.6
 Nodes (5): main(), test_isIdentity(), test_isNormalized(), test_isNull(), test_isOrthogonal()
 
-### Community 626 - "Community 626"
+### Community 614 - "Community 614"
 Cohesion: 0.6
 Nodes (5): main(), test_string_cast_dual_quaternion(), test_string_cast_matrix(), test_string_cast_quaternion(), test_string_cast_vector()
 
-### Community 627 - "Community 627"
+### Community 615 - "Community 615"
 Cohesion: 0.6
 Nodes (5): Delete(), Draw(), DrawFields(), Fetch(), Save()
 
-### Community 628 - "Community 628"
+### Community 616 - "Community 616"
 Cohesion: 0.6
 Nodes (5): Delete(), Draw(), DrawFields(), Fetch(), Save()
 
-### Community 631 - "Community 631"
+### Community 619 - "Community 619"
 Cohesion: 0.6
 Nodes (3): Render(), withAlpha(), worldToScreen()
 
-### Community 634 - "Community 634"
+### Community 622 - "Community 622"
+Cohesion: 0.4
+Nodes (5): IsMouseDragPastThreshold(), DragBehaviorT(), GetMinimumStepAtDecimalPrecision(), ImParseFormatPrecision(), SliderBehaviorT()
+
+### Community 623 - "Community 623"
 Cohesion: 0.7
 Nodes (3): Assimp(), Intern(), operator()
 
-### Community 635 - "Community 635"
+### Community 624 - "Community 624"
 Cohesion: 0.6
 Nodes (3): ASSIMP_API, IOSystem, LogStream()
 
-### Community 636 - "Community 636"
-Cohesion: 0.4
-Nodes (5): PushOverrideID(), BeginTabBar(), BeginTabBarEx(), BeginTabItem(), GetTabBarRefFromTabBar()
-
-### Community 640 - "Community 640"
-Cohesion: 0.6
-Nodes (3): Read(), ReadIndex(), ReadString()
-
-### Community 641 - "Community 641"
+### Community 629 - "Community 629"
 Cohesion: 0.6
 Nodes (3): base64_encode_block(), base64_encode_blockend(), base64_encode_value()
 
-### Community 642 - "Community 642"
-Cohesion: 0.5
-Nodes (5): CopyVertex(), ExtractDataObjectFromChannel(), ReadPrimitives(), ReadPrimTriStrips(), ReportWarning()
-
-### Community 643 - "Community 643"
+### Community 630 - "Community 630"
 Cohesion: 0.6
 Nodes (3): ApplyModifiers(), DoIt(), IsActive()
 
-### Community 650 - "Community 650"
-Cohesion: 0.6
-Nodes (3): crypthead(), init_keys(), update_keys()
-
-### Community 651 - "Community 651"
-Cohesion: 0.6
-Nodes (4): adler32(), adler32_combine_(), adler32_combine64(), adler32_z()
-
-### Community 652 - "Community 652"
-Cohesion: 0.6
-Nodes (3): crypthead(), init_keys(), update_keys()
-
-### Community 655 - "Community 655"
+### Community 632 - "Community 632"
 Cohesion: 0.5
 Nodes (5): GetExtensionList(), GetImporter(), GetImporterIndex(), IsExtensionSupported(), RegisterLoader()
 
-### Community 664 - "Community 664"
-Cohesion: 0.7
-Nodes (4): main(), test_normalizedRand2(), test_normalizedRand3(), test_signedRand1()
+### Community 637 - "Community 637"
+Cohesion: 0.6
+Nodes (3): Read(), ReadIndex(), ReadString()
 
-### Community 665 - "Community 665"
+### Community 639 - "Community 639"
+Cohesion: 0.6
+Nodes (3): capture(), depart(), testing()
+
+### Community 640 - "Community 640"
+Cohesion: 0.6
+Nodes (3): crypthead(), init_keys(), update_keys()
+
+### Community 641 - "Community 641"
+Cohesion: 0.6
+Nodes (4): adler32(), adler32_combine_(), adler32_combine64(), adler32_z()
+
+### Community 643 - "Community 643"
+Cohesion: 0.6
+Nodes (3): crypthead(), init_keys(), update_keys()
+
+### Community 653 - "Community 653"
 Cohesion: 0.6
 Nodes (4): computeTangentBasis(), generateAttribute(), generateBuffer(), generateDepthMap()
 
-### Community 667 - "Community 667"
+### Community 654 - "Community 654"
+Cohesion: 0.7
+Nodes (4): main(), test_normalizedRand2(), test_normalizedRand3(), test_signedRand1()
+
+### Community 656 - "Community 656"
 Cohesion: 0.7
 Nodes (4): main(), test_mat_memcpy(), test_quat_memcpy(), test_vec_memcpy()
 
-### Community 668 - "Community 668"
+### Community 657 - "Community 657"
 Cohesion: 0.7
 Nodes (4): main(), test_mat(), test_qua(), test_vec()
 
-### Community 669 - "Community 669"
+### Community 658 - "Community 658"
 Cohesion: 0.7
 Nodes (4): main(), test_dvec(), test_mat(), test_vec()
 
-### Community 670 - "Community 670"
+### Community 659 - "Community 659"
 Cohesion: 0.7
 Nodes (4): main(), test_storage_aligned(), test_storage_unaligned(), test_vec3_aligned()
 
-### Community 671 - "Community 671"
+### Community 660 - "Community 660"
 Cohesion: 0.7
 Nodes (4): main(), test_length_mat(), test_length_mat_non_squared(), test_length_vec()
 
-### Community 672 - "Community 672"
+### Community 661 - "Community 661"
 Cohesion: 0.7
 Nodes (4): main(), test_rotate(), test_scale(), test_translate()
 
-### Community 673 - "Community 673"
+### Community 662 - "Community 662"
 Cohesion: 0.7
 Nodes (4): main(), test_intersectLineTriangle(), test_intersectRayPlane(), test_intersectRayTriangle()
 
-### Community 674 - "Community 674"
+### Community 663 - "Community 663"
 Cohesion: 0.7
 Nodes (4): main(), perf_mul(), print(), test_decl()
 
-### Community 675 - "Community 675"
+### Community 664 - "Community 664"
 Cohesion: 0.7
 Nodes (4): main(), test_angle(), test_orientedAngle_vec2(), test_orientedAngle_vec3()
 
-### Community 676 - "Community 676"
+### Community 665 - "Community 665"
 Cohesion: 0.7
 Nodes (4): getScaleFactor(), interpolatePosition(), interpolateRotation(), interpolateScaling()
 
+### Community 671 - "Community 671"
+Cohesion: 0.5
+Nodes (4): clear(), clear_delete(), clear_destruct(), ImDrawData()
+
+### Community 682 - "Community 682"
+Cohesion: 0.83
+Nodes (3): ProcessAnimation(), ProcessMesh(), ProcessScene()
+
 ### Community 690 - "Community 690"
+Cohesion: 0.83
+Nodes (3): Fail(), main(), TestFailureThrowsRuntimeError()
+
+### Community 691 - "Community 691"
 Cohesion: 0.67
 Nodes (3): Assimp(), BaseNode(), Parser()
 
 ### Community 693 - "Community 693"
-Cohesion: 0.83
-Nodes (3): ProcessAnimation(), ProcessMesh(), ProcessScene()
+Cohesion: 0.5
+Nodes (4): ParseToAST(), A generator that yields the tokens in the given string., Convert the given Pump source text into an AST., Tokenize()
 
-### Community 701 - "Community 701"
-Cohesion: 0.83
-Nodes (3): Fail(), main(), TestFailureThrowsRuntimeError()
-
-### Community 709 - "Community 709"
+### Community 699 - "Community 699"
 Cohesion: 0.67
 Nodes (3): ReadFile(), TEST_F(), utglTF2ImportExport
 
-### Community 712 - "Community 712"
+### Community 702 - "Community 702"
 Cohesion: 0.67
 Nodes (3): checkMesh(), TEST_F(), VTAdjacencyTest
 
-### Community 715 - "Community 715"
+### Community 705 - "Community 705"
 Cohesion: 0.5
 Nodes (3): GLFWWindow, -canBecomeKeyWindow, -canBecomeMainWindow
 
-### Community 716 - "Community 716"
+### Community 706 - "Community 706"
 Cohesion: 0.83
 Nodes (3): main(), test_comp(), test_constexpr()
 
-### Community 717 - "Community 717"
+### Community 707 - "Community 707"
 Cohesion: 0.83
 Nodes (3): main(), test_conjugate(), test_mix()
+
+### Community 711 - "Community 711"
+Cohesion: 0.83
+Nodes (3): main(), test_comp(), test_size()
+
+### Community 712 - "Community 712"
+Cohesion: 0.83
+Nodes (3): main(), test_packSnorm(), test_packUnorm()
+
+### Community 713 - "Community 713"
+Cohesion: 0.83
+Nodes (3): main(), test_comp(), test_size()
+
+### Community 714 - "Community 714"
+Cohesion: 0.83
+Nodes (3): main(), test_comp(), test_size()
+
+### Community 715 - "Community 715"
+Cohesion: 0.83
+Nodes (3): main(), test_comp(), test_size()
+
+### Community 716 - "Community 716"
+Cohesion: 0.83
+Nodes (3): main(), test_comp(), test_size()
+
+### Community 717 - "Community 717"
+Cohesion: 0.83
+Nodes (3): main(), test_comp(), test_size()
+
+### Community 718 - "Community 718"
+Cohesion: 0.83
+Nodes (3): main(), test_comp(), test_size()
+
+### Community 719 - "Community 719"
+Cohesion: 0.83
+Nodes (3): main(), test_comp(), test_size()
+
+### Community 720 - "Community 720"
+Cohesion: 0.83
+Nodes (3): main(), test_comp(), test_size()
 
 ### Community 721 - "Community 721"
 Cohesion: 0.83
 Nodes (3): main(), test_comp(), test_size()
 
-### Community 722 - "Community 722"
-Cohesion: 0.83
-Nodes (3): main(), test_packSnorm(), test_packUnorm()
-
 ### Community 723 - "Community 723"
-Cohesion: 0.83
-Nodes (3): main(), test_comp(), test_size()
-
-### Community 724 - "Community 724"
-Cohesion: 0.83
-Nodes (3): main(), test_comp(), test_size()
-
-### Community 725 - "Community 725"
-Cohesion: 0.83
-Nodes (3): main(), test_comp(), test_size()
-
-### Community 726 - "Community 726"
-Cohesion: 0.83
-Nodes (3): main(), test_comp(), test_size()
-
-### Community 727 - "Community 727"
-Cohesion: 0.83
-Nodes (3): main(), test_comp(), test_size()
-
-### Community 728 - "Community 728"
-Cohesion: 0.83
-Nodes (3): main(), test_comp(), test_size()
-
-### Community 729 - "Community 729"
-Cohesion: 0.83
-Nodes (3): main(), test_comp(), test_size()
-
-### Community 730 - "Community 730"
-Cohesion: 0.83
-Nodes (3): main(), test_comp(), test_size()
-
-### Community 731 - "Community 731"
-Cohesion: 0.83
-Nodes (3): main(), test_comp(), test_size()
-
-### Community 733 - "Community 733"
 Cohesion: 0.83
 Nodes (3): epsilonEqual(), main(), test()
 
-### Community 734 - "Community 734"
+### Community 724 - "Community 724"
 Cohesion: 0.83
 Nodes (3): main(), test_fastDistance(), test_fastInverseSqrt()
 
-### Community 735 - "Community 735"
+### Community 725 - "Community 725"
 Cohesion: 0.83
 Nodes (3): main(), test_gauss_1d(), test_gauss_2d()
 
-### Community 736 - "Community 736"
+### Community 726 - "Community 726"
 Cohesion: 0.83
 Nodes (3): main(), test_linearGradient(), test_radialGradient()
 
-### Community 737 - "Community 737"
+### Community 727 - "Community 727"
 Cohesion: 0.83
 Nodes (3): main(), test_lMaxNorm(), test_lxNorm()
 
-### Community 738 - "Community 738"
+### Community 728 - "Community 728"
 Cohesion: 0.83
 Nodes (3): main(), test_mat(), test_vec()
 
 ## Knowledge Gaps
-- **723 isolated node(s):** `IncludeHandler`, `serverConfig`, `databaseConfig`, `gameConfig`, `config` (+718 more)
+- **730 isolated node(s):** `IncludeHandler`, `serverConfig`, `databaseConfig`, `gameConfig`, `movementConfig` (+725 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **274 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **273 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Malloc()` connect `Community 71` to `Community 3`, `Community 132`, `Community 7`, `Community 12`, `Community 275`, `Community 408`, `Community 294`, `Community 297`, `Community 47`, `Community 560`, `Community 310`, `Community 311`, `Community 186`, `Community 189`, `Community 67`, `Community 329`, `Community 80`, `Community 470`, `Community 471`, `Community 599`, `Community 102`, `Community 246`, `Community 254`?**
-  _High betweenness centrality (0.115) - this node is a cross-community bridge._
-- **Why does `Assert()` connect `Community 4` to `Community 515`, `Community 134`, `Community 7`, `Community 11`, `Community 12`, `Community 14`, `Community 16`, `Community 18`, `Community 405`, `Community 664`, `Community 153`, `Community 414`, `Community 545`, `Community 34`, `Community 167`, `Community 42`, `Community 49`, `Community 50`, `Community 181`, `Community 54`, `Community 440`, `Community 569`, `Community 192`, `Community 449`, `Community 194`, `Community 195`, `Community 71`, `Community 72`, `Community 330`, `Community 331`, `Community 206`, `Community 599`, `Community 222`, `Community 223`, `Community 354`, `Community 226`, `Community 228`, `Community 610`, `Community 102`, `Community 103`, `Community 104`, `Community 109`, `Community 115`, `Community 511`?**
-  _High betweenness centrality (0.097) - this node is a cross-community bridge._
-- **Why does `DeadlyImportError()` connect `Community 13` to `Community 640`, `Community 133`, `Community 143`, `Community 144`, `Community 401`, `Community 528`, `Community 530`, `Community 529`, `Community 271`, `Community 21`, `Community 151`, `Community 26`, `Community 283`, `Community 158`, `Community 159`, `Community 164`, `Community 38`, `Community 39`, `Community 41`, `Community 426`, `Community 427`, `Community 46`, `Community 175`, `Community 304`, `Community 174`, `Community 306`, `Community 691`, `Community 182`, `Community 183`, `Community 184`, `Community 57`, `Community 191`, `Community 64`, `Community 320`, `Community 321`, `Community 68`, `Community 457`, `Community 202`, `Community 461`, `Community 78`, `Community 340`, `Community 344`, `Community 93`, `Community 97`, `Community 227`, `Community 484`, `Community 486`, `Community 487`, `Community 490`, `Community 363`, `Community 362`, `Community 239`, `Community 114`, `Community 119`, `Community 249`, `Community 250`, `Community 251`?**
-  _High betweenness centrality (0.069) - this node is a cross-community bridge._
+- **Why does `Assert()` connect `Community 4` to `Community 133`, `Community 263`, `Community 8`, `Community 9`, `Community 10`, `Community 14`, `Community 15`, `Community 16`, `Community 654`, `Community 402`, `Community 18`, `Community 26`, `Community 540`, `Community 159`, `Community 35`, `Community 552`, `Community 42`, `Community 427`, `Community 47`, `Community 177`, `Community 435`, `Community 181`, `Community 184`, `Community 59`, `Community 65`, `Community 323`, `Community 324`, `Community 196`, `Community 326`, `Community 71`, `Community 202`, `Community 87`, `Community 216`, `Community 218`, `Community 348`, `Community 220`, `Community 610`, `Community 100`, `Community 113`, `Community 503`, `Community 507`, `Community 639`?**
+  _High betweenness centrality (0.128) - this node is a cross-community bridge._
+- **Why does `Malloc()` connect `Community 47` to `Community 1`, `Community 136`, `Community 8`, `Community 266`, `Community 16`, `Community 18`, `Community 285`, `Community 35`, `Community 549`, `Community 298`, `Community 299`, `Community 44`, `Community 186`, `Community 445`, `Community 192`, `Community 65`, `Community 322`, `Community 68`, `Community 460`, `Community 81`, `Community 240`, `Community 248`?**
+  _High betweenness centrality (0.126) - this node is a cross-community bridge._
+- **Why does `DeadlyImportError()` connect `Community 69` to `Community 128`, `Community 262`, `Community 141`, `Community 15`, `Community 529`, `Community 530`, `Community 147`, `Community 531`, `Community 150`, `Community 23`, `Community 24`, `Community 22`, `Community 27`, `Community 156`, `Community 157`, `Community 160`, `Community 161`, `Community 417`, `Community 419`, `Community 36`, `Community 293`, `Community 167`, `Community 168`, `Community 169`, `Community 43`, `Community 45`, `Community 51`, `Community 180`, `Community 311`, `Community 443`, `Community 191`, `Community 450`, `Community 199`, `Community 333`, `Community 78`, `Community 79`, `Community 337`, `Community 338`, `Community 93`, `Community 94`, `Community 96`, `Community 481`, `Community 483`, `Community 102`, `Community 487`, `Community 233`, `Community 362`, `Community 235`, `Community 361`, `Community 493`, `Community 366`, `Community 243`, `Community 245`, `Community 246`, `Community 637`?**
+  _High betweenness centrality (0.090) - this node is a cross-community bridge._
 - **Are the 285 inferred relationships involving `Assert()` (e.g. with `keypress_cb()` and `mouse_button_cb()`) actually correct?**
   _`Assert()` has 285 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 242 inferred relationships involving `DeadlyImportError()` (e.g. with `ConvertMeshes()` and `InternReadFile()`) actually correct?**
@@ -3267,4 +3251,4 @@ _Questions this graph is uniquely positioned to answer:_
 - **Are the 126 inferred relationships involving `_glfwInputError()` (e.g. with `_glfwIsValidContextConfig()` and `_glfwRefreshContextAttribs()`) actually correct?**
   _`_glfwInputError()` has 126 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `IncludeHandler`, `serverConfig`, `databaseConfig` to the rest of the system?**
-  _723 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _730 weakly-connected nodes found - possible documentation gaps or missing edges._
