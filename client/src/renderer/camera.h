@@ -15,7 +15,7 @@ public:
     // Smooth yaw toward target angle (handles 360° wrap). speed is units/s.
     void LerpYawToward(float target_deg, float speed, float dt);
 
-    // Called by A/D turning so the camera follows the character's facing.
+    // Keep camera yaw aligned with character facing when needed.
     void SetYaw(float yaw)   { yaw_ = yaw; }
     void SetPitch(float p)   { pitch_ = p; }
     void AddYaw(float delta) { yaw_ += delta; }
@@ -45,7 +45,7 @@ public:
     float fov           = 70.f;
     float znear         = 0.5f;
     float zfar          = 1000.f;
-    float default_pitch = 32.f;  // pitch restaurado ao andar (classic mode)
+    float default_pitch = 32.f;  // default gameplay pitch
 
     // When true, View() shifts the lookat/pivot laterally so the player model
     // sits slightly left of center (crosshair-mode shoulder offset).

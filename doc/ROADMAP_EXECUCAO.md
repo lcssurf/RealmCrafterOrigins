@@ -105,6 +105,57 @@ Detalhamento oficial desta fase:
 Regra operacional da fase:
 - Toda nova feature da Fase 3 so fecha com fluxo correspondente no GUE (criar/editar/duplicar/validar), nao apenas implementacao por codigo.
 
+Status macro (2026-05-12):
+
+1. Etapa A iniciada e parcialmente concluida.
+- Contratos de protocolo da fase adicionados (server/client), incluindo pacotes alvo e extensoes 124-131.
+- Dispatch in-game no server modularizado para metodo dedicado.
+- Handlers iniciais de acoes in-game adicionados em `server/internal/net/ingame_actions.go`.
+- Gate de pacotes da Fase 3 extraido no client para `client/src/gameplay/ingame_packet_gate.*`.
+- Testes de codec dos novos payloads adicionados em `server/internal/net/ingame_actions_test.go`.
+- Checklist de smoke da etapa criado em `doc/FASE3_ETAPA_A_SMOKE_CHECKLIST.md`.
+- Matriz de paridade GUE criada em `doc/FASE3_GUE_PARITY_MATRIX.md`.
+
+2. Validacao tecnica da entrega A1/A3.
+- `go test ./...` no server ok.
+- build do client ok.
+
+3. Etapa B concluida (quests ponta a ponta + paridade inicial no GUE).
+- Migração V18 concluida com tabelas de definicao, progresso e recompensa.
+- `PQuestAction` conectado ao runtime real (accept/abandon/turn-in).
+- `PQuestLog` snapshot integrado no world-enter e em updates de progresso.
+- `PQuestLog` evoluido para modo hibrido: snapshot inicial + delta incremental.
+- Hooks de progresso conectados em kill/pickup/talk/explore.
+- Testes automatizados de fluxo de quest adicionados em `server/internal/db/quests_test.go`.
+- Client recebeu `Quest Journal` + `Quest Tracker` conectados ao `PQuestLog`.
+- Client agora recebe tambem quests disponiveis e aceita direto pela lista (sem accept manual por ID).
+- GUE recebeu aba `Quests` com fluxo completo:
+  criar/editar/duplicar/ativar quest, objetivos e recompensas, com validacao inline.
+
+4. Etapa C consolidada tecnicamente (party system baseline server-authoritative).
+- Runtime de party em memoria implementado no server com:
+  convite, aceitar, recusar, sair, kick e transferir lider.
+- `PPartyUpdate` em modo hibrido snapshot + delta no server (membros/lider/HP + notificacoes).
+- `PPartyUpdate` evoluido com `notice_code` (resultado/erro de negocio codificado) + `notice` textual.
+- Registro de clients in-game centralizado para resolver alvos por nome e sincronizar snapshots.
+- Limpeza de estado de party em disconnect para evitar convites/estado zumbi.
+- Convite nao bloqueado por distancia (mantido apenas requisito de mesma area); distancia fica para regras futuras de gameplay (ex.: XP por proximidade).
+- Divisao de XP em party implementada por proximidade (mesma area + raio), com fallback seguro para o killer.
+- Client recebeu `PartyPanel` (lista de membros, HP, lider, convite pendente).
+- Client suporta comandos rapidos via chat:
+  `/party invite`, `/party accept`, `/party decline`, `/party leave`, `/party kick`, `/party lead`.
+- Testes automatizados adicionados em:
+  `server/internal/net/party_runtime_test.go`,
+  `server/internal/net/party_runtime_delta_test.go`,
+  `server/internal/net/party_xp_test.go`.
+
+5. Proximos passos imediatos.
+- Rodada de smoke manual da Etapa C (2 jogadores): invite -> accept -> transfer lead -> kick -> leave.
+- Rodada de smoke manual da divisao de XP por proximidade (membro perto x membro longe).
+- Checklist de smoke da Etapa C criado em `doc/FASE3_ETAPA_C_SMOKE_CHECKLIST.md`.
+- Etapa C.5 iniciada com slice de defesa ativa (`PCombatAction` + `PCombatEvent` + mitigacao melee server-side).
+- Iniciar Etapa D (projectile runtime autoritativo) apos smoke manual.
+
 1. Quests (PQuestLog=23)
 - Schema + fluxo de quest state.
 - UI de log e progresso.

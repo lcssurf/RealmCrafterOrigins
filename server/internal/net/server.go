@@ -13,6 +13,7 @@ import (
 	"log"
 	"math/big"
 	"net"
+	"sync"
 	"time"
 
 	"realm-crafter/server/internal/accounts"
@@ -53,17 +54,29 @@ type Server struct {
 	accounts  *accounts.Service
 	world     *world.World
 	scripting *scripting.Registry
+	party     *partyManager
+
+	clientRegistryMu   sync.RWMutex
+	clientsByCharacter map[string]*ClientConn
+	clientsByName      map[string]*ClientConn
+	clientsByRuntimeID map[uint32]*ClientConn
 }
 
 // NewServer creates a Server with all required dependencies.
 func NewServer(cfg *Config, database *db.DB, accts *accounts.Service, w *world.World, reg *scripting.Registry) *Server {
-	return &Server{
-		config:    cfg,
-		db:        database,
-		accounts:  accts,
-		world:     w,
-		scripting: reg,
+	s := &Server{
+		config:             cfg,
+		db:                 database,
+		accounts:           accts,
+		world:              w,
+		scripting:          reg,
+		party:              newPartyManager(5),
+		clientsByCharacter: make(map[string]*ClientConn),
+		clientsByName:      make(map[string]*ClientConn),
+		clientsByRuntimeID: make(map[uint32]*ClientConn),
 	}
+	world.SetSpecialKillHook(s.handleSpecialKill)
+	return s
 }
 
 // Start binds the QUIC listener and begins accepting connections.

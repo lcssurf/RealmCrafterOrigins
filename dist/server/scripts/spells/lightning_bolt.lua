@@ -19,6 +19,9 @@ spell.on_cast = function(caster_id, target_id)
     end
 
     Combat.deal_damage(caster_id, target_id, dmg, "magic")
+    if Combat.interrupt then
+        Combat.interrupt(caster_id, target_id)
+    end
 end
 
 Spell.register(spell)

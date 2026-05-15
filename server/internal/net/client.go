@@ -50,6 +50,8 @@ type ClientConn struct {
 	activeDialogNPC uint32 // RID of NPC currently in dialog with this player; 0 = none
 	lastMoveLogAtMs int64
 	worldEnterStart int64 // unix ms when handleStartGame started
+	questLogSync    questLogSyncCache
+	partySync       partySyncCache
 }
 
 // Run is the main goroutine for a connected client.
@@ -147,38 +149,51 @@ func (c *ClientConn) dispatch(ctx context.Context, pktType uint16, payload []byt
 		}
 
 	case StateInGame:
-		switch pktType {
-		case protocol.PStandardUpdate:
-			return c.handleStandardUpdate(ctx, payload)
-		case protocol.PChatMessage:
-			return c.handleChatMessage(ctx, payload)
-		case protocol.PInventorySwap:
-			return c.handleInventorySwap(ctx, payload)
-		case protocol.PAttackActor:
-			return c.handleAttackActor(ctx, payload)
-		case protocol.PUseItem:
-			return c.handleUseItem(ctx, payload)
-		case protocol.PRespawnPlayer:
-			return c.handleRespawnPlayer(ctx)
-		case protocol.PCastSpell:
-			return c.handleCastSpell(ctx, payload)
-		case protocol.PRightClick:
-			return c.handleRightClick(ctx, payload)
-		case protocol.PDialogChoice:
-			return c.handleDialogChoice(ctx, payload)
-		case protocol.PPickupItem:
-			return c.handlePickupItem(ctx, payload)
-		case protocol.PShopAction:
-			return c.handleShopAction(ctx, payload)
-		case protocol.PPlayerAction:
-			return c.handlePlayerAction(ctx, payload)
-		case protocol.PClientWorldReady:
-			return c.handleClientWorldReady(payload)
-		case protocol.PPing:
-			return c.sendPong()
-		default:
-			log.Printf("client: state=ingame: unexpected packet %d", pktType)
-		}
+		return c.dispatchInGamePacket(ctx, pktType, payload)
+	}
+	return nil
+}
+
+func (c *ClientConn) dispatchInGamePacket(ctx context.Context, pktType uint16, payload []byte) error {
+	switch pktType {
+	case protocol.PStandardUpdate:
+		return c.handleStandardUpdate(ctx, payload)
+	case protocol.PChatMessage:
+		return c.handleChatMessage(ctx, payload)
+	case protocol.PInventorySwap:
+		return c.handleInventorySwap(ctx, payload)
+	case protocol.PAttackActor:
+		return c.handleAttackActor(ctx, payload)
+	case protocol.PUseItem:
+		return c.handleUseItem(ctx, payload)
+	case protocol.PRespawnPlayer:
+		return c.handleRespawnPlayer(ctx)
+	case protocol.PCastSpell:
+		return c.handleCastSpell(ctx, payload)
+	case protocol.PRightClick:
+		return c.handleRightClick(ctx, payload)
+	case protocol.PDialogChoice:
+		return c.handleDialogChoice(ctx, payload)
+	case protocol.PPickupItem:
+		return c.handlePickupItem(ctx, payload)
+	case protocol.PShopAction:
+		return c.handleShopAction(ctx, payload)
+	case protocol.PPlayerAction:
+		return c.handlePlayerAction(ctx, payload)
+	case protocol.PQuestAction:
+		return c.handleQuestAction(ctx, payload)
+	case protocol.PPartyAction:
+		return c.handlePartyAction(ctx, payload)
+	case protocol.PCombatAction:
+		return c.handleCombatAction(ctx, payload)
+	case protocol.PSkillLoadoutAction:
+		return c.handleSkillLoadoutAction(ctx, payload)
+	case protocol.PClientWorldReady:
+		return c.handleClientWorldReady(payload)
+	case protocol.PPing:
+		return c.sendPong()
+	default:
+		log.Printf("client: state=ingame: unexpected packet %d", pktType)
 	}
 	return nil
 }
@@ -381,8 +396,10 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	actor.AreaName = char.AreaName
 	actor.Health = char.Health
 	actor.HealthMax = char.HealthMax
-	actor.Energy = char.Energy
-	actor.EnergyMax = char.EnergyMax
+	actor.Energy = char.Energy       // MP
+	actor.EnergyMax = char.EnergyMax // MP max
+	actor.StaminaMax = 100
+	actor.Stamina = actor.StaminaMax
 	actor.XP = char.XP
 	actor.Gold = char.Gold
 	actor.Strength = int32(char.Level) * 3
@@ -419,6 +436,9 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 
 	area.AddActor(actor)
 	c.state = StateInGame
+	c.resetQuestLogSyncCache()
+	c.resetPartySyncCache()
+	c.server.registerInGameClient(c)
 
 	log.Printf("client: %s entered world as %q (runtimeID=%d, area=%s)",
 		c.account.Username, char.Name, actor.RuntimeID, char.AreaName)
@@ -436,8 +456,10 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 		w.WriteFloat32(actor.Yaw)
 		w.WriteInt32(actor.Health)
 		w.WriteInt32(actor.HealthMax)
-		w.WriteInt32(actor.Energy)
-		w.WriteInt32(actor.EnergyMax)
+		w.WriteInt32(actor.Energy)    // MP
+		w.WriteInt32(actor.EnergyMax) // MP max
+		w.WriteInt32(actor.Stamina)
+		w.WriteInt32(actor.StaminaMax)
 		payload := append(w.Bytes(), world.AppearanceBytes(actor.Appearance)...)
 		if err := c.sendPacket(protocol.PStartGame, payload); err != nil {
 			return err
@@ -483,6 +505,17 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 
 	// Send known spells.
 	c.sendKnownSpells()
+
+	// Send current quest state after entering world.
+	_ = c.sendQuestLogSnapshot(ctx)
+	_ = c.server.sendPartySnapshotToClient(c, protocol.PartyNoticeNone, "")
+
+	// Mark the current area for explore-type objectives on login.
+	c.applyQuestProgressEvent(ctx, db.QuestProgressEvent{
+		ObjectiveType: db.QuestObjectiveExplore,
+		TargetArea:    actor.AreaName,
+		Delta:         1,
+	})
 
 	// Start area music.
 	c.sendMusic(musicForArea(actor.AreaName), 128)
@@ -800,6 +833,13 @@ func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) er
 	c.sendMusic(musicForArea(portal.TargetArea), 128)
 	c.sendAreaConfig(portal.TargetArea)
 
+	// Mark the destination area for explore-type objectives.
+	c.applyQuestProgressEvent(context.Background(), db.QuestProgressEvent{
+		ObjectiveType: db.QuestObjectiveExplore,
+		TargetArea:    portal.TargetArea,
+		Delta:         1,
+	})
+
 	log.Printf("client: %s portal → %s (%.0f,%.0f,%.0f)",
 		c.actor.Name, portal.TargetArea, portal.DestX, portal.DestY, portal.DestZ)
 	return nil
@@ -877,51 +917,26 @@ func (c *ClientConn) handleAttackActor(ctx context.Context, payload []byte) erro
 		target.Mu.Unlock()
 	}
 
-	dmg, isCrit, onCD := world.ProcessAttack(c.actor, target)
+	dmg, isCrit, onCD, result := world.ProcessAttack(c.actor, target)
 	if onCD {
 		return nil
 	}
 
-	died := world.BroadcastAttack(area, c.actor, target, dmg, isCrit)
+	died := world.BroadcastAttack(area, c.actor, target, dmg, isCrit, result)
 	if died && target.IsNPC {
 		x, y, z := target.X, target.Y, target.Z
 		area.KillNPC(target)
 		area.SpawnDropsForNPC(target)
-		c.broadcastEmitter(area, protocol.EmitterExplosion, x, y, z, 0)
+		c.applyQuestProgressEvent(ctx, db.QuestProgressEvent{
+			ObjectiveType: db.QuestObjectiveKill,
+			TargetNPCName: target.Name,
+			Delta:         1,
+		})
+		c.broadcastEmitter(area, protocol.EmitterBlood, x, y, z, 0)
 		c.broadcastSound(area, protocol.SoundNPCDeath, 200)
-		return c.awardXP(ctx, int(target.Level))
+		return c.awardXP(ctx, int(target.Level), x, z)
 	}
 	return nil
-}
-
-func (c *ClientConn) awardXP(ctx context.Context, npcLevel int) error {
-	gain := world.XPForKill(npcLevel)
-
-	c.actor.Mu.Lock()
-	curXP := c.actor.XP
-	curLevel := int(c.actor.Level)
-	c.actor.Mu.Unlock()
-
-	newXP, newLevel, leveled := world.ProcessXP(curXP, curLevel, gain)
-	hpMax, epMax, strength := world.StatsByLevel(newLevel)
-
-	if err := c.server.db.SaveXP(ctx, c.actor.CharacterID, newXP, newLevel, hpMax, epMax); err != nil {
-		log.Printf("client: save xp: %v", err)
-	}
-
-	c.actor.Mu.Lock()
-	c.actor.XP = newXP
-	c.actor.Level = uint16(newLevel)
-	if leveled {
-		c.actor.HealthMax = hpMax
-		c.actor.EnergyMax = epMax
-		c.actor.Health = hpMax
-		c.actor.Energy = epMax // full restore on level up
-		c.actor.Strength = strength
-	}
-	c.actor.Mu.Unlock()
-
-	return c.sendXPUpdate()
 }
 
 func (c *ClientConn) sendXPUpdate() error {
@@ -942,11 +957,13 @@ func (c *ClientConn) sendXPUpdate() error {
 		return err
 	}
 
-	// Push HP, healthMax and energyMax so the HUD stays in sync.
+	// Push HP/MP/SP so the HUD stays in sync.
 	rid := c.actor.RuntimeID
 	c.actor.Mu.Lock()
-	ep := c.actor.Energy
-	epMax := c.actor.EnergyMax
+	mp := c.actor.Energy
+	mpMax := c.actor.EnergyMax
+	sp := c.actor.Stamina
+	spMax := c.actor.StaminaMax
 	c.actor.Mu.Unlock()
 
 	for _, attr := range []struct {
@@ -955,8 +972,10 @@ func (c *ClientConn) sendXPUpdate() error {
 	}{
 		{1, hpMax},
 		{0, hp},
-		{3, epMax},
-		{2, ep},
+		{3, mpMax},
+		{2, mp},
+		{5, spMax},
+		{4, sp},
 	} {
 		var sp Writer
 		sp.WriteUint8('A')
@@ -1064,6 +1083,11 @@ func (c *ClientConn) handleRespawnPlayer(ctx context.Context) error {
 	}
 	c.actor.Health = c.actor.HealthMax
 	c.actor.DeadAt = 0
+	c.actor.Guarding = false
+	c.actor.GuardUntil = 0
+	c.actor.ParryUntil = 0
+	c.actor.DodgeUntil = 0
+	c.actor.LastCombatAt = 0
 	c.actor.X = c.actor.SpawnX
 	c.actor.Y = c.actor.SpawnY
 	c.actor.Z = c.actor.SpawnZ
@@ -1101,6 +1125,7 @@ func (c *ClientConn) handleRespawnPlayer(ctx context.Context) error {
 		up.WriteFloat32(yaw)
 		up.WriteUint8(0)
 		area.Broadcast(buildFramedPacket(protocol.PStandardUpdate, up.Bytes()), rid)
+		world.BroadcastAnimate(area, c.actor, "Idle")
 	}
 
 	return nil
@@ -1152,7 +1177,70 @@ func (c *ClientConn) handleCastSpell(ctx context.Context, payload []byte) error 
 		return nil
 	}
 
-	// Validate and deduct EP + cooldown under lock.
+	area, ok := c.server.world.GetArea(c.actor.AreaName)
+	if !ok {
+		return nil
+	}
+	var target *world.Actor
+	if targetRID != 0 {
+		target, _ = area.GetActor(targetRID)
+	}
+
+	// Optional C2 bridge: when runtime_ability_id is configured for this spell,
+	// cast through the unified cast_intent pipeline instead of legacy spell Lua.
+	if def.RuntimeAbilityID > 0 {
+		reasonTag := "player_input"
+		actionOverride := ""
+		clientTraceID := ""
+		if c.server.scripting != nil {
+			advice := c.server.scripting.DispatchPlayerBeforeCastIntent(
+				area,
+				c.actor,
+				target,
+				def.RuntimeAbilityID,
+				reasonTag,
+			)
+			if advice.Cancel {
+				log.Printf("client: %s cast-intent cancelled by script spell=%d runtime_ability=%d target=%d",
+					c.actor.Name, def.ID, def.RuntimeAbilityID, targetRID)
+				return nil
+			}
+			if advice.ReasonTag != "" {
+				reasonTag = advice.ReasonTag
+			}
+			actionOverride = advice.ActionOverride
+			clientTraceID = advice.ClientTraceID
+		}
+
+		started, reason := world.TryStartPlayerCastByRID(c.server.world, world.CastIntent{
+			CasterRID:      c.actor.RuntimeID,
+			TargetRID:      targetRID,
+			AbilityID:      def.RuntimeAbilityID,
+			ActionOverride: actionOverride,
+			ReasonTag:      reasonTag,
+			ClientTraceID:  clientTraceID,
+		})
+		if !started {
+			log.Printf("client: %s cast-intent reject spell=%d runtime_ability=%d target=%d reason=%s",
+				c.actor.Name, def.ID, def.RuntimeAbilityID, targetRID, reason)
+			return nil
+		}
+		// Provoke defensive/aggressive NPC target on successful cast start.
+		if target != nil && target.IsNPC {
+			target.Mu.Lock()
+			if target.AIMode == world.AIWait &&
+				(target.Aggressiveness == 1 || target.Aggressiveness == 2) {
+				target.AIMode = world.AIChase
+				target.AITarget = c.actor
+			}
+			target.Mu.Unlock()
+		}
+		log.Printf("client: %s casting %q via cast-intent (spell=%d runtime_ability=%d target=%d)",
+			c.actor.Name, def.Name, def.ID, def.RuntimeAbilityID, targetRID)
+		return nil
+	}
+
+	// Validate and deduct MP + cooldown under lock.
 	c.actor.Mu.Lock()
 	now := time.Now().UnixMilli()
 	if now-c.actor.SpellCooldowns[spellID] < def.CooldownMs {
@@ -1166,30 +1254,16 @@ func (c *ClientConn) handleCastSpell(ctx context.Context, payload []byte) error 
 	c.actor.Energy -= def.EPCost
 	c.actor.SpellCooldowns[spellID] = now
 	c.actor.LastCombatAt = now
-	ep := c.actor.Energy
+	mp := c.actor.Energy
 	c.actor.Mu.Unlock()
 
-	// Broadcast EP update immediately.
-	{
-		var sw Writer
-		sw.WriteUint8('A')
-		sw.WriteUint32(c.actor.RuntimeID)
-		sw.WriteUint8(2)
-		sw.WriteUint16(uint16(int16(ep)))
-		c.actor.Send(buildFramedPacket(protocol.PStatUpdate, sw.Bytes()))
-	}
+	// Broadcast MP update immediately.
+	world.BroadcastMPUpdate(c.actor, mp)
 
-	area, ok := c.server.world.GetArea(c.actor.AreaName)
-	if !ok {
-		return nil
-	}
-
-	var target *world.Actor
 	needsTarget := def.SpellType == "damage" || def.SpellType == "debuff"
 	isGroundAoE := def.AoEType == 2
 
 	if needsTarget && !isGroundAoE {
-		target, _ = area.GetActor(targetRID)
 		if target == nil || target.IsDead() {
 			return nil
 		}
@@ -1225,9 +1299,14 @@ func (c *ClientConn) handleCastSpell(ctx context.Context, payload []byte) error 
 			x, y, z := killed.X, killed.Y, killed.Z
 			area.KillNPC(killed)
 			area.SpawnDropsForNPC(killed)
-			c.broadcastEmitter(area, protocol.EmitterExplosion, x, y, z, 0)
+			c.applyQuestProgressEvent(ctx, db.QuestProgressEvent{
+				ObjectiveType: db.QuestObjectiveKill,
+				TargetNPCName: killed.Name,
+				Delta:         1,
+			})
+			c.broadcastEmitter(area, protocol.EmitterBlood, x, y, z, 0)
 			c.broadcastSound(area, protocol.SoundNPCDeath, 200)
-			return c.awardXP(ctx, int(killed.Level))
+			return c.awardXP(ctx, int(killed.Level), x, z)
 		}
 	}
 	return nil
@@ -1242,6 +1321,9 @@ func (c *ClientConn) cleanup(ctx context.Context) {
 		c.actor.Close()
 
 		if c.state == StateInGame {
+			c.handlePartyDisconnect()
+			c.server.unregisterInGameClient(c)
+
 			area, ok := c.server.world.GetArea(c.actor.AreaName)
 			if ok {
 				area.RemoveActor(c.actor.RuntimeID)
@@ -1258,6 +1340,8 @@ func (c *ClientConn) cleanup(ctx context.Context) {
 				c.actor.X, c.actor.Y, c.actor.Z, c.actor.Yaw); err != nil {
 				log.Printf("client: save position for %s: %v", c.actor.Name, err)
 			}
+		} else {
+			c.server.unregisterInGameClient(c)
 		}
 	}
 
@@ -1384,6 +1468,20 @@ func (c *ClientConn) handleRightClick(_ context.Context, payload []byte) error {
 	if pending == nil {
 		return nil
 	}
+
+	// NPC interaction can advance "talk to NPC" objectives.
+	c.applyQuestProgressEvent(context.Background(), db.QuestProgressEvent{
+		ObjectiveType: db.QuestObjectiveTalk,
+		TargetNPCName: npc.Name,
+		Delta:         1,
+	})
+	// Interact objectives share the same NPC target matching contract.
+	c.applyQuestProgressEvent(context.Background(), db.QuestProgressEvent{
+		ObjectiveType: db.QuestObjectiveInteract,
+		TargetNPCName: npc.Name,
+		Delta:         1,
+	})
+
 	c.activeDialogNPC = targetRID
 	return c.sendDialog(npc.Name, pending.Text, pending.Options)
 }
@@ -1518,6 +1616,13 @@ func (c *ClientConn) handlePickupItem(ctx context.Context, payload []byte) error
 	}
 
 	area.RemoveDroppedItem(rid)
+
+	c.applyQuestProgressEvent(ctx, db.QuestProgressEvent{
+		ObjectiveType: db.QuestObjectiveCollect,
+		TargetItemID:  item.ItemID,
+		Delta:         int(item.Quantity),
+	})
+
 	return c.sendInventory(ctx, c.actor.CharacterID)
 }
 

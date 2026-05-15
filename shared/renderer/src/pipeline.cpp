@@ -75,6 +75,7 @@ void Pipeline::SetAtmosphereFog(const glm::vec3& fogColor, float densityScale) {
 
 void Pipeline::Begin(const glm::mat4& view, const glm::mat4& proj,
                      const glm::vec3& cam_pos, float dt) {
+    engine_->FlushMaterialsBufferIfDirty();
     view_     = view;
     proj_     = proj;
     viewProj_ = proj * view;

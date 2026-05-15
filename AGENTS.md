@@ -166,11 +166,11 @@ Nothing from `dist/server/` or `dist/tools/` ever ships â€” those are inter
 | 114 | PRemoveWorldItem | Sâ†’C | âœ“ (despawn / picked up) |
 | 115 | POpenShop | Sâ†’C | âœ“ |
 | 116 | PShopAction | Câ†’S | âœ“ (buy=0 / sell=1) |
-| 23 | PQuestLog | Sâ†’C | âœ— not implemented |
+| 23 | PQuestLog | S->C | ✓ - implemented (snapshot/delta sync for quest journal + available quests). |
 | 17 | PWeatherChange | Sâ†’C | âœ— not implemented |
-| 30 | PAnimateActor | Sâ†’C | âœ“ â€” payload: rid(u32)+anim_name(str); clip names are arbitrary strings (e.g. "Idle","Walk","Attack","Death") |
+| 30 | PAnimateActor | S->C | ✓ - payload: rid(u32)+action_id(u8); action_id indexes actor appearance anim bindings. |
 | 37 | PProjectile | Sâ†’C | âœ— not implemented |
-| 38 | PPartyUpdate | Sâ†’C | âœ— not implemented |
+| 38 | PPartyUpdate | S->C | ✓ - implemented (snapshot payload: party_id, leader_rid, member list, pending_invite_from, notice). |
 | 39 | PAppearanceUpdate | Sâ†’C | âœ— not implemented |
 
 ### EmitterType constants (PCreateEmitter)
@@ -362,10 +362,10 @@ Terrain sculpting + splatmap painting live inside the GUE's **Zones tab**, under
 | NPC Shop | âœ“ | POpenShop=115, PShopAction=116, buy/sell, PGoldChange=24, Dialog.open_shop() |
 | Audio | âœ“ | miniaudio integrated; SFX on combat/death/pickup/shop; music per area |
 | Particles | âœ“ | GL_POINTS system; server triggers PCreateEmitter=28; Explosion/Portal/Heal/Fire/Blood/Smoke types |
-| Quests | âœ— Pending | PQuestLog=23 â€” no code at all |
-| Factions | âœ— Pending | no code at all |
-| Player-to-player trading | âœ— Pending | POpenTrading=35 â€” no code at all |
-| Animations | âœ— Pending | PAnimateActor=30 â€” no packet, no system |
+| Quests | Done | PQuestLog=23 + PQuestAction=124 implemented (snapshot/delta sync, accept/abandon/turn-in). |
+| Factions | Pending | no code at all |
+| Player-to-player trading | Pending | no code at all (no trade packet/system yet). |
+| Animations | Done | PAnimateActor=30 implemented; actor action broadcasts and client playback active. |
 
 ### Phase 4 â€” DONE âœ“
 
@@ -390,9 +390,9 @@ Terrain sculpting + splatmap painting live inside the GUE's **Zones tab**, under
 | **Animations** | âœ“ Done | PAnimateActor=30; skeletal skinning in model.cpp (Assimp bones, 64-bone limit, 4-weights/vertex); string-based clip names (any arbitrary string); `Actor.play_anim(rid, name)` Lua binding; walk auto-detected from player movement |
 | **GUE â€” Areas tab** | âœ“ Done | `area_config` (music, fog) + `area_portals` (trigger + dest); server loads from DB at startup |
 | **Media system** | âœ“ Done | GUE Media tab with 4 sub-tabs (Models, Materials, Anim Clips, Actor Defs); 6 DB tables (`media_*`); `npc_spawns.actor_def_id`; server resolves at spawn via `buildAppearance()` â†’ `world.Appearance`; `PNewActor` carries meshes + anim bindings; client instantiates per-actor `rco::renderer::Actor` with its own Model when appearance data is present, else falls back to shared `player_actor` |
-| **Quests** | Medium | PQuestLog=23 â€” no code at all |
+| **Quests** | ✓ Done | PQuestLog=23 + PQuestAction=124 implemented (snapshot/delta sync, accept/abandon/turn-in). |
 | Factions | Low | no code at all |
-| Player-to-player trading | Low | POpenTrading=35 â€” no code at all |
+| Player-to-player trading | Low | no code at all (no trade packet/system yet). |
 | Multi-mesh rendering | Low | Appearance carries all mesh slots; currently only slot 0 (Body) is drawn client-side. Hair/Helm/Weapon attachments need bone-attachment rendering |
 | Material override at runtime | Low | Server ships albedo/normal/ORM paths + PBR factors, but client currently uses the model's embedded material. Needs refactor of `SubMesh` to accept external texture IDs |
 | Preview 3D no GUE | Low | FBO viewport + Assimp in GUE; requires adding Assimp to `tools/gue/CMakeLists.txt` |
@@ -647,3 +647,4 @@ Equip slot icons live in `assets/ui/gui/`: `Weapon.bmp`, `Shield.bmp`, `Hat.bmp`
 - For engine code, assume future editability is a requirement: systems should be designed so designers can tune behavior without recompiling whenever feasible.
 - When a hardcoded value is temporarily unavoidable, document the reason and create a clear follow-up path to externalize it.
 - During reviews/refactors, explicitly check: correctness, modularity, centralization, data-driven extensibility, and debugability.
+

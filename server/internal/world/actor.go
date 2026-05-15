@@ -31,24 +31,46 @@ type Actor struct {
 	AreaName    string
 
 	// HP / EP / XP / Gold — read/write under Mu.
-	Mu        sync.Mutex
-	Health    int32
-	HealthMax int32
-	Energy    int32
-	EnergyMax int32
-	XP        int64
-	Gold      int64
+	Mu         sync.Mutex
+	Health     int32
+	HealthMax  int32
+	Energy     int32 // MP
+	EnergyMax  int32 // MP max
+	Stamina    int32 // SP
+	StaminaMax int32 // SP max
+	XP         int64
+	Gold       int64
 
 	// Combat — read/write under Mu.
-	LastPortal   int64  // unix ms of last portal use (cooldown)
-	LastMoveAt   int64  // unix ms of last accepted movement update
-	AIMode       int    // AIWait or AIChase
-	AITarget     *Actor // current target; nil = none
-	LastAttack   int64  // unix ms of last successful attack
-	LastCombatAt int64  // unix ms of last combat action (attack/spell); 0 = never
-	DeadAt       int64  // unix ms when killed; 0 = alive
+	LastPortal            int64         // unix ms of last portal use (cooldown)
+	LastMoveAt            int64         // unix ms of last accepted movement update
+	AIMode                int           // AIWait or AIChase
+	AITarget              *Actor        // current target; nil = none
+	LastAttack            int64         // unix ms of last successful attack
+	LastCombatAt          int64         // unix ms of last combat action (attack/spell); 0 = never
+	DeadAt                int64         // unix ms when killed; 0 = alive
+	Guarding              bool          // active guard stance (reduces incoming damage)
+	GuardUntil            int64         // unix ms until guard stance is active
+	ParryUntil            int64         // unix ms until parry window is active
+	DodgeUntil            int64         // unix ms until dodge i-frames are active
+	LastDodgeAt           int64         // unix ms of last dodge action
+	LastGuardAt           int64         // unix ms of last guard action
+	LastParryAt           int64         // unix ms of last parry action
+	LastInterruptAt       int64         // unix ms of last interrupt action
+	SpecialWindupUntil    int64         // unix ms when NPC special windup resolves (0 = inactive)
+	SpecialTargetRID      uint32        // runtimeID of the current special target
+	SpecialAbilityID      int           // active ability template id for the current special windup
+	SpecialActionOverride string        // optional per-cast action override resolved from cast intent
+	SpecialReasonTag      string        // trace tag for ability decisions (npc_ai/player_input/script_combo...)
+	SpecialClientTraceID  string        // optional client trace correlation id
+	LastSpecialAt         int64         // unix ms of last special windup start
+	LastAbilityDecisionAt int64         // unix ms of last special/script decision evaluation
+	SpecialChainCount     int           // consecutive special casts in current chain window
+	AbilityCooldowns      map[int]int64 // last cast start (unix ms) by ability id
 
 	// Combat config — set once at spawn, then read-only.
+	SpawnID         int // source npc_spawns.id when spawned from authored spawn rows
+	ActorDefID      int // visual archetype id (media_actor_defs.id)
 	IsNPC           bool
 	Aggressiveness  int     // 0=passive 1=defensive 2=aggressive 3=no-combat
 	AggressiveRange float32 // detection radius; NPC starts chasing when player enters this
@@ -170,8 +192,9 @@ type AnimBinding struct {
 // NewActor creates an Actor with initialised channels.
 func NewActor() *Actor {
 	return &Actor{
-		SendCh: make(chan []byte, sendChSize),
-		done:   make(chan struct{}),
+		SendCh:           make(chan []byte, sendChSize),
+		done:             make(chan struct{}),
+		AbilityCooldowns: make(map[int]int64),
 	}
 }
 

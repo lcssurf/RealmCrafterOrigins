@@ -9,7 +9,7 @@ namespace rco::ui {
 void SpellBar::Clear() { slots.clear(); pending_ground_spell = 0; }
 
 void SpellBar::AddSpell(uint16_t id, const std::string& name, uint8_t spell_type,
-                        uint16_t ep_cost, uint32_t cooldown_ms,
+                        uint16_t mp_cost, uint32_t cooldown_ms,
                         uint8_t aoe_type, float aoe_radius, float range) {
     SpellSlot s;
     s.id          = id;
@@ -18,13 +18,13 @@ void SpellBar::AddSpell(uint16_t id, const std::string& name, uint8_t spell_type
     s.aoe_type    = aoe_type;
     s.aoe_radius  = aoe_radius;
     s.range       = range;
-    s.ep_cost     = ep_cost;
+    s.mp_cost     = mp_cost;
     s.cooldown_ms = cooldown_ms;
     slots.push_back(s);
 }
 
 void SpellBar::Render(int screen_w, int screen_h, uint32_t combat_target,
-                      float now, bool player_dead, int32_t player_ep,
+                      float now, bool player_dead, int32_t player_mp,
                       float target_dist) {
     hovered_range = 0.f; hovered_aoe_radius = 0.f; hovered_aoe_type = 0;
     if (slots.empty()) return;
@@ -82,12 +82,12 @@ void SpellBar::Render(int screen_w, int screen_h, uint32_t combat_target,
         dl->AddText({x0 + (kSlotW - ts.x) * 0.5f, y0 + 5.f},
                     IM_COL32(240, 240, 240, 220), abbr);
 
-        // --- EP cost ---
-        char ep_lbl[10];
-        snprintf(ep_lbl, sizeof(ep_lbl), "%d EP", (int)s.ep_cost);
-        ImVec2 es = ImGui::CalcTextSize(ep_lbl);
+        // --- MP cost ---
+        char mp_lbl[10];
+        snprintf(mp_lbl, sizeof(mp_lbl), "%d MP", (int)s.mp_cost);
+        ImVec2 es = ImGui::CalcTextSize(mp_lbl);
         dl->AddText({x0 + (kSlotW - es.x) * 0.5f, y1 - es.y - 4.f},
-                    IM_COL32(80, 200, 255, 200), ep_lbl);
+                    IM_COL32(80, 200, 255, 200), mp_lbl);
 
         // --- Hotkey number (bottom-left) ---
         char hk[4];
@@ -106,13 +106,13 @@ void SpellBar::Render(int screen_w, int screen_h, uint32_t combat_target,
         // --- Border: usability + range ---
         bool  awaiting  = (pending_ground_spell == s.id);
         bool  off_cd    = (now - s.last_cast) >= (s.cooldown_ms / 1000.f);
-        bool  has_ep    = player_ep >= static_cast<int32_t>(s.ep_cost);
+        bool  has_mp    = player_mp >= static_cast<int32_t>(s.mp_cost);
         bool  is_heal   = (s.spell_type == 1);
         bool  is_ground = (s.aoe_type == 2);
         bool  has_tgt   = is_heal || is_ground || (combat_target != 0);
         bool  in_range  = is_heal || (s.range <= 0.f) ||
                           (combat_target != 0 && target_dist <= s.range);
-        bool  can_cast  = !player_dead && off_cd && has_ep && has_tgt && in_range;
+        bool  can_cast  = !player_dead && off_cd && has_mp && has_tgt && in_range;
         ImU32 border;
         if (awaiting)
             border = IM_COL32(255, 220, 40, 220);
@@ -128,7 +128,7 @@ void SpellBar::Render(int screen_w, int screen_h, uint32_t combat_target,
         if (!player_dead && (i + 1) <= 9 && !ImGui::GetIO().WantTextInput) {
             ImGuiKey key = static_cast<ImGuiKey>(ImGuiKey_1 + i);
             if (ImGui::IsKeyPressed(key, false)) {
-                if (off_cd && has_ep && has_tgt && in_range) {
+                if (off_cd && has_mp && has_tgt && in_range) {
                     if (is_ground) {
                         pending_ground_spell = s.id;
                         s.last_cast = now;

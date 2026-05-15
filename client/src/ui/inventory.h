@@ -65,8 +65,10 @@ public:
     uint16_t    stat_level   = 1;
     int32_t     stat_hp      = 0;
     int32_t     stat_hp_max  = 0;
-    int32_t     stat_ep      = 0;
-    int32_t     stat_ep_max  = 0;
+    int32_t     stat_mp      = 0;
+    int32_t     stat_mp_max  = 0;
+    int32_t     stat_sp      = 0;
+    int32_t     stat_sp_max  = 0;
     uint32_t    stat_xp      = 0;
     uint32_t    stat_xp_next = 100;
 

@@ -116,7 +116,7 @@ bool PreviewViewport::LoadModel(const std::string& path) {
     std::string resolved = ResolveClientAsset(path);
     rco::renderer::MaterialManager* mm = engine_ ? &engine_->materials() : nullptr;
     actor_.Init("", resolved.c_str(), mm);
-    if (engine_) engine_->RebuildMaterialsBuffer();
+    if (engine_) engine_->MarkMaterialsDirty();
 
     // Actor::Init auto-starts "Idle" when the model has animations. If the
     // model ships with clips under another name, fall back to the first one.
@@ -147,7 +147,7 @@ void PreviewViewport::ApplyMaterialsFromMedia(const std::vector<MaterialLookup>&
     }
 
     actor_.ApplyMaterialsByName(engine_->materials(), by_name);
-    engine_->RebuildMaterialsBuffer();
+    engine_->MarkMaterialsDirty();
 }
 
 void PreviewViewport::OverrideMaterial(const std::string& albedo,

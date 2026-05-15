@@ -139,3 +139,162 @@ CREATE INDEX IF NOT EXISTS idx_chat_log_created_at
 INSERT INTO areas (name, description, spawn_x, spawn_y, spawn_z)
 VALUES ('Starter Zone', 'The beginning area for new adventurers.', 0, 0, 0)
 ON CONFLICT (name) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- quests (Phase 3 / Etapa B)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS quest_defs (
+    id                    SERIAL       PRIMARY KEY,
+    code                  VARCHAR(64)  NOT NULL UNIQUE,
+    title                 VARCHAR(128) NOT NULL DEFAULT '',
+    description           TEXT         NOT NULL DEFAULT '',
+    min_level             INTEGER      NOT NULL DEFAULT 1,
+    repeatable            BOOLEAN      NOT NULL DEFAULT FALSE,
+    auto_accept           BOOLEAN      NOT NULL DEFAULT FALSE,
+    prerequisite_quest_id INTEGER      NOT NULL DEFAULT 0,
+    is_active             BOOLEAN      NOT NULL DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS quest_objective_defs (
+    id               SERIAL       PRIMARY KEY,
+    quest_id         INTEGER      NOT NULL DEFAULT 0,
+    objective_order  INTEGER      NOT NULL DEFAULT 0,
+    objective_type   SMALLINT     NOT NULL DEFAULT 1,
+    description      TEXT         NOT NULL DEFAULT '',
+    target_npc_name  VARCHAR(128) NOT NULL DEFAULT '',
+    target_item_id   INTEGER      NOT NULL DEFAULT 0,
+    target_area_name VARCHAR(128) NOT NULL DEFAULT '',
+    target_count     INTEGER      NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS quest_reward_defs (
+    id          SERIAL PRIMARY KEY,
+    quest_id    INTEGER NOT NULL DEFAULT 0,
+    xp_reward   INTEGER NOT NULL DEFAULT 0,
+    gold_reward INTEGER NOT NULL DEFAULT 0,
+    item_id     INTEGER NOT NULL DEFAULT 0,
+    item_qty    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS character_quests (
+    id           SERIAL       PRIMARY KEY,
+    character_id TEXT         NOT NULL,
+    quest_id     INTEGER      NOT NULL DEFAULT 0,
+    state        VARCHAR(32)  NOT NULL DEFAULT 'active',
+    accepted_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    turned_in_at TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (character_id, quest_id)
+);
+
+CREATE TABLE IF NOT EXISTS character_quest_progress (
+    character_id  TEXT        NOT NULL,
+    quest_id      INTEGER     NOT NULL DEFAULT 0,
+    objective_id  INTEGER     NOT NULL DEFAULT 0,
+    current_count INTEGER     NOT NULL DEFAULT 0,
+    target_count  INTEGER     NOT NULL DEFAULT 1,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (character_id, quest_id, objective_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_character_quests_character
+    ON character_quests (character_id);
+
+CREATE INDEX IF NOT EXISTS idx_character_quests_state
+    ON character_quests (state);
+
+CREATE INDEX IF NOT EXISTS idx_character_quest_progress_char
+    ON character_quest_progress (character_id);
+
+-- ---------------------------------------------------------------------------
+-- combat ability runtime (AAA data-driven foundation)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS ability_templates (
+    id                        SERIAL       PRIMARY KEY,
+    name                      VARCHAR(96)  NOT NULL UNIQUE,
+    family                    VARCHAR(32)  NOT NULL DEFAULT 'melee_special',
+    resource_type             VARCHAR(16)  NOT NULL DEFAULT 'none',
+    resource_cost             INTEGER      NOT NULL DEFAULT 0,
+    cooldown_ms               INTEGER      NOT NULL DEFAULT 2000,
+    range_min                 REAL         NOT NULL DEFAULT 0,
+    range_max                 REAL         NOT NULL DEFAULT 2.5,
+    windup_ms                 INTEGER      NOT NULL DEFAULT 700,
+    impact_delay_ms           INTEGER      NOT NULL DEFAULT 0,
+    recover_ms                INTEGER      NOT NULL DEFAULT 400,
+    parry_window_ms           INTEGER      NOT NULL DEFAULT 200,
+    interruptible             BOOLEAN      NOT NULL DEFAULT TRUE,
+    base_damage_min           INTEGER      NOT NULL DEFAULT 0,
+    base_damage_max           INTEGER      NOT NULL DEFAULT 0,
+    damage_stat_scale_json    TEXT         NOT NULL DEFAULT '',
+    armor_pierce_pct          REAL         NOT NULL DEFAULT 0,
+    crit_policy_json          TEXT         NOT NULL DEFAULT '',
+    telegraph_type            VARCHAR(32)  NOT NULL DEFAULT 'ring_close',
+    telegraph_radius          REAL         NOT NULL DEFAULT 2.5,
+    telegraph_color_rgba      VARCHAR(32)  NOT NULL DEFAULT '1,0.2,0.2,0.75',
+    action_windup             VARCHAR(64)  NOT NULL DEFAULT 'Attack',
+    action_impact             VARCHAR(64)  NOT NULL DEFAULT 'Attack',
+    action_recover            VARCHAR(64)  NOT NULL DEFAULT 'Idle',
+    allow_action_override     BOOLEAN      NOT NULL DEFAULT FALSE,
+    allowed_action_tags_json  TEXT         NOT NULL DEFAULT '',
+    vfx_id_windup             INTEGER      NOT NULL DEFAULT 0,
+    vfx_id_impact             INTEGER      NOT NULL DEFAULT 0,
+    sfx_id_windup             INTEGER      NOT NULL DEFAULT 0,
+    sfx_id_impact             INTEGER      NOT NULL DEFAULT 0,
+    enabled                   BOOLEAN      NOT NULL DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS npc_ability_loadouts (
+    id                 SERIAL       PRIMARY KEY,
+    npc_spawn_id       INTEGER      NOT NULL DEFAULT 0,
+    actor_def_id       INTEGER      NOT NULL DEFAULT 0,
+    ability_id         INTEGER      NOT NULL DEFAULT 0,
+    priority           INTEGER      NOT NULL DEFAULT 100,
+    weight             INTEGER      NOT NULL DEFAULT 100,
+    min_distance       REAL         NOT NULL DEFAULT 0,
+    max_distance       REAL         NOT NULL DEFAULT 0,
+    min_target_hp_pct  REAL         NOT NULL DEFAULT 0,
+    max_target_hp_pct  REAL         NOT NULL DEFAULT 100,
+    phase_tag          VARCHAR(32)  NOT NULL DEFAULT '',
+    condition_lua      TEXT         NOT NULL DEFAULT '',
+    enabled            BOOLEAN      NOT NULL DEFAULT TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_npc_ability_loadouts_spawn
+    ON npc_ability_loadouts (npc_spawn_id);
+
+CREATE INDEX IF NOT EXISTS idx_npc_ability_loadouts_actor
+    ON npc_ability_loadouts (actor_def_id);
+
+CREATE INDEX IF NOT EXISTS idx_npc_ability_loadouts_ability
+    ON npc_ability_loadouts (ability_id);
+
+CREATE TABLE IF NOT EXISTS npc_combat_profiles (
+    id                        SERIAL       PRIMARY KEY,
+    name                      VARCHAR(64)  NOT NULL UNIQUE,
+    global_gcd_ms             INTEGER      NOT NULL DEFAULT 450,
+    decision_tick_ms          INTEGER      NOT NULL DEFAULT 250,
+    aggro_style               VARCHAR(32)  NOT NULL DEFAULT 'default',
+    allow_chain_cast          BOOLEAN      NOT NULL DEFAULT FALSE,
+    max_consecutive_specials  INTEGER      NOT NULL DEFAULT 1,
+    enabled                   BOOLEAN      NOT NULL DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS npc_profile_bindings (
+    id           SERIAL PRIMARY KEY,
+    npc_spawn_id INTEGER NOT NULL DEFAULT 0,
+    actor_def_id INTEGER NOT NULL DEFAULT 0,
+    profile_id   INTEGER NOT NULL DEFAULT 0,
+    enabled      BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_npc_profile_bindings_spawn
+    ON npc_profile_bindings (npc_spawn_id);
+
+CREATE INDEX IF NOT EXISTS idx_npc_profile_bindings_actor
+    ON npc_profile_bindings (actor_def_id);
+
+CREATE INDEX IF NOT EXISTS idx_npc_profile_bindings_profile
+    ON npc_profile_bindings (profile_id);

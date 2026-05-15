@@ -63,11 +63,16 @@ type movementConfig struct {
 	TelemetrySampleMs int64   `toml:"telemetry_sample_ms"`
 }
 
+type featuresConfig struct {
+	CombatAbilityRuntime bool `toml:"combat_ability_runtime"`
+}
+
 type config struct {
 	Server   serverConfig   `toml:"server"`
 	Database databaseConfig `toml:"database"`
 	Game     gameConfig     `toml:"game"`
 	Movement movementConfig `toml:"movement"`
+	Features featuresConfig `toml:"features"`
 }
 
 // defaultConfig returns sensible defaults for local development.
@@ -97,6 +102,9 @@ func defaultConfig() config {
 			EnableTelemetry:   false,
 			LogRejections:     true,
 			TelemetrySampleMs: 500,
+		},
+		Features: featuresConfig{
+			CombatAbilityRuntime: true,
 		},
 	}
 }
@@ -137,6 +145,7 @@ func main() {
 	// Bootstrap services.
 	acctService := accounts.New(database)
 	gameWorld := world.New()
+	world.SetAbilityRuntimeEnabled(cfg.Features.CombatAbilityRuntime)
 
 	// Seed starter item templates (idempotent).
 	if err := database.SeedDefaultItems(ctx); err != nil {
@@ -146,6 +155,7 @@ func main() {
 	// Create Lua scripting registry and load scripts.
 	// Canonical path: dist/server/scripts/ (relative to exe, after anchor).
 	scriptReg := scripting.New(gameWorld)
+	world.SetNPCDecisionHook(scriptReg.DispatchNPCAIDecision)
 	const scriptsDir = "scripts"
 	if _, err := os.Stat(scriptsDir); err != nil {
 		log.Printf("main: WARNING — scripts directory %q not found, scripting disabled", scriptsDir)
@@ -157,20 +167,145 @@ func main() {
 	// Overlay AoE config from DB onto in-memory SpellDefs so GUE edits take effect.
 	if spellRows, err := database.LoadSpells(ctx); err == nil {
 		var aoeRows []scripting.SpellAoERow
+		var runtimeRows []scripting.SpellRuntimeAbilityRow
 		for _, r := range spellRows {
 			aoeRows = append(aoeRows, scripting.SpellAoERow{
 				ID:        r.ID,
 				AoEType:   r.AoEType,
 				AoERadius: r.AoERadius,
 			})
+			runtimeRows = append(runtimeRows, scripting.SpellRuntimeAbilityRow{
+				ID:               r.ID,
+				RuntimeAbilityID: r.RuntimeAbilityID,
+			})
 		}
 		scriptReg.PatchAoEFromDB(aoeRows)
+		scriptReg.PatchRuntimeAbilityFromDB(runtimeRows)
 		log.Printf("main: AoE config patched for %d spells from DB", len(aoeRows))
+		log.Printf("main: runtime ability mapping patched for %d spells from DB", len(runtimeRows))
 	}
 
 	// Load item templates and register drop tables + shops.
 	if err := setupDropsAndShops(ctx, database); err != nil {
 		log.Printf("main: drops/shops: %v", err)
+	}
+
+	// Load data-driven combat ability runtime definitions.
+	if cfg.Features.CombatAbilityRuntime {
+		abilityRows, err := database.LoadAbilityTemplates(ctx)
+		if err != nil {
+			log.Printf("main: load ability_templates: %v", err)
+		} else {
+			abilities := make([]world.AbilityTemplate, 0, len(abilityRows))
+			for _, row := range abilityRows {
+				abilities = append(abilities, world.AbilityTemplate{
+					ID:                    row.ID,
+					Name:                  row.Name,
+					Family:                row.Family,
+					ResourceType:          row.ResourceType,
+					ResourceCost:          row.ResourceCost,
+					CooldownMs:            row.CooldownMs,
+					RangeMin:              row.RangeMin,
+					RangeMax:              row.RangeMax,
+					WindupMs:              row.WindupMs,
+					ImpactDelayMs:         row.ImpactDelayMs,
+					RecoverMs:             row.RecoverMs,
+					ParryWindowMs:         row.ParryWindowMs,
+					Interruptible:         row.Interruptible,
+					BaseDamageMin:         row.BaseDamageMin,
+					BaseDamageMax:         row.BaseDamageMax,
+					DamageStatScaleJSON:   row.DamageStatScaleJSON,
+					ArmorPiercePct:        row.ArmorPiercePct,
+					CritPolicyJSON:        row.CritPolicyJSON,
+					TelegraphType:         row.TelegraphType,
+					TelegraphRadius:       row.TelegraphRadius,
+					TelegraphColorRGBA:    row.TelegraphColorRGBA,
+					ActionWindup:          row.ActionWindup,
+					ActionImpact:          row.ActionImpact,
+					ActionRecover:         row.ActionRecover,
+					AllowActionOverride:   row.AllowActionOverride,
+					AllowedActionTagsJSON: row.AllowedActionTagsJSON,
+					VFXIDWindup:           row.VFXIDWindup,
+					VFXIDImpact:           row.VFXIDImpact,
+					SFXIDWindup:           row.SFXIDWindup,
+					SFXIDImpact:           row.SFXIDImpact,
+					Enabled:               row.Enabled,
+				})
+			}
+			world.SetAbilityCatalog(abilities)
+			log.Printf("main: loaded %d ability templates", len(abilities))
+		}
+
+		loadoutRows, err := database.LoadNPCAbilityLoadouts(ctx)
+		if err != nil {
+			log.Printf("main: load npc_ability_loadouts: %v", err)
+		} else {
+			loadouts := make([]world.NPCAbilityLoadoutEntry, 0, len(loadoutRows))
+			for _, row := range loadoutRows {
+				loadouts = append(loadouts, world.NPCAbilityLoadoutEntry{
+					ID:             row.ID,
+					NPCSpawnID:     row.NPCSpawnID,
+					ActorDefID:     row.ActorDefID,
+					AbilityID:      row.AbilityID,
+					Priority:       row.Priority,
+					Weight:         row.Weight,
+					MinDistance:    row.MinDistance,
+					MaxDistance:    row.MaxDistance,
+					MinTargetHPPct: row.MinTargetHPPct,
+					MaxTargetHPPct: row.MaxTargetHPPct,
+					PhaseTag:       row.PhaseTag,
+					ConditionLua:   row.ConditionLua,
+					Enabled:        row.Enabled,
+				})
+			}
+			world.SetNPCAbilityLoadouts(loadouts)
+			log.Printf("main: loaded %d npc ability loadout rows", len(loadouts))
+		}
+
+		profileRows, err := database.LoadNPCCombatProfiles(ctx)
+		if err != nil {
+			log.Printf("main: load npc_combat_profiles: %v", err)
+		} else {
+			profiles := make([]world.NPCCombatProfile, 0, len(profileRows))
+			for _, row := range profileRows {
+				profiles = append(profiles, world.NPCCombatProfile{
+					ID:                     row.ID,
+					Name:                   row.Name,
+					GlobalGCDMs:            row.GlobalGCDMs,
+					DecisionTickMs:         row.DecisionTickMs,
+					AggroStyle:             row.AggroStyle,
+					AllowChainCast:         row.AllowChainCast,
+					MaxConsecutiveSpecials: row.MaxConsecutiveSpecials,
+					Enabled:                row.Enabled,
+				})
+			}
+			world.SetNPCCombatProfiles(profiles)
+			log.Printf("main: loaded %d npc combat profile rows", len(profiles))
+		}
+
+		profileBindingRows, err := database.LoadNPCProfileBindings(ctx)
+		if err != nil {
+			log.Printf("main: load npc_profile_bindings: %v", err)
+		} else {
+			bindings := make([]world.NPCProfileBinding, 0, len(profileBindingRows))
+			for _, row := range profileBindingRows {
+				bindings = append(bindings, world.NPCProfileBinding{
+					ID:         row.ID,
+					NPCSpawnID: row.NPCSpawnID,
+					ActorDefID: row.ActorDefID,
+					ProfileID:  row.ProfileID,
+					Enabled:    row.Enabled,
+				})
+			}
+			world.SetNPCProfileBindings(bindings)
+			log.Printf("main: loaded %d npc profile binding rows", len(bindings))
+		}
+	} else {
+		world.SetAbilityCatalog(nil)
+		world.SetNPCAbilityLoadouts(nil)
+		world.SetNPCCombatProfiles(nil)
+		world.SetNPCProfileBindings(nil)
+		log.Printf("main: combat ability runtime disabled via config")
 	}
 
 	// Spawn NPCs from the database.
@@ -186,6 +321,8 @@ func main() {
 		npc.AggressiveRange = s.AggressiveRange
 		npc.AttackRange = s.AttackRange
 		npc.RespawnDelay = s.RespawnDelayMs
+		npc.SpawnID = s.ID
+		npc.ActorDefID = s.ActorDefID
 		npc.StartWaypointID = s.StartWaypointID
 		npc.WanderRadius = s.WanderRadius
 		npc.WanderPauseMinMs = s.WanderPauseMinMs
@@ -265,6 +402,7 @@ func main() {
 					npc.AggressiveRange = float32(m.AggressiveRange)
 					npc.AttackRange = float32(m.AttackRange)
 					npc.RespawnDelay = m.RespawnDelayMs
+					npc.ActorDefID = m.ActorDefID
 					if m.ActorDefID > 0 {
 						if app := rconet.BuildAppearance(ctx, database, m.ActorDefID); app != nil {
 							npc.Appearance = app
@@ -346,6 +484,7 @@ func main() {
 			TelemetrySampleMs: cfg.Movement.TelemetrySampleMs,
 		},
 	}, database, acctService, gameWorld, scriptReg)
+	scriptReg.SetQuestBridge(srv)
 
 	// Run server in background goroutine so we can wait on OS signals.
 	errCh := make(chan error, 1)

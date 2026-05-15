@@ -204,7 +204,7 @@ void ZoneRenderer::SyncSceneryModels(const std::vector<ZScenery>& scenery,
         }
     }
 
-    if (need_rebuild) fullEngine_->RebuildMaterialsBuffer();
+    if (need_rebuild) fullEngine_->MarkMaterialsDirty();
 }
 
 void ZoneRenderer::SetGhostModel(int modelId, const std::string& filePath,
@@ -223,7 +223,7 @@ void ZoneRenderer::SetGhostModel(int modelId, const std::string& filePath,
         rco::renderer::MaterialManager* mm =
             fullEngine_ ? &fullEngine_->materials() : nullptr;
         ghostActor_->Init("", resolved.c_str(), mm);
-        if (fullEngine_) fullEngine_->RebuildMaterialsBuffer();
+        if (fullEngine_) fullEngine_->MarkMaterialsDirty();
         ghostModelId_ = modelId;
     }
 
@@ -297,7 +297,7 @@ void ZoneRenderer::SyncNpcModels(const std::unordered_map<int, ModelBind>& npcBi
         }
     }
 
-    if (need_rebuild) fullEngine_->RebuildMaterialsBuffer();
+    if (need_rebuild) fullEngine_->MarkMaterialsDirty();
 }
 
 // ─── Primitive VAOs ───────────────────────────────────────────────────────────

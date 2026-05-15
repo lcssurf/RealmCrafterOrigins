@@ -136,10 +136,10 @@ void PlayerController::UpdateVertical(float dt,
 // Update
 // ---------------------------------------------------------------------------
 PlayerController::Result PlayerController::Update(
-        GLFWwindow* win, float dt, bool dead, bool action_mode,
+        GLFWwindow* win, float dt, bool dead,
         PlayerState& player,
         const renderer::Terrain& terrain,
-        bool rmb_held, bool lmb_held, bool ms_lmb_drag)
+        bool rmb_held, bool lmb_held)
 {
     Result r{};
 
@@ -161,70 +161,52 @@ PlayerController::Result PlayerController::Update(
     r.auto_running = auto_run_;
 
     // --- Sprint (Shift) ---
-    bool sprinting = glfwGetKey(win, GLFW_KEY_LEFT_SHIFT)  == GLFW_PRESS ||
+    bool sprinting = glfwGetKey(win, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
                      glfwGetKey(win, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
     r.sprinting = sprinting;
 
-    bool both_held    = rmb_held && lmb_held;
+    bool both_held = rmb_held && lmb_held;
     bool any_key_move = false;
 
     float yr = glm::radians(player.yaw);
-    glm::vec2 fdir = { -std::sin(yr), -std::cos(yr) };
-    glm::vec2 rdir = {  std::cos(yr), -std::sin(yr) };
+    glm::vec2 fdir = {-std::sin(yr), -std::cos(yr)};
+    glm::vec2 rdir = { std::cos(yr), -std::sin(yr)};
 
-    // --- Turning (classic mode only — action mode uses mouse) ---
-    if (!action_mode) {
-        float turn = 0.f;
-        if (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS) turn += cfg_.turn_rate * dt;
-        if (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS) turn -= cfg_.turn_rate * dt;
-        if (turn != 0.f) {
-            player.yaw += turn;
-            r.yaw_delta = turn;
-            // Recalculate facing after turn
-            yr   = glm::radians(player.yaw);
-            fdir = { -std::sin(yr), -std::cos(yr) };
-            rdir = {  std::cos(yr), -std::sin(yr) };
-        }
-    }
-
-    // --- Build movement direction ---
-    bool moving_fwd  = glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS || both_held || auto_run_;
+    // --- Build movement direction (Action mode only) ---
+    bool moving_fwd = glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS || both_held || auto_run_;
     bool moving_back = glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS;
 
-    // Any key press or both-buttons cancels auto-run
-    if (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS ||
-        glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS ||
+    // Any explicit movement input cancels auto-run.
+    if (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS ||
+        glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS ||
+        glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS ||
+        glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS ||
         glfwGetKey(win, GLFW_KEY_Q) == GLFW_PRESS ||
-        glfwGetKey(win, GLFW_KEY_E) == GLFW_PRESS ||
-        (!action_mode && (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS ||
-                          glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS)))
+        glfwGetKey(win, GLFW_KEY_E) == GLFW_PRESS) {
         auto_run_ = false;
+    }
 
-    // In action mode: A/D strafe. In classic mode: A/D turn (handled above).
-    bool strafe_l = glfwGetKey(win, GLFW_KEY_Q) == GLFW_PRESS ||
-                    (action_mode && glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS);
-    bool strafe_r = glfwGetKey(win, GLFW_KEY_E) == GLFW_PRESS ||
-                    (action_mode && glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS);
+    bool strafe_l = glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS ||
+                    glfwGetKey(win, GLFW_KEY_Q) == GLFW_PRESS;
+    bool strafe_r = glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS ||
+                    glfwGetKey(win, GLFW_KEY_E) == GLFW_PRESS;
 
     glm::vec2 dir(0.f);
-    if (moving_fwd)  dir += fdir;
+    if (moving_fwd) dir += fdir;
     if (moving_back) dir -= fdir;
-    if (strafe_l)    dir -= rdir;
-    if (strafe_r)    dir += rdir;
+    if (strafe_l) dir -= rdir;
+    if (strafe_r) dir += rdir;
 
     if (glm::dot(dir, dir) > cfg_.min_dir_len_sq) {
         dir = glm::normalize(dir);
-        float chosen_speed = (moving_back && !moving_fwd) ? cfg_.speed * cfg_.back_mult : cfg_.speed;
+        float chosen_speed =
+            (moving_back && !moving_fwd) ? cfg_.speed * cfg_.back_mult : cfg_.speed;
         if (sprinting && !moving_back) chosen_speed *= cfg_.sprint_mult;
 
         CancelMoveTarget();
         any_key_move = true;
         ApplyHorizontalMove(dir * chosen_speed * dt, player, terrain);
     }
-
-    // Camera centering when walking forward in classic mode
-    if (!action_mode && (moving_fwd || moving_back) && !rmb_held && !ms_lmb_drag)
-        r.center_camera = true;
 
     // --- Click-to-move ---
     if (has_move_target_ && !any_key_move) {
@@ -234,7 +216,7 @@ PlayerController::Result PlayerController::Update(
         if (d2 > cfg_.click_stop_radius * cfg_.click_stop_radius) {
             float dist = std::sqrt(d2);
             float step = std::min(cfg_.speed * dt, dist);
-            ApplyHorizontalMove({ (dx / dist) * step, (dz / dist) * step }, player, terrain);
+            ApplyHorizontalMove({(dx / dist) * step, (dz / dist) * step}, player, terrain);
             player.yaw = glm::degrees(std::atan2f(dx / dist, dz / dist));
         } else {
             CancelMoveTarget();
@@ -242,11 +224,10 @@ PlayerController::Result PlayerController::Update(
     }
 
     // --- Jump ---
-    if (on_ground_ && glfwGetKey(win, GLFW_KEY_SPACE) == GLFW_PRESS)
-    {
-        vel_y_     = cfg_.jump_vel;
+    if (on_ground_ && glfwGetKey(win, GLFW_KEY_SPACE) == GLFW_PRESS) {
+        vel_y_ = cfg_.jump_vel;
         on_ground_ = false;
-        auto_run_  = false;
+        auto_run_ = false;
         if (kDebugPlayerMovement) {
             std::fprintf(stderr, "[move] jump vel=%.2f\n", cfg_.jump_vel);
         }
@@ -259,3 +240,4 @@ PlayerController::Result PlayerController::Update(
 }
 
 } // namespace rco
+

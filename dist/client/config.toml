@@ -4,3 +4,8 @@
 # - "medium" -> equilibrado (padrao recomendado)
 # - "high"   -> loading maior, mundo mais pronto ao entrar
 preset = "high"
+
+[perf]
+# Quando true, gera arquivos perf_entry_<timestamp>.jsonl na pasta do cliente.
+# Override temporario por ambiente: RCO_PERF_ENTRY=1 / 0.
+entry_log_enabled = true

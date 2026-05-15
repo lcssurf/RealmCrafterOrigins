@@ -28,8 +28,10 @@
 
 #include "tabs/items.h"
 #include "tabs/spells.h"
+#include "tabs/combat_abilities.h"
 #include "tabs/actors.h"
 #include "tabs/areas.h"
+#include "tabs/quests.h"
 #include "tabs/media.h"
 #include "tabs/zones.h"
 #include "tabs/input_maps.h"
@@ -155,8 +157,10 @@ int main() {
 
     gue::ItemsTab        itemsTab;
     gue::SpellsTab       spellsTab;
+    gue::CombatAbilitiesTab combatAbilitiesTab;
     gue::ActorsTab       actorsTab;
     gue::AreasTab        areasTab;
+    gue::QuestsTab       questsTab;
     gue::MediaTab        mediaTab;
     gue::ZonesTab        zonesTab;
     gue::InputMapsTab    inputMapsTab;
@@ -262,6 +266,10 @@ int main() {
                 spellsTab.Draw(db);
                 ImGui::EndTabItem();
             }
+            if (ImGui::BeginTabItem("Combat Abilities")) {
+                combatAbilitiesTab.Draw(db);
+                ImGui::EndTabItem();
+            }
             if (ImGui::BeginTabItem("Assets")) {
                 mediaTab.Draw(db);
                 ImGui::EndTabItem();
@@ -273,6 +281,10 @@ int main() {
             (void)actorsTab;
             if (ImGui::BeginTabItem("Areas")) {
                 areasTab.Draw(db);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Quests")) {
+                questsTab.Draw(db);
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Zones")) {

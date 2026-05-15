@@ -17,11 +17,11 @@ type deadNPC struct {
 // Waypoint is one node in an NPC patrol graph. NextA/NextB are IDs of
 // successor waypoints (0 = end); if both are set one is chosen at random.
 type Waypoint struct {
-	ID       int
-	X, Y, Z  float32
-	NextA    int // ID of next waypoint (0 = end of path)
-	NextB    int // ID of alternate branch (0 = no branch)
-	PauseMs  int // ms to pause at this node
+	ID      int
+	X, Y, Z float32
+	NextA   int // ID of next waypoint (0 = end of path)
+	NextB   int // ID of alternate branch (0 = no branch)
+	PauseMs int // ms to pause at this node
 }
 
 // WorldObject is a placed static model instance in a zone.
@@ -54,16 +54,16 @@ type Area struct {
 	Objects   []WorldObject
 
 	// Environment config (loaded from area_config at startup)
-	PvPEnabled  bool
-	IsOutdoor   bool
-	FogNear     float32
-	FogFar      float32
-	FogR, FogG, FogB float32 // 0.0–1.0
+	PvPEnabled                   bool
+	IsOutdoor                    bool
+	FogNear                      float32
+	FogFar                       float32
+	FogR, FogG, FogB             float32 // 0.0–1.0
 	AmbientR, AmbientG, AmbientB uint8
-	Gravity     float32
-	EntryScript string
-	ExitScript  string
-	MusicTrack  uint8
+	Gravity                      float32
+	EntryScript                  string
+	ExitScript                   string
+	MusicTrack                   uint8
 
 	// Script trigger volumes
 	Triggers []Trigger
@@ -164,7 +164,7 @@ func (a *Area) Snapshot() []*Actor {
 	return out
 }
 
-// StartRegen launches the out-of-combat HP/EP regeneration goroutine for this area.
+// StartRegen launches the HP/MP/SP regeneration goroutine for this area.
 func (a *Area) StartRegen(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(3 * time.Second)
@@ -190,27 +190,36 @@ func (a *Area) tickRegen() {
 		dead := actor.DeadAt > 0
 		inCombat := actor.LastCombatAt > 0 && now-actor.LastCombatAt < regenCombatWindow
 		hp, hpMax := actor.Health, actor.HealthMax
-		ep, epMax := actor.Energy, actor.EnergyMax
+		mp, mpMax := actor.Energy, actor.EnergyMax
+		sp, spMax := actor.Stamina, actor.StaminaMax
 		actor.Mu.Unlock()
 
-		if dead || inCombat {
+		if dead {
 			continue
 		}
 
-		var hpGain, epGain int32
-		if hp < hpMax {
-			hpGain = hpMax / 20 // 5% per tick
-			if hpGain < 1 {
-				hpGain = 1
+		var hpGain, mpGain, spGain int32
+		if !inCombat {
+			if hp < hpMax {
+				hpGain = hpMax / 20 // 5% per tick
+				if hpGain < 1 {
+					hpGain = 1
+				}
+			}
+			if mp < mpMax {
+				mpGain = mpMax / 12 // ~8% per tick
+				if mpGain < 1 {
+					mpGain = 1
+				}
 			}
 		}
-		if ep < epMax {
-			epGain = epMax / 12 // ~8% per tick
-			if epGain < 1 {
-				epGain = 1
+		if sp < spMax {
+			spGain = spMax / 6 // faster stamina recovery
+			if spGain < 1 {
+				spGain = 1
 			}
 		}
-		if hpGain == 0 && epGain == 0 {
+		if hpGain == 0 && mpGain == 0 && spGain == 0 {
 			continue
 		}
 
@@ -222,18 +231,28 @@ func (a *Area) tickRegen() {
 			}
 			hp = actor.Health
 		}
-		if epGain > 0 {
-			actor.Energy += epGain
+		if mpGain > 0 {
+			actor.Energy += mpGain
 			if actor.Energy > actor.EnergyMax {
 				actor.Energy = actor.EnergyMax
 			}
-			ep = actor.Energy
+			mp = actor.Energy
+		}
+		if spGain > 0 {
+			actor.Stamina += spGain
+			if actor.Stamina > actor.StaminaMax {
+				actor.Stamina = actor.StaminaMax
+			}
+			sp = actor.Stamina
 		}
 		actor.Mu.Unlock()
 
 		BroadcastHPUpdate(a, actor, hp)
-		if !actor.IsNPC && epGain > 0 {
-			BroadcastEPUpdate(actor, ep)
+		if !actor.IsNPC && mpGain > 0 {
+			BroadcastMPUpdate(actor, mp)
+		}
+		if !actor.IsNPC && spGain > 0 {
+			BroadcastSPUpdate(actor, sp)
 		}
 	}
 }
@@ -255,9 +274,9 @@ func (a *Area) StartAI(ctx context.Context) {
 }
 
 const (
-	npcMoveSpeed  = 5.0  // world units per second
-	aiTickSec     = 0.5  // seconds per AI tick (matches 500ms ticker)
-	leashMultiple = 2.5  // NPC leashes when player is > aggro * leashMultiple from NPC spawn
+	npcMoveSpeed  = 5.0 // world units per second
+	aiTickSec     = 0.5 // seconds per AI tick (matches 500ms ticker)
+	leashMultiple = 2.5 // NPC leashes when player is > aggro * leashMultiple from NPC spawn
 )
 
 // broadcastNPCPosition sends a PStandardUpdate for the NPC to every player in the area.
@@ -306,6 +325,18 @@ func leashNPC(npc *Actor, a *Area) {
 	npc.Y = npc.SpawnY
 	npc.Z = npc.SpawnZ
 	npc.Yaw = npc.SpawnYaw
+	npc.Guarding = false
+	npc.GuardUntil = 0
+	npc.ParryUntil = 0
+	npc.DodgeUntil = 0
+	npc.SpecialWindupUntil = 0
+	npc.SpecialTargetRID = 0
+	npc.SpecialAbilityID = 0
+	npc.SpecialActionOverride = ""
+	npc.SpecialReasonTag = ""
+	npc.SpecialClientTraceID = ""
+	npc.SpecialChainCount = 0
+	npc.AbilityCooldowns = make(map[int]int64)
 	postChaseMode(npc)
 	npc.Mu.Unlock()
 	broadcastNPCPosition(a, npc)
@@ -332,6 +363,13 @@ func startWander(npc *Actor) {
 // Priority: patrol > wander > idle. Must be called with npc.Mu held.
 func postChaseMode(npc *Actor) {
 	npc.AITarget = nil
+	npc.SpecialWindupUntil = 0
+	npc.SpecialTargetRID = 0
+	npc.SpecialAbilityID = 0
+	npc.SpecialActionOverride = ""
+	npc.SpecialReasonTag = ""
+	npc.SpecialClientTraceID = ""
+	npc.SpecialChainCount = 0
 	if npc.StartWaypointID > 0 {
 		npc.CurrentWaypointID = npc.StartWaypointID
 		npc.AIMode = AIPatrol
@@ -595,11 +633,32 @@ func (a *Area) tickAI() {
 				}
 			}
 
+			// Ability/script decisions are budgeted by npc_combat_profiles.decision_tick_ms.
+			// If the budget is closed this tick, NPC keeps normal chase/melee behavior.
+			if consumeNPCAbilityDecisionBudget(npc, now) {
+				// Optional scripted decision hook runs before built-in special logic.
+				if runNPCDecisionHook(a, npc, target, now) {
+					continue
+				}
+
+				// Special attack/parry timing flow has priority over regular melee.
+				if handled, killedBySpecial := ProcessNPCSpecialAttack(a, npc, target, now); handled {
+					if killedBySpecial && !target.IsNPC {
+						npc.Mu.Lock()
+						endChase(npc)
+						npc.Mu.Unlock()
+						BroadcastAnimate(a, npc, "Idle")
+					}
+					continue
+				}
+			}
+
 			// Either attack (if in range) or move closer.
 			if InMeleeRange(npc, target) {
-				dmg, isCrit, onCD := ProcessAttack(npc, target)
+				dmg, isCrit, onCD, result := ProcessAttack(npc, target)
 				if !onCD {
-					died := BroadcastAttack(a, npc, target, dmg, isCrit)
+					breakNPCSpecialChain(npc)
+					died := BroadcastAttack(a, npc, target, dmg, isCrit, result)
 					if died && !target.IsNPC {
 						// Player died — clear NPC target, don't add to kill queue.
 						npc.Mu.Lock()
@@ -753,11 +812,24 @@ func (a *Area) tickDropDespawn(now int64) {
 func (a *Area) respawnNPC(npc *Actor) {
 	npc.Mu.Lock()
 	npc.Health = npc.HealthMax
+	npc.Stamina = npc.StaminaMax
 	npc.DeadAt = 0
 	npc.X = npc.SpawnX
 	npc.Y = npc.SpawnY
 	npc.Z = npc.SpawnZ
 	npc.Yaw = npc.SpawnYaw
+	npc.Guarding = false
+	npc.GuardUntil = 0
+	npc.ParryUntil = 0
+	npc.DodgeUntil = 0
+	npc.SpecialWindupUntil = 0
+	npc.SpecialTargetRID = 0
+	npc.SpecialAbilityID = 0
+	npc.SpecialActionOverride = ""
+	npc.SpecialReasonTag = ""
+	npc.SpecialClientTraceID = ""
+	npc.SpecialChainCount = 0
+	npc.AbilityCooldowns = make(map[int]int64)
 	postChaseMode(npc)
 	npc.Mu.Unlock()
 

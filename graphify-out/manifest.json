@@ -12,8 +12,8 @@
     "hash": "b1480aa62da8aae561eeb05343cf4ac2"
   },
   "D:\\Github\\RealmCrafterOrigins\\client\\src\\core\\main.cpp": {
-    "mtime": 1778614357.6255875,
-    "hash": "3fe3b0e00edcfa60462b67efc5698c5d"
+    "mtime": 1778631841.3158696,
+    "hash": "b0202ea446925c8c2571aeede67ffa2e"
   },
   "D:\\Github\\RealmCrafterOrigins\\client\\src\\core\\paths.cpp": {
     "mtime": 1776781928.6464684,
@@ -39,6 +39,14 @@
     "mtime": 1776688353.7969947,
     "hash": "4930afaf8ca66889dc3f2a9c1f6a314e"
   },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\gameplay\\ingame_packet_gate.cpp": {
+    "mtime": 1778629392.753401,
+    "hash": "1c2642fe36a1d1d049bc8af7473dccbc"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\gameplay\\ingame_packet_gate.h": {
+    "mtime": 1778626178.5792756,
+    "hash": "bd2b805a08a3a05440d23b3b0584063a"
+  },
   "D:\\Github\\RealmCrafterOrigins\\client\\src\\input\\input_system.cpp": {
     "mtime": 1777156515.3166022,
     "hash": "0998d69c2a5f748bce04db6f151241e5"
@@ -60,8 +68,8 @@
     "hash": "467be6ec08b2bcf494a26d19693932b8"
   },
   "D:\\Github\\RealmCrafterOrigins\\client\\src\\net\\protocol.h": {
-    "mtime": 1778614377.8222072,
-    "hash": "3987323547dc9e1a0802c5c4ea69c0ea"
+    "mtime": 1778626240.8952713,
+    "hash": "35266e9667929fc0d764cf763c521ad7"
   },
   "D:\\Github\\RealmCrafterOrigins\\client\\src\\renderer\\anim_controller.cpp": {
     "mtime": 1777982309.2706764,
@@ -166,6 +174,14 @@
   "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\login_screen.h": {
     "mtime": 1776688388.1290965,
     "hash": "bfc678fd97d153b54a885df7bf6bc826"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\quest_log.cpp": {
+    "mtime": 1778631826.467168,
+    "hash": "fec865d40ce23cc1507c84cf77c1d7d9"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\quest_log.h": {
+    "mtime": 1778631779.4826076,
+    "hash": "d7000e3d5d850550d63bf1752300fcc1"
   },
   "D:\\Github\\RealmCrafterOrigins\\client\\src\\ui\\spellbar.cpp": {
     "mtime": 1776770728.55593,
@@ -2716,12 +2732,16 @@
     "hash": "e4a37f795825ce1ba7592523043fb17d"
   },
   "D:\\Github\\RealmCrafterOrigins\\server\\internal\\db\\db.go": {
-    "mtime": 1778614393.3983917,
-    "hash": "ccdea8fdee6a723da68aed949e55a453"
+    "mtime": 1778629671.9500422,
+    "hash": "84ad63a5e04b544b8d83f1c8c184469f"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\db\\quests_test.go": {
+    "mtime": 1778629663.4273138,
+    "hash": "0251192ef08abaf25c23e27836d31fd3"
   },
   "D:\\Github\\RealmCrafterOrigins\\server\\internal\\db\\schema.sql": {
-    "mtime": 1776688388.346869,
-    "hash": "cce2d66f978ed532f4bdd81b3f2027e6"
+    "mtime": 1778627574.123371,
+    "hash": "2954d3a970ab3f25189b7c65b8feeb2d"
   },
   "D:\\Github\\RealmCrafterOrigins\\server\\internal\\nav\\agent.go": {
     "mtime": 1778085105.5466266,
@@ -2740,20 +2760,32 @@
     "hash": "d30b23cacbc0386348e063a5827a97ba"
   },
   "D:\\Github\\RealmCrafterOrigins\\server\\internal\\net\\client.go": {
-    "mtime": 1778614393.3947158,
-    "hash": "e74b009db8e627384c353289ad529b2c"
+    "mtime": 1778631771.0206447,
+    "hash": "22beaf7f5b9fd75605d96ae51245463c"
   },
   "D:\\Github\\RealmCrafterOrigins\\server\\internal\\net\\codec.go": {
     "mtime": 1776687896.564177,
     "hash": "d759b82886c31acd5c528476c0b61cc3"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\net\\ingame_actions.go": {
+    "mtime": 1778627814.0650303,
+    "hash": "94de9dd539b67cc95a3392b67862e44e"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\net\\ingame_actions_test.go": {
+    "mtime": 1778625881.2767227,
+    "hash": "1efe9d75f9f9c72c15c6e00e4b17fde7"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\server\\internal\\net\\quest_runtime.go": {
+    "mtime": 1778631851.1345618,
+    "hash": "0ded1bccd3b5f7daccb3bc500ec8bf55"
   },
   "D:\\Github\\RealmCrafterOrigins\\server\\internal\\net\\server.go": {
     "mtime": 1778509850.9528213,
     "hash": "466d66f348db5a29eda3a7aa41e984e6"
   },
   "D:\\Github\\RealmCrafterOrigins\\server\\internal\\protocol\\packets.go": {
-    "mtime": 1778614367.9324355,
-    "hash": "d911d5aca9790e1e206a7bf8ba854984"
+    "mtime": 1778625201.9189506,
+    "hash": "e83738fe2cd25514ed8d9cabf5c03213"
   },
   "D:\\Github\\RealmCrafterOrigins\\server\\internal\\scripting\\api.go": {
     "mtime": 1777155745.1657681,
@@ -9983,13 +10015,21 @@
     "mtime": 1776908652.941869,
     "hash": "d1abb5c358fdc00ece882f2e596abb6a"
   },
+  "D:\\Github\\RealmCrafterOrigins\\doc\\FASE3_ETAPA_A_SMOKE_CHECKLIST.md": {
+    "mtime": 1778626500.3365126,
+    "hash": "1260c45713399c51d65b28d829cf46f8"
+  },
+  "D:\\Github\\RealmCrafterOrigins\\doc\\FASE3_GUE_PARITY_MATRIX.md": {
+    "mtime": 1778625977.8475864,
+    "hash": "95ac06a7833227616936b6407ca630bb"
+  },
   "D:\\Github\\RealmCrafterOrigins\\doc\\FASE3_MMO_SYSTEMS_EXPANSION_PLAN.md": {
-    "mtime": 1778624225.4700038,
-    "hash": "3224c84f6ed3418405aa9829f193e39f"
+    "mtime": 1778629709.1257975,
+    "hash": "5507547499bc95c36e5c0985356fce3f"
   },
   "D:\\Github\\RealmCrafterOrigins\\doc\\ROADMAP_EXECUCAO.md": {
-    "mtime": 1778624277.2613685,
-    "hash": "534c13c1b66a5c84a729398f66b5a3a0"
+    "mtime": 1778629718.7608137,
+    "hash": "69d6ba02261d4b342f093a0855277644"
   },
   "D:\\Github\\RealmCrafterOrigins\\doc\\done\\ANIMATION_SYSTEM_SPEC.md": {
     "mtime": 1777155072.0398247,

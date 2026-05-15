@@ -29,3 +29,7 @@ max_above_ground    = 12.0
 enable_telemetry    = false
 log_rejections      = true
 telemetry_sample_ms = 500
+
+[features]
+# Habilita o runtime de combate data-driven (ability templates + loadouts NPC).
+combat_ability_runtime = true

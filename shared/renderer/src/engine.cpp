@@ -1,6 +1,7 @@
 #include "rco/renderer/engine.h"
 
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -771,7 +772,25 @@ StaticMeshHandle Engine::UploadStaticMesh(const std::vector<Vertex>& vertices,
     return h;
 }
 
-void Engine::RebuildMaterialsBuffer() {
+void Engine::MarkMaterialsDirty() {
+    materials_dirty_ = true;
+}
+
+bool Engine::FlushMaterialsBufferIfDirty(uint64_t* out_dur_us) {
+    if (out_dur_us) *out_dur_us = 0;
+    if (!materials_dirty_) return false;
+
+    const auto t0 = std::chrono::steady_clock::now();
+    RebuildMaterialsBufferImpl();
+    const auto dur_us = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - t0).count());
+    materials_dirty_ = false;
+    if (out_dur_us) *out_dur_us = dur_us;
+    return true;
+}
+
+void Engine::RebuildMaterialsBufferImpl() {
     auto gpuMats = material_manager_.GetLinearBindless();
     if (gpuMats.empty()) {
         BindlessMaterial zero{};
@@ -787,7 +806,7 @@ void Engine::EndStaticScene() {
     assert(static_scene_open_);
     static_scene_open_ = false;
 
-    RebuildMaterialsBuffer();
+    MarkMaterialsDirty();
 
     std::vector<DrawElementsIndirectCommand> cmds;
     cmds.reserve(staticMeshes_.size());

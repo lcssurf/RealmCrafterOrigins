@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <algorithm>
@@ -10,6 +11,9 @@
 #include <chrono>
 #include <fstream>
 #include <filesystem>
+#include <cstdlib>
+#include <ctime>
+#include <sstream>
 
 // OpenGL / GLFW
 #include <glad/glad.h>
@@ -38,8 +42,11 @@
 #include "../ui/ui_texture.h"
 #include "../ui/spellbar.h"
 #include "../ui/spell_effects.h"
+#include "../ui/quest_log.h"
+#include "../ui/party_panel.h"
 #include "../ui/chat_bubbles.h"
 #include "../ui/controls_ui.h"
+#include "../gameplay/ingame_packet_gate.h"
 #include "../renderer/camera.h"
 #include "../renderer/terrain/terrain.h"
 #include "../renderer/actors/actor.h"
@@ -58,6 +65,63 @@ static void ScrollCallback(GLFWwindow*, double, double y) {
     if (g_camera) g_camera->ProcessScroll(static_cast<float>(y));
 }
 
+static std::string TrimConfigToken(std::string s) {
+    const char* ws = " \t\r\n";
+    const std::size_t b = s.find_first_not_of(ws);
+    if (b == std::string::npos) return std::string{};
+    const std::size_t e = s.find_last_not_of(ws);
+    return s.substr(b, e - b + 1);
+}
+
+static bool ParseConfigBool(std::string raw, bool& out) {
+    raw = TrimConfigToken(std::move(raw));
+    if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"') {
+        raw = raw.substr(1, raw.size() - 2);
+    }
+    std::transform(raw.begin(), raw.end(), raw.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (raw == "1" || raw == "true" || raw == "on" || raw == "yes") {
+        out = true;
+        return true;
+    }
+    if (raw == "0" || raw == "false" || raw == "off" || raw == "no") {
+        out = false;
+        return true;
+    }
+    return false;
+}
+
+static bool ReadConfigBool(const char* section_name,
+                           const char* key_name,
+                           bool& out_value) {
+    std::ifstream f("config.toml");
+    if (!f) return false;
+
+    bool in_section = false;
+    std::string line;
+    while (std::getline(f, line)) {
+        const auto hash = line.find('#');
+        if (hash != std::string::npos) line = line.substr(0, hash);
+        line = TrimConfigToken(std::move(line));
+        if (line.empty()) continue;
+
+        if (line.front() == '[' && line.back() == ']') {
+            const std::string section = TrimConfigToken(line.substr(1, line.size() - 2));
+            in_section = (section == section_name);
+            continue;
+        }
+        if (!in_section) continue;
+
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = TrimConfigToken(line.substr(0, eq));
+        if (key != key_name) continue;
+        std::string val = TrimConfigToken(line.substr(eq + 1));
+        return ParseConfigBool(val, out_value);
+    }
+    return false;
+}
+
 static bool SceneDebugLogsEnabled() {
     static const bool enabled = []() {
         const char* v = std::getenv("RCO_CLIENT_DEBUG_LOGS");
@@ -69,9 +133,298 @@ static bool SceneDebugLogsEnabled() {
     return enabled;
 }
 
+static bool EntryPerfEnabled() {
+    static const bool enabled = []() {
+        const char* v = std::getenv("RCO_PERF_ENTRY");
+        bool parsed = false;
+        if (v && ParseConfigBool(v, parsed)) return parsed;
+
+        bool cfg_enabled = false;
+        if (ReadConfigBool("perf", "entry_log_enabled", cfg_enabled)) {
+            return cfg_enabled;
+        }
+        return false;
+    }();
+    return enabled;
+}
+
+class EntryPerfLogger {
+public:
+    EntryPerfLogger() {
+        enabled_ = EntryPerfEnabled();
+        if (!enabled_) return;
+        start_tp_ = Clock::now();
+        std::time_t tt = std::time(nullptr);
+        std::tm tm{};
+#ifdef _WIN32
+        localtime_s(&tm, &tt);
+#else
+        localtime_r(&tt, &tm);
+#endif
+        char stamp[32]{};
+        std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tm);
+        file_path_ = "perf_entry_" + std::string(stamp) + ".jsonl";
+    }
+
+    ~EntryPerfLogger() {
+        if (!enabled_) return;
+        if (entry_active_ && !entry_finalized_) Finalize("process_exit");
+        Flush();
+    }
+
+    bool Enabled() const { return enabled_; }
+    int EntryID() const { return entry_id_; }
+    bool EntryActive() const { return entry_active_ && !entry_finalized_; }
+    const std::string& FilePath() const { return file_path_; }
+
+    void StartEntry(int slot) {
+        if (!enabled_) return;
+        if (entry_active_ && !entry_finalized_) Finalize("entry_restart");
+        ++entry_id_;
+        entry_active_ = true;
+        entry_finalized_ = false;
+        entry_start_us_ = NowUs();
+        core_done_logged_ = false;
+        gate_release_logged_ = false;
+        client_world_ready_us_ = 0;
+        last_actor_init_us_ = 0;
+        LogKV("entry_start",
+              ",\"slot\":" + std::to_string(slot));
+    }
+
+    void LogPacketArrival(const char* packet_name) {
+        if (!EntryActive()) return;
+        LogKV("packet_arrival",
+              ",\"packet\":\"" + Escape(packet_name ? packet_name : "") + "\"");
+    }
+
+    void LogWorldObjectsSummary(
+        uint16_t object_count,
+        const std::unordered_map<std::string, int>& model_counts) {
+        if (!EntryActive()) return;
+        LogKV("world_objects_summary",
+              ",\"object_count\":" + std::to_string(object_count) +
+              ",\"unique_models\":" + std::to_string(model_counts.size()));
+        for (const auto& [model, count] : model_counts) {
+            LogKV("world_object_model_count",
+                  ",\"model\":\"" + Escape(model) +
+                  "\",\"count\":" + std::to_string(count));
+        }
+    }
+
+    void LogLazyStage(const char* stage, uint64_t dur_us, bool ok = true) {
+        if (!EntryActive()) return;
+        LogKV("lazy_stage",
+              ",\"stage\":\"" + Escape(stage ? stage : "") +
+              "\",\"dur_us\":" + std::to_string(dur_us) +
+              ",\"ok\":" + std::string(ok ? "true" : "false"));
+    }
+
+    void LogLoadEnvironment(const char* callsite,
+                            const std::string& path,
+                            uint64_t dur_us) {
+        if (!EntryActive()) return;
+        LogKV("load_environment_call",
+              ",\"callsite\":\"" + Escape(callsite ? callsite : "") +
+              "\",\"path\":\"" + Escape(path) +
+              "\",\"dur_us\":" + std::to_string(dur_us));
+    }
+
+    void LogClientWorldReady(uint32_t total_ms, uint32_t client_init_ms) {
+        if (!EntryActive()) return;
+        client_world_ready_us_ = NowUs();
+        LogKV("client_world_ready_sent",
+              ",\"total_ms\":" + std::to_string(total_ms) +
+              ",\"client_init_ms\":" + std::to_string(client_init_ms));
+    }
+
+    void LogCoreDone(std::size_t core_total, std::size_t core_done, int pending_total) {
+        if (!EntryActive() || core_done_logged_) return;
+        core_done_logged_ = true;
+        LogKV("gate_core_done",
+              ",\"core_total\":" + std::to_string(core_total) +
+              ",\"core_done\":" + std::to_string(core_done) +
+              ",\"pending_total\":" + std::to_string(pending_total));
+    }
+
+    void LogGateRelease(const char* reason,
+                        std::size_t core_total,
+                        std::size_t core_done,
+                        int pending_total,
+                        double elapsed_ms) {
+        if (!EntryActive() || gate_release_logged_) return;
+        gate_release_logged_ = true;
+        std::ostringstream os;
+        os.setf(std::ios::fixed);
+        os.precision(3);
+        os << ",\"reason\":\"" << Escape(reason ? reason : "")
+           << "\",\"core_total\":" << core_total
+           << ",\"core_done\":" << core_done
+           << ",\"pending_total\":" << pending_total
+           << ",\"elapsed_ms\":" << elapsed_ms;
+        LogKV("gate_release", os.str());
+    }
+
+    void LogActorInit(const char* stage,
+                      const std::string& model_path,
+                      bool cache_hit,
+                      bool post_loading,
+                      uint64_t dur_us,
+                      uint64_t frame_index) {
+        if (!EntryActive()) return;
+        last_actor_init_us_ = NowUs();
+        LogKV("actor_init",
+              ",\"stage\":\"" + Escape(stage ? stage : "") +
+              "\",\"model\":\"" + Escape(model_path) +
+              "\",\"cache_hit\":" + std::string(cache_hit ? "true" : "false") +
+              ",\"post_loading\":" + std::string(post_loading ? "true" : "false") +
+              ",\"dur_us\":" + std::to_string(dur_us) +
+              ",\"frame\":" + std::to_string(frame_index));
+    }
+
+    void LogRebuildMaterials(const char* stage,
+                             bool post_loading,
+                             uint64_t dur_us,
+                             uint64_t frame_index) {
+        if (!EntryActive()) return;
+        LogKV("rebuild_materials",
+              ",\"stage\":\"" + Escape(stage ? stage : "") +
+              "\",\"post_loading\":" + std::string(post_loading ? "true" : "false") +
+              ",\"dur_us\":" + std::to_string(dur_us) +
+              ",\"frame\":" + std::to_string(frame_index));
+    }
+
+    void LogModelCacheGet(const char* path, bool hit, const char* context) {
+        if (!EntryActive()) return;
+        LogKV("model_cache_get",
+              ",\"path\":\"" + Escape(path ? path : "") +
+              "\",\"hit\":" + std::string(hit ? "true" : "false") +
+              ",\"context\":\"" + Escape(context ? context : "") + "\"");
+    }
+
+    void Finalize(const char* reason) {
+        if (!EntryActive()) return;
+        uint64_t streaming_us = 0;
+        if (client_world_ready_us_ > 0 && last_actor_init_us_ > client_world_ready_us_) {
+            streaming_us = last_actor_init_us_ - client_world_ready_us_;
+        }
+        LogKV("entry_finalize",
+              ",\"reason\":\"" + Escape(reason ? reason : "") +
+              "\",\"world_ready_us\":" + std::to_string(client_world_ready_us_) +
+              ",\"last_actor_init_us\":" + std::to_string(last_actor_init_us_) +
+              ",\"streaming_tail_us\":" + std::to_string(streaming_us));
+        entry_finalized_ = true;
+        Flush();
+    }
+
+    void MaybeAutoFinalize(bool world_entry_loading, int pending_static, int pending_npc) {
+        if (!EntryActive()) return;
+        if (world_entry_loading) return;
+        const uint64_t now_us = NowUs();
+        constexpr uint64_t kIdleFinalizeUs = 2'000'000;
+        constexpr uint64_t kHardFinalizeUs = 120'000'000;
+
+        if (client_world_ready_us_ > 0 && now_us > client_world_ready_us_ + kHardFinalizeUs) {
+            Finalize("hard_timeout");
+            return;
+        }
+        if (pending_static != 0 || pending_npc != 0) return;
+
+        if (last_actor_init_us_ > 0) {
+            if (now_us > last_actor_init_us_ + kIdleFinalizeUs) {
+                Finalize("idle_after_last_init");
+            }
+            return;
+        }
+        if (client_world_ready_us_ > 0 && now_us > client_world_ready_us_ + kIdleFinalizeUs) {
+            Finalize("idle_no_actor_init");
+        }
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+
+    static std::string Escape(const std::string& in) {
+        std::string out;
+        out.reserve(in.size() + 16);
+        for (char c : in) {
+            switch (c) {
+                case '\\': out += "\\\\"; break;
+                case '"':  out += "\\\""; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:   out += c; break;
+            }
+        }
+        return out;
+    }
+
+    uint64_t NowUs() const {
+        if (!enabled_) return 0;
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                Clock::now() - start_tp_).count());
+    }
+
+    void LogKV(const char* event, const std::string& extra) {
+        if (!enabled_) return;
+        const uint64_t ts_us = NowUs();
+        std::ostringstream os;
+        os << "{\"event\":\"" << Escape(event ? event : "") << "\""
+           << ",\"entry_id\":" << entry_id_
+           << ",\"ts_us\":" << ts_us;
+        if (entry_active_ && ts_us >= entry_start_us_) {
+            os << ",\"entry_rel_us\":" << (ts_us - entry_start_us_);
+        }
+        os << extra << "}";
+        lines_.push_back(os.str());
+        if (lines_.size() >= 8192) Flush();
+    }
+
+    void Flush() {
+        if (!enabled_ || lines_.empty()) return;
+        std::ofstream out(file_path_, std::ios::out | std::ios::app);
+        if (!out) return;
+        for (const auto& l : lines_) out << l << '\n';
+        lines_.clear();
+    }
+
+    bool enabled_ = false;
+    bool entry_active_ = false;
+    bool entry_finalized_ = false;
+    bool core_done_logged_ = false;
+    bool gate_release_logged_ = false;
+    int entry_id_ = 0;
+    uint64_t entry_start_us_ = 0;
+    uint64_t client_world_ready_us_ = 0;
+    uint64_t last_actor_init_us_ = 0;
+    Clock::time_point start_tp_{};
+    std::string file_path_;
+    std::vector<std::string> lines_;
+};
+
+static EntryPerfLogger* g_entry_perf_logger = nullptr;
+
+static void ModelCachePerfObserver(const char* path, bool hit, const char* context) {
+    if (!g_entry_perf_logger) return;
+    g_entry_perf_logger->LogModelCacheGet(path, hit, context);
+}
+
+class ModelCacheContextScope {
+public:
+    explicit ModelCacheContextScope(const char* context) {
+        rco::renderer::ModelCacheSetContext(context);
+    }
+    ~ModelCacheContextScope() {
+        rco::renderer::ModelCacheSetContext(nullptr);
+    }
+};
+
 struct LoadingPresetConfig {
     const char* name;
     float core_preload_radius;
+    int core_preload_max_objects;
     double core_preload_timeout_ms;
     int core_init_per_frame;
     double core_init_budget_ms;
@@ -128,25 +481,25 @@ static LoadingPresetConfig ResolveLoadingPreset() {
     if (v == "low") {
         return {
             "low",
-            90.f, 7000.0, 3, 6.0, 1, 220,
+            90.f, 40, 7000.0, 3, 6.0, 1, 0,
             2, 3.0,
-            1, 1.0, 1
+            32, 8.0, 4
         };
     }
     if (v == "high") {
         return {
             "high",
-            170.f, 20000.0, 8, 16.0, 4, 60,
+            170.f, 110, 20000.0, 8, 16.0, 4, 0,
             6, 10.0,
-            3, 3.0, 2
+            64, 12.0, 8
         };
     }
     // default: medium
     return {
         "medium",
-        140.f, 15000.0, 6, 12.0, 3, 120,
+        140.f, 70, 15000.0, 6, 12.0, 3, 0,
         4, 6.0,
-        2, 2.0, 1
+        48, 10.0, 6
     };
 }
 
@@ -191,6 +544,131 @@ static std::string NormalizeLightingKey(std::string s) {
         if (c == ' ' || c == '-' || c == '/' || c == '\\' || c == '.') c = '_';
     }
     return s;
+}
+
+static std::string TrimCopy(std::string s) {
+    const char* ws = " \t\r\n";
+    const std::size_t b = s.find_first_not_of(ws);
+    if (b == std::string::npos) return std::string{};
+    const std::size_t e = s.find_last_not_of(ws);
+    return s.substr(b, e - b + 1);
+}
+
+static bool ParseFloatStrict(const std::string& raw, float& out) {
+    const std::string s = TrimCopy(raw);
+    if (s.empty()) return false;
+    char* end = nullptr;
+    const float v = std::strtof(s.c_str(), &end);
+    if (end == s.c_str()) return false;
+    while (end && *end != '\0') {
+        if (!std::isspace(static_cast<unsigned char>(*end))) return false;
+        ++end;
+    }
+    out = v;
+    return true;
+}
+
+static ImU32 ParseColorRGBA01OrFallback(const std::string& raw, ImU32 fallback) {
+    float r = 0.f, g = 0.f, b = 0.f, a = 0.f;
+    if (std::sscanf(raw.c_str(), "%f,%f,%f,%f", &r, &g, &b, &a) != 4) {
+        return fallback;
+    }
+    r = std::clamp(r, 0.f, 1.f);
+    g = std::clamp(g, 0.f, 1.f);
+    b = std::clamp(b, 0.f, 1.f);
+    a = std::clamp(a, 0.f, 1.f);
+    const int ri = static_cast<int>(r * 255.f + 0.5f);
+    const int gi = static_cast<int>(g * 255.f + 0.5f);
+    const int bi = static_cast<int>(b * 255.f + 0.5f);
+    const int ai = static_cast<int>(a * 255.f + 0.5f);
+    return IM_COL32(ri, gi, bi, ai);
+}
+
+static ImU32 DefaultInnerTelegraphColorForReason(std::string reason_tag) {
+    std::transform(reason_tag.begin(), reason_tag.end(), reason_tag.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (reason_tag.find("phase_3") != std::string::npos ||
+        reason_tag.find("enrage") != std::string::npos) {
+        return IM_COL32(255, 135, 110, 240);
+    }
+    if (reason_tag.find("phase_2") != std::string::npos) {
+        return IM_COL32(255, 195, 95, 240);
+    }
+    return IM_COL32(255, 230, 80, 235);
+}
+
+static std::string TelegraphPhaseLabelFromReason(std::string reason_tag) {
+    std::transform(reason_tag.begin(), reason_tag.end(), reason_tag.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (reason_tag.find("phase_3") != std::string::npos ||
+        reason_tag.find("enrage") != std::string::npos) {
+        return "Phase 3 / Enrage";
+    }
+    if (reason_tag.find("phase_2") != std::string::npos) return "Phase 2";
+    if (reason_tag.find("phase_1") != std::string::npos) return "Phase 1";
+    return std::string{};
+}
+
+struct CombatTelegraphMeta {
+    bool     valid = false;
+    float    radius = 0.f;
+    ImU32    outer_color = 0;
+    int      parry_window_ms = 0;
+    std::string style;
+    std::string reason_tag;
+};
+
+static CombatTelegraphMeta ParseCombatTelegraphMeta(const std::string& raw_text) {
+    CombatTelegraphMeta meta{};
+    if (raw_text.rfind("meta:", 0) != 0) return meta;
+
+    std::string payload = raw_text.substr(5);
+    bool has_telegraph_hint = false;
+    bool has_radius = false;
+    bool has_color = false;
+    bool has_reason = false;
+
+    std::size_t cursor = 0;
+    while (cursor <= payload.size()) {
+        std::size_t sep = payload.find(';', cursor);
+        if (sep == std::string::npos) sep = payload.size();
+        std::string token = TrimCopy(payload.substr(cursor, sep - cursor));
+        cursor = (sep == payload.size()) ? (payload.size() + 1) : (sep + 1);
+        if (token.empty()) continue;
+        const std::size_t eq = token.find('=');
+        if (eq == std::string::npos) continue;
+
+        std::string key = TrimCopy(token.substr(0, eq));
+        std::string val = TrimCopy(token.substr(eq + 1));
+        std::transform(key.begin(), key.end(), key.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        if (key == "telegraph") {
+            has_telegraph_hint = true;
+        } else if (key == "radius") {
+            float radius = 0.f;
+            if (ParseFloatStrict(val, radius) && radius > 0.f) {
+                meta.radius = radius;
+                has_radius = true;
+            }
+        } else if (key == "color") {
+            meta.outer_color = ParseColorRGBA01OrFallback(val, 0);
+            has_color = (meta.outer_color != 0);
+        } else if (key == "window_ms" || key == "parry_window_ms") {
+            float ms = 0.f;
+            if (ParseFloatStrict(val, ms) && ms > 0.f) {
+                meta.parry_window_ms = static_cast<int>(ms + 0.5f);
+            }
+        } else if (key == "style") {
+            meta.style = val;
+        } else if (key == "reason") {
+            meta.reason_tag = val;
+            has_reason = !meta.reason_tag.empty();
+        }
+    }
+
+    meta.valid = has_telegraph_hint || has_radius || has_color || has_reason;
+    return meta;
 }
 
 static AreaLightingConfig ResolveAreaLightingConfig() {
@@ -368,6 +846,10 @@ int main() {
     // Network
     // -----------------------------------------------------------------------
     rco::net::Connection conn;
+    EntryPerfLogger perf_entry;
+    g_entry_perf_logger = perf_entry.Enabled() ? &perf_entry : nullptr;
+    rco::renderer::ModelCacheSetObserver(
+        perf_entry.Enabled() ? &ModelCachePerfObserver : nullptr);
 
     // -----------------------------------------------------------------------
     // Game state
@@ -448,6 +930,24 @@ int main() {
         WorldActorEntry& operator=(const WorldActorEntry&) = delete;
     };
     std::unordered_map<uint32_t, WorldActorEntry> world_actors;
+    struct CorpseEntry {
+        uint32_t rid = 0;
+        WorldActorEntry actor;
+        double death_time = 0.0;
+        double sink_start_time = 0.0;
+        double remove_time = 0.0;
+        float  base_y = 0.f;
+        float  sink_depth = 1.15f;
+        CorpseEntry() = default;
+        CorpseEntry(CorpseEntry&&) = default;
+        CorpseEntry& operator=(CorpseEntry&&) = default;
+        CorpseEntry(const CorpseEntry&) = delete;
+        CorpseEntry& operator=(const CorpseEntry&) = delete;
+    };
+    std::vector<CorpseEntry> world_corpses;
+    static constexpr double kCorpseLieTimeSec = 4.25;
+    static constexpr double kCorpseSinkDurationSec = 6.50;
+    static constexpr float  kCorpseSinkDepth = 1.20f;
 
     // AnimController for the local player
     rco::anim::AnimController player_anim_ctrl;
@@ -472,6 +972,7 @@ int main() {
     rco::renderer::ColData col_data;
     rco::renderer::Actor   player_actor;
     bool renderer_ready = false;
+    bool initial_material_rebuild_pending_log = false;
 
     rco::renderer::Engine engine;
     std::unique_ptr<rco::renderer::Pipeline> pipeline;
@@ -481,6 +982,8 @@ int main() {
     rco::ui::FloatingNumbers float_nums;
     rco::ui::SpellBar        spellbar;
     rco::ui::SpellEffects    spell_fx;
+    rco::ui::QuestLog        quest_log;
+    rco::ui::PartyPanel      party_panel;
     rco::ui::ChatBubbles     chat_bubbles;
     rco::ui::ControlsUI      controls_ui;
 
@@ -517,6 +1020,7 @@ int main() {
     std::chrono::steady_clock::time_point world_enter_pstart_tp{};
     bool world_entry_loading = false;
     double world_entry_loading_start = 0.0;
+    bool world_entry_world_objects_received = false;
     std::vector<std::size_t> world_entry_core_indices;
     std::size_t world_entry_core_cursor = 0;
 
@@ -553,6 +1057,28 @@ int main() {
     std::vector<WorldObjectEntry> world_static_objects;
     std::vector<std::string> static_model_prewarm_queue;
     std::size_t static_model_prewarm_cursor = 0;
+    constexpr std::size_t kStaticInitSampleWindow = 256;
+    std::vector<uint64_t> static_init_samples_us;
+    static_init_samples_us.reserve(kStaticInitSampleWindow);
+    auto record_static_init_sample = [&](uint64_t dur_us) {
+        if (dur_us == 0) return;
+        if (static_init_samples_us.size() >= kStaticInitSampleWindow) {
+            static_init_samples_us.erase(static_init_samples_us.begin());
+        }
+        static_init_samples_us.push_back(dur_us);
+    };
+    auto estimate_static_init_p99_us = [&]() -> double {
+        if (static_init_samples_us.empty()) return 0.0;
+        std::vector<uint64_t> sorted = static_init_samples_us;
+        std::sort(sorted.begin(), sorted.end());
+        const double pos = (static_cast<double>(sorted.size() - 1) * 0.99);
+        const std::size_t lo = static_cast<std::size_t>(std::floor(pos));
+        const std::size_t hi = static_cast<std::size_t>(std::ceil(pos));
+        if (lo == hi) return static_cast<double>(sorted[lo]);
+        const double w = pos - static_cast<double>(lo);
+        return static_cast<double>(sorted[lo]) * (1.0 - w) +
+               static_cast<double>(sorted[hi]) * w;
+    };
 
     // Shop UI
     struct ShopEntry {
@@ -579,11 +1105,37 @@ int main() {
     double   last_attack_sent  = 0.0;
     bool     player_dead       = false;
     glm::mat4 view_mat{1.f}, proj_mat{1.f};
+    bool      dodge_roll_active = false;
+    glm::vec2 dodge_roll_dir{0.f};
+    double    dodge_roll_start = 0.0;
+    double    dodge_roll_end = 0.0;
+    bool      dodge_roll_pending = false;
+    glm::vec2 dodge_roll_pending_dir{0.f};
+    double    dodge_roll_pending_until = 0.0;
+    constexpr float kDodgeRollSpeedStart = 12.0f;
+    constexpr float kDodgeRollSpeedEnd = 4.5f;
+    struct SpecialParryTelegraph {
+        uint32_t target_rid = 0;
+        double   start_time = 0.0;
+        double   end_time = 0.0;
+        float    radius = 1.45f;
+        int      parry_window_ms = 220;
+        ImU32    outer_color = IM_COL32(255, 70, 70, 190);
+        ImU32    inner_color = IM_COL32(255, 230, 80, 235);
+        std::string reason_tag;
+    };
+    std::unordered_map<uint32_t, SpecialParryTelegraph> special_parry_telegraphs; // key = source mob rid
+    struct ParryJudgementFx {
+        uint32_t source_rid = 0;
+        bool success = false;
+        int32_t metric = 0; // success: parry timing (ms), fail: damage received
+        double start_time = 0.0;
+        double end_time = 0.0;
+    };
+    std::vector<ParryJudgementFx> parry_judgements;
 
     // Player movement controller (gravity, slope, jump, sprint, click-to-move)
     rco::PlayerController player_ctrl{};
-    bool      action_mode    = false; // V key: mouse always rotates, A/D strafe
-    bool      v_key_prev     = false;
     glm::vec2 last_player_pos{0.f}; // XZ position from previous frame (walk detection)
     uint32_t  pending_interact   = 0;     // RID of NPC we're walking toward to interact
     constexpr float kInteractRange = 5.f;
@@ -601,6 +1153,59 @@ int main() {
         rco::net::Writer w;
         w.WriteU8(static_cast<uint8_t>(slot));
         conn.SendPacket(rco::net::kPUseItem, w);
+    };
+
+    quest_log.on_action = [&](uint8_t action, uint32_t quest_id) {
+        if (!conn.IsConnected()) return;
+        rco::net::Writer w;
+        w.WriteU8(action);
+        w.WriteU32(quest_id);
+        conn.SendPacket(rco::net::kPQuestAction, w);
+    };
+
+    party_panel.on_action = [&](uint8_t action, const std::string& target_name) {
+        if (!conn.IsConnected()) return;
+        rco::net::Writer w;
+        w.WriteU8(action);
+        w.WriteString(target_name);
+        conn.SendPacket(rco::net::kPPartyAction, w);
+    };
+
+    auto send_combat_action = [&](uint8_t action, uint32_t target_rid) {
+        if (!conn.IsConnected()) return;
+        rco::net::Writer w;
+        w.WriteU8(action);
+        w.WriteU32(target_rid);
+        conn.SendPacket(rco::net::kPCombatAction, w);
+    };
+
+    auto rebind_player_anim_controller = [&]() -> bool {
+        if (player_anims.empty()) return false;
+        std::vector<rco::anim::AnimBinding> bindings;
+        bindings.reserve(player_anims.size());
+        for (const auto& wa : player_anims) {
+            rco::anim::AnimBinding ab;
+            ab.action      = wa.action;
+            ab.source_path = wa.source_path;
+            ab.start_frame = wa.start_frame;
+            ab.end_frame   = wa.end_frame;
+            ab.fps         = wa.fps;
+            ab.loop        = wa.loop;
+            ab.speed       = wa.speed;
+            ab.blend_in    = wa.blend_in;
+            ab.return_to   = wa.return_to;
+            ab.priority    = wa.priority;
+            for (const auto& ev : wa.events) {
+                rco::anim::AnimEvent aev;
+                aev.frame      = ev.frame;
+                aev.event_type = ev.event_type;
+                aev.payload    = ev.payload;
+                ab.events.push_back(std::move(aev));
+            }
+            bindings.push_back(std::move(ab));
+        }
+        player_anim_ctrl.Bind(bindings);
+        return player_anim_ctrl.RequestStateByName("Idle");
     };
 
     spellbar.on_cast = [&](uint16_t spell_id, uint32_t target_rid) {
@@ -661,6 +1266,10 @@ int main() {
     // -----------------------------------------------------------------------
     auto handle_packet = [&](const rco::net::InboundPacket& pkt) {
         rco::net::Reader r(pkt.payload.data(), pkt.payload.size());
+
+        if (rco::gameplay::HandleIngamePacketGate(pkt.type, r)) {
+            return;
+        }
 
         switch (pkt.type) {
 
@@ -739,6 +1348,7 @@ int main() {
             }
 
             case rco::net::kPStartGame: {
+                perf_entry.LogPacketArrival("PStartGame");
                 world_enter_pstart_tp = std::chrono::steady_clock::now();
                 if (world_enter_pending) {
                     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -754,8 +1364,14 @@ int main() {
                 player.yaw       = r.ReadF32();
                 player.health    = static_cast<int32_t>(r.ReadU32());
                 player.healthMax = static_cast<int32_t>(r.ReadU32());
-                player.energy    = static_cast<int32_t>(r.ReadU32());
-                player.energyMax = static_cast<int32_t>(r.ReadU32());
+                player.mana      = static_cast<int32_t>(r.ReadU32());
+                player.manaMax   = static_cast<int32_t>(r.ReadU32());
+                player.stamina   = 100;
+                player.staminaMax= 100;
+                if (!r.Done()) {
+                    player.stamina = static_cast<int32_t>(r.ReadU32());
+                    player.staminaMax = static_cast<int32_t>(r.ReadU32());
+                }
                 if (!r.OK()) break;
 
                 // Read appearance section (same format as PNewActor tail).
@@ -855,9 +1471,15 @@ int main() {
                     (unsigned)player_anims.size());
 
                 last_player_pos = {player.x, player.z};
+                dodge_roll_active = false;
+                dodge_roll_pending = false;
+                world_corpses.clear();
+                special_parry_telegraphs.clear();
+                parry_judgements.clear();
                 state = rco::GameState::InGame;
                 world_entry_loading = true;
                 world_entry_loading_start = glfwGetTime();
+                world_entry_world_objects_received = false;
                 world_entry_core_indices.clear();
                 world_entry_core_cursor = 0;
                 active_character_readability_tuning = character_readability_tuning;
@@ -905,8 +1527,10 @@ int main() {
                 inventory.stat_class  = player.charClass;
                 inventory.stat_hp     = player.health;
                 inventory.stat_hp_max = player.healthMax;
-                inventory.stat_ep     = player.energy;
-                inventory.stat_ep_max = player.energyMax;
+                inventory.stat_mp     = player.mana;
+                inventory.stat_mp_max = player.manaMax;
+                inventory.stat_sp     = player.stamina;
+                inventory.stat_sp_max = player.staminaMax;
                 break;
             }
 
@@ -920,8 +1544,10 @@ int main() {
                 player.z = cz; player.yaw = cyaw;
                 last_player_pos = {player.x, player.z};
                 world_actors.clear();
+                world_corpses.clear();
                 world_static_objects.clear();
                 world_entry_loading = false;
+                world_entry_world_objects_received = false;
                 world_entry_core_indices.clear();
                 world_entry_core_cursor = 0;
                 static_model_prewarm_queue.clear();
@@ -930,6 +1556,8 @@ int main() {
                 world_items.clear();
                 shop.open = false;
                 combat_target = 0;
+                special_parry_telegraphs.clear();
+                parry_judgements.clear();
                 active_character_readability_tuning = character_readability_tuning;
                 active_scene_look_tuning = scene_look_tuning;
                 active_render_color_profile = render_color_profile;
@@ -949,6 +1577,8 @@ int main() {
                 }
                 col_data = rco::renderer::LoadColData(area);
                 player_ctrl.Reset();
+                dodge_roll_active = false;
+                dodge_roll_pending = false;
                 // Server will send PNewActor + PKnownSpells packets for the new area.
                 break;
             }
@@ -1173,7 +1803,11 @@ int main() {
                             if (!wa.clip_override.empty())
                                 player_actor.AliasClip(wa.clip_override, wa.action);
                         }
-                        engine.RebuildMaterialsBuffer();
+                        for (auto& wa : player_anims) {
+                            player_anim_ctrl.SetClipDuration(
+                                wa.action, player_actor.ClipDuration(wa.action));
+                        }
+                        engine.MarkMaterialsDirty();
                         camera.SetActorHeight(player_actor.ModelHeight());
                     }
                     break;
@@ -1283,6 +1917,15 @@ int main() {
                 uint32_t rid = r.ReadU32();
                 if (!r.OK()) break;
                 world_actors.erase(rid);
+                special_parry_telegraphs.erase(rid);
+                for (auto it = special_parry_telegraphs.begin();
+                     it != special_parry_telegraphs.end();) {
+                    if (it->second.target_rid == rid) {
+                        it = special_parry_telegraphs.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
                 break;
             }
 
@@ -1314,12 +1957,21 @@ int main() {
                 login_error = reason.empty() ? "Disconnected by server." : reason;
                 characters.clear();
                 world_actors.clear();
+                world_corpses.clear();
                 world_static_objects.clear();
                 world_entry_loading = false;
+                world_entry_world_objects_received = false;
                 world_entry_core_indices.clear();
                 world_entry_core_cursor = 0;
                 static_model_prewarm_queue.clear();
                 static_model_prewarm_cursor = 0;
+                quest_log.Clear();
+                quest_log.journal_visible = false;
+                party_panel.Clear();
+                dodge_roll_active = false;
+                dodge_roll_pending = false;
+                special_parry_telegraphs.clear();
+                parry_judgements.clear();
                 renderer_ready = false;
                 break;
             }
@@ -1387,6 +2039,160 @@ int main() {
                 break;
             }
 
+            case rco::net::kPCombatEvent: {
+                uint8_t event_code = r.ReadU8();
+                uint32_t source_rid = r.ReadU32();
+                uint32_t target_rid = r.ReadU32();
+                int16_t value = static_cast<int16_t>(r.ReadU16());
+                std::string text = r.ReadString();
+                if (!r.OK()) break;
+                const double event_now = glfwGetTime();
+                bool telegraph_meta_consumed = false;
+                CombatTelegraphMeta telegraph_meta{};
+                if (event_code == rco::net::kCombatEventSpecialWindup && !text.empty()) {
+                    telegraph_meta = ParseCombatTelegraphMeta(text);
+                    telegraph_meta_consumed = telegraph_meta.valid;
+                }
+                if (event_code == rco::net::kCombatEventSpecialWindup && source_rid != 0) {
+                    const double windup_s =
+                        (value > 0) ? (static_cast<double>(value) / 1000.0) : 1.2;
+                    SpecialParryTelegraph tg;
+                    tg.target_rid = target_rid;
+                    tg.start_time = event_now;
+                    const double windup_clamped = (windup_s < 0.25) ? 0.25 : windup_s;
+                    tg.end_time = event_now + windup_clamped;
+                    if (telegraph_meta.radius > 0.01f) {
+                        tg.radius = telegraph_meta.radius;
+                    }
+                    if (telegraph_meta.outer_color != 0) {
+                        tg.outer_color = telegraph_meta.outer_color;
+                    }
+                    if (telegraph_meta.parry_window_ms > 0) {
+                        tg.parry_window_ms = telegraph_meta.parry_window_ms;
+                    }
+                    if (!telegraph_meta.reason_tag.empty()) {
+                        tg.reason_tag = telegraph_meta.reason_tag;
+                    }
+                    tg.inner_color = DefaultInnerTelegraphColorForReason(tg.reason_tag);
+                    special_parry_telegraphs[source_rid] = tg;
+                } else if ((event_code == rco::net::kCombatEventSpecialParry ||
+                            event_code == rco::net::kCombatEventSpecialHit) &&
+                           source_rid != 0) {
+                    special_parry_telegraphs.erase(source_rid);
+                }
+                if ((event_code == rco::net::kCombatEventSpecialParry ||
+                     event_code == rco::net::kCombatEventSpecialHit) &&
+                    target_rid == player.runtimeId) {
+                    ParryJudgementFx fx;
+                    fx.source_rid = source_rid;
+                    fx.success = (event_code == rco::net::kCombatEventSpecialParry);
+                    fx.metric = static_cast<int32_t>(value);
+                    fx.start_time = event_now;
+                    fx.end_time = event_now + (fx.success ? 0.85 : 0.78);
+                    parry_judgements.push_back(fx);
+                }
+
+                // Authoritative dodge-roll trigger:
+                // only start local roll when the server accepts dodge.
+                if (event_code == rco::net::kCombatEventDodgeStarted &&
+                    source_rid == player.runtimeId) {
+                    glm::vec2 chosen_dir{0.f, 0.f};
+                    if (dodge_roll_pending &&
+                        event_now <= dodge_roll_pending_until &&
+                        glm::dot(dodge_roll_pending_dir, dodge_roll_pending_dir) > 0.0001f) {
+                        chosen_dir = glm::normalize(dodge_roll_pending_dir);
+                    } else {
+                        float yr = glm::radians(player.yaw);
+                        chosen_dir = {-std::sin(yr), -std::cos(yr)}; // fallback: forward roll
+                    }
+                    dodge_roll_dir = chosen_dir;
+                    dodge_roll_start = event_now;
+                    const float iframe_s = (value > 0) ? (static_cast<float>(value) / 1000.f) : 0.28f;
+                    const float roll_s = std::clamp(iframe_s + 0.08f, 0.24f, 0.45f);
+                    dodge_roll_end = event_now + static_cast<double>(roll_s);
+                    dodge_roll_active = true;
+                    dodge_roll_pending = false;
+                } else if (event_code == rco::net::kCombatEventActionRejected &&
+                           source_rid == player.runtimeId &&
+                           static_cast<uint8_t>(value) == rco::net::kCombatActionDodge) {
+                    dodge_roll_active = false;
+                    dodge_roll_pending = false;
+                }
+
+                auto actor_name = [&](uint32_t rid) -> std::string {
+                    if (rid == 0) return std::string("Unknown");
+                    if (rid == player.runtimeId) return player.name.empty() ? std::string("You") : player.name;
+                    auto it = world_actors.find(rid);
+                    if (it != world_actors.end() && !it->second.name.empty()) return it->second.name;
+                    return std::string("Actor#") + std::to_string(rid);
+                };
+
+                if (!text.empty() && !telegraph_meta_consumed) {
+                    chat.AddMessage("", text);
+                    break;
+                }
+
+                std::string msg;
+                switch (event_code) {
+                    case rco::net::kCombatEventActionRejected:
+                        msg = "Combat action rejected by server.";
+                        break;
+                    case rco::net::kCombatEventDodgeStarted:
+                        msg = actor_name(source_rid) + " used Dodge.";
+                        break;
+                    case rco::net::kCombatEventGuardStarted:
+                        msg = actor_name(source_rid) + " raised Guard.";
+                        break;
+                    case rco::net::kCombatEventGuardEnded:
+                        msg = actor_name(source_rid) + " lowered Guard.";
+                        break;
+                    case rco::net::kCombatEventParryStarted:
+                        msg = actor_name(source_rid) + " opened a Parry window.";
+                        break;
+                    case rco::net::kCombatEventParryEnded:
+                        msg = actor_name(source_rid) + " ended Parry.";
+                        break;
+                    case rco::net::kCombatEventInterruptSuccess:
+                        msg = actor_name(source_rid) + " interrupted " + actor_name(target_rid) + ".";
+                        break;
+                    case rco::net::kCombatEventHitDodged:
+                        msg = actor_name(source_rid) + " dodged an incoming hit.";
+                        break;
+                    case rco::net::kCombatEventHitGuarded:
+                        msg = actor_name(source_rid) + " guarded and took " + std::to_string(value) + " damage.";
+                        break;
+                    case rco::net::kCombatEventHitParried:
+                        msg = actor_name(source_rid) + " parried an incoming hit.";
+                        break;
+                    case rco::net::kCombatEventSpecialWindup:
+                        msg = actor_name(source_rid) + " is charging a special attack. Parry at the last moment.";
+                        if (auto it = special_parry_telegraphs.find(source_rid);
+                            it != special_parry_telegraphs.end()) {
+                            const std::string phase_label =
+                                TelegraphPhaseLabelFromReason(it->second.reason_tag);
+                            if (!phase_label.empty()) {
+                                msg += " [" + phase_label + "]";
+                            }
+                        }
+                        break;
+                    case rco::net::kCombatEventSpecialParry:
+                        msg = actor_name(target_rid) + " parried " + actor_name(source_rid) + "'s special.";
+                        if (value > 0) {
+                            msg += " [timing " + std::to_string(value) + "ms]";
+                        }
+                        break;
+                    case rco::net::kCombatEventSpecialHit:
+                        msg = actor_name(source_rid) + " landed a special hit on " +
+                              actor_name(target_rid) + " for " + std::to_string(value) + " damage.";
+                        break;
+                    default:
+                        msg = "Combat event received.";
+                        break;
+                }
+                chat.AddMessage("", msg);
+                break;
+            }
+
             case rco::net::kPActorDead: {
                 uint32_t dead_rid   = r.ReadU32();
                 /*killer*/ r.ReadU32();
@@ -1395,9 +2201,45 @@ int main() {
                     player_dead    = true;
                     player.health  = 0;
                     combat_target  = 0;
+                    dodge_roll_active = false;
+                    dodge_roll_pending = false;
+                    if (player_anim_ctrl.IsReady()) {
+                        player_anim_ctrl.RequestStateByName("Death");
+                    } else {
+                        player_actor.PlayAnim("Death", false);
+                    }
+                    special_parry_telegraphs.clear();
+                    parry_judgements.clear();
                     audio.PlaySfx(rco::audio::SfxId::PlayerDeath);
                 } else {
-                    world_actors.erase(dead_rid);
+                    auto wit = world_actors.find(dead_rid);
+                    if (wit != world_actors.end()) {
+                        const double corpse_now = glfwGetTime();
+                        CorpseEntry corpse;
+                        corpse.rid = dead_rid;
+                        corpse.actor = std::move(wit->second);
+                        corpse.death_time = corpse_now;
+                        corpse.sink_start_time = corpse_now + kCorpseLieTimeSec;
+                        corpse.remove_time = corpse.sink_start_time + kCorpseSinkDurationSec;
+                        corpse.base_y = corpse.actor.y;
+                        corpse.sink_depth = kCorpseSinkDepth;
+                        if (corpse.actor.anim_ctrl.IsReady()) {
+                            corpse.actor.anim_ctrl.RequestStateByName("Death");
+                        } else if (corpse.actor.actor) {
+                            corpse.actor.actor->PlayAnim("Death", false);
+                        }
+                        world_corpses.push_back(std::move(corpse));
+                        world_actors.erase(wit);
+                    }
+                    special_parry_telegraphs.erase(dead_rid);
+                    for (auto it = special_parry_telegraphs.begin();
+                         it != special_parry_telegraphs.end();) {
+                        if (it->second.target_rid == dead_rid) {
+                            it = special_parry_telegraphs.erase(it);
+                        } else {
+                            ++it;
+                        }
+                    }
                     if (combat_target == dead_rid) combat_target = 0;
                     audio.PlaySfx(rco::audio::SfxId::NPCDeath);
                 }
@@ -1410,11 +2252,26 @@ int main() {
                       rz = r.ReadF32(), ryaw = r.ReadF32();
                 if (!r.OK()) break;
                 if (rid == player.runtimeId) {
+                    const bool was_dead = player_dead;
                     player.x = rx; player.y = ry;
                     player.z = rz; player.yaw = ryaw;
                     last_player_pos = {rx, rz};
                     player_dead = false;
                     player_ctrl.Reset();
+                    dodge_roll_active = false;
+                    dodge_roll_pending = false;
+                    if (was_dead) {
+                        bool reset_ok = false;
+                        if (player_anim_ctrl.IsReady()) {
+                            reset_ok = player_anim_ctrl.RequestStateByName("Idle");
+                        }
+                        if (!reset_ok) {
+                            reset_ok = rebind_player_anim_controller();
+                        }
+                        if (!reset_ok) {
+                            player_actor.PlayAnim("Idle", true);
+                        }
+                    }
                 } else {
                     auto it = world_actors.find(rid);
                     if (it != world_actors.end()) {
@@ -1432,6 +2289,16 @@ int main() {
                 if (!r.OK()) break;
                 // Local player
                 if (rid == player.runtimeId) {
+                    bool is_death_action = false;
+                    if (action_id < player_anims.size()) {
+                        std::string act = player_anims[action_id].action;
+                        std::transform(act.begin(), act.end(), act.begin(),
+                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        is_death_action = (act == "death");
+                    }
+                    if (!player_dead && is_death_action) {
+                        break; // stale death packet after respawn
+                    }
                     player_anim_ctrl.RequestState(action_id);
                     break;
                 }
@@ -1455,14 +2322,31 @@ int main() {
                     int16_t  val  = static_cast<int16_t>(r.ReadU16());
                     if (!r.OK()) break;
                     if (rid == player.runtimeId) {
+                        const bool was_dead = player_dead;
                         if      (attr == 0) { player.health    = val; if (val > 0) player_dead = false; }
                         else if (attr == 1) { player.healthMax = val; }
-                        else if (attr == 2) { player.energy    = val; }
-                        else if (attr == 3) { player.energyMax = val; }
+                        else if (attr == 2) { player.mana      = val; }
+                        else if (attr == 3) { player.manaMax   = val; }
+                        else if (attr == 4) { player.stamina   = val; }
+                        else if (attr == 5) { player.staminaMax= val; }
+                        if (was_dead && !player_dead) {
+                            bool reset_ok = false;
+                            if (player_anim_ctrl.IsReady()) {
+                                reset_ok = player_anim_ctrl.RequestStateByName("Idle");
+                            }
+                            if (!reset_ok) {
+                                reset_ok = rebind_player_anim_controller();
+                            }
+                            if (!reset_ok) {
+                                player_actor.PlayAnim("Idle", true);
+                            }
+                        }
                         inventory.stat_hp     = player.health;
                         inventory.stat_hp_max = player.healthMax;
-                        inventory.stat_ep     = player.energy;
-                        inventory.stat_ep_max = player.energyMax;
+                        inventory.stat_mp     = player.mana;
+                        inventory.stat_mp_max = player.manaMax;
+                        inventory.stat_sp     = player.stamina;
+                        inventory.stat_sp_max = player.staminaMax;
                     } else {
                         auto it = world_actors.find(rid);
                         if (it != world_actors.end()) {
@@ -1512,12 +2396,14 @@ int main() {
             }
 
             case rco::net::kPWorldObjects: {
+                perf_entry.LogPacketArrival("PWorldObjects");
                 world_static_objects.clear();
                 static_model_prewarm_queue.clear();
                 static_model_prewarm_cursor = 0;
                 uint16_t obj_count = r.ReadU16();
                 world_static_objects.reserve(obj_count);
                 std::unordered_set<std::string> unique_models;
+                std::unordered_map<std::string, int> model_counts;
                 unique_models.reserve(obj_count);
                 for (uint16_t oi = 0; oi < obj_count && r.OK(); ++oi) {
                     WorldObjectEntry e;
@@ -1529,11 +2415,14 @@ int main() {
                     e.yaw        = r.ReadF32();
                     if (!r.OK() || e.model_path.empty()) break;
                     unique_models.insert(e.model_path);
+                    ++model_counts[e.model_path];
                     world_static_objects.push_back(std::move(e));
                 }
                 static_model_prewarm_queue.reserve(unique_models.size());
                 for (const auto& path : unique_models)
                     static_model_prewarm_queue.push_back(path);
+                world_entry_world_objects_received = true;
+                perf_entry.LogWorldObjectsSummary(obj_count, model_counts);
                 break;
             }
 
@@ -1553,6 +2442,20 @@ int main() {
                 break;
             }
 
+            case rco::net::kPQuestLog: {
+                if (!quest_log.ApplyPacket(r)) {
+                    std::fprintf(stderr, "[quest-log] malformed or unsupported payload\n");
+                }
+                break;
+            }
+
+            case rco::net::kPPartyUpdate: {
+                if (!party_panel.ApplyPacket(r)) {
+                    std::fprintf(stderr, "[party] malformed or unsupported payload\n");
+                }
+                break;
+            }
+
             case rco::net::kPKnownSpells: {
                 spellbar.Clear();
                 uint8_t count = r.ReadU8();
@@ -1560,14 +2463,14 @@ int main() {
                     uint16_t    spell_id    = r.ReadU16();
                     std::string name        = r.ReadString();
                     uint8_t     spell_type  = r.ReadU8();
-                    uint16_t    ep_cost     = r.ReadU16();
+                    uint16_t    mp_cost     = r.ReadU16();
                     uint32_t    cooldown_ms = r.ReadU32();
                     float       range       = r.ReadF32();
                     /*icon*/                 r.ReadU8();
                     uint8_t     aoe_type    = r.ReadU8();
                     float       aoe_radius  = r.ReadF32();
                     if (!r.OK()) break;
-                    spellbar.AddSpell(spell_id, name, spell_type, ep_cost, cooldown_ms,
+                    spellbar.AddSpell(spell_id, name, spell_type, mp_cost, cooldown_ms,
                                       aoe_type, aoe_radius, range);
                 }
                 break;
@@ -1682,6 +2585,7 @@ int main() {
             }
 
             case rco::net::kPAreaConfig: {
+                perf_entry.LogPacketArrival("PAreaConfig");
                 std::string skybox_hdr = r.ReadString();
                 if (!r.OK()) break;
 
@@ -1827,7 +2731,12 @@ int main() {
                     active_terrain_render_tuning.height_blend_slop);
                 if (renderer_ready) {
                     const std::string path = ResolveIblPathFromAreaConfig(pending_area_skybox_hdr);
+                    const auto env_t0 = std::chrono::steady_clock::now();
                     engine.LoadEnvironment(path);
+                    const auto env_us = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - env_t0).count());
+                    perf_entry.LogLoadEnvironment("area_config_immediate", path, env_us);
                     pending_area_skybox_hdr.clear();
                 }
                 break;
@@ -1913,6 +2822,7 @@ int main() {
             rco::net::Writer w;
             w.WriteU8(static_cast<uint8_t>(slot));
             conn.SendPacket(rco::net::kPStartGame, w);
+            perf_entry.StartEntry(slot);
             world_enter_pending = true;
             world_enter_logged  = false;
             world_enter_start_tp = std::chrono::steady_clock::now();
@@ -1935,17 +2845,27 @@ int main() {
             conn.SendPacket(rco::net::kPDeleteCharacter, w);
         },
         .OnLogout = [&]() {
+            perf_entry.Finalize("logout");
             conn.Disconnect();
             state          = rco::GameState::Login;
             renderer_ready = false;
             characters.clear();
             world_actors.clear();
+            world_corpses.clear();
             world_static_objects.clear();
             world_entry_loading = false;
+            world_entry_world_objects_received = false;
             world_entry_core_indices.clear();
             world_entry_core_cursor = 0;
             static_model_prewarm_queue.clear();
             static_model_prewarm_cursor = 0;
+            quest_log.Clear();
+            quest_log.journal_visible = false;
+            party_panel.Clear();
+            dodge_roll_active = false;
+            dodge_roll_pending = false;
+            special_parry_telegraphs.clear();
+            parry_judgements.clear();
             login_error.clear();
         }
     });
@@ -1963,17 +2883,21 @@ int main() {
     // ---------------------------------------------------------------------------
     bool   ms_rmb_prev    = false;  // RMB state last frame
     bool   ms_lmb_prev    = false;  // LMB state last frame
-    bool   ms_lmb_drag    = false;  // true while LMB drag (orbit) is active
-    bool   ms_lmb_click   = false;  // true for exactly one frame: LMB released without drag
+    bool   ms_lmb_click   = false;  // true for exactly one frame: LMB press
     double ms_prev_x      = 0.0, ms_prev_y = 0.0;
-    double ms_lmb_start_x = 0.0, ms_lmb_start_y = 0.0;
-    constexpr float kDragThresholdPx = 4.f;
+    bool   ms_rmb_defense_candidate = false; // tap RMB => defense skill (T&L-like)
+    double ms_rmb_down_time = 0.0;
+    double ms_rmb_down_x = 0.0, ms_rmb_down_y = 0.0;
+    int    cursor_mode_last = GLFW_CURSOR_NORMAL;
+    uint64_t frame_index = 0;
 
     while (!window.ShouldClose()) {
+        ++frame_index;
 
         double now = glfwGetTime();
         float  dt  = static_cast<float>(now - last_time);
         last_time  = now;
+        bool action_cursor_unlocked = false;
 
         // ---- Network poll ----
         {
@@ -1983,6 +2907,31 @@ int main() {
 
         // ---- Begin frame (clears buffers, polls events) ----
         window.BeginFrame();
+
+        // Cursor policy: action-only gameplay keeps mouse captured; menus/UI stay normal.
+        {
+            if (state == rco::GameState::InGame) {
+                action_cursor_unlocked =
+                    glfwGetKey(window.Handle(), GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
+                    glfwGetKey(window.Handle(), GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
+            }
+            const int desired_cursor_mode =
+                (state == rco::GameState::InGame && !action_cursor_unlocked)
+                    ? GLFW_CURSOR_DISABLED
+                    : GLFW_CURSOR_NORMAL;
+            if (cursor_mode_last != desired_cursor_mode) {
+                glfwSetInputMode(window.Handle(), GLFW_CURSOR, desired_cursor_mode);
+                cursor_mode_last = desired_cursor_mode;
+                if (desired_cursor_mode == GLFW_CURSOR_DISABLED) {
+                    glfwGetCursorPos(window.Handle(), &ms_prev_x, &ms_prev_y);
+                }
+            }
+        }
+
+        // ---- ImGui frame start (must happen before any ImGui input checks/draw lists) ----
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
 
         // ---- 3D world (rendered before ImGui so HUD draws on top) ----
         if (state == rco::GameState::InGame) {
@@ -1994,8 +2943,24 @@ int main() {
                 ecfg.width      = window.Width();
                 ecfg.height     = window.Height();
                 ecfg.shader_dir = "shaders/";
-                engine.Init(ecfg);
-                engine.LoadEnvironment("assets/ibl/default.hdr");
+                {
+                    const auto t0 = std::chrono::steady_clock::now();
+                    engine.Init(ecfg);
+                    const auto dur_us = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - t0).count());
+                    perf_entry.LogLazyStage("engine_init", dur_us, true);
+                }
+                {
+                    const std::string path = "assets/ibl/default.hdr";
+                    const auto t0 = std::chrono::steady_clock::now();
+                    engine.LoadEnvironment(path);
+                    const auto dur_us = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - t0).count());
+                    perf_entry.LogLazyStage("load_environment_initial", dur_us, true);
+                    perf_entry.LogLoadEnvironment("init_default", path, dur_us);
+                }
                 pipeline = std::make_unique<rco::renderer::Pipeline>(engine);
                 pipeline->SetCharacterReadability(active_character_readability_tuning);
                 pipeline->SetSceneLook(active_scene_look_tuning);
@@ -2030,15 +2995,36 @@ int main() {
                     active_render_color_profile.vignette_softness);
                 std::fprintf(stderr, "[engine] init ok\n");
 
-                if (terrain.Init()) {
+                bool terrain_ok = false;
+                {
+                    const auto t0 = std::chrono::steady_clock::now();
+                    terrain_ok = terrain.Init();
+                    const auto dur_us = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - t0).count());
+                    perf_entry.LogLazyStage("terrain_init", dur_us, terrain_ok);
+                }
+                if (terrain_ok) {
                     terrain.SetRenderTuning(active_terrain_render_tuning);
                     // Use the appearance from the actor def if already received,
                     // otherwise fall back to the default placeholder model.
                     const char* player_model = !player_meshes.empty()
                         ? player_meshes[0].model_path.c_str()
                         : "assets/models/player.glb";
-                    player_actor.Init("shaders", player_model,
-                                      &engine.materials());
+                    const bool player_cache_hit = static_cast<bool>(
+                        rco::renderer::ModelCachePeek(player_model));
+                    {
+                        const auto t0 = std::chrono::steady_clock::now();
+                        ModelCacheContextScope mctx("lazy_player_init");
+                        player_actor.Init("shaders", player_model, &engine.materials());
+                        const auto dur_us = static_cast<uint64_t>(
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - t0).count());
+                        perf_entry.LogLazyStage("player_actor_init", dur_us, true);
+                        perf_entry.LogActorInit(
+                            "lazy_player_init", player_model, player_cache_hit,
+                            false, dur_us, frame_index);
+                    }
                     player_actor.SetReadabilityProfile(
                         rco::renderer::Actor::ReadabilityProfile::Character);
                     if (!player_meshes.empty()) {
@@ -2071,12 +3057,31 @@ int main() {
                         if (!wa.clip_override.empty())
                             player_actor.AliasClip(wa.clip_override, wa.action);
                     }
-                    engine.RebuildMaterialsBuffer();
+                    for (auto& wa : player_anims) {
+                        player_anim_ctrl.SetClipDuration(
+                            wa.action, player_actor.ClipDuration(wa.action));
+                    }
+                    engine.MarkMaterialsDirty();
+                    initial_material_rebuild_pending_log = true;
                     camera.SetActorHeight(player_actor.ModelHeight());
                     particles.Init();
                     renderer_ready = true;
-                    terrain.LoadFromEditor(player.areaName);
-                    col_data = rco::renderer::LoadColData(player.areaName);
+                    {
+                        const auto t0 = std::chrono::steady_clock::now();
+                        terrain.LoadFromEditor(player.areaName);
+                        const auto dur_us = static_cast<uint64_t>(
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - t0).count());
+                        perf_entry.LogLazyStage("terrain_load_from_editor", dur_us, true);
+                    }
+                    {
+                        const auto t0 = std::chrono::steady_clock::now();
+                        col_data = rco::renderer::LoadColData(player.areaName);
+                        const auto dur_us = static_cast<uint64_t>(
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - t0).count());
+                        perf_entry.LogLazyStage("coldata_load", dur_us, true);
+                    }
                     player.y = terrain.SampleHeight(player.x, player.z);
                     player_ctrl.Reset();
                     camera.SnapTarget({player.x, player.y, player.z});
@@ -2094,6 +3099,9 @@ int main() {
                         pwe.WriteU32(static_cast<uint32_t>(std::max<long long>(0, total_ms)));
                         pwe.WriteU32(static_cast<uint32_t>(std::max<long long>(0, client_init_ms)));
                         conn.SendPacket(rco::net::kPClientWorldReady, pwe);
+                        perf_entry.LogClientWorldReady(
+                            static_cast<uint32_t>(std::max<long long>(0, total_ms)),
+                            static_cast<uint32_t>(std::max<long long>(0, client_init_ms)));
                         world_enter_logged = true;
                         world_enter_pending = false;
                     }
@@ -2117,7 +3125,12 @@ int main() {
                         active_render_color_profile.vignette_strength,
                         active_render_color_profile.vignette_softness);
                     const std::string path = ResolveIblPathFromAreaConfig(pending_area_skybox_hdr);
+                    const auto env_t0 = std::chrono::steady_clock::now();
                     engine.LoadEnvironment(path);
+                    const auto env_us = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - env_t0).count());
+                    perf_entry.LogLoadEnvironment("area_apply_pending", path, env_us);
                     pending_area_skybox_hdr.clear();
                     if (SceneDebugLogsEnabled()) {
                         std::fprintf(stderr,
@@ -2141,6 +3154,7 @@ int main() {
                 // pre-load a core radius around player spawn before gameplay.
                 if (world_entry_loading) {
                     const float kCorePreloadRadius = loading_preset.core_preload_radius;
+                    const int kCorePreloadMaxObjects = loading_preset.core_preload_max_objects;
                     const double kCorePreloadTimeoutMs = loading_preset.core_preload_timeout_ms;
                     const int kCoreInitPerFrame = loading_preset.core_init_per_frame;
                     const double kCoreInitBudgetMs = loading_preset.core_init_budget_ms;
@@ -2161,6 +3175,10 @@ int main() {
                         }
                         std::sort(core_sorted.begin(), core_sorted.end(),
                             [](const auto& a, const auto& b) { return a.first < b.first; });
+                        if (kCorePreloadMaxObjects > 0 &&
+                            core_sorted.size() > static_cast<std::size_t>(kCorePreloadMaxObjects)) {
+                            core_sorted.resize(static_cast<std::size_t>(kCorePreloadMaxObjects));
+                        }
                         world_entry_core_indices.reserve(core_sorted.size());
                         for (const auto& it : core_sorted) world_entry_core_indices.push_back(it.second);
                         world_entry_core_cursor = 0;
@@ -2182,14 +3200,26 @@ int main() {
                         if (!warm_cached && cold_loads >= kCoreColdLoadsPerFrame) continue;
 
                         obj.actor = std::make_unique<rco::renderer::Actor>();
-                        obj.actor->Init("shaders", obj.model_path.c_str(), &engine.materials());
+                        const auto init_t0 = std::chrono::steady_clock::now();
+                        {
+                            ModelCacheContextScope mctx("core_preload");
+                            obj.actor->Init("shaders", obj.model_path.c_str(), &engine.materials());
+                        }
+                        const auto init_us = static_cast<uint64_t>(
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - init_t0).count());
+                        perf_entry.LogActorInit(
+                            "core_preload", obj.model_path, warm_cached, false, init_us, frame_index);
+                        record_static_init_sample(init_us);
                         obj.actor->position = {obj.x, obj.y, obj.z};
                         obj.actor->yaw      = obj.yaw;
                         obj.actor->scale    = obj.scale;
                         if (!warm_cached) ++cold_loads;
                         ++initialized;
                     }
-                    if (initialized > 0) engine.RebuildMaterialsBuffer();
+                    if (initialized > 0) {
+                        engine.MarkMaterialsDirty();
+                    }
 
                     // After core is done, continue loading the most relevant global
                     // objects while still inside the loading screen so gameplay
@@ -2236,7 +3266,17 @@ int main() {
                                     static_cast<bool>(rco::renderer::ModelCachePeek(obj.model_path));
                                 if (!warm_cached && cold_loads >= kCoreColdLoadsPerFrame) continue;
                                 obj.actor = std::make_unique<rco::renderer::Actor>();
-                                obj.actor->Init("shaders", obj.model_path.c_str(), &engine.materials());
+                                const auto init_t0 = std::chrono::steady_clock::now();
+                                {
+                                    ModelCacheContextScope mctx("loading_global");
+                                    obj.actor->Init("shaders", obj.model_path.c_str(), &engine.materials());
+                                }
+                                const auto init_us = static_cast<uint64_t>(
+                                    std::chrono::duration_cast<std::chrono::microseconds>(
+                                        std::chrono::steady_clock::now() - init_t0).count());
+                                perf_entry.LogActorInit(
+                                    "loading_global", obj.model_path, warm_cached, false, init_us, frame_index);
+                                record_static_init_sample(init_us);
                                 obj.actor->position = {obj.x, obj.y, obj.z};
                                 obj.actor->yaw      = obj.yaw;
                                 obj.actor->scale    = obj.scale;
@@ -2245,20 +3285,58 @@ int main() {
                             }
                         }
 
-                        if (global_inits > 0) engine.RebuildMaterialsBuffer();
+                        if (global_inits > 0) {
+                            engine.MarkMaterialsDirty();
+                        }
                     }
 
                     const double loading_elapsed_ms =
                         (glfwGetTime() - world_entry_loading_start) * 1000.0;
+                    constexpr double kGateAbsoluteTimeoutMs = 10000.0;
+                    const bool world_objects_ready = world_entry_world_objects_received;
                     const bool core_done =
+                        world_objects_ready &&
                         world_entry_core_cursor >= world_entry_core_indices.size();
                     int pending_total = 0;
                     for (const auto& obj : world_static_objects) {
                         if (!obj.actor && !obj.model_path.empty()) ++pending_total;
                     }
-                    const bool ready_enough = core_done && pending_total <= kLoadingExitPendingMax;
-                    const bool timeout = loading_elapsed_ms >= kCorePreloadTimeoutMs;
+                    if (core_done) {
+                        perf_entry.LogCoreDone(
+                            world_entry_core_indices.size(),
+                            (std::min)(world_entry_core_cursor, world_entry_core_indices.size()),
+                            pending_total);
+                    }
+                    const bool pending_gate_pass =
+                        (kLoadingExitPendingMax < 0) ||
+                        (pending_total <= kLoadingExitPendingMax);
+                    const bool ready_enough =
+                        world_objects_ready && core_done && pending_gate_pass;
+                    const bool soft_timeout =
+                        world_objects_ready && (loading_elapsed_ms >= kCorePreloadTimeoutMs);
+                    const bool absolute_timeout = loading_elapsed_ms >= kGateAbsoluteTimeoutMs;
+                    const bool timeout = soft_timeout || absolute_timeout;
                     if (ready_enough || timeout) {
+                        const char* gate_reason = ready_enough ? "core_ready"
+                            : (!world_objects_ready ? "timeout_wait_worldobjects"
+                                                    : (absolute_timeout ? "absolute_timeout" : "timeout"));
+                        if (SceneDebugLogsEnabled()) {
+                            std::fprintf(stderr,
+                                "[perf-world-enter] loading-exit reason=%s core_total=%zu core_done=%zu pending=%d elapsed_ms=%.0f preset=%s world_objects_ready=%d\n",
+                                gate_reason,
+                                world_entry_core_indices.size(),
+                                (std::min)(world_entry_core_cursor, world_entry_core_indices.size()),
+                                pending_total,
+                                loading_elapsed_ms,
+                                loading_preset.name,
+                                world_objects_ready ? 1 : 0);
+                        }
+                        perf_entry.LogGateRelease(
+                            gate_reason,
+                            world_entry_core_indices.size(),
+                            (std::min)(world_entry_core_cursor, world_entry_core_indices.size()),
+                            pending_total,
+                            loading_elapsed_ms);
                         world_entry_loading = false;
                     }
                 }
@@ -2282,8 +3360,10 @@ int main() {
 
                             const std::string& path =
                                 static_model_prewarm_queue[static_model_prewarm_cursor++];
-                            if (!rco::renderer::ModelCachePeek(path))
+                            if (!rco::renderer::ModelCachePeek(path)) {
+                                ModelCacheContextScope mctx("static_prewarm");
                                 (void)rco::renderer::ModelCacheGet(path, &engine.materials());
+                            }
                             ++warmed;
                         }
                     }
@@ -2311,6 +3391,17 @@ int main() {
                     } else if (frame_ms > kFrameSoftLimitMs) {
                         max_inits_this_frame = 1;
                         init_budget_ms = 1.0;
+                    }
+                    // Calibrate throughput from real data: use rolling p99 of
+                    // static Actor::Init so budget picks a safe count/frame.
+                    const double static_init_p99_us = estimate_static_init_p99_us();
+                    if (max_inits_this_frame > 0 &&
+                        init_budget_ms > 0.0 &&
+                        static_init_p99_us > 0.0) {
+                        const int budget_cap = static_cast<int>(
+                            std::floor((init_budget_ms * 1000.0) / static_init_p99_us));
+                        max_inits_this_frame = (std::min)(
+                            max_inits_this_frame, (std::max)(1, budget_cap));
                     }
 
                     // Camera-aware streaming:
@@ -2355,7 +3446,22 @@ int main() {
                                 static_cast<bool>(rco::renderer::ModelCachePeek(obj.model_path));
                             if (!warm_cached && cold_loads >= kMaxColdLoadsPerFrame) continue;
                             obj.actor = std::make_unique<rco::renderer::Actor>();
-                            obj.actor->Init("shaders", obj.model_path.c_str(), &engine.materials());
+                            const auto init_t0 = std::chrono::steady_clock::now();
+                            {
+                                ModelCacheContextScope mctx("static_stream_post_loading");
+                                obj.actor->Init("shaders", obj.model_path.c_str(), &engine.materials());
+                            }
+                            const auto init_us = static_cast<uint64_t>(
+                                std::chrono::duration_cast<std::chrono::microseconds>(
+                                    std::chrono::steady_clock::now() - init_t0).count());
+                            perf_entry.LogActorInit(
+                                "static_stream_post_loading",
+                                obj.model_path,
+                                warm_cached,
+                                true,
+                                init_us,
+                                frame_index);
+                            record_static_init_sample(init_us);
                             obj.actor->position = {obj.x, obj.y, obj.z};
                             obj.actor->yaw      = obj.yaw;
                             obj.actor->scale    = obj.scale;
@@ -2365,7 +3471,7 @@ int main() {
                     }
 
                     if (initialized > 0) {
-                        engine.RebuildMaterialsBuffer();
+                        engine.MarkMaterialsDirty();
                         static double s_last_static_log = 0.0;
                         if (now - s_last_static_log > 1.0) {
                             std::fprintf(stderr,
@@ -2378,90 +3484,94 @@ int main() {
 
                 GLFWwindow* w = window.Handle();
 
-                // ---- V key: toggle Action Mode / Classic Mode ----
-                {
-                    bool v_cur = glfwGetKey(w, GLFW_KEY_V) == GLFW_PRESS;
-                    if (v_cur && !v_key_prev && !ImGui::GetIO().WantCaptureKeyboard) {
-                        action_mode = !action_mode;
-                        ms_lmb_drag = false;
-                        if (action_mode) {
-                            glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-                        } else {
-                            glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-                        }
-                        glfwGetCursorPos(w, &ms_prev_x, &ms_prev_y);
-                    }
-                    v_key_prev = v_cur;
-                }
-
-                // ---- Mouse orbit ----
-                // Action mode : mouse always rotates camera + character, no button held needed.
-                // Classic mode: LMB drag = camera only, RMB drag = camera + turn character.
+                // ---- Mouse orbit (Action mode only) ----
                 {
                     bool cur_rmb = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
                     bool cur_lmb = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
+                    const ImGuiIO& io_state = ImGui::GetIO();
 
-                    if (action_mode) {
-                        // Always rotate camera; character yaw follows.
-                        double cx, cy;
-                        glfwGetCursorPos(w, &cx, &cy);
+                    // T&L-like defense skill flow:
+                    // quick RMB tap -> defense skill.
+                    // if moving while tapping, treat as dodge; otherwise guard window.
+                    if (cur_rmb && !ms_rmb_prev) {
+                        glfwGetCursorPos(w, &ms_rmb_down_x, &ms_rmb_down_y);
+                        ms_rmb_down_time = now;
+                        ms_rmb_defense_candidate = conn.IsConnected() && !player_dead &&
+                                                   !io_state.WantCaptureMouse &&
+                                                   !io_state.WantTextInput;
+                    } else if (!cur_rmb && ms_rmb_prev) {
+                        if (ms_rmb_defense_candidate && !io_state.WantCaptureMouse) {
+                            double rx, ry;
+                            glfwGetCursorPos(w, &rx, &ry);
+                            const float moved = std::hypot(
+                                static_cast<float>(rx - ms_rmb_down_x),
+                                static_cast<float>(ry - ms_rmb_down_y));
+                            const double held_s = now - ms_rmb_down_time;
+                            if (held_s <= 0.22 && moved <= 6.f) {
+                                auto resolve_dodge_dir = [&]() -> glm::vec2 {
+                                    const float yr = glm::radians(player.yaw);
+                                    const glm::vec2 fdir{-std::sin(yr), -std::cos(yr)};
+                                    const glm::vec2 rdir{std::cos(yr), -std::sin(yr)};
+
+                                    glm::vec2 dir(0.f);
+                                    if (glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS) dir += fdir;
+                                    if (glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS) dir -= fdir;
+                                    if (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS ||
+                                        glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS) dir -= rdir;
+                                    if (glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS ||
+                                        glfwGetKey(w, GLFW_KEY_E) == GLFW_PRESS) dir += rdir;
+
+                                    if (glm::dot(dir, dir) > 0.0001f) {
+                                        return glm::normalize(dir);
+                                    }
+                                    if (player_ctrl.HasMoveTarget()) {
+                                        glm::vec3 mt = player_ctrl.MoveTarget();
+                                        glm::vec2 to_target{mt.x - player.x, mt.z - player.z};
+                                        if (glm::dot(to_target, to_target) > 0.0001f) {
+                                            return glm::normalize(to_target);
+                                        }
+                                    }
+                                    if (player_ctrl.IsAutoRunning()) {
+                                        return glm::normalize(fdir);
+                                    }
+                                    return glm::normalize(fdir);
+                                };
+
+                                bool moving_input =
+                                    glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS ||
+                                    glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS ||
+                                    glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS ||
+                                    glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS ||
+                                    glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS ||
+                                    glfwGetKey(w, GLFW_KEY_E) == GLFW_PRESS ||
+                                    player_ctrl.IsAutoRunning() ||
+                                    player_ctrl.HasMoveTarget();
+                                if (moving_input) {
+                                    dodge_roll_pending = true;
+                                    dodge_roll_pending_dir = resolve_dodge_dir();
+                                    dodge_roll_pending_until = now + 0.45;
+                                    send_combat_action(rco::net::kCombatActionDodge, 0);
+                                } else {
+                                    send_combat_action(rco::net::kCombatActionGuardStart, 0);
+                                }
+                            }
+                        }
+                        ms_rmb_defense_candidate = false;
+                    }
+
+                    // Always rotate camera while cursor is captured; pause look when UI cursor is unlocked.
+                    double cx, cy;
+                    glfwGetCursorPos(w, &cx, &cy);
+                    if (!action_cursor_unlocked && !io_state.WantCaptureMouse) {
                         camera.ApplyMouseDelta((float)(cx - ms_prev_x),
                                                (float)(cy - ms_prev_y));
-                        ms_prev_x   = cx; ms_prev_y = cy;
-                        player.yaw  = camera.GetYaw();
-                        // LMB down in action mode = instant click (no drag detection needed)
-                        if (cur_lmb && !ms_lmb_prev) ms_lmb_click = true;
-                        ms_lmb_drag = false;
-                    } else {
-                        // --- Classic mode ---
-                        // LMB press: record start pos for drag detection
-                        if (cur_lmb && !ms_lmb_prev) {
-                            glfwGetCursorPos(w, &ms_lmb_start_x, &ms_lmb_start_y);
-                            ms_lmb_drag  = false;
-                            ms_lmb_click = false;
-                        }
-                        // LMB held without RMB: promote to drag if moved enough
-                        if (cur_lmb && !cur_rmb && !ms_lmb_drag && !ImGui::GetIO().WantCaptureMouse) {
-                            double cx, cy;
-                            glfwGetCursorPos(w, &cx, &cy);
-                            float moved = std::hypot((float)(cx - ms_lmb_start_x),
-                                                     (float)(cy - ms_lmb_start_y));
-                            if (moved > kDragThresholdPx) {
-                                ms_lmb_drag = true;
-                                glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-                                glfwGetCursorPos(w, &ms_prev_x, &ms_prev_y);
-                            }
-                        }
-                        // LMB release
-                        if (!cur_lmb && ms_lmb_prev) {
-                            if (ms_lmb_drag) {
-                                ms_lmb_drag = false;
-                                if (!cur_rmb)
-                                    glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-                            } else {
-                                ms_lmb_click = true;
-                            }
-                        }
-                        // RMB press
-                        if (cur_rmb && !ms_rmb_prev) {
-                            glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-                            glfwGetCursorPos(w, &ms_prev_x, &ms_prev_y);
-                            ms_lmb_drag = false;
-                        }
-                        // RMB release
-                        if (!cur_rmb && ms_rmb_prev && !ms_lmb_drag)
-                            glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-
-                        // Apply mouse delta
-                        if (cur_rmb || ms_lmb_drag) {
-                            double cx, cy;
-                            glfwGetCursorPos(w, &cx, &cy);
-                            camera.ApplyMouseDelta((float)(cx - ms_prev_x),
-                                                   (float)(cy - ms_prev_y));
-                            ms_prev_x = cx; ms_prev_y = cy;
-                            if (cur_rmb) player.yaw = camera.GetYaw();
-                        }
+                        player.yaw = camera.GetYaw();
                     }
+                    ms_prev_x = cx;
+                    ms_prev_y = cy;
+
+                    // LMB down = instant click event.
+                    if (cur_lmb && !ms_lmb_prev) ms_lmb_click = true;
 
                     ms_rmb_prev = cur_rmb;
                     ms_lmb_prev = cur_lmb;
@@ -2472,14 +3582,23 @@ int main() {
                     bool rmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
                     bool lmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
 
-                    auto mr = player_ctrl.Update(w, dt, player_dead, action_mode,
-                                                 player, terrain,
-                                                 rmb_held, lmb_held, ms_lmb_drag);
-                    if (mr.yaw_delta != 0.f)
-                        camera.AddYaw(mr.yaw_delta);
-                    if (mr.center_camera) {
-                        camera.LerpYawToward(player.yaw, 270.f, dt);
-                        camera.SetPitch(camera.default_pitch);
+                    player_ctrl.Update(w, dt, player_dead, player, terrain, rmb_held, lmb_held);
+                }
+
+                // Directional dodge roll impulse (authoritative start from PCombatEvent).
+                if (!player_dead && dodge_roll_active) {
+                    const double roll_total = dodge_roll_end - dodge_roll_start;
+                    if (now >= dodge_roll_end || roll_total <= 0.0001 ||
+                        glm::dot(dodge_roll_dir, dodge_roll_dir) < 0.0001f) {
+                        dodge_roll_active = false;
+                    } else {
+                        const float t = std::clamp(
+                            static_cast<float>((now - dodge_roll_start) / roll_total),
+                            0.f, 1.f);
+                        const float speed =
+                            kDodgeRollSpeedStart + (kDodgeRollSpeedEnd - kDodgeRollSpeedStart) * t;
+                        player.x += dodge_roll_dir.x * speed * dt;
+                        player.z += dodge_roll_dir.y * speed * dt;
                     }
                 }
 
@@ -2492,7 +3611,12 @@ int main() {
                 }
 
                 // Cancel movement on death.
-                if (player_dead) { player_ctrl.CancelMoveTarget(); pending_interact = 0; }
+                if (player_dead) {
+                    player_ctrl.CancelMoveTarget();
+                    pending_interact = 0;
+                    dodge_roll_active = false;
+                    dodge_roll_pending = false;
+                }
 
                 // Auto-interact: fire kPRightClick once close enough.
                 if (pending_interact != 0 && !player_dead) {
@@ -2527,7 +3651,7 @@ int main() {
 
                 // Camera follows player — anchor at the model's visual feet, not
                 // raw terrain y, so the pivot stays at shoulder regardless of y_offset.
-                camera.action_mode = action_mode;
+                camera.action_mode = true;
                 camera.SetTarget({player.x, player.y + player_actor.FeetOffset(), player.z});
                 camera.Update(dt);
 
@@ -2588,6 +3712,22 @@ int main() {
                 // Volumetric fog stays always enabled (design decision for atmosphere).
 
                 // --- New pipeline: begin frame, submit all scene geometry, end writes to framebuffer 0 ---
+                {
+                    uint64_t rb_us = 0;
+                    if (engine.FlushMaterialsBufferIfDirty(&rb_us)) {
+                        const bool post_loading = !world_entry_loading;
+                        perf_entry.LogRebuildMaterials(
+                            post_loading ? "coalesced_frame_post_loading"
+                                         : "coalesced_frame_loading",
+                            post_loading, rb_us, frame_index);
+                        if (initial_material_rebuild_pending_log) {
+                            perf_entry.LogLazyStage("rebuild_materials_initial", rb_us, true);
+                            perf_entry.LogRebuildMaterials(
+                                "rebuild_materials_initial", false, rb_us, frame_index);
+                            initial_material_rebuild_pending_log = false;
+                        }
+                    }
+                }
                 pipeline->Begin(view, proj, camera.Position(), static_cast<float>(dt));
                 auto area_scene_look = active_scene_look_tuning;
                 area_scene_look.sunIntensity =
@@ -2706,9 +3846,25 @@ int main() {
                         }
                         if (!body) body = &e.meshes.front();
 
+                        const bool warm_cached = static_cast<bool>(
+                            rco::renderer::ModelCachePeek(body->model_path));
                         auto a = std::make_unique<rco::renderer::Actor>();
-                        a->Init("shaders", body->model_path.c_str(),
-                                &engine.materials());
+                        const auto init_t0 = std::chrono::steady_clock::now();
+                        {
+                            ModelCacheContextScope mctx("npc_lazy_init");
+                            a->Init("shaders", body->model_path.c_str(),
+                                    &engine.materials());
+                        }
+                        const auto init_us = static_cast<uint64_t>(
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - init_t0).count());
+                        perf_entry.LogActorInit(
+                            "npc_lazy_init",
+                            body->model_path,
+                            warm_cached,
+                            !world_entry_loading,
+                            init_us,
+                            frame_index);
                         a->SetReadabilityProfile(
                             rco::renderer::Actor::ReadabilityProfile::Character);
                         a->scale      = body->scale > 0.f ? body->scale : 1.f;
@@ -2745,7 +3901,7 @@ int main() {
                                                 body->ar, body->ag, body->ab,
                                                 body->roughness, body->metallic);
                         }
-                        engine.RebuildMaterialsBuffer();
+                        engine.MarkMaterialsDirty();
 
                         for (auto& an : e.anims) {
                             if (!an.source_path.empty())
@@ -2829,6 +3985,72 @@ int main() {
                     }
                 }
 
+                // Render corpses: keep death pose briefly, then sink into ground.
+                if (!world_corpses.empty()) {
+                    for (auto it = world_corpses.begin(); it != world_corpses.end();) {
+                        if (now >= it->remove_time) {
+                            it = world_corpses.erase(it);
+                            continue;
+                        }
+                        auto& e = it->actor;
+                        if (!e.actor) {
+                            ++it;
+                            continue;
+                        }
+
+                        float sink_t = 0.f;
+                        if (now > it->sink_start_time && it->remove_time > it->sink_start_time) {
+                            sink_t = static_cast<float>((now - it->sink_start_time) /
+                                (it->remove_time - it->sink_start_time));
+                            sink_t = std::clamp(sink_t, 0.f, 1.f);
+                        }
+                        const float sink_eased = sink_t * sink_t * (3.f - 2.f * sink_t); // smoothstep
+                        e.y = it->base_y - (it->sink_depth * sink_eased);
+
+                        if (e.anim_ctrl.IsReady()) {
+                            e.anim_ctrl.Update(dt, 0.f);
+                            e.anim_name = e.anim_ctrl.CurrentAction();
+                            e.anim_t    = e.anim_ctrl.CurrentTime();
+                        } else {
+                            e.anim_t += dt;
+                            e.actor->Update(dt);
+                        }
+
+                        glm::vec3 pos = {e.x, e.y, e.z};
+                        static constexpr float kActorDrawDist = 150.f;
+                        {
+                            float ddx = e.x - player.x;
+                            float ddz = e.z - player.z;
+                            if (ddx * ddx + ddz * ddz > kActorDrawDist * kActorDrawDist) {
+                                ++it;
+                                continue;
+                            }
+                        }
+                        {
+                            const glm::vec3 center = pos + glm::vec3(0.f, 0.9f, 0.f);
+                            bool inside = true;
+                            for (const auto& p : fc_planes) {
+                                float dist = glm::dot(p.n, center) + p.d
+                                           + std::abs(p.n.x) + std::abs(p.n.y) + std::abs(p.n.z);
+                                if (dist < 0.f) { inside = false; break; }
+                            }
+                            if (!inside) {
+                                ++it;
+                                continue;
+                            }
+                        }
+
+                        e.actor->position = pos;
+                        e.actor->yaw      = e.yaw;
+                        if (e.anim_ctrl.IsReady()) {
+                            e.anim_ctrl.Submit(*e.actor, *pipeline);
+                        } else {
+                            e.actor->Submit(*pipeline);
+                        }
+                        ++it;
+                    }
+                }
+
                 // Static world objects
                 for (auto& obj : world_static_objects) {
                     if (obj.actor && obj.actor->IsLoaded()) {
@@ -2892,12 +4114,196 @@ int main() {
                     }
                 }
 
+                // NPC special attack telegraph and parry judgement feedback.
+                // The circle is billboarded (screen-facing) and anchored in air.
+                if (!special_parry_telegraphs.empty() || !parry_judgements.empty()) {
+                    auto* ol = ImGui::GetForegroundDrawList();
+                    float sw = static_cast<float>(window.Width());
+                    float sh = static_cast<float>(window.Height());
+                    std::vector<uint32_t> expired;
+                    auto project_to_screen = [&](float wx, float wy, float wz, ImVec2& out) -> bool {
+                        glm::vec4 c = proj * view * glm::vec4(wx, wy, wz, 1.f);
+                        if (c.w <= 0.f) return false;
+                        out = {(c.x / c.w * 0.5f + 0.5f) * sw,
+                               (1.f - c.y / c.w * 0.5f - 0.5f) * sh};
+                        return true;
+                    };
+                    auto MulAlpha = [](ImU32 col, float mul) -> ImU32 {
+                        const int r = static_cast<int>((col >> IM_COL32_R_SHIFT) & 0xFF);
+                        const int g = static_cast<int>((col >> IM_COL32_G_SHIFT) & 0xFF);
+                        const int b = static_cast<int>((col >> IM_COL32_B_SHIFT) & 0xFF);
+                        int a = static_cast<int>((col >> IM_COL32_A_SHIFT) & 0xFF);
+                        a = std::clamp(static_cast<int>(static_cast<float>(a) * mul), 0, 255);
+                        return IM_COL32(r, g, b, a);
+                    };
+                    auto LerpColor = [](ImU32 a, ImU32 b, float t) -> ImU32 {
+                        t = std::clamp(t, 0.f, 1.f);
+                        auto lerp_ch = [t](int x, int y) -> int {
+                            return static_cast<int>(static_cast<float>(x) +
+                                                    (static_cast<float>(y - x) * t) + 0.5f);
+                        };
+                        const int ar = static_cast<int>((a >> IM_COL32_R_SHIFT) & 0xFF);
+                        const int ag = static_cast<int>((a >> IM_COL32_G_SHIFT) & 0xFF);
+                        const int ab = static_cast<int>((a >> IM_COL32_B_SHIFT) & 0xFF);
+                        const int aa = static_cast<int>((a >> IM_COL32_A_SHIFT) & 0xFF);
+                        const int br = static_cast<int>((b >> IM_COL32_R_SHIFT) & 0xFF);
+                        const int bg = static_cast<int>((b >> IM_COL32_G_SHIFT) & 0xFF);
+                        const int bb = static_cast<int>((b >> IM_COL32_B_SHIFT) & 0xFF);
+                        const int ba = static_cast<int>((b >> IM_COL32_A_SHIFT) & 0xFF);
+                        return IM_COL32(
+                            std::clamp(lerp_ch(ar, br), 0, 255),
+                            std::clamp(lerp_ch(ag, bg), 0, 255),
+                            std::clamp(lerp_ch(ab, bb), 0, 255),
+                            std::clamp(lerp_ch(aa, ba), 0, 255));
+                    };
+
+                    for (const auto& [source_rid, tg] : special_parry_telegraphs) {
+                        auto sit = world_actors.find(source_rid);
+                        if (sit == world_actors.end()) {
+                            expired.push_back(source_rid);
+                            continue;
+                        }
+                        if (now > tg.end_time + 0.35) {
+                            expired.push_back(source_rid);
+                            continue;
+                        }
+
+                        const float tx = sit->second.x;
+                        const float tz = sit->second.z;
+                        const float model_h = (sit->second.actor && sit->second.actor->IsLoaded())
+                            ? sit->second.actor->ModelHeight()
+                            : 1.8f;
+                        const float ty = sit->second.y + (std::max)(1.6f, model_h * 1.05f);
+                        ImVec2 center{};
+                        if (!project_to_screen(tx, ty, tz, center)) {
+                            continue;
+                        }
+
+                        double duration = tg.end_time - tg.start_time;
+                        if (duration < 0.0001) duration = 0.0001;
+                        const float duration_s = static_cast<float>(duration);
+                        const float remaining_s = (std::max)(0.f, static_cast<float>(tg.end_time - now));
+                        const float t = std::clamp(remaining_s / duration_s, 0.f, 1.f);
+                        const float urgency = 1.f - t;
+                        const float outer_world = (tg.radius > 0.2f) ? tg.radius : 1.45f;
+                        const float dx = tx - player.x;
+                        const float dy = ty - player.y;
+                        const float dz = tz - player.z;
+                        const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+                        const float outer_px = std::clamp(
+                            (outer_world * 160.f) / (distance > 0.8f ? distance : 0.8f),
+                            24.f, 120.f);
+
+                        float parry_window_s =
+                            (tg.parry_window_ms > 0) ? (static_cast<float>(tg.parry_window_ms) / 1000.f) : 0.22f;
+                        parry_window_s = std::clamp(parry_window_s, 0.08f, duration_s * 0.80f);
+                        const float parry_window_ratio =
+                            std::clamp(parry_window_s / duration_s, 0.08f, 0.75f);
+                        const bool parry_now = (remaining_s <= parry_window_s);
+
+                        const float pulse = 0.85f + 0.15f *
+                            std::sin(static_cast<float>((now - tg.start_time) * 14.0));
+                        const ImU32 outer_col = MulAlpha(
+                            tg.outer_color,
+                            std::clamp((0.55f + urgency * 0.65f) * pulse, 0.30f, 1.45f));
+                        const ImU32 guide_col = parry_now
+                            ? IM_COL32(95, 255, 165, 245)
+                            : IM_COL32(255, 225, 110, 190);
+                        const ImU32 inner_hot = parry_now ? IM_COL32(120, 255, 170, 245)
+                                                          : IM_COL32(255, 255, 255, 245);
+                        const ImU32 inner_mix = LerpColor(tg.inner_color, inner_hot, urgency * 0.80f);
+                        const ImU32 inner_col = MulAlpha(
+                            inner_mix, std::clamp(0.75f + urgency * 0.45f, 0.45f, 1.35f));
+
+                        const float guide_px = outer_px * parry_window_ratio;
+                        const float inner_px = (std::max)(outer_px * 0.10f, outer_px * t);
+                        ol->AddCircle(center, outer_px, outer_col, 64, 2.4f);
+                        ol->AddCircle(center, guide_px, MulAlpha(guide_col, 0.90f), 64, 2.2f);
+                        ol->AddCircle(center, inner_px, inner_col, 64, 3.0f);
+
+                        if (tg.target_rid == player.runtimeId) {
+                            const char* lbl = parry_now ? "PARRY AGORA!" : "PARRY";
+                            ImVec2 ts = ImGui::CalcTextSize(lbl);
+                            ImU32 lbl_col = parry_now ? IM_COL32(120, 255, 175, 252)
+                                                      : IM_COL32(255, 240, 100, 245);
+                            ol->AddText({center.x - ts.x * 0.5f, center.y - outer_px - ts.y - 8.f},
+                                        lbl_col, lbl);
+
+                            char timer_text[24];
+                            std::snprintf(timer_text, sizeof(timer_text), "%.2fs", remaining_s);
+                            ImVec2 tts = ImGui::CalcTextSize(timer_text);
+                            ol->AddText({center.x - tts.x * 0.5f, center.y + outer_px + 4.f},
+                                        IM_COL32(255, 255, 255, 220), timer_text);
+                        }
+                    }
+                    for (uint32_t rid : expired) {
+                        special_parry_telegraphs.erase(rid);
+                    }
+
+                    for (auto it = parry_judgements.begin(); it != parry_judgements.end();) {
+                        if (now > it->end_time) {
+                            it = parry_judgements.erase(it);
+                            continue;
+                        }
+                        const float life = static_cast<float>(it->end_time - it->start_time);
+                        const float elapsed = static_cast<float>(now - it->start_time);
+                        const float p = (life > 0.0001f) ? std::clamp(elapsed / life, 0.f, 1.f) : 1.f;
+                        const float alpha_mul = 1.f - p;
+
+                        ImVec2 center{};
+                        bool has_center = false;
+                        auto src = world_actors.find(it->source_rid);
+                        if (src != world_actors.end()) {
+                            const float src_h = (src->second.actor && src->second.actor->IsLoaded())
+                                ? src->second.actor->ModelHeight()
+                                : 1.8f;
+                            ImVec2 projected{};
+                            if (project_to_screen(
+                                    src->second.x,
+                                    src->second.y + (std::max)(1.6f, src_h * 1.10f),
+                                    src->second.z, projected)) {
+                                center = projected;
+                                has_center = true;
+                            }
+                        }
+                        if (!has_center) {
+                            ++it;
+                            continue;
+                        }
+
+                        const ImU32 burst_col = it->success
+                            ? MulAlpha(IM_COL32(90, 255, 165, 245), alpha_mul)
+                            : MulAlpha(IM_COL32(255, 110, 110, 245), alpha_mul);
+                        const float burst_r = 22.f + p * 80.f;
+                        ol->AddCircle(center, burst_r, burst_col, 56, 3.0f);
+
+                        const char* lbl = it->success ? "PARRY PERFEITO!" : "PARRY FALHOU!";
+                        ImVec2 ts = ImGui::CalcTextSize(lbl);
+                        ImU32 lbl_col = it->success
+                            ? MulAlpha(IM_COL32(120, 255, 180, 255), alpha_mul)
+                            : MulAlpha(IM_COL32(255, 135, 135, 255), alpha_mul);
+                        ol->AddText({center.x - ts.x * 0.5f, center.y - burst_r - ts.y - 8.f},
+                                    lbl_col, lbl);
+
+                        char sub[48];
+                        if (it->success) {
+                            std::snprintf(sub, sizeof(sub), "timing: %dms", static_cast<int>(it->metric));
+                        } else {
+                            std::snprintf(sub, sizeof(sub), "special hit: %d", static_cast<int>(it->metric));
+                        }
+                        ImVec2 ss = ImGui::CalcTextSize(sub);
+                        ol->AddText({center.x - ss.x * 0.5f, center.y + burst_r + 4.f},
+                                    MulAlpha(IM_COL32(255, 255, 255, 220), alpha_mul), sub);
+                        ++it;
+                    }
+                }
+
                 // Particles render inside pipeline->End() forward-pass callback above.
                 // HDRI skybox is now drawn by pipeline->skyboxPass_().
 
                 // Left-click: select closest actor within 55 px of cursor.
                 // ms_lmb_click is set by the orbit section above: true for one
-                // frame when LMB was released without dragging.
+                // frame when LMB is pressed.
                 {
                     // Ground-AoE targeting: resolve mouse ray to world XZ plane.
                     float ground_cursor_x = 0.f, ground_cursor_z = 0.f;
@@ -3059,10 +4465,20 @@ int main() {
             }
         }
 
-        // ---- ImGui ----
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
+        if (perf_entry.EntryActive() &&
+            state == rco::GameState::InGame &&
+            renderer_ready) {
+            int pending_static = 0;
+            for (const auto& obj : world_static_objects) {
+                if (!obj.actor && !obj.model_path.empty()) ++pending_static;
+            }
+            int pending_npc = 0;
+            for (const auto& [rid, e] : world_actors) {
+                (void)rid;
+                if (!e.actor && !e.meshes.empty()) ++pending_npc;
+            }
+            perf_entry.MaybeAutoFinalize(world_entry_loading, pending_static, pending_npc);
+        }
 
         switch (state) {
 
@@ -3080,6 +4496,7 @@ int main() {
 
             case rco::GameState::InGame: {
                 if (world_entry_loading) {
+                    const bool world_objects_ready = world_entry_world_objects_received;
                     const int core_total = static_cast<int>(world_entry_core_indices.size());
                     const int core_done  = static_cast<int>(
                         (std::min)(world_entry_core_cursor, world_entry_core_indices.size()));
@@ -3105,6 +4522,12 @@ int main() {
                     ImGui::SetCursorPosX(window.Width() * 0.5f - 180.f);
                     ImGui::Text("Preset: %s", loading_preset.name);
                     ImGui::SetCursorPosX(window.Width() * 0.5f - 180.f);
+                    if (!world_objects_ready) {
+                        ImGui::Text("Aguardando dados de objetos do mundo (PWorldObjects)...");
+                    } else {
+                        ImGui::Text("Objetos do mundo recebidos.");
+                    }
+                    ImGui::SetCursorPosX(window.Width() * 0.5f - 180.f);
                     ImGui::Text("Preload core (raio spawn): %d / %d  (%.1fs)", core_done, core_total,
                                 static_cast<float>(elapsed_ms / 1000.0));
                     ImGui::End();
@@ -3114,7 +4537,7 @@ int main() {
 
                 // HUD
                 ImGui::SetNextWindowPos({10.f, 10.f}, ImGuiCond_Always);
-                ImGui::SetNextWindowSize({300.f, 125.f}, ImGuiCond_Always);
+                ImGui::SetNextWindowSize({300.f, 142.f}, ImGuiCond_Always);
                 ImGui::SetNextWindowBgAlpha(0.55f);
                 ImGui::Begin("##hud", nullptr,
                     ImGuiWindowFlags_NoDecoration  |
@@ -3122,9 +4545,10 @@ int main() {
                     ImGuiWindowFlags_NoNav          |
                     ImGuiWindowFlags_NoSavedSettings);
                 ImGui::Text("Area: %s  |  Lv %d", player.areaName.c_str(), (int)player.level);
-                ImGui::Text("HP: %d / %d    EP: %d / %d",
+                ImGui::Text("HP: %d / %d    MP: %d / %d    SP: %d / %d",
                     player.health, player.healthMax,
-                    player.energy, player.energyMax);
+                    player.mana, player.manaMax,
+                    player.stamina, player.staminaMax);
                 // XP bar
                 {
                     float xp_ratio = player.xp_next > 0
@@ -3136,17 +4560,15 @@ int main() {
                     ImGui::ProgressBar(xp_ratio, {-1.f, 10.f}, xp_lbl);
                     ImGui::PopStyleColor();
                 }
-                ImGui::Text("Gold: %u    Pos: %.1f, %.1f, %.1f    %s",
-                    player_gold, player.x, player.y, player.z,
-                    action_mode ? "[ACTION]" : "");
-                if (action_mode)
-                    ImGui::TextDisabled("[Action] Mouse=cam  WASD=move  AD=strafe  Shift=sprint  V=classic");
-                else
-                    ImGui::TextDisabled("[Classic] RMB=cam  AD=turn  QE=strafe  Shift=sprint  NumLk=autorun  V=action");
+                ImGui::Text("Gold: %u    Pos: %.1f, %.1f, %.1f    [ACTION]",
+                    player_gold, player.x, player.y, player.z);
+                ImGui::TextDisabled("[Action] Mouse=cam  WASD=move  AD=strafe  Shift=sprint  NumLk=autorun");
+                ImGui::TextDisabled("Hold Alt to unlock cursor for UI.");
+                ImGui::TextDisabled("Combat: Tap RMB moving = Dodge Roll (W/A/S/D direction), still = Guard");
                 ImGui::End();
 
-                // Action mode crosshair
-                if (action_mode) {
+                // Action-mode crosshair.
+                {
                     auto* dl = ImGui::GetForegroundDrawList();
                     float cx = window.Width()  * 0.5f;
                     float cy = window.Height() * 0.5f;
@@ -3160,18 +4582,24 @@ int main() {
                     dl->AddLine({cx, cy + kGap}, {cx, cy + kArm}, col, kThick);
                 }
 
-                // Toggle bag with I, character sheet with C, controls with K
+                // Toggle bag with I, character sheet with C, controls with K,
+                // quest journal with J, party panel with P.
                 if (ImGui::IsKeyPressed(ImGuiKey_I) && !player_dead && !ImGui::GetIO().WantTextInput)
                     inventory.bag_visible = !inventory.bag_visible;
                 if (ImGui::IsKeyPressed(ImGuiKey_C) && !player_dead && !ImGui::GetIO().WantTextInput)
                     inventory.char_visible = !inventory.char_visible;
                 if (ImGui::IsKeyPressed(ImGuiKey_K) && !ImGui::GetIO().WantTextInput)
                     controls_ui.Toggle();
+                if (ImGui::IsKeyPressed(ImGuiKey_J) && !ImGui::GetIO().WantTextInput)
+                    quest_log.journal_visible = !quest_log.journal_visible;
+                if (ImGui::IsKeyPressed(ImGuiKey_P) && !ImGui::GetIO().WantTextInput)
+                    party_panel.visible = !party_panel.visible;
 
                 // Close shop and controls window with Escape
                 if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
                     shop.open = false;
                     controls_ui.SetVisible(false);
+                    quest_log.journal_visible = false;
                 }
 
                 // F key — pick up nearby dropped item
@@ -3195,15 +4623,93 @@ int main() {
                 {
                     std::string msg;
                     if (chat.PollSend(msg) && conn.IsConnected()) {
-                        rco::net::Writer w;
-                        w.WriteU8(0); // channel: say
-                        w.WriteString(msg);
-                        conn.SendPacket(rco::net::kPChatMessage, w);
+                        bool handled_ingame_cmd = false;
+                        if (!msg.empty() && msg[0] == '/') {
+                            std::string lower = msg;
+                            std::transform(lower.begin(), lower.end(), lower.begin(),
+                                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                            auto trim_copy = [](std::string value) {
+                                const auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
+                                while (!value.empty() && is_space(static_cast<unsigned char>(value.front())))
+                                    value.erase(value.begin());
+                                while (!value.empty() && is_space(static_cast<unsigned char>(value.back())))
+                                    value.pop_back();
+                                return value;
+                            };
+
+                            auto send_party_action = [&](uint8_t action, const std::string& target_name) {
+                                rco::net::Writer w;
+                                w.WriteU8(action);
+                                w.WriteString(target_name);
+                                conn.SendPacket(rco::net::kPPartyAction, w);
+                            };
+
+                            if (lower == "/party accept") {
+                                send_party_action(rco::net::kPartyActionAccept, "");
+                                handled_ingame_cmd = true;
+                            } else if (lower == "/party decline") {
+                                send_party_action(rco::net::kPartyActionDecline, "");
+                                handled_ingame_cmd = true;
+                            } else if (lower == "/party leave") {
+                                send_party_action(rco::net::kPartyActionLeave, "");
+                                handled_ingame_cmd = true;
+                            } else if (lower.rfind("/party invite ", 0) == 0 && msg.size() > 14) {
+                                std::string target = trim_copy(msg.substr(14));
+                                if (!target.empty()) {
+                                    send_party_action(rco::net::kPartyActionInvite, target);
+                                    handled_ingame_cmd = true;
+                                }
+                            } else if (lower.rfind("/party kick ", 0) == 0 && msg.size() > 12) {
+                                std::string target = trim_copy(msg.substr(12));
+                                if (!target.empty()) {
+                                    send_party_action(rco::net::kPartyActionKick, target);
+                                    handled_ingame_cmd = true;
+                                }
+                            } else if (lower.rfind("/party lead ", 0) == 0 && msg.size() > 12) {
+                                std::string target = trim_copy(msg.substr(12));
+                                if (!target.empty()) {
+                                    send_party_action(rco::net::kPartyActionTransferLead, target);
+                                    handled_ingame_cmd = true;
+                                }
+                            } else if (lower == "/party help") {
+                                chat.AddMessage("",
+                                    "Party commands: /party invite <name>, /party accept, /party decline, /party leave, /party kick <name>, /party lead <name>.");
+                                handled_ingame_cmd = true;
+                            } else if (lower == "/combat dodge") {
+                                {
+                                    const float yr = glm::radians(player.yaw);
+                                    dodge_roll_pending = true;
+                                    dodge_roll_pending_dir = {-std::sin(yr), -std::cos(yr)};
+                                    dodge_roll_pending_until = glfwGetTime() + 0.45;
+                                }
+                                send_combat_action(rco::net::kCombatActionDodge, 0);
+                                handled_ingame_cmd = true;
+                            } else if (lower == "/combat guard on") {
+                                send_combat_action(rco::net::kCombatActionGuardStart, 0);
+                                handled_ingame_cmd = true;
+                            } else if (lower == "/combat parry") {
+                                send_combat_action(rco::net::kCombatActionParryStart, 0);
+                                handled_ingame_cmd = true;
+                            } else if (lower == "/combat help") {
+                                chat.AddMessage("",
+                                    "Combat commands: /combat dodge, /combat guard on, /combat parry. Dodge roll follows W/A/S/D direction.");
+                                handled_ingame_cmd = true;
+                            }
+                        }
+
+                        if (!handled_ingame_cmd) {
+                            rco::net::Writer w;
+                            w.WriteU8(0); // channel: say
+                            w.WriteString(msg);
+                            conn.SendPacket(rco::net::kPChatMessage, w);
+                        }
                     }
                 }
 
                 inventory.Render(window.Width(), window.Height());
                 controls_ui.Draw(player.name);
+                quest_log.Render(window.Width(), window.Height());
+                party_panel.Render(window.Width(), window.Height());
 
                 // Death overlay.
                 if (player_dead) {
@@ -3287,7 +4793,7 @@ int main() {
                 }
                 spellbar.Render(window.Width(), window.Height(),
                                 combat_target, static_cast<float>(now), player_dead,
-                                player.energy, target_dist_for_spells);
+                                player.mana, target_dist_for_spells);
 
                 // Range / AoE preview circles (drawn when hovering a spell slot).
                 if (renderer_ready && spellbar.hovered_range > 0.f) {
@@ -3656,6 +5162,10 @@ int main() {
     // -----------------------------------------------------------------------
     // Shutdown
     // -----------------------------------------------------------------------
+    perf_entry.Finalize("main_loop_exit");
+    rco::renderer::ModelCacheSetObserver(nullptr);
+    g_entry_perf_logger = nullptr;
+
     pipeline.reset();
     engine.Shutdown();
 
@@ -3671,3 +5181,4 @@ int main() {
 
     return 0;
 }
+

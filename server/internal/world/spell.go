@@ -67,15 +67,30 @@ func BroadcastHPUpdate(area *Area, actor *Actor, hp int32) {
 	}
 }
 
-// BroadcastEPUpdate sends PStatUpdate(attr=EP) to the actor's own client.
-func BroadcastEPUpdate(actor *Actor, ep int32) {
+// BroadcastMPUpdate sends PStatUpdate(attr=MP) to the actor's own client.
+// Wire compatibility: attr 2 is now treated as MP.
+func BroadcastMPUpdate(actor *Actor, mp int32) {
 	var p pb
 	p.u8('A')
 	p.u32(actor.RuntimeID)
-	p.u8(2) // attr 2 = EP
-	p.i16(int16(ep))
+	p.u8(2) // attr 2 = MP
+	p.i16(int16(mp))
 	actor.Send(buildFrame(pStatUpdate, p))
 }
+
+// BroadcastSPUpdate sends PStatUpdate(attr=SP) to the actor's own client.
+// attr 4 = SP current.
+func BroadcastSPUpdate(actor *Actor, sp int32) {
+	var p pb
+	p.u8('A')
+	p.u32(actor.RuntimeID)
+	p.u8(4) // attr 4 = SP
+	p.i16(int16(sp))
+	actor.Send(buildFrame(pStatUpdate, p))
+}
+
+// Backward-compatible alias used by older call sites.
+func BroadcastEPUpdate(actor *Actor, ep int32) { BroadcastMPUpdate(actor, ep) }
 
 // BroadcastActorDead sends PActorDead to all players in the area.
 func BroadcastActorDead(area *Area, targetRID, killerRID uint32) {
@@ -110,4 +125,3 @@ func ActorsInRadius(area *Area, cx, cz, radius float32) []*Actor {
 	}
 	return out
 }
-

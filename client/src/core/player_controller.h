@@ -29,8 +29,6 @@ public:
     };
 
     struct Result {
-        float yaw_delta     = 0.f;   // classic A/D turn: add to player.yaw AND camera
-        bool  center_camera = false; // W/S without drag: camera lerps behind player
         bool  sprinting     = false;
         bool  auto_running  = false;
     };
@@ -46,11 +44,11 @@ public:
     const Config& GetConfig() const { return cfg_; }
     void SetConfig(const Config& cfg) { cfg_ = cfg; }
 
-    // action_mode: when true, A/D strafe instead of turn (mouse handles rotation).
-    Result Update(GLFWwindow* win, float dt, bool dead, bool action_mode,
+    // Action-mode controller (RCO): mouse handles rotation; A/D always strafe.
+    Result Update(GLFWwindow* win, float dt, bool dead,
                   PlayerState& player,
                   const renderer::Terrain& terrain,
-                  bool rmb_held, bool lmb_held, bool ms_lmb_drag);
+                  bool rmb_held, bool lmb_held);
 
 private:
     Config    cfg_{};

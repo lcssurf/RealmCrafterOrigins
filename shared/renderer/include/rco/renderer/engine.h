@@ -1,6 +1,7 @@
 #pragma once
 #include <glad/glad.h>
 #include <glm/glm.hpp>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -57,10 +58,11 @@ public:
 
     MaterialManager& materials() { return material_manager_; }
 
-    // Re-upload the materials SSBO from the current MaterialManager state.
-    // Call this after registering new materials outside Begin/EndStaticScene
-    // (e.g. right after Model::Load extracted textures and registered them).
-    void RebuildMaterialsBuffer();
+    // Marks materials SSBO as stale. The buffer is rebuilt once on the next
+    // frame flush, coalescing many writes into a single GL upload.
+    void MarkMaterialsDirty();
+    // Rebuilds materials SSBO when dirty. Returns true when a rebuild occurred.
+    bool FlushMaterialsBufferIfDirty(uint64_t* out_dur_us = nullptr);
 
     int    width()       const { return width_;  }
     int    height()      const { return height_; }
@@ -81,6 +83,7 @@ private:
     void createFramebuffers_();
     void destroyFramebuffers_();
     void createVAO_();
+    void RebuildMaterialsBufferImpl();
 
     int    width_             = 0;
     int    height_            = 0;
@@ -93,6 +96,7 @@ private:
     std::unique_ptr<StaticBuffer>  materialsBuffer_;
     std::unique_ptr<StaticBuffer>  drawIndirectBuffer_;
     MaterialManager                material_manager_;
+    bool                           materials_dirty_ = false;
 
     struct StaticMeshRecord {
         uint64_t vtx_alloc     = 0;

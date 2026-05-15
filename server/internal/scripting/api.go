@@ -4,6 +4,7 @@ import (
 	"log"
 
 	lua "github.com/yuin/gopher-lua"
+	"realm-crafter/server/internal/protocol"
 	"realm-crafter/server/internal/world"
 )
 
@@ -12,9 +13,12 @@ import (
 func (r *Registry) registerAPI() {
 	r.registerSpellAPI()
 	r.registerCombatAPI()
+	r.registerNPCCombatAPI()
+	r.registerPlayerCombatAPI()
 	r.registerActorAPI()
 	r.registerEventAPI()
 	r.registerDialogAPI()
+	r.registerQuestAPI()
 	r.registerLogAPI()
 }
 
@@ -214,7 +218,240 @@ func (r *Registry) registerCombatAPI() {
 		return 1
 	}))
 
+	// Combat.interrupt(caster_id, target_id)
+	// Interrupts defensive states on the target (guard/parry/dodge) when present.
+	// Returns: interrupted (bool)
+	r.L.SetField(mod, "interrupt", r.L.NewFunction(func(L *lua.LState) int {
+		casterRID := uint32(L.CheckNumber(1))
+		targetRID := uint32(L.CheckNumber(2))
+		if casterRID == 0 || targetRID == 0 || casterRID == targetRID {
+			L.Push(lua.LFalse)
+			return 1
+		}
+
+		area := r.ctx.area
+		if area == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+
+		caster, _ := area.GetActor(casterRID)
+		target, _ := area.GetActor(targetRID)
+		if caster == nil || target == nil || target.IsDead() {
+			L.Push(lua.LFalse)
+			return 1
+		}
+
+		now := nowMs()
+		target.Mu.Lock()
+		interrupted := (target.Guarding && target.GuardUntil > now) ||
+			target.ParryUntil > now || target.DodgeUntil > now
+		if interrupted {
+			target.Guarding = false
+			target.GuardUntil = 0
+			target.ParryUntil = 0
+			target.DodgeUntil = 0
+			target.LastCombatAt = now
+		}
+		target.Mu.Unlock()
+
+		if interrupted {
+			world.BroadcastCombatEvent(
+				area,
+				protocol.CombatEventInterruptSuccess,
+				casterRID,
+				targetRID,
+				0,
+				"",
+			)
+		}
+
+		L.Push(lua.LBool(interrupted))
+		return 1
+	}))
+
 	r.L.SetGlobal("Combat", mod)
+}
+
+// ---------------------------------------------------------------------------
+// NPCCombat API — NPCCombat.can_cast, NPCCombat.try_cast
+// ---------------------------------------------------------------------------
+
+func (r *Registry) registerNPCCombatAPI() {
+	mod := r.L.NewTable()
+
+	// NPCCombat.can_cast(npc_id, ability_id, target_id) -> bool
+	r.L.SetField(mod, "can_cast", r.L.NewFunction(func(L *lua.LState) int {
+		npcRID := uint32(L.CheckNumber(1))
+		abilityID := int(L.CheckNumber(2))
+		targetRID := uint32(L.CheckNumber(3))
+		if r.w == nil || npcRID == 0 || targetRID == 0 || abilityID <= 0 {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		ok, _ := world.CanNPCCastByRID(r.w, world.CastIntent{
+			CasterRID: npcRID,
+			TargetRID: targetRID,
+			AbilityID: abilityID,
+		})
+		L.Push(lua.LBool(ok))
+		return 1
+	}))
+
+	// NPCCombat.try_cast(npc_id, ability_id, target_id [, opts]) -> bool
+	// opts = { action_override="CastHeavy", reason_tag="npc_ai", client_trace_id="..." }
+	r.L.SetField(mod, "try_cast", r.L.NewFunction(func(L *lua.LState) int {
+		npcRID := uint32(L.CheckNumber(1))
+		abilityID := int(L.CheckNumber(2))
+		targetRID := uint32(L.CheckNumber(3))
+		if r.w == nil || npcRID == 0 || targetRID == 0 || abilityID <= 0 {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		intent := world.CastIntent{
+			CasterRID: npcRID,
+			TargetRID: targetRID,
+			AbilityID: abilityID,
+			ReasonTag: "npc_ai",
+		}
+		if opts := L.OptTable(4, nil); opts != nil {
+			intent.ActionOverride = luaStrField(opts, "action_override", "")
+			if tag := luaStrField(opts, "reason_tag", ""); tag != "" {
+				intent.ReasonTag = tag
+			}
+			intent.ClientTraceID = luaStrField(opts, "client_trace_id", "")
+		}
+
+		ok, reason := world.TryStartNPCCastByRID(r.w, intent)
+		if !ok {
+			log.Printf("scripting: NPCCombat.try_cast rejected npc=%d ability=%d target=%d reason=%s",
+				npcRID, abilityID, targetRID, reason)
+		}
+		L.Push(lua.LBool(ok))
+		return 1
+	}))
+
+	// NPCCombat.get_loadout(npc_id) -> table[]
+	// Returns effective loadout rows already resolved by spawn/actor_def priority.
+	r.L.SetField(mod, "get_loadout", r.L.NewFunction(func(L *lua.LState) int {
+		npcRID := uint32(L.CheckNumber(1))
+		if r.w == nil || npcRID == 0 {
+			L.Push(r.L.NewTable())
+			return 1
+		}
+		rows := world.GetNPCAbilityLoadoutByRID(r.w, npcRID)
+		out := r.L.NewTable()
+		for _, row := range rows {
+			item := r.L.NewTable()
+			item.RawSetString("id", lua.LNumber(row.ID))
+			item.RawSetString("npc_spawn_id", lua.LNumber(row.NPCSpawnID))
+			item.RawSetString("actor_def_id", lua.LNumber(row.ActorDefID))
+			item.RawSetString("ability_id", lua.LNumber(row.AbilityID))
+			item.RawSetString("priority", lua.LNumber(row.Priority))
+			item.RawSetString("weight", lua.LNumber(row.Weight))
+			item.RawSetString("min_distance", lua.LNumber(row.MinDistance))
+			item.RawSetString("max_distance", lua.LNumber(row.MaxDistance))
+			item.RawSetString("min_target_hp_pct", lua.LNumber(row.MinTargetHPPct))
+			item.RawSetString("max_target_hp_pct", lua.LNumber(row.MaxTargetHPPct))
+			item.RawSetString("phase_tag", lua.LString(row.PhaseTag))
+			item.RawSetString("condition_lua", lua.LString(row.ConditionLua))
+			item.RawSetString("enabled", lua.LBool(row.Enabled))
+			out.Append(item)
+		}
+		L.Push(out)
+		return 1
+	}))
+
+	// NPCCombat.get_context(npc_id, target_id) -> table
+	// Returns runtime context snapshot used by condition checks.
+	r.L.SetField(mod, "get_context", r.L.NewFunction(func(L *lua.LState) int {
+		npcRID := uint32(L.CheckNumber(1))
+		targetRID := uint32(L.CheckNumber(2))
+		out := r.L.NewTable()
+		if r.w == nil || npcRID == 0 || targetRID == 0 {
+			L.Push(out)
+			return 1
+		}
+		ctx, ok := world.GetNPCAbilityDecisionContextByRID(r.w, npcRID, targetRID)
+		if !ok {
+			L.Push(out)
+			return 1
+		}
+		out.RawSetString("distance", lua.LNumber(ctx.Distance))
+		out.RawSetString("npc_hp_pct", lua.LNumber(ctx.NPCHPPct))
+		out.RawSetString("target_hp_pct", lua.LNumber(ctx.TargetHPPct))
+		out.RawSetString("npc_sp_pct", lua.LNumber(ctx.NPCSPPct))
+		out.RawSetString("target_sp_pct", lua.LNumber(ctx.TargetSPPct))
+		out.RawSetString("npc_mp_pct", lua.LNumber(ctx.NPCMPPct))
+		out.RawSetString("target_mp_pct", lua.LNumber(ctx.TargetMPPct))
+		out.RawSetString("phase_tag", lua.LString(ctx.PhaseTag))
+		out.RawSetString("phase", lua.LNumber(ctx.Phase))
+		L.Push(out)
+		return 1
+	}))
+
+	r.L.SetGlobal("NPCCombat", mod)
+}
+
+// ---------------------------------------------------------------------------
+// PlayerCombat API — PlayerCombat.can_cast, PlayerCombat.try_cast
+// ---------------------------------------------------------------------------
+
+func (r *Registry) registerPlayerCombatAPI() {
+	mod := r.L.NewTable()
+
+	// PlayerCombat.can_cast(player_id, ability_id, target_id) -> bool
+	r.L.SetField(mod, "can_cast", r.L.NewFunction(func(L *lua.LState) int {
+		playerRID := uint32(L.CheckNumber(1))
+		abilityID := int(L.CheckNumber(2))
+		targetRID := uint32(L.CheckNumber(3))
+		if r.w == nil || playerRID == 0 || targetRID == 0 || abilityID <= 0 {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		ok, _ := world.CanPlayerCastByRID(r.w, world.CastIntent{
+			CasterRID: playerRID,
+			TargetRID: targetRID,
+			AbilityID: abilityID,
+		})
+		L.Push(lua.LBool(ok))
+		return 1
+	}))
+
+	// PlayerCombat.try_cast(player_id, ability_id, target_id [, opts]) -> bool
+	// opts = { action_override="AttackHeavy", reason_tag="player_input", client_trace_id="..." }
+	r.L.SetField(mod, "try_cast", r.L.NewFunction(func(L *lua.LState) int {
+		playerRID := uint32(L.CheckNumber(1))
+		abilityID := int(L.CheckNumber(2))
+		targetRID := uint32(L.CheckNumber(3))
+		if r.w == nil || playerRID == 0 || targetRID == 0 || abilityID <= 0 {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		intent := world.CastIntent{
+			CasterRID: playerRID,
+			TargetRID: targetRID,
+			AbilityID: abilityID,
+			ReasonTag: "player_input",
+		}
+		if opts := L.OptTable(4, nil); opts != nil {
+			intent.ActionOverride = luaStrField(opts, "action_override", "")
+			if tag := luaStrField(opts, "reason_tag", ""); tag != "" {
+				intent.ReasonTag = tag
+			}
+			intent.ClientTraceID = luaStrField(opts, "client_trace_id", "")
+		}
+
+		ok, reason := world.TryStartPlayerCastByRID(r.w, intent)
+		if !ok {
+			log.Printf("scripting: PlayerCombat.try_cast rejected player=%d ability=%d target=%d reason=%s",
+				playerRID, abilityID, targetRID, reason)
+		}
+		L.Push(lua.LBool(ok))
+		return 1
+	}))
+
+	r.L.SetGlobal("PlayerCombat", mod)
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +643,156 @@ func (r *Registry) registerDialogAPI() {
 // ---------------------------------------------------------------------------
 // Log API  —  Log(msg)
 // ---------------------------------------------------------------------------
+
+func (r *Registry) registerQuestAPI() {
+	mod := r.L.NewTable()
+
+	questCall := func(L *lua.LState, fn func(QuestBridge, uint32, int) (bool, error)) int {
+		playerRID := uint32(L.CheckNumber(1))
+		questID := int(L.CheckNumber(2))
+		if playerRID == 0 || questID <= 0 || r.quest == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		changed, err := fn(r.quest, playerRID, questID)
+		if err != nil {
+			log.Printf("scripting: quest op failed player=%d quest=%d err=%v", playerRID, questID, err)
+			L.Push(lua.LFalse)
+			return 1
+		}
+		L.Push(lua.LBool(changed))
+		return 1
+	}
+
+	// Quest.accept(player_id, quest_id) -> changed(bool)
+	r.L.SetField(mod, "accept", r.L.NewFunction(func(L *lua.LState) int {
+		return questCall(L, func(q QuestBridge, playerRID uint32, questID int) (bool, error) {
+			return q.Accept(playerRID, questID)
+		})
+	}))
+
+	// Quest.abandon(player_id, quest_id) -> changed(bool)
+	r.L.SetField(mod, "abandon", r.L.NewFunction(func(L *lua.LState) int {
+		return questCall(L, func(q QuestBridge, playerRID uint32, questID int) (bool, error) {
+			return q.Abandon(playerRID, questID)
+		})
+	}))
+
+	// Quest.turn_in(player_id, quest_id) -> changed(bool)
+	r.L.SetField(mod, "turn_in", r.L.NewFunction(func(L *lua.LState) int {
+		return questCall(L, func(q QuestBridge, playerRID uint32, questID int) (bool, error) {
+			return q.TurnIn(playerRID, questID)
+		})
+	}))
+
+	// Quest.sync(player_id) -> ok(bool)
+	r.L.SetField(mod, "sync", r.L.NewFunction(func(L *lua.LState) int {
+		playerRID := uint32(L.CheckNumber(1))
+		if playerRID == 0 || r.quest == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		if err := r.quest.Sync(playerRID); err != nil {
+			log.Printf("scripting: quest sync failed player=%d err=%v", playerRID, err)
+			L.Push(lua.LFalse)
+			return 1
+		}
+		L.Push(lua.LTrue)
+		return 1
+	}))
+
+	progressCall := func(L *lua.LState, event QuestProgressEvent) int {
+		playerRID := uint32(L.CheckNumber(1))
+		if playerRID == 0 || r.quest == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		changed, err := r.quest.Progress(playerRID, event)
+		if err != nil {
+			log.Printf("scripting: quest progress failed player=%d type=%d err=%v",
+				playerRID, event.ObjectiveType, err)
+			L.Push(lua.LFalse)
+			return 1
+		}
+		L.Push(lua.LBool(changed))
+		return 1
+	}
+
+	// Quest.progress(player_id, objective_type, {npc_name="", item_id=0, area="", delta=1}) -> changed(bool)
+	r.L.SetField(mod, "progress", r.L.NewFunction(func(L *lua.LState) int {
+		objectiveType := uint8(L.CheckNumber(2))
+		event := QuestProgressEvent{
+			ObjectiveType: objectiveType,
+			Delta:         1,
+		}
+		if t := L.OptTable(3, nil); t != nil {
+			event.TargetNPCName = luaStrField(t, "npc_name", "")
+			event.TargetItemID = uint16(luaIntField(L, t, "item_id", 0))
+			event.TargetArea = luaStrField(t, "area", "")
+			event.Delta = luaIntField(L, t, "delta", 1)
+		}
+		return progressCall(L, event)
+	}))
+
+	// Quest.progress_kill(player_id, npc_name [, delta=1]) -> changed(bool)
+	r.L.SetField(mod, "progress_kill", r.L.NewFunction(func(L *lua.LState) int {
+		event := QuestProgressEvent{
+			ObjectiveType: QuestObjectiveKill,
+			TargetNPCName: L.CheckString(2),
+			Delta:         L.OptInt(3, 1),
+		}
+		return progressCall(L, event)
+	}))
+
+	// Quest.progress_collect(player_id, item_id [, delta=1]) -> changed(bool)
+	r.L.SetField(mod, "progress_collect", r.L.NewFunction(func(L *lua.LState) int {
+		event := QuestProgressEvent{
+			ObjectiveType: QuestObjectiveCollect,
+			TargetItemID:  uint16(L.CheckInt(2)),
+			Delta:         L.OptInt(3, 1),
+		}
+		return progressCall(L, event)
+	}))
+
+	// Quest.progress_talk(player_id, npc_name [, delta=1]) -> changed(bool)
+	r.L.SetField(mod, "progress_talk", r.L.NewFunction(func(L *lua.LState) int {
+		event := QuestProgressEvent{
+			ObjectiveType: QuestObjectiveTalk,
+			TargetNPCName: L.CheckString(2),
+			Delta:         L.OptInt(3, 1),
+		}
+		return progressCall(L, event)
+	}))
+
+	// Quest.progress_explore(player_id, area_name [, delta=1]) -> changed(bool)
+	r.L.SetField(mod, "progress_explore", r.L.NewFunction(func(L *lua.LState) int {
+		event := QuestProgressEvent{
+			ObjectiveType: QuestObjectiveExplore,
+			TargetArea:    L.CheckString(2),
+			Delta:         L.OptInt(3, 1),
+		}
+		return progressCall(L, event)
+	}))
+
+	// Quest.progress_interact(player_id, npc_name [, delta=1]) -> changed(bool)
+	r.L.SetField(mod, "progress_interact", r.L.NewFunction(func(L *lua.LState) int {
+		event := QuestProgressEvent{
+			ObjectiveType: QuestObjectiveInteract,
+			TargetNPCName: L.CheckString(2),
+			Delta:         L.OptInt(3, 1),
+		}
+		return progressCall(L, event)
+	}))
+
+	// Objective type constants exposed to Lua scripts.
+	r.L.SetField(mod, "TYPE_KILL", lua.LNumber(QuestObjectiveKill))
+	r.L.SetField(mod, "TYPE_COLLECT", lua.LNumber(QuestObjectiveCollect))
+	r.L.SetField(mod, "TYPE_TALK", lua.LNumber(QuestObjectiveTalk))
+	r.L.SetField(mod, "TYPE_EXPLORE", lua.LNumber(QuestObjectiveExplore))
+	r.L.SetField(mod, "TYPE_INTERACT", lua.LNumber(QuestObjectiveInteract))
+
+	r.L.SetGlobal("Quest", mod)
+}
 
 func (r *Registry) registerLogAPI() {
 	r.L.SetGlobal("Log", r.L.NewFunction(func(L *lua.LState) int {

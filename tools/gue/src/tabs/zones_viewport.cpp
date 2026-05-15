@@ -89,7 +89,7 @@ void ZonesTab::DrawFloatingToolbar() {
         ImGui::TextUnformatted("● pan");
         ImGui::PopStyleColor();
     } else {
-        ImGui::TextDisabled("RMB=fly  Alt+LMB=orbit  MMB=pan  Scroll=zoom");
+        ImGui::TextDisabled("RMB click=place/context  RMB hold=fly  Alt+LMB=orbit");
     }
 
     // Armed-placement indicator — shows which model is queued + ESC to cancel
@@ -250,8 +250,29 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
     const bool shiftDown  = ImGui::IsKeyDown(ImGuiKey_LeftShift)
                          || ImGui::IsKeyDown(ImGuiKey_RightShift);
 
+    // Right-click has dual use:
+    // 1) placement/context in zone editing
+    // 2) freelook/fly camera
+    // If this click is for placement/context, suppress fly until RMB release.
+    const bool scnArmedIntent = (zoneMode_ == kModeScenery &&
+                                 scnModelId_ != 0 &&
+                                 xformMode_ == kXFormSelect);
+    const bool wantsRmbAddMenu = (xformMode_ == kXFormSelect && !scnArmedIntent);
+    const bool wantsRmbDirectPlace =
+        (!scnArmedIntent &&
+         zoneMode_ != kModeEnviro &&
+         zoneMode_ != kModeOther &&
+         zoneMode_ != kModeTerrain);
+    const bool rmbPlacementClick =
+        (vpHovered_ && ImGui::IsMouseClicked(1) && !altDown &&
+         (wantsRmbAddMenu || wantsRmbDirectPlace));
+
+    if (!rmbDown) suppressMouseLookUntilRmbRelease_ = false;
+    if (rmbPlacementClick) suppressMouseLookUntilRmbRelease_ = true;
+
     // RMB engage / disengage freelook
-    if (vpHovered_ && ImGui::IsMouseClicked(1) && !altDown) {
+    if (vpHovered_ && ImGui::IsMouseClicked(1) && !altDown &&
+        !suppressMouseLookUntilRmbRelease_) {
         mouseLook_ = true;
         ImGui::SetMouseCursor(ImGuiMouseCursor_None);
     }
@@ -349,7 +370,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
 
     // mouseLook_ used downstream to suppress selection / placement clicks.
     // Redefine: true while RMB is held (freelook active, not alt-dolly).
-    mouseLook_ = rmbDown && !altDown;
+    mouseLook_ = rmbDown && !altDown && !suppressMouseLookUntilRmbRelease_;
 
     // Selection — LMB click (select mode)
     if (vpHovered_ && ImGui::IsMouseClicked(0) && xformMode_ == kXFormSelect) {

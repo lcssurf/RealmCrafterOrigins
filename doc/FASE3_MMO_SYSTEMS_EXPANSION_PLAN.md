@@ -458,6 +458,28 @@ Resposta recomendada: modelo hibrido com prioridade em arma.
 
 Objetivo: preparar terreno para os sistemas novos sem quebrar o que ja funciona.
 
+Status atual (2026-05-12):
+
+1. Feito:
+- Contratos de protocolo da Fase 3 adicionados em `server/internal/protocol/packets.go` e `client/src/net/protocol.h` (pacotes 17, 23, 37, 38, 39 e extensoes 124-131).
+- Dispatch in-game no server desacoplado para metodo dedicado (`dispatchInGamePacket`).
+- Handlers iniciais de acao in-game criados em `server/internal/net/ingame_actions.go`:
+  - `handleQuestAction`
+  - `handlePartyAction`
+  - `handleCombatAction`
+  - `handleSkillLoadoutAction`
+- Extracao inicial no client: gate de pacotes da Fase 3 movido de `main.cpp` para `client/src/gameplay/ingame_packet_gate.*`.
+- Testes de codec dedicados para payloads novos adicionados em `server/internal/net/ingame_actions_test.go`.
+- Checklist formal de smoke da Etapa A criado em `doc/FASE3_ETAPA_A_SMOKE_CHECKLIST.md`.
+- Matriz de paridade feature -> GUE versionada em `doc/FASE3_GUE_PARITY_MATRIX.md`.
+- Validacao tecnica executada:
+  - `go test ./...` (server) ok.
+  - build do client ok.
+
+2. Pendente nesta etapa:
+- Rodada manual do smoke funcional completo (login -> selecao -> world -> movimento -> combate) usando checklist formal.
+- Extracao adicional de hooks de gameplay do `main.cpp` para modulos `gameplay/*` conforme os sistemas entrarem (Etapas B+).
+
 ### A.1 Descoberta e mapeamento
 
 1. Rodar Graphify para mapear fluxos atuais em:
@@ -497,6 +519,31 @@ DoD Etapa A:
 ## Etapa B - Quests ponta a ponta
 
 Objetivo: entregar sistema de quests funcional, autoritativo e extensivel.
+
+Status atual (2026-05-12):
+
+- Concluido:
+1. Migração `migrateV18` criada com tabelas:
+`quest_defs`, `quest_objective_defs`, `quest_reward_defs`, `character_quests`, `character_quest_progress`.
+2. Seed baseline de quest de teste (`training_camp_cleanup`) com objetivo e recompensa.
+3. Handler `PQuestAction` ligado ao runtime real:
+accept, abandon e turn-in com idempotencia.
+4. `PQuestLog` snapshot server->client implementado e enviado no world-enter.
+5. Progressão por eventos integrada:
+kill NPC, pickup item, talk/interact NPC e explore (login/portal).
+6. Recompensas de turn-in aplicadas (XP, gold, itens) com atualização de HUD/inventory.
+7. Testes automatizados adicionados em `server/internal/db/quests_test.go`
+(fluxo accept -> progress -> complete -> turn-in + idempotencia).
+8. Client Quest UI conectada:
+`PQuestLog` parseado no client com `Quest Journal` + `Quest Tracker` e ações de accept/abandon/turn-in.
+9. Snapshot de quest ampliado para incluir lista de quests disponiveis para aceite no client.
+10. `PQuestLog` evoluido para modo hibrido:
+snapshot inicial + delta incremental (upsert/remove para quest log e lista de disponiveis).
+11. Paridade de tooling no GUE implementada para Quests:
+aba `Quests` com CRUD completo de quest, objetivo e recompensa, duplicacao de quest e toggle de ativacao, com validacoes inline.
+
+- Pendente nesta etapa:
+1. Rodada final de smoke funcional (GUE -> server -> client) para fechamento oficial da etapa.
 
 ### B.1 Modelo de dados
 
@@ -594,9 +641,58 @@ DoD Etapa C:
 2. Estados de party permanecem coerentes para todos os membros.
 3. Nenhum cliente consegue forcar alteracao ilegal de party.
 
+Status de implementacao (2026-05-13):
+
+1. Baseline server-authoritative implementado em `server/internal/net/party_runtime.go`:
+- convite, aceitar, recusar, sair, kick e transferir lider.
+- validacao de lideranca, party cheia, auto-invite e alvo fora de contexto.
+- limpeza de estado de party/convites no disconnect.
+2. `PPartyUpdate` snapshot funcional:
+- payload com party_id, lider, membros (rid/nome/level/hp) e convite pendente.
+- payload inclui `notice_code` para resultado/erro de negocio codificado.
+- envio inicial no world-enter e sincronizacao apos cada acao de party.
+3. `PPartyUpdate` evoluido para sincronizacao hibrida:
+- snapshot inicial + delta incremental (upsert/remove de membros), mantendo `notice_code` e `notice`.
+4. Divisao de XP em party por proximidade implementada:
+- membros elegiveis = mesma party, online/in-game, vivos, mesma area e dentro do raio.
+- XP dividido entre elegiveis com resto atribuido ao killer.
+5. Client baseline implementado:
+- `ui/party_panel.*` com lista de membros, HP e status de lider.
+- aceite/recusa de convite e acoes de party por UI.
+- comandos rapidos de chat (`/party ...`) conectados ao `PPartyAction`.
+6. Testes automatizados adicionados:
+- `server/internal/net/party_runtime_test.go` cobrindo invite/accept, regras de lider e cleanup.
+- `server/internal/net/party_runtime_delta_test.go` cobrindo snapshot/delta/no-op e remocao de membro.
+- `server/internal/net/party_xp_test.go` cobrindo elegibilidade por proximidade e distribuicao de resto.
+7. UX e validacao de contexto reforcadas:
+- mensagens de party diferenciadas por codigo no client (info x erro).
+- convite exige mesma area (sem bloqueio por distancia para o baseline).
+- distancia fica reservada para regras futuras de gameplay em grupo (ex.: divisao de XP por proximidade).
+
 ## Etapa C.5 - Combat Session TL (core de combate moderno)
 
 Objetivo: implementar o nucleo de combate action-MMO da fase, integrado a Party/Quests/Projectile.
+
+Status parcial (2026-05-13):
+
+1. Slice inicial de defesa ativa implementado:
+- `PCombatAction` conectado ao runtime real no server (`server/internal/net/combat_runtime.go`).
+- acoes baseline: dodge, guard start/end, parry start/end e interrupt.
+2. Resolucao de dano melee atualizada:
+- `world.ProcessAttack` agora resolve `dodge/parry/guard` server-side antes de aplicar dano.
+- guard reduz dano e consome EP por hit absorvido.
+3. Feedback de combate habilitado:
+- `PCombatEvent` emitido para eventos de defesa/interrupt/resultado de hit.
+- client parseia `PCombatEvent` e exibe feedback em chat.
+4. Comandos de teste no client:
+- `/combat dodge`
+- `/combat guard on`
+- `/combat guard off`
+- `/combat parry`
+- `/combat interrupt`
+5. Cobertura automatizada:
+- `server/internal/net/combat_runtime_test.go`
+- `server/internal/world/combat_defense_test.go`
 
 ### C.5.1 Defense e resource loop
 

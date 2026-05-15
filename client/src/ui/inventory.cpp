@@ -372,7 +372,7 @@ void Inventory::RenderCharacter(int screenW, int screenH) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // HP / EP bars side-by-side
+    // HP / MP bars side-by-side
     const float barW = (cw - 8.f) * 0.5f;
 
     float hpFill = stat_hp_max > 0 ? (float)stat_hp / stat_hp_max : 0.f;
@@ -383,10 +383,18 @@ void Inventory::RenderCharacter(int screenW, int screenH) {
 
     ImGui::SameLine(0.f, 8.f);
 
-    float epFill = stat_ep_max > 0 ? (float)stat_ep / stat_ep_max : 0.f;
-    char  epLbl[32]; std::snprintf(epLbl, sizeof(epLbl), "%d / %d", stat_ep, stat_ep_max);
+    float mpFill = stat_mp_max > 0 ? (float)stat_mp / stat_mp_max : 0.f;
+    char  mpLbl[32]; std::snprintf(mpLbl, sizeof(mpLbl), "%d / %d", stat_mp, stat_mp_max);
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4{0.18f,0.38f,0.80f,1.f});
-    ImGui::ProgressBar(epFill, {barW, 16.f}, epLbl);
+    ImGui::ProgressBar(mpFill, {barW, 16.f}, mpLbl);
+    ImGui::PopStyleColor();
+
+    ImGui::Spacing();
+
+    float spFill = stat_sp_max > 0 ? (float)stat_sp / stat_sp_max : 0.f;
+    char  spLbl[32]; std::snprintf(spLbl, sizeof(spLbl), "SP %d / %d", stat_sp, stat_sp_max);
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4{0.22f,0.78f,0.50f,1.f});
+    ImGui::ProgressBar(spFill, {cw, 14.f}, spLbl);
     ImGui::PopStyleColor();
 
     ImGui::Spacing();

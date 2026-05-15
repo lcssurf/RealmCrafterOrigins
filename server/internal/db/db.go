@@ -4,12 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver for database/sql
-	_ "modernc.org/sqlite"             // SQLite — pure Go, no CGo needed
+	_ "modernc.org/sqlite"             // SQLite - pure Go, no CGo needed
+	"realm-crafter/server/internal/world"
 )
 
 // ---------------------------------------------------------------------------
@@ -89,6 +93,98 @@ type PlayableDef struct {
 	DefaultClass string
 }
 
+// Quest objective type constants.
+const (
+	QuestObjectiveKill     uint8 = 1
+	QuestObjectiveCollect  uint8 = 2
+	QuestObjectiveTalk     uint8 = 3
+	QuestObjectiveExplore  uint8 = 4
+	QuestObjectiveInteract uint8 = 5
+)
+
+// Quest runtime state constants.
+const (
+	QuestStateActive uint8 = iota + 1
+	QuestStateCompleted
+	QuestStateTurnedIn
+	QuestStateFailed
+	QuestStateAbandoned
+)
+
+const (
+	questStateTextActive    = "active"
+	questStateTextCompleted = "completed"
+	questStateTextTurnedIn  = "turned_in"
+	questStateTextFailed    = "failed"
+	questStateTextAbandoned = "abandoned"
+)
+
+// QuestLogEntry is one quest row sent to the client quest log.
+type QuestLogEntry struct {
+	QuestID     int
+	Code        string
+	Title       string
+	Description string
+	State       uint8
+	Objectives  []QuestLogObjective
+}
+
+// QuestAvailableEntry is one quest that can be accepted by the character.
+type QuestAvailableEntry struct {
+	QuestID     int
+	Code        string
+	Title       string
+	Description string
+	MinLevel    int
+	Repeatable  bool
+}
+
+// QuestLogObjective is one objective row inside a quest log entry.
+type QuestLogObjective struct {
+	ObjectiveID   int
+	ObjectiveType uint8
+	Description   string
+	CurrentCount  int
+	TargetCount   int
+	TargetNPCName string
+	TargetItemID  int
+	TargetArea    string
+}
+
+// QuestRewardEntry describes one reward row attached to a quest turn-in.
+type QuestRewardEntry struct {
+	XPReward   int64
+	GoldReward int64
+	ItemID     uint16
+	ItemQty    uint8
+}
+
+// QuestTurnInResult contains the final state updates produced by a successful
+// turn-in transaction (quest state + rewards applied atomically).
+type QuestTurnInResult struct {
+	Rewards      []QuestRewardEntry
+	NewGold      int64
+	NewXP        int64
+	NewLevel     int
+	NewHPMax     int32
+	NewEPMax     int32
+	NewStrength  int32
+	Leveled      bool
+	GoldChanged  bool
+	XPChanged    bool
+	ItemsChanged bool
+}
+
+// QuestProgressEvent is emitted by gameplay systems (kill/pickup/dialog/etc.)
+// and consumed by DB quest progression.
+type QuestProgressEvent struct {
+	ObjectiveType uint8
+	TargetNPCName string
+	TargetItemID  uint16
+	TargetArea    string
+	Delta         int
+}
+
 // ---------------------------------------------------------------------------
 // DB
 // ---------------------------------------------------------------------------
@@ -101,8 +197,8 @@ type DB struct {
 
 // Open creates a DB connection, runs migrations, and returns a ready DB.
 //
-//	driver = "sqlite"   → dsn is a file path, e.g. "./rco.db"
-//	driver = "postgres" → dsn is a postgres:// URL
+//	driver = "sqlite"   Ã¢â€ â€™ dsn is a file path, e.g. "./rco.db"
+//	driver = "postgres" Ã¢â€ â€™ dsn is a postgres:// URL
 func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	var sqlDriver string
 	switch driver {
@@ -154,6 +250,10 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV15(ctx)
 	d.migrateV16(ctx)
 	d.migrateV17(ctx)
+	d.migrateV18(ctx)
+	d.migrateV19(ctx)
+	d.migrateV20(ctx)
+	d.migrateV21(ctx)
 
 	return d, nil
 }
@@ -165,7 +265,7 @@ func (d *DB) Close() {
 
 // ---------------------------------------------------------------------------
 // Placeholder translation
-// q() converts ? placeholders to $1, $2, … for PostgreSQL.
+// q() converts ? placeholders to $1, $2, Ã¢â‚¬Â¦ for PostgreSQL.
 // SQLite and PostgreSQL are the only two drivers; SQLite uses ?.
 // ---------------------------------------------------------------------------
 
@@ -190,6 +290,62 @@ func (d *DB) q(query string) string {
 // now returns the current UTC time in a format both drivers accept.
 func now() string {
 	return time.Now().UTC().Format(time.RFC3339)
+}
+
+func boolFromDB(v interface{}) bool {
+	switch b := v.(type) {
+	case bool:
+		return b
+	case int:
+		return b != 0
+	case int32:
+		return b != 0
+	case int64:
+		return b != 0
+	case uint:
+		return b != 0
+	case uint32:
+		return b != 0
+	case uint64:
+		return b != 0
+	case []byte:
+		s := strings.TrimSpace(string(b))
+		if s == "" {
+			return false
+		}
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return n != 0
+		}
+		return strings.EqualFold(s, "true") || strings.EqualFold(s, "t")
+	case string:
+		s := strings.TrimSpace(b)
+		if s == "" {
+			return false
+		}
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return n != 0
+		}
+		return strings.EqualFold(s, "true") || strings.EqualFold(s, "t")
+	default:
+		return false
+	}
+}
+
+func questStateToCode(state string) uint8 {
+	switch state {
+	case questStateTextActive:
+		return QuestStateActive
+	case questStateTextCompleted:
+		return QuestStateCompleted
+	case questStateTextTurnedIn:
+		return QuestStateTurnedIn
+	case questStateTextFailed:
+		return QuestStateFailed
+	case questStateTextAbandoned:
+		return QuestStateAbandoned
+	default:
+		return 0
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -483,8 +639,8 @@ func (d *DB) ListCharacters(ctx context.Context, accountID string) ([]*Character
 
 // CreateCharacter inserts a new character into the specified slot.
 // Initial x/z put the character at the center of the default Starter Zone
-// (1024×1024 world units → center is 512). Column defaults can't be relied
-// on across SQLite/Postgres for this — so we set them explicitly.
+// (1024Ãƒâ€”1024 world units Ã¢â€ â€™ center is 512). Column defaults can't be relied
+// on across SQLite/Postgres for this Ã¢â‚¬â€ so we set them explicitly.
 func (d *DB) CreateCharacter(ctx context.Context, accountID string, slot int, name, race, className string, gender, faceTex, hair, beard, bodyTex, actorDefID int) (*Character, error) {
 	id := uuid.New().String()
 	_, err := d.db.ExecContext(ctx,
@@ -622,7 +778,7 @@ func (d *DB) GiveStarterItems(ctx context.Context, charID string) error {
 		if err := d.db.QueryRowContext(ctx,
 			d.q(`SELECT id FROM item_templates WHERE name = ?`), s.itemName,
 		).Scan(&itemID); err != nil {
-			continue // item template not seeded yet — skip
+			continue // item template not seeded yet Ã¢â‚¬â€ skip
 		}
 		insertSQL := `INSERT OR IGNORE INTO character_items (character_id, slot, item_id, quantity, durability) VALUES (?, ?, ?, ?, 100)`
 		if d.driver == "postgres" {
@@ -815,7 +971,7 @@ func (d *DB) UseItem(ctx context.Context, charID string, slot uint8) (*UseItemRe
 	}
 
 	switch {
-	case res.ItemType == 2: // consumable — reduce stack
+	case res.ItemType == 2: // consumable Ã¢â‚¬â€ reduce stack
 		if quantity > 1 {
 			_, err = d.db.ExecContext(ctx,
 				d.q(`UPDATE character_items SET quantity = quantity - 1
@@ -830,7 +986,7 @@ func (d *DB) UseItem(ctx context.Context, charID string, slot uint8) (*UseItemRe
 			return nil, fmt.Errorf("db: UseItem consume: %w", err)
 		}
 
-	case slotType < 10 && slot >= 14: // equippable from bag — auto-equip
+	case slotType < 10 && slot >= 14: // equippable from bag Ã¢â‚¬â€ auto-equip
 		target := d.findEquipSlotFor(ctx, charID, slotType)
 		if err := d.SwapInventorySlots(ctx, charID, slot, target); err != nil {
 			return nil, err
@@ -851,23 +1007,97 @@ func (d *DB) UseItem(ctx context.Context, charID string, slot uint8) (*UseItemRe
 
 // SpellRow holds one row from spell_templates.
 type SpellRow struct {
-	ID         uint16
-	Name       string
-	SpellType  int
-	DamageMin  int32
-	DamageMax  int32
-	EPCost     int32
-	CooldownMs int64
-	Range      float32
-	Icon       uint8
-	AoEType    uint8   // 0=single 1=around_target 2=ground_target
-	AoERadius  float32 // world units; 0 = not AoE
+	ID               uint16
+	Name             string
+	SpellType        int
+	DamageMin        int32
+	DamageMax        int32
+	EPCost           int32
+	CooldownMs       int64
+	Range            float32
+	Icon             uint8
+	AoEType          uint8   // 0=single 1=around_target 2=ground_target
+	AoERadius        float32 // world units; 0 = not AoE
+	RuntimeAbilityID int     // 0 = legacy script-spell path, >0 = cast_intent ability ID
+}
+
+// AbilityTemplateRow mirrors one row in ability_templates.
+type AbilityTemplateRow struct {
+	ID                    int
+	Name                  string
+	Family                string
+	ResourceType          string
+	ResourceCost          int32
+	CooldownMs            int64
+	RangeMin              float32
+	RangeMax              float32
+	WindupMs              int64
+	ImpactDelayMs         int64
+	RecoverMs             int64
+	ParryWindowMs         int64
+	Interruptible         bool
+	BaseDamageMin         int32
+	BaseDamageMax         int32
+	DamageStatScaleJSON   string
+	ArmorPiercePct        float32
+	CritPolicyJSON        string
+	TelegraphType         string
+	TelegraphRadius       float32
+	TelegraphColorRGBA    string
+	ActionWindup          string
+	ActionImpact          string
+	ActionRecover         string
+	AllowActionOverride   bool
+	AllowedActionTagsJSON string
+	VFXIDWindup           int
+	VFXIDImpact           int
+	SFXIDWindup           int
+	SFXIDImpact           int
+	Enabled               bool
+}
+
+// NPCAbilityLoadoutRow mirrors one row in npc_ability_loadouts.
+type NPCAbilityLoadoutRow struct {
+	ID             int
+	NPCSpawnID     int
+	ActorDefID     int
+	AbilityID      int
+	Priority       int
+	Weight         int
+	MinDistance    float32
+	MaxDistance    float32
+	MinTargetHPPct float32
+	MaxTargetHPPct float32
+	PhaseTag       string
+	ConditionLua   string
+	Enabled        bool
+}
+
+// NPCCombatProfileRow mirrors one row in npc_combat_profiles.
+type NPCCombatProfileRow struct {
+	ID                     int
+	Name                   string
+	GlobalGCDMs            int64
+	DecisionTickMs         int64
+	AggroStyle             string
+	AllowChainCast         bool
+	MaxConsecutiveSpecials int
+	Enabled                bool
+}
+
+// NPCProfileBindingRow mirrors one row in npc_profile_bindings.
+type NPCProfileBindingRow struct {
+	ID         int
+	NPCSpawnID int
+	ActorDefID int
+	ProfileID  int
+	Enabled    bool
 }
 
 // LoadSpells returns all spell templates.
 func (d *DB) LoadSpells(ctx context.Context) ([]SpellRow, error) {
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT id, name, spell_type, damage_min, damage_max, ep_cost, cooldown_ms, range, icon, aoe_type, aoe_radius
+		`SELECT id, name, spell_type, damage_min, damage_max, ep_cost, cooldown_ms, range, icon, aoe_type, aoe_radius, runtime_ability_id
 		 FROM spell_templates ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -877,9 +1107,141 @@ func (d *DB) LoadSpells(ctx context.Context) ([]SpellRow, error) {
 	for rows.Next() {
 		var r SpellRow
 		if err := rows.Scan(&r.ID, &r.Name, &r.SpellType, &r.DamageMin, &r.DamageMax,
-			&r.EPCost, &r.CooldownMs, &r.Range, &r.Icon, &r.AoEType, &r.AoERadius); err != nil {
+			&r.EPCost, &r.CooldownMs, &r.Range, &r.Icon, &r.AoEType, &r.AoERadius, &r.RuntimeAbilityID); err != nil {
 			return nil, err
 		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// LoadAbilityTemplates returns all ability templates ordered by id.
+func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, name, family, resource_type, resource_cost, cooldown_ms,
+		       range_min, range_max, windup_ms, impact_delay_ms, recover_ms,
+		       parry_window_ms, interruptible, base_damage_min, base_damage_max,
+		       damage_stat_scale_json, armor_pierce_pct, crit_policy_json,
+		       telegraph_type, telegraph_radius, telegraph_color_rgba,
+		       action_windup, action_impact, action_recover,
+		       allow_action_override, allowed_action_tags_json,
+		       vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact,
+		       enabled
+		  FROM ability_templates
+		 ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadAbilityTemplates: %w", err)
+	}
+	defer rows.Close()
+
+	var out []AbilityTemplateRow
+	for rows.Next() {
+		var r AbilityTemplateRow
+		var interruptibleRaw interface{}
+		var allowOverrideRaw interface{}
+		var enabledRaw interface{}
+		if err := rows.Scan(
+			&r.ID, &r.Name, &r.Family, &r.ResourceType, &r.ResourceCost, &r.CooldownMs,
+			&r.RangeMin, &r.RangeMax, &r.WindupMs, &r.ImpactDelayMs, &r.RecoverMs,
+			&r.ParryWindowMs, &interruptibleRaw, &r.BaseDamageMin, &r.BaseDamageMax,
+			&r.DamageStatScaleJSON, &r.ArmorPiercePct, &r.CritPolicyJSON,
+			&r.TelegraphType, &r.TelegraphRadius, &r.TelegraphColorRGBA,
+			&r.ActionWindup, &r.ActionImpact, &r.ActionRecover,
+			&allowOverrideRaw, &r.AllowedActionTagsJSON,
+			&r.VFXIDWindup, &r.VFXIDImpact, &r.SFXIDWindup, &r.SFXIDImpact,
+			&enabledRaw,
+		); err != nil {
+			return nil, fmt.Errorf("db: LoadAbilityTemplates scan: %w", err)
+		}
+		r.Interruptible = boolFromDB(interruptibleRaw)
+		r.AllowActionOverride = boolFromDB(allowOverrideRaw)
+		r.Enabled = boolFromDB(enabledRaw)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// LoadNPCAbilityLoadouts returns enabled/disabled NPC ability loadout rows.
+func (d *DB) LoadNPCAbilityLoadouts(ctx context.Context) ([]NPCAbilityLoadoutRow, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, npc_spawn_id, actor_def_id, ability_id, priority, weight,
+		       min_distance, max_distance, min_target_hp_pct, max_target_hp_pct,
+		       phase_tag, condition_lua, enabled
+		  FROM npc_ability_loadouts
+		 ORDER BY priority DESC, id`)
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadNPCAbilityLoadouts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []NPCAbilityLoadoutRow
+	for rows.Next() {
+		var r NPCAbilityLoadoutRow
+		var enabledRaw interface{}
+		if err := rows.Scan(
+			&r.ID, &r.NPCSpawnID, &r.ActorDefID, &r.AbilityID, &r.Priority, &r.Weight,
+			&r.MinDistance, &r.MaxDistance, &r.MinTargetHPPct, &r.MaxTargetHPPct,
+			&r.PhaseTag, &r.ConditionLua, &enabledRaw,
+		); err != nil {
+			return nil, fmt.Errorf("db: LoadNPCAbilityLoadouts scan: %w", err)
+		}
+		r.Enabled = boolFromDB(enabledRaw)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// LoadNPCCombatProfiles returns enabled/disabled NPC combat profile rows.
+func (d *DB) LoadNPCCombatProfiles(ctx context.Context) ([]NPCCombatProfileRow, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, name, global_gcd_ms, decision_tick_ms, aggro_style,
+		       allow_chain_cast, max_consecutive_specials, enabled
+		  FROM npc_combat_profiles
+		 ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadNPCCombatProfiles: %w", err)
+	}
+	defer rows.Close()
+
+	var out []NPCCombatProfileRow
+	for rows.Next() {
+		var r NPCCombatProfileRow
+		var allowChainRaw interface{}
+		var enabledRaw interface{}
+		if err := rows.Scan(
+			&r.ID, &r.Name, &r.GlobalGCDMs, &r.DecisionTickMs, &r.AggroStyle,
+			&allowChainRaw, &r.MaxConsecutiveSpecials, &enabledRaw,
+		); err != nil {
+			return nil, fmt.Errorf("db: LoadNPCCombatProfiles scan: %w", err)
+		}
+		r.AllowChainCast = boolFromDB(allowChainRaw)
+		r.Enabled = boolFromDB(enabledRaw)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// LoadNPCProfileBindings returns enabled/disabled profile binding rows.
+func (d *DB) LoadNPCProfileBindings(ctx context.Context) ([]NPCProfileBindingRow, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, npc_spawn_id, actor_def_id, profile_id, enabled
+		  FROM npc_profile_bindings
+		 ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadNPCProfileBindings: %w", err)
+	}
+	defer rows.Close()
+
+	var out []NPCProfileBindingRow
+	for rows.Next() {
+		var r NPCProfileBindingRow
+		var enabledRaw interface{}
+		if err := rows.Scan(
+			&r.ID, &r.NPCSpawnID, &r.ActorDefID, &r.ProfileID, &enabledRaw,
+		); err != nil {
+			return nil, fmt.Errorf("db: LoadNPCProfileBindings scan: %w", err)
+		}
+		r.Enabled = boolFromDB(enabledRaw)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -898,8 +1260,8 @@ type NpcSpawn struct {
 	AggressiveRange  float32
 	AttackRange      float32
 	RespawnDelayMs   int64
-	ActorDefID       int // FK → media_actor_defs.id (0 = unset)
-	StartWaypointID  int // FK → area_waypoints.id (0 = no patrol)
+	ActorDefID       int // FK Ã¢â€ â€™ media_actor_defs.id (0 = unset)
+	StartWaypointID  int // FK Ã¢â€ â€™ area_waypoints.id (0 = no patrol)
 	WanderRadius     float32
 	WanderPauseMinMs int
 	WanderPauseMaxMs int
@@ -997,19 +1359,19 @@ func (d *DB) migrateV6(ctx context.Context) {
 		respawnMs             int64
 	}
 	// Coords are 0-indexed to match the GUE / client (terrain [0, W*cs]).
-	// Starter Zone = 1024×1024 → center is (512, 512); seeds cluster there.
+	// Starter Zone = 1024Ãƒâ€”1024 Ã¢â€ â€™ center is (512, 512); seeds cluster there.
 	seeds := []seed{
-		// Starter Zone — dialog NPCs (aggressiveness=3)
+		// Starter Zone Ã¢â‚¬â€ dialog NPCs (aggressiveness=3)
 		{"Guard", "Human", "Warrior", 5, "Starter Zone", 517, 0, 512, 0, 3, 8, 2, 30000},
 		{"Merchant", "Elf", "Mage", 3, "Starter Zone", 504, 0, 515, 180, 3, 8, 2, 30000},
 		{"Innkeeper", "Dwarf", "Warrior", 10, "Starter Zone", 524, 0, 507, 270, 3, 8, 2, 30000},
-		// Starter Zone — combat mobs (aggressiveness=2)
+		// Starter Zone Ã¢â‚¬â€ combat mobs (aggressiveness=2)
 		{"Goblin", "Beast", "Warrior", 2, "Starter Zone", 527, 0, 520, 0, 2, 8, 2, 30000},
 		{"Goblin", "Beast", "Warrior", 2, "Starter Zone", 532, 0, 506, 90, 2, 8, 2, 30000},
 		{"Goblin Scout", "Beast", "Rogue", 3, "Starter Zone", 522, 0, 530, 180, 2, 8, 2, 30000},
 		{"Slime", "Beast", "Beast", 1, "Starter Zone", 497, 0, 522, 0, 2, 8, 2, 30000},
 		{"Slime", "Beast", "Beast", 1, "Starter Zone", 494, 0, 508, 0, 2, 8, 2, 30000},
-		// Forest — combat mobs
+		// Forest Ã¢â‚¬â€ combat mobs
 		{"Wolf", "Beast", "Beast", 4, "Forest", 520, 0, 524, 0, 2, 10, 2, 30000},
 		{"Wolf", "Beast", "Beast", 4, "Forest", 526, 0, 518, 90, 2, 10, 2, 30000},
 		{"Forest Troll", "Beast", "Beast", 8, "Forest", 507, 0, 520, 90, 2, 10, 2, 30000},
@@ -1058,7 +1420,7 @@ func (d *DB) LoadNPCSpawns(ctx context.Context) ([]*NpcSpawn, error) {
 // migrateV7 creates the Media registry tables and adds actor_def_id to npc_spawns.
 //
 // These tables are primarily written by the GUE (Media tab). The server reads
-// them to resolve a spawn's ActorDefID → model_path + material_paths + animation
+// them to resolve a spawn's ActorDefID Ã¢â€ â€™ model_path + material_paths + animation
 // clips before broadcasting PNewActor to clients.
 func (d *DB) migrateV7(ctx context.Context) {
 	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
@@ -1154,7 +1516,7 @@ func (d *DB) migrateV7(ctx context.Context) {
 
 	// Per-aiMaterial mapping for multi-material models (e.g. Substance imports
 	// where every submesh names a different "blinn"/"ID" material). Stored as
-	// a flat "k1=v1;k2=v2" string keyed by the model's ai-material name → the
+	// a flat "k1=v1;k2=v2" string keyed by the model's ai-material name Ã¢â€ â€™ the
 	// media_materials.name to use. Mirrors the GUE-side migration.
 	if d.driver == "postgres" {
 		exec(`ALTER TABLE media_models ADD COLUMN IF NOT EXISTS material_map TEXT NOT NULL DEFAULT ''`)
@@ -1162,7 +1524,7 @@ func (d *DB) migrateV7(ctx context.Context) {
 		exec(`ALTER TABLE media_models ADD COLUMN material_map TEXT NOT NULL DEFAULT ''`)
 	}
 
-	// Normal map intensity per terrain material — compensates for whiteout triplanar
+	// Normal map intensity per terrain material Ã¢â‚¬â€ compensates for whiteout triplanar
 	// blend softening on top-facing surfaces. 2.5 matches the shader's previous global default.
 	if d.driver == "postgres" {
 		exec(`ALTER TABLE media_materials ADD COLUMN IF NOT EXISTS normal_strength REAL NOT NULL DEFAULT 2.5`)
@@ -1170,7 +1532,7 @@ func (d *DB) migrateV7(ctx context.Context) {
 		exec(`ALTER TABLE media_materials ADD COLUMN normal_strength REAL NOT NULL DEFAULT 2.5`)
 	}
 
-	// migrateV8 — extend media_actor_defs with gameplay defaults so an actor
+	// migrateV8 Ã¢â‚¬â€ extend media_actor_defs with gameplay defaults so an actor
 	// def carries everything needed to spawn a creature (appearance + stats +
 	// AI tuning). Zone placement copies these into npc_spawns at insert time.
 	if d.driver == "postgres" {
@@ -1207,22 +1569,22 @@ func (d *DB) migrateV7(ctx context.Context) {
 	}
 }
 
-// migrateV9 — coordinate-system alignment: previously the client terrain
+// migrateV9 Ã¢â‚¬â€ coordinate-system alignment: previously the client terrain
 // was centered on the origin while the GUE stored positions in [0, W*cs].
 // Shift rows that still use the old "centered on origin" values into the
-// new 0-indexed convention (Starter Zone is 1024×1024 → center = 512,512).
-// Heuristic: positions inside the small ±100 window around the old origin
+// new 0-indexed convention (Starter Zone is 1024Ãƒâ€”1024 Ã¢â€ â€™ center = 512,512).
+// Heuristic: positions inside the small Ã‚Â±100 window around the old origin
 // are assumed legacy and get bumped. Positions already in the new range
 // (hundreds of units) are left alone.
 // Safe to run multiple times: once a row's been shifted it falls outside
 // the window and no further migration is applied.
 func (d *DB) migrateV9(ctx context.Context) {
 	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
-	// Characters still at (0, 0, 0) — the old map center — land at the
+	// Characters still at (0, 0, 0) Ã¢â‚¬â€ the old map center Ã¢â‚¬â€ land at the
 	// new center of Starter Zone so they don't spawn at the corner.
 	exec(`UPDATE characters SET x = 512, z = 512
 	      WHERE x = 0 AND z = 0 AND area_name = 'Starter Zone'`)
-	// Seed NPCs in Starter Zone (coords around old origin) → shift by the
+	// Seed NPCs in Starter Zone (coords around old origin) Ã¢â€ â€™ shift by the
 	// old map half-extent.
 	exec(`UPDATE npc_spawns SET x = x + 512, z = z + 512
 	      WHERE area_name = 'Starter Zone'
@@ -1232,7 +1594,7 @@ func (d *DB) migrateV9(ctx context.Context) {
 	        AND x BETWEEN -100 AND 100 AND z BETWEEN -100 AND 100`)
 }
 
-// migrateV10 — adds actor_def_id to characters so player appearance is driven
+// migrateV10 Ã¢â‚¬â€ adds actor_def_id to characters so player appearance is driven
 // by the Media registry (same path as NPCs).
 func (d *DB) migrateV10(ctx context.Context) {
 	if d.driver == "postgres" {
@@ -1409,7 +1771,7 @@ func (d *DB) migrateV11(ctx context.Context) {
 	}
 }
 
-// migrateV12 — adds yaw_offset and y_offset to media_actor_defs so GUE authors
+// migrateV12 Ã¢â‚¬â€ adds yaw_offset and y_offset to media_actor_defs so GUE authors
 // can correct backwards-facing or ground-sunken models without touching assets.
 func (d *DB) migrateV12(ctx context.Context) {
 	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
@@ -1423,7 +1785,7 @@ func (d *DB) migrateV12(ctx context.Context) {
 }
 
 // ---------------------------------------------------------------------------
-// Media registry — read-only accessors used by the server to resolve an
+// Media registry Ã¢â‚¬â€ read-only accessors used by the server to resolve an
 // NpcSpawn.ActorDefID into concrete asset paths for PNewActor.
 // ---------------------------------------------------------------------------
 
@@ -1527,7 +1889,7 @@ type ActorDef struct {
 	YawOffset float64 // model-space Y rotation (degrees) applied before world yaw
 	YOffset   float64 // vertical offset (world units) added to position at render time
 
-	// Gameplay defaults — applied to freshly placed npc_spawns so users
+	// Gameplay defaults Ã¢â‚¬â€ applied to freshly placed npc_spawns so users
 	// don't have to retype identical fields for every copy of the same
 	// creature. Empty strings / zero values mean "no default".
 	DefaultName           string
@@ -1632,7 +1994,7 @@ func (d *DB) GetMediaModel(ctx context.Context, id int) (*MediaModel, error) {
 
 // ListMediaMaterials returns every row in media_materials, keyed by name.
 // Used by the spawn-time appearance builder to resolve a model's
-// material_map (aiMaterial → media material name) into concrete PBR paths.
+// material_map (aiMaterial Ã¢â€ â€™ media material name) into concrete PBR paths.
 func (d *DB) ListMediaMaterials(ctx context.Context) (map[string]*MediaMaterial, error) {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, name, albedo_path, normal_path, orm_path,
@@ -1819,6 +2181,755 @@ func (d *DB) GetKnownSpellIDs(ctx context.Context, charID string) ([]uint16, err
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// Quest methods
+// ---------------------------------------------------------------------------
+
+// ListQuestLog returns all visible quest states for a character.
+func (d *DB) ListQuestLog(ctx context.Context, charID string) ([]*QuestLogEntry, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT q.id, q.code, q.title, q.description, cq.state
+		  FROM character_quests cq
+		  JOIN quest_defs q ON q.id = cq.quest_id
+		 WHERE cq.character_id = ?
+		   AND cq.state IN ('active', 'completed', 'turned_in')
+		 ORDER BY q.id`), charID)
+	if err != nil {
+		return nil, fmt.Errorf("db: ListQuestLog: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*QuestLogEntry
+	for rows.Next() {
+		e := &QuestLogEntry{}
+		var stateText string
+		if err := rows.Scan(&e.QuestID, &e.Code, &e.Title, &e.Description, &stateText); err != nil {
+			return nil, fmt.Errorf("db: ListQuestLog scan quest: %w", err)
+		}
+		e.State = questStateToCode(stateText)
+
+		objRows, err := d.db.QueryContext(ctx, d.q(`
+			SELECT od.id, od.objective_type, od.description,
+			       COALESCE(cp.current_count, 0),
+			       CASE
+			         WHEN COALESCE(cp.target_count, od.target_count, 1) < 1 THEN 1
+			         ELSE COALESCE(cp.target_count, od.target_count, 1)
+			       END AS target_count,
+			       od.target_npc_name,
+			       od.target_item_id,
+			       od.target_area_name
+			  FROM quest_objective_defs od
+			  LEFT JOIN character_quest_progress cp
+			         ON cp.character_id = ? AND cp.quest_id = od.quest_id AND cp.objective_id = od.id
+			 WHERE od.quest_id = ?
+			 ORDER BY od.objective_order, od.id`), charID, e.QuestID)
+		if err != nil {
+			return nil, fmt.Errorf("db: ListQuestLog objectives: %w", err)
+		}
+		for objRows.Next() {
+			var obj QuestLogObjective
+			if err := objRows.Scan(
+				&obj.ObjectiveID,
+				&obj.ObjectiveType,
+				&obj.Description,
+				&obj.CurrentCount,
+				&obj.TargetCount,
+				&obj.TargetNPCName,
+				&obj.TargetItemID,
+				&obj.TargetArea,
+			); err != nil {
+				objRows.Close()
+				return nil, fmt.Errorf("db: ListQuestLog scan objective: %w", err)
+			}
+			e.Objectives = append(e.Objectives, obj)
+		}
+		if err := objRows.Err(); err != nil {
+			objRows.Close()
+			return nil, fmt.Errorf("db: ListQuestLog objective rows: %w", err)
+		}
+		objRows.Close()
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: ListQuestLog rows: %w", err)
+	}
+	return out, nil
+}
+
+// ListAvailableQuests returns quests currently available to accept.
+func (d *DB) ListAvailableQuests(ctx context.Context, charID string) ([]*QuestAvailableEntry, error) {
+	var charLevel int
+	if err := d.db.QueryRowContext(ctx, d.q(`SELECT level FROM characters WHERE id = ?`), charID).Scan(&charLevel); err != nil {
+		return nil, fmt.Errorf("db: ListAvailableQuests character level: %w", err)
+	}
+
+	rows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT q.id,
+		       q.code,
+		       q.title,
+		       q.description,
+		       q.min_level,
+		       CASE WHEN q.repeatable THEN 1 ELSE 0 END AS repeatable_int,
+		       q.prerequisite_quest_id,
+		       COALESCE(cq.state, '') AS current_state
+		  FROM quest_defs q
+		  LEFT JOIN character_quests cq
+		         ON cq.character_id = ? AND cq.quest_id = q.id
+		 WHERE CASE WHEN q.is_active THEN 1 ELSE 0 END = 1
+		 ORDER BY q.id`), charID)
+	if err != nil {
+		return nil, fmt.Errorf("db: ListAvailableQuests query: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*QuestAvailableEntry
+	for rows.Next() {
+		var (
+			e              QuestAvailableEntry
+			repeatableInt  int
+			prerequisiteID int
+			currentState   string
+		)
+		if err := rows.Scan(
+			&e.QuestID,
+			&e.Code,
+			&e.Title,
+			&e.Description,
+			&e.MinLevel,
+			&repeatableInt,
+			&prerequisiteID,
+			&currentState,
+		); err != nil {
+			return nil, fmt.Errorf("db: ListAvailableQuests scan: %w", err)
+		}
+		e.Repeatable = repeatableInt != 0
+
+		if charLevel < e.MinLevel {
+			continue
+		}
+
+		switch currentState {
+		case questStateTextActive, questStateTextCompleted:
+			continue
+		case questStateTextTurnedIn:
+			if !e.Repeatable {
+				continue
+			}
+		}
+
+		if prerequisiteID > 0 {
+			var prereqTurnedIn int
+			if err := d.db.QueryRowContext(ctx, d.q(`
+				SELECT COUNT(1)
+				  FROM character_quests
+				 WHERE character_id = ? AND quest_id = ? AND state = ?`),
+				charID, prerequisiteID, questStateTextTurnedIn).Scan(&prereqTurnedIn); err != nil {
+				return nil, fmt.Errorf("db: ListAvailableQuests prerequisite: %w", err)
+			}
+			if prereqTurnedIn == 0 {
+				continue
+			}
+		}
+
+		out = append(out, &e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: ListAvailableQuests rows: %w", err)
+	}
+	return out, nil
+}
+
+// AcceptQuest starts a quest for the character (idempotent for already-active).
+// Returns true when state changed.
+func (d *DB) AcceptQuest(ctx context.Context, charID string, questID int) (bool, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	var (
+		minLevel       int
+		repeatableInt  int
+		prerequisiteID int
+		isActiveInt    int
+		charLevel      int
+		existingState  string
+		nowStamp       = now()
+	)
+	err = tx.QueryRowContext(ctx, d.q(`
+		SELECT min_level,
+		       CASE WHEN repeatable THEN 1 ELSE 0 END,
+		       prerequisite_quest_id,
+		       CASE WHEN is_active THEN 1 ELSE 0 END
+		  FROM quest_defs
+		 WHERE id = ?`), questID).Scan(&minLevel, &repeatableInt, &prerequisiteID, &isActiveInt)
+	if err == sql.ErrNoRows {
+		return false, fmt.Errorf("db: AcceptQuest: quest %d not found", questID)
+	}
+	if err != nil {
+		return false, fmt.Errorf("db: AcceptQuest quest row: %w", err)
+	}
+	if isActiveInt == 0 {
+		return false, fmt.Errorf("db: AcceptQuest: quest %d is inactive", questID)
+	}
+
+	if err := tx.QueryRowContext(ctx, d.q(`SELECT level FROM characters WHERE id = ?`), charID).Scan(&charLevel); err != nil {
+		return false, fmt.Errorf("db: AcceptQuest character level: %w", err)
+	}
+	if charLevel < minLevel {
+		return false, fmt.Errorf("db: AcceptQuest: level %d required", minLevel)
+	}
+
+	if prerequisiteID > 0 {
+		var prereqTurnedIn int
+		if err := tx.QueryRowContext(ctx, d.q(`
+			SELECT COUNT(1)
+			  FROM character_quests
+			 WHERE character_id = ? AND quest_id = ? AND state = ?`),
+			charID, prerequisiteID, questStateTextTurnedIn).Scan(&prereqTurnedIn); err != nil {
+			return false, fmt.Errorf("db: AcceptQuest prerequisite: %w", err)
+		}
+		if prereqTurnedIn == 0 {
+			return false, fmt.Errorf("db: AcceptQuest: prerequisite quest %d not turned in", prerequisiteID)
+		}
+	}
+
+	err = tx.QueryRowContext(ctx, d.q(`
+		SELECT state
+		  FROM character_quests
+		 WHERE character_id = ? AND quest_id = ?`), charID, questID).Scan(&existingState)
+	switch err {
+	case nil:
+		if existingState == questStateTextActive {
+			if err := tx.Commit(); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+		if repeatableInt == 0 && (existingState == questStateTextCompleted || existingState == questStateTextTurnedIn) {
+			return false, fmt.Errorf("db: AcceptQuest: quest %d is not repeatable", questID)
+		}
+		if _, err := tx.ExecContext(ctx, d.q(`
+			UPDATE character_quests
+			   SET state = ?, accepted_at = ?, completed_at = NULL, turned_in_at = NULL, updated_at = ?
+			 WHERE character_id = ? AND quest_id = ?`),
+			questStateTextActive, nowStamp, nowStamp, charID, questID); err != nil {
+			return false, fmt.Errorf("db: AcceptQuest update: %w", err)
+		}
+	case sql.ErrNoRows:
+		if _, err := tx.ExecContext(ctx, d.q(`
+			INSERT INTO character_quests (character_id, quest_id, state, accepted_at, updated_at)
+			VALUES (?, ?, ?, ?, ?)`),
+			charID, questID, questStateTextActive, nowStamp, nowStamp); err != nil {
+			return false, fmt.Errorf("db: AcceptQuest insert: %w", err)
+		}
+	default:
+		return false, fmt.Errorf("db: AcceptQuest query existing: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, d.q(`
+		DELETE FROM character_quest_progress
+		 WHERE character_id = ? AND quest_id = ?`), charID, questID); err != nil {
+		return false, fmt.Errorf("db: AcceptQuest clear progress: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, d.q(`
+		INSERT INTO character_quest_progress (character_id, quest_id, objective_id, current_count, target_count, updated_at)
+		SELECT ?, ?, od.id, 0,
+		       CASE WHEN od.target_count < 1 THEN 1 ELSE od.target_count END,
+		       ?
+		  FROM quest_objective_defs od
+		 WHERE od.quest_id = ?`),
+		charID, questID, nowStamp, questID); err != nil {
+		return false, fmt.Errorf("db: AcceptQuest seed progress: %w", err)
+	}
+
+	var objectiveCount int
+	if err := tx.QueryRowContext(ctx, d.q(`SELECT COUNT(1) FROM quest_objective_defs WHERE quest_id = ?`), questID).Scan(&objectiveCount); err != nil {
+		return false, fmt.Errorf("db: AcceptQuest objective count: %w", err)
+	}
+	if objectiveCount == 0 {
+		if _, err := tx.ExecContext(ctx, d.q(`
+			UPDATE character_quests
+			   SET state = ?, completed_at = ?, updated_at = ?
+			 WHERE character_id = ? AND quest_id = ? AND state = ?`),
+			questStateTextCompleted, nowStamp, nowStamp, charID, questID, questStateTextActive); err != nil {
+			return false, fmt.Errorf("db: AcceptQuest auto-complete: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// AbandonQuest marks an active quest as abandoned and clears progress.
+// Returns true when state changed.
+func (d *DB) AbandonQuest(ctx context.Context, charID string, questID int) (bool, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	var state string
+	err = tx.QueryRowContext(ctx, d.q(`
+		SELECT state FROM character_quests
+		 WHERE character_id = ? AND quest_id = ?`), charID, questID).Scan(&state)
+	if err == sql.ErrNoRows {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("db: AbandonQuest query: %w", err)
+	}
+	if state != questStateTextActive {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	nowStamp := now()
+	if _, err := tx.ExecContext(ctx, d.q(`
+		UPDATE character_quests
+		   SET state = ?, updated_at = ?
+		 WHERE character_id = ? AND quest_id = ? AND state = ?`),
+		questStateTextAbandoned, nowStamp, charID, questID, questStateTextActive); err != nil {
+		return false, fmt.Errorf("db: AbandonQuest update: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, d.q(`
+		DELETE FROM character_quest_progress
+		 WHERE character_id = ? AND quest_id = ?`), charID, questID); err != nil {
+		return false, fmt.Errorf("db: AbandonQuest clear progress: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// TurnInQuest atomically marks a completed quest as turned-in and applies all
+// rewards (items/gold/xp) in the same DB transaction.
+//
+// Returns changed=false when the quest was already turned in (idempotent).
+func (d *DB) TurnInQuest(ctx context.Context, charID string, questID int) (*QuestTurnInResult, bool, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+
+	var state string
+	err = tx.QueryRowContext(ctx, d.q(`
+		SELECT state FROM character_quests
+		 WHERE character_id = ? AND quest_id = ?`), charID, questID).Scan(&state)
+	if err == sql.ErrNoRows {
+		return nil, false, fmt.Errorf("db: TurnInQuest: quest %d not accepted", questID)
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("db: TurnInQuest query state: %w", err)
+	}
+	if state == questStateTextTurnedIn {
+		if err := tx.Commit(); err != nil {
+			return nil, false, err
+		}
+		return nil, false, nil
+	}
+	if state != questStateTextCompleted {
+		return nil, false, fmt.Errorf("db: TurnInQuest: quest %d is not completed", questID)
+	}
+
+	rows, err := tx.QueryContext(ctx, d.q(`
+		SELECT xp_reward, gold_reward, item_id, item_qty
+		  FROM quest_reward_defs
+		 WHERE quest_id = ?
+		 ORDER BY id`), questID)
+	if err != nil {
+		return nil, false, fmt.Errorf("db: TurnInQuest rewards query: %w", err)
+	}
+
+	var (
+		rewards      []QuestRewardEntry
+		totalXP      int64
+		totalGold    int64
+		itemsChanged bool
+	)
+	for rows.Next() {
+		var (
+			r       QuestRewardEntry
+			itemID  int
+			itemQty int
+		)
+		if err := rows.Scan(&r.XPReward, &r.GoldReward, &itemID, &itemQty); err != nil {
+			rows.Close()
+			return nil, false, fmt.Errorf("db: TurnInQuest rewards scan: %w", err)
+		}
+		if itemID < 0 || itemQty < 0 {
+			rows.Close()
+			return nil, false, fmt.Errorf("db: TurnInQuest reward row invalid: negative item fields")
+		}
+		if itemID == 0 && itemQty > 0 {
+			rows.Close()
+			return nil, false, fmt.Errorf("db: TurnInQuest reward row invalid: item_qty without item_id")
+		}
+		if itemID > 0 && itemQty == 0 {
+			rows.Close()
+			return nil, false, fmt.Errorf("db: TurnInQuest reward row invalid: item_id without item_qty")
+		}
+		if itemID > math.MaxUint16 {
+			rows.Close()
+			return nil, false, fmt.Errorf("db: TurnInQuest reward row invalid: item_id %d exceeds uint16", itemID)
+		}
+		if itemQty > math.MaxUint8 {
+			rows.Close()
+			return nil, false, fmt.Errorf("db: TurnInQuest reward row invalid: item_qty %d exceeds uint8", itemQty)
+		}
+
+		if itemID > 0 {
+			r.ItemID = uint16(itemID)
+			r.ItemQty = uint8(itemQty)
+		}
+		rewards = append(rewards, r)
+		totalXP += r.XPReward
+		totalGold += r.GoldReward
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, false, fmt.Errorf("db: TurnInQuest rewards rows: %w", err)
+	}
+	rows.Close()
+
+	var (
+		curXP    int64
+		curLevel int
+		curGold  int64
+	)
+	if err := tx.QueryRowContext(ctx, d.q(`
+		SELECT xp, level, gold
+		  FROM characters
+		 WHERE id = ?`), charID).Scan(&curXP, &curLevel, &curGold); err != nil {
+		return nil, false, fmt.Errorf("db: TurnInQuest character state: %w", err)
+	}
+
+	newXP := curXP
+	newLevel := curLevel
+	leveled := false
+	if totalXP > 0 {
+		newXP, newLevel, leveled = world.ProcessXP(curXP, curLevel, totalXP)
+	}
+	hpMax, epMax, strength := world.StatsByLevel(newLevel)
+
+	for _, reward := range rewards {
+		if reward.ItemID == 0 || reward.ItemQty == 0 {
+			continue
+		}
+		if _, err := d.addStackableItemTx(ctx, tx, charID, reward.ItemID, reward.ItemQty, 0, 100); err != nil {
+			return nil, false, fmt.Errorf("db: TurnInQuest add item (%d x%d): %w", reward.ItemID, reward.ItemQty, err)
+		}
+		itemsChanged = true
+	}
+
+	newGold := curGold
+	if totalGold != 0 {
+		if _, err := tx.ExecContext(ctx,
+			d.q(`UPDATE characters SET gold = gold + ? WHERE id = ?`),
+			totalGold, charID); err != nil {
+			return nil, false, fmt.Errorf("db: TurnInQuest update gold: %w", err)
+		}
+		if err := tx.QueryRowContext(ctx,
+			d.q(`SELECT gold FROM characters WHERE id = ?`),
+			charID).Scan(&newGold); err != nil {
+			return nil, false, fmt.Errorf("db: TurnInQuest read gold: %w", err)
+		}
+	}
+
+	if totalXP > 0 {
+		if _, err := tx.ExecContext(ctx, d.q(`
+			UPDATE characters
+			   SET xp = ?, level = ?, health_max = ?, energy_max = ?
+			 WHERE id = ?`),
+			newXP, newLevel, hpMax, epMax, charID); err != nil {
+			return nil, false, fmt.Errorf("db: TurnInQuest update xp: %w", err)
+		}
+	}
+
+	nowStamp := now()
+	if _, err := tx.ExecContext(ctx, d.q(`
+		UPDATE character_quests
+		   SET state = ?, turned_in_at = ?, updated_at = ?
+		 WHERE character_id = ? AND quest_id = ? AND state = ?`),
+		questStateTextTurnedIn, nowStamp, nowStamp, charID, questID, questStateTextCompleted); err != nil {
+		return nil, false, fmt.Errorf("db: TurnInQuest update state: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+
+	result := &QuestTurnInResult{
+		Rewards:      rewards,
+		NewGold:      newGold,
+		NewXP:        newXP,
+		NewLevel:     newLevel,
+		NewHPMax:     hpMax,
+		NewEPMax:     epMax,
+		NewStrength:  strength,
+		Leveled:      leveled,
+		GoldChanged:  totalGold != 0,
+		XPChanged:    totalXP > 0,
+		ItemsChanged: itemsChanged,
+	}
+	return result, true, nil
+}
+
+func (d *DB) findFreeBackpackSlotTx(ctx context.Context, tx *sql.Tx, charID string) (uint8, bool, error) {
+	rows, err := tx.QueryContext(ctx,
+		d.q(`SELECT slot FROM character_items WHERE character_id = ? AND slot >= 14 ORDER BY slot`),
+		charID)
+	if err != nil {
+		return 0, false, fmt.Errorf("db: findFreeBackpackSlotTx: %w", err)
+	}
+	defer rows.Close()
+
+	used := make(map[uint8]bool)
+	for rows.Next() {
+		var slot uint8
+		if err := rows.Scan(&slot); err != nil {
+			return 0, false, err
+		}
+		used[slot] = true
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false, err
+	}
+	for slot := uint8(14); slot <= 44; slot++ {
+		if !used[slot] {
+			return slot, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+func (d *DB) addItemToSlotTx(ctx context.Context, tx *sql.Tx, charID string, slot uint8, itemID uint16, qty, dur uint8) error {
+	_, err := tx.ExecContext(ctx,
+		d.q(`INSERT INTO character_items (character_id, slot, item_id, quantity, durability)
+		     VALUES (?, ?, ?, ?, ?)`),
+		charID, slot, itemID, qty, dur)
+	if err != nil {
+		return fmt.Errorf("db: addItemToSlotTx: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) addStackableItemTx(ctx context.Context, tx *sql.Tx, charID string, itemID uint16, qty uint8, maxStack uint8, dur uint8) (uint8, error) {
+	if qty == 0 {
+		return 0, nil
+	}
+
+	if maxStack == 0 {
+		var ms int
+		err := tx.QueryRowContext(ctx,
+			d.q(`SELECT max_stack FROM item_templates WHERE id = ?`),
+			itemID).Scan(&ms)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return 0, fmt.Errorf("item template %d not found", itemID)
+			}
+			return 0, fmt.Errorf("db: addStackableItemTx max_stack: %w", err)
+		}
+		if ms > 0 {
+			maxStack = uint8(ms)
+		}
+	}
+	if maxStack < 1 {
+		maxStack = 1
+	}
+
+	rows, err := tx.QueryContext(ctx,
+		d.q(`SELECT slot, quantity FROM character_items
+		     WHERE character_id = ? AND item_id = ? AND slot >= 14 AND quantity < ?
+		     ORDER BY slot`),
+		charID, itemID, maxStack)
+	if err != nil {
+		return 0, fmt.Errorf("db: addStackableItemTx query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			slot     uint8
+			existing uint8
+		)
+		if err := rows.Scan(&slot, &existing); err != nil {
+			return 0, fmt.Errorf("db: addStackableItemTx scan: %w", err)
+		}
+		room := maxStack - existing
+		add := qty
+		if add > room {
+			add = room
+		}
+		if _, err := tx.ExecContext(ctx,
+			d.q(`UPDATE character_items SET quantity = quantity + ? WHERE character_id = ? AND slot = ?`),
+			add, charID, slot); err != nil {
+			return 0, fmt.Errorf("db: addStackableItemTx update: %w", err)
+		}
+		qty -= add
+		if qty == 0 {
+			return slot, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("db: addStackableItemTx rows: %w", err)
+	}
+
+	freeSlot, found, err := d.findFreeBackpackSlotTx(ctx, tx, charID)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, fmt.Errorf("inventory full")
+	}
+	if err := d.addItemToSlotTx(ctx, tx, charID, freeSlot, itemID, qty, dur); err != nil {
+		return 0, err
+	}
+	return freeSlot, nil
+}
+
+// ApplyQuestProgressEvent advances active objectives matching the event and
+// returns the list of quest IDs that changed progress/state.
+func (d *DB) ApplyQuestProgressEvent(ctx context.Context, charID string, event QuestProgressEvent) ([]int, error) {
+	if event.Delta <= 0 {
+		event.Delta = 1
+	}
+
+	query := `
+		SELECT cq.quest_id, cp.objective_id, cp.current_count, cp.target_count
+		  FROM character_quests cq
+		  JOIN character_quest_progress cp
+		    ON cp.character_id = cq.character_id AND cp.quest_id = cq.quest_id
+		  JOIN quest_objective_defs od
+		    ON od.id = cp.objective_id
+		 WHERE cq.character_id = ? AND cq.state = ? AND od.objective_type = ?`
+	args := []interface{}{charID, questStateTextActive, event.ObjectiveType}
+
+	switch event.ObjectiveType {
+	case QuestObjectiveKill, QuestObjectiveTalk, QuestObjectiveInteract:
+		if event.TargetNPCName == "" {
+			return nil, nil
+		}
+		query += ` AND od.target_npc_name = ?`
+		args = append(args, event.TargetNPCName)
+	case QuestObjectiveCollect:
+		if event.TargetItemID == 0 {
+			return nil, nil
+		}
+		query += ` AND od.target_item_id = ?`
+		args = append(args, int(event.TargetItemID))
+	case QuestObjectiveExplore:
+		if event.TargetArea == "" {
+			return nil, nil
+		}
+		query += ` AND od.target_area_name = ?`
+		args = append(args, event.TargetArea)
+	default:
+		return nil, nil
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, d.q(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: ApplyQuestProgressEvent query: %w", err)
+	}
+	type rowData struct {
+		questID     int
+		objectiveID int
+		current     int
+		target      int
+	}
+	var matches []rowData
+	for rows.Next() {
+		var row rowData
+		if err := rows.Scan(&row.questID, &row.objectiveID, &row.current, &row.target); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("db: ApplyQuestProgressEvent scan: %w", err)
+		}
+		matches = append(matches, row)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("db: ApplyQuestProgressEvent rows: %w", err)
+	}
+	rows.Close()
+	if len(matches) == 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	changedQuestIDs := make(map[int]struct{})
+	nowStamp := now()
+
+	for _, m := range matches {
+		if m.target < 1 {
+			m.target = 1
+		}
+		if m.current >= m.target {
+			continue
+		}
+		next := m.current + event.Delta
+		if next > m.target {
+			next = m.target
+		}
+		if _, err := tx.ExecContext(ctx, d.q(`
+			UPDATE character_quest_progress
+			   SET current_count = ?, updated_at = ?
+			 WHERE character_id = ? AND quest_id = ? AND objective_id = ?`),
+			next, nowStamp, charID, m.questID, m.objectiveID); err != nil {
+			return nil, fmt.Errorf("db: ApplyQuestProgressEvent update objective: %w", err)
+		}
+		changedQuestIDs[m.questID] = struct{}{}
+	}
+
+	var changed []int
+	for questID := range changedQuestIDs {
+		var pending int
+		if err := tx.QueryRowContext(ctx, d.q(`
+			SELECT COUNT(1)
+			  FROM character_quest_progress
+			 WHERE character_id = ? AND quest_id = ? AND current_count < target_count`),
+			charID, questID).Scan(&pending); err != nil {
+			return nil, fmt.Errorf("db: ApplyQuestProgressEvent pending count: %w", err)
+		}
+		if pending == 0 {
+			if _, err := tx.ExecContext(ctx, d.q(`
+				UPDATE character_quests
+				   SET state = ?, completed_at = ?, updated_at = ?
+				 WHERE character_id = ? AND quest_id = ? AND state = ?`),
+				questStateTextCompleted, nowStamp, nowStamp, charID, questID, questStateTextActive); err != nil {
+				return nil, fmt.Errorf("db: ApplyQuestProgressEvent complete quest: %w", err)
+			}
+		}
+		changed = append(changed, questID)
+	}
+	sort.Ints(changed)
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return changed, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -2122,7 +3233,7 @@ type AreaConfig struct {
 	IsOutdoor                    bool
 	FogNear                      float32
 	FogFar                       float32
-	FogR, FogG, FogB             float32 // 0.0–1.0
+	FogR, FogG, FogB             float32 // 0.0Ã¢â‚¬â€œ1.0
 	AmbientR, AmbientG, AmbientB uint8
 	Gravity                      float32 // 1.0 = normal
 
@@ -2131,14 +3242,14 @@ type AreaConfig struct {
 	EntryScript string
 	ExitScript  string
 
-	// Weather probabilities (0–100 %)
+	// Weather probabilities (0Ã¢â‚¬â€œ100 %)
 	WeatherRain  uint8
 	WeatherSnow  uint8
 	WeatherFog   uint8
 	WeatherStorm uint8
 	WeatherWind  uint8
 
-	// Skybox — filename relative to assets/ibl/ (e.g. "forest.hdr"). Empty = use default.hdr.
+	// Skybox Ã¢â‚¬â€ filename relative to assets/ibl/ (e.g. "forest.hdr"). Empty = use default.hdr.
 	SkyboxHdr string
 
 	// Authoritative render tuning (sent to clients through PAreaConfig).
@@ -2225,7 +3336,7 @@ func (d *DB) LoadAreaConfigs(ctx context.Context) ([]*AreaConfig, error) {
 			fog_density REAL    NOT NULL DEFAULT 0.0
 		)`))
 
-	// Migrate: add new columns if they don't exist yet (errors are ignored — column may already exist).
+	// Migrate: add new columns if they don't exist yet (errors are ignored Ã¢â‚¬â€ column may already exist).
 	migs := []string{
 		`ALTER TABLE area_config ADD COLUMN is_outdoor    INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE area_config ADD COLUMN pvp_enabled   INTEGER NOT NULL DEFAULT 0`,
@@ -2614,7 +3725,7 @@ func (d *DB) LoadAreaPortals(ctx context.Context) ([]*AreaPortal, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Spawn Points — authored in GUE, loaded read-only by the server at startup.
+// Spawn Points Ã¢â‚¬â€ authored in GUE, loaded read-only by the server at startup.
 // ---------------------------------------------------------------------------
 
 // SpawnPoint mirrors one row in spawn_points.
@@ -2859,6 +3970,539 @@ func (d *DB) migrateV17(ctx context.Context) {
 		)`)
 		exec(`CREATE INDEX IF NOT EXISTS idx_world_objects_area ON world_objects(area_name)`)
 	}
+}
+
+// migrateV18 creates quest definition/progress tables and seeds one baseline
+// quest for the Training Camp loop.
+func (d *DB) migrateV18(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+
+	if d.driver == "postgres" {
+		exec(`CREATE TABLE IF NOT EXISTS quest_defs (
+			id                   SERIAL PRIMARY KEY,
+			code                 VARCHAR(64) NOT NULL UNIQUE,
+			title                VARCHAR(128) NOT NULL DEFAULT '',
+			description          TEXT NOT NULL DEFAULT '',
+			min_level            INTEGER NOT NULL DEFAULT 1,
+			repeatable           BOOLEAN NOT NULL DEFAULT FALSE,
+			auto_accept          BOOLEAN NOT NULL DEFAULT FALSE,
+			prerequisite_quest_id INTEGER NOT NULL DEFAULT 0,
+			is_active            BOOLEAN NOT NULL DEFAULT TRUE
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS quest_objective_defs (
+			id               SERIAL PRIMARY KEY,
+			quest_id         INTEGER NOT NULL DEFAULT 0,
+			objective_order  INTEGER NOT NULL DEFAULT 0,
+			objective_type   SMALLINT NOT NULL DEFAULT 1,
+			description      TEXT NOT NULL DEFAULT '',
+			target_npc_name  VARCHAR(128) NOT NULL DEFAULT '',
+			target_item_id   INTEGER NOT NULL DEFAULT 0,
+			target_area_name VARCHAR(128) NOT NULL DEFAULT '',
+			target_count     INTEGER NOT NULL DEFAULT 1
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS quest_reward_defs (
+			id          SERIAL PRIMARY KEY,
+			quest_id    INTEGER NOT NULL DEFAULT 0,
+			xp_reward   INTEGER NOT NULL DEFAULT 0,
+			gold_reward INTEGER NOT NULL DEFAULT 0,
+			item_id     INTEGER NOT NULL DEFAULT 0,
+			item_qty    INTEGER NOT NULL DEFAULT 0
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS character_quests (
+			id           SERIAL PRIMARY KEY,
+			character_id TEXT NOT NULL,
+			quest_id     INTEGER NOT NULL DEFAULT 0,
+			state        VARCHAR(32) NOT NULL DEFAULT 'active',
+			accepted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			completed_at TIMESTAMPTZ,
+			turned_in_at TIMESTAMPTZ,
+			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(character_id, quest_id)
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS character_quest_progress (
+			character_id TEXT NOT NULL,
+			quest_id     INTEGER NOT NULL DEFAULT 0,
+			objective_id INTEGER NOT NULL DEFAULT 0,
+			current_count INTEGER NOT NULL DEFAULT 0,
+			target_count  INTEGER NOT NULL DEFAULT 1,
+			updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY(character_id, quest_id, objective_id)
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_character_quests_character ON character_quests(character_id)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_character_quests_state ON character_quests(state)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_character_quest_progress_char ON character_quest_progress(character_id)`)
+	} else {
+		exec(`CREATE TABLE IF NOT EXISTS quest_defs (
+			id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+			code                  TEXT NOT NULL UNIQUE,
+			title                 TEXT NOT NULL DEFAULT '',
+			description           TEXT NOT NULL DEFAULT '',
+			min_level             INTEGER NOT NULL DEFAULT 1,
+			repeatable            INTEGER NOT NULL DEFAULT 0,
+			auto_accept           INTEGER NOT NULL DEFAULT 0,
+			prerequisite_quest_id INTEGER NOT NULL DEFAULT 0,
+			is_active             INTEGER NOT NULL DEFAULT 1
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS quest_objective_defs (
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			quest_id         INTEGER NOT NULL DEFAULT 0,
+			objective_order  INTEGER NOT NULL DEFAULT 0,
+			objective_type   INTEGER NOT NULL DEFAULT 1,
+			description      TEXT NOT NULL DEFAULT '',
+			target_npc_name  TEXT NOT NULL DEFAULT '',
+			target_item_id   INTEGER NOT NULL DEFAULT 0,
+			target_area_name TEXT NOT NULL DEFAULT '',
+			target_count     INTEGER NOT NULL DEFAULT 1
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS quest_reward_defs (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			quest_id    INTEGER NOT NULL DEFAULT 0,
+			xp_reward   INTEGER NOT NULL DEFAULT 0,
+			gold_reward INTEGER NOT NULL DEFAULT 0,
+			item_id     INTEGER NOT NULL DEFAULT 0,
+			item_qty    INTEGER NOT NULL DEFAULT 0
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS character_quests (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			character_id TEXT NOT NULL,
+			quest_id     INTEGER NOT NULL DEFAULT 0,
+			state        TEXT NOT NULL DEFAULT 'active',
+			accepted_at  TEXT NOT NULL DEFAULT '',
+			completed_at TEXT NOT NULL DEFAULT '',
+			turned_in_at TEXT NOT NULL DEFAULT '',
+			updated_at   TEXT NOT NULL DEFAULT '',
+			UNIQUE(character_id, quest_id)
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS character_quest_progress (
+			character_id  TEXT NOT NULL,
+			quest_id      INTEGER NOT NULL DEFAULT 0,
+			objective_id  INTEGER NOT NULL DEFAULT 0,
+			current_count INTEGER NOT NULL DEFAULT 0,
+			target_count  INTEGER NOT NULL DEFAULT 1,
+			updated_at    TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY(character_id, quest_id, objective_id)
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_character_quests_character ON character_quests(character_id)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_character_quests_state ON character_quests(state)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_character_quest_progress_char ON character_quest_progress(character_id)`)
+	}
+
+	// Seed a baseline quest for local tests and quick GUE parity checks.
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO quest_defs (code, title, description, min_level, repeatable, auto_accept, prerequisite_quest_id, is_active)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(code) DO NOTHING`),
+		"training_camp_cleanup",
+		"Training Camp Cleanup",
+		"Defeat 5 Goblins around the training camp.",
+		1, 0, 0, 0, 1,
+	)
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO quest_objective_defs
+			(quest_id, objective_order, objective_type, description, target_npc_name, target_item_id, target_area_name, target_count)
+		SELECT q.id, 1, ?, ?, ?, 0, '', 5
+		  FROM quest_defs q
+		 WHERE q.code = ?
+		   AND NOT EXISTS (
+		       SELECT 1 FROM quest_objective_defs o
+		        WHERE o.quest_id = q.id AND o.objective_order = 1
+		   )`),
+		QuestObjectiveKill,
+		"Defeat Goblins (0/5)",
+		"Goblin",
+		"training_camp_cleanup",
+	)
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO quest_reward_defs
+			(quest_id, xp_reward, gold_reward, item_id, item_qty)
+		SELECT q.id, 150, 35, 0, 0
+		  FROM quest_defs q
+		 WHERE q.code = ?
+		   AND NOT EXISTS (SELECT 1 FROM quest_reward_defs r WHERE r.quest_id = q.id)`),
+		"training_camp_cleanup",
+	)
+}
+
+// migrateV19 creates data-driven combat ability runtime tables.
+func (d *DB) migrateV19(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+
+	if d.driver == "postgres" {
+		exec(`CREATE TABLE IF NOT EXISTS ability_templates (
+			id                      SERIAL PRIMARY KEY,
+			name                    VARCHAR(96) NOT NULL UNIQUE,
+			family                  VARCHAR(32) NOT NULL DEFAULT 'melee_special',
+			resource_type           VARCHAR(16) NOT NULL DEFAULT 'none',
+			resource_cost           INTEGER NOT NULL DEFAULT 0,
+			cooldown_ms             INTEGER NOT NULL DEFAULT 2000,
+			range_min               REAL NOT NULL DEFAULT 0,
+			range_max               REAL NOT NULL DEFAULT 2.5,
+			windup_ms               INTEGER NOT NULL DEFAULT 700,
+			impact_delay_ms         INTEGER NOT NULL DEFAULT 0,
+			recover_ms              INTEGER NOT NULL DEFAULT 400,
+			parry_window_ms         INTEGER NOT NULL DEFAULT 200,
+			interruptible           BOOLEAN NOT NULL DEFAULT TRUE,
+			base_damage_min         INTEGER NOT NULL DEFAULT 0,
+			base_damage_max         INTEGER NOT NULL DEFAULT 0,
+			damage_stat_scale_json  TEXT NOT NULL DEFAULT '',
+			armor_pierce_pct        REAL NOT NULL DEFAULT 0,
+			crit_policy_json        TEXT NOT NULL DEFAULT '',
+			telegraph_type          VARCHAR(32) NOT NULL DEFAULT 'ring_close',
+			telegraph_radius        REAL NOT NULL DEFAULT 2.5,
+			telegraph_color_rgba    VARCHAR(32) NOT NULL DEFAULT '1,0.2,0.2,0.75',
+			action_windup           VARCHAR(64) NOT NULL DEFAULT 'Attack',
+			action_impact           VARCHAR(64) NOT NULL DEFAULT 'Attack',
+			action_recover          VARCHAR(64) NOT NULL DEFAULT 'Idle',
+			allow_action_override   BOOLEAN NOT NULL DEFAULT FALSE,
+			allowed_action_tags_json TEXT NOT NULL DEFAULT '',
+			vfx_id_windup           INTEGER NOT NULL DEFAULT 0,
+			vfx_id_impact           INTEGER NOT NULL DEFAULT 0,
+			sfx_id_windup           INTEGER NOT NULL DEFAULT 0,
+			sfx_id_impact           INTEGER NOT NULL DEFAULT 0,
+			enabled                 BOOLEAN NOT NULL DEFAULT TRUE
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS npc_ability_loadouts (
+			id                 SERIAL PRIMARY KEY,
+			npc_spawn_id       INTEGER NOT NULL DEFAULT 0,
+			actor_def_id       INTEGER NOT NULL DEFAULT 0,
+			ability_id         INTEGER NOT NULL DEFAULT 0,
+			priority           INTEGER NOT NULL DEFAULT 100,
+			weight             INTEGER NOT NULL DEFAULT 100,
+			min_distance       REAL NOT NULL DEFAULT 0,
+			max_distance       REAL NOT NULL DEFAULT 0,
+			min_target_hp_pct  REAL NOT NULL DEFAULT 0,
+			max_target_hp_pct  REAL NOT NULL DEFAULT 100,
+			phase_tag          VARCHAR(32) NOT NULL DEFAULT '',
+			condition_lua      TEXT NOT NULL DEFAULT '',
+			enabled            BOOLEAN NOT NULL DEFAULT TRUE
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_npc_ability_loadouts_spawn ON npc_ability_loadouts(npc_spawn_id)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_npc_ability_loadouts_actor ON npc_ability_loadouts(actor_def_id)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_npc_ability_loadouts_ability ON npc_ability_loadouts(ability_id)`)
+		exec(`CREATE TABLE IF NOT EXISTS npc_combat_profiles (
+			id                        SERIAL PRIMARY KEY,
+			name                      VARCHAR(64) NOT NULL UNIQUE,
+			global_gcd_ms             INTEGER NOT NULL DEFAULT 450,
+			decision_tick_ms          INTEGER NOT NULL DEFAULT 250,
+			aggro_style               VARCHAR(32) NOT NULL DEFAULT 'default',
+			allow_chain_cast          BOOLEAN NOT NULL DEFAULT FALSE,
+			max_consecutive_specials  INTEGER NOT NULL DEFAULT 1,
+			enabled                   BOOLEAN NOT NULL DEFAULT TRUE
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS npc_profile_bindings (
+			id           SERIAL PRIMARY KEY,
+			npc_spawn_id INTEGER NOT NULL DEFAULT 0,
+			actor_def_id INTEGER NOT NULL DEFAULT 0,
+			profile_id   INTEGER NOT NULL DEFAULT 0,
+			enabled      BOOLEAN NOT NULL DEFAULT TRUE
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_npc_profile_bindings_spawn ON npc_profile_bindings(npc_spawn_id)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_npc_profile_bindings_actor ON npc_profile_bindings(actor_def_id)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_npc_profile_bindings_profile ON npc_profile_bindings(profile_id)`)
+	} else {
+		exec(`CREATE TABLE IF NOT EXISTS ability_templates (
+			id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+			name                     TEXT NOT NULL UNIQUE,
+			family                   TEXT NOT NULL DEFAULT 'melee_special',
+			resource_type            TEXT NOT NULL DEFAULT 'none',
+			resource_cost            INTEGER NOT NULL DEFAULT 0,
+			cooldown_ms              INTEGER NOT NULL DEFAULT 2000,
+			range_min                REAL NOT NULL DEFAULT 0,
+			range_max                REAL NOT NULL DEFAULT 2.5,
+			windup_ms                INTEGER NOT NULL DEFAULT 700,
+			impact_delay_ms          INTEGER NOT NULL DEFAULT 0,
+			recover_ms               INTEGER NOT NULL DEFAULT 400,
+			parry_window_ms          INTEGER NOT NULL DEFAULT 200,
+			interruptible            INTEGER NOT NULL DEFAULT 1,
+			base_damage_min          INTEGER NOT NULL DEFAULT 0,
+			base_damage_max          INTEGER NOT NULL DEFAULT 0,
+			damage_stat_scale_json   TEXT NOT NULL DEFAULT '',
+			armor_pierce_pct         REAL NOT NULL DEFAULT 0,
+			crit_policy_json         TEXT NOT NULL DEFAULT '',
+			telegraph_type           TEXT NOT NULL DEFAULT 'ring_close',
+			telegraph_radius         REAL NOT NULL DEFAULT 2.5,
+			telegraph_color_rgba     TEXT NOT NULL DEFAULT '1,0.2,0.2,0.75',
+			action_windup            TEXT NOT NULL DEFAULT 'Attack',
+			action_impact            TEXT NOT NULL DEFAULT 'Attack',
+			action_recover           TEXT NOT NULL DEFAULT 'Idle',
+			allow_action_override    INTEGER NOT NULL DEFAULT 0,
+			allowed_action_tags_json TEXT NOT NULL DEFAULT '',
+			vfx_id_windup            INTEGER NOT NULL DEFAULT 0,
+			vfx_id_impact            INTEGER NOT NULL DEFAULT 0,
+			sfx_id_windup            INTEGER NOT NULL DEFAULT 0,
+			sfx_id_impact            INTEGER NOT NULL DEFAULT 0,
+			enabled                  INTEGER NOT NULL DEFAULT 1
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS npc_ability_loadouts (
+			id                INTEGER PRIMARY KEY AUTOINCREMENT,
+			npc_spawn_id      INTEGER NOT NULL DEFAULT 0,
+			actor_def_id      INTEGER NOT NULL DEFAULT 0,
+			ability_id        INTEGER NOT NULL DEFAULT 0,
+			priority          INTEGER NOT NULL DEFAULT 100,
+			weight            INTEGER NOT NULL DEFAULT 100,
+			min_distance      REAL NOT NULL DEFAULT 0,
+			max_distance      REAL NOT NULL DEFAULT 0,
+			min_target_hp_pct REAL NOT NULL DEFAULT 0,
+			max_target_hp_pct REAL NOT NULL DEFAULT 100,
+			phase_tag         TEXT NOT NULL DEFAULT '',
+			condition_lua     TEXT NOT NULL DEFAULT '',
+			enabled           INTEGER NOT NULL DEFAULT 1
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_npc_ability_loadouts_spawn ON npc_ability_loadouts(npc_spawn_id)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_npc_ability_loadouts_actor ON npc_ability_loadouts(actor_def_id)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_npc_ability_loadouts_ability ON npc_ability_loadouts(ability_id)`)
+		exec(`CREATE TABLE IF NOT EXISTS npc_combat_profiles (
+			id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+			name                     TEXT NOT NULL UNIQUE,
+			global_gcd_ms            INTEGER NOT NULL DEFAULT 450,
+			decision_tick_ms         INTEGER NOT NULL DEFAULT 250,
+			aggro_style              TEXT NOT NULL DEFAULT 'default',
+			allow_chain_cast         INTEGER NOT NULL DEFAULT 0,
+			max_consecutive_specials INTEGER NOT NULL DEFAULT 1,
+			enabled                  INTEGER NOT NULL DEFAULT 1
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS npc_profile_bindings (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			npc_spawn_id INTEGER NOT NULL DEFAULT 0,
+			actor_def_id INTEGER NOT NULL DEFAULT 0,
+			profile_id   INTEGER NOT NULL DEFAULT 0,
+			enabled      INTEGER NOT NULL DEFAULT 1
+		)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_npc_profile_bindings_spawn ON npc_profile_bindings(npc_spawn_id)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_npc_profile_bindings_actor ON npc_profile_bindings(actor_def_id)`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_npc_profile_bindings_profile ON npc_profile_bindings(profile_id)`)
+	}
+
+	// Seed baseline definitions so runtime has a canonical starting point.
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO ability_templates (
+			name, family, resource_type, resource_cost, cooldown_ms,
+			range_min, range_max, windup_ms, impact_delay_ms, recover_ms,
+			parry_window_ms, interruptible, base_damage_min, base_damage_max,
+			damage_stat_scale_json, armor_pierce_pct, crit_policy_json,
+			telegraph_type, telegraph_radius, telegraph_color_rgba,
+			action_windup, action_impact, action_recover,
+			allow_action_override, allowed_action_tags_json,
+			vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, enabled
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO NOTHING`),
+		"legacy_special_v1", "melee_special", "none", 0, 6500,
+		0.0, 2.5, 1300, 0, 350,
+		220, true, 0, 0,
+		"", 50.0, "",
+		"ring_close", 2.5, "1,0.2,0.2,0.75",
+		"Attack", "Attack", "Idle",
+		false, "",
+		0, 0, 0, 0, true,
+	)
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO npc_combat_profiles (
+			name, global_gcd_ms, decision_tick_ms, aggro_style, allow_chain_cast, max_consecutive_specials, enabled
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO NOTHING`),
+		"default_profile", 450, 250, "default", false, 1, true,
+	)
+}
+
+// migrateV20 adds optional mapping from spell_templates -> ability_templates.
+// runtime_ability_id = 0 keeps legacy script spell execution.
+func (d *DB) migrateV20(ctx context.Context) {
+	if d.driver == "postgres" {
+		_, _ = d.db.ExecContext(ctx, `ALTER TABLE spell_templates ADD COLUMN IF NOT EXISTS runtime_ability_id INTEGER NOT NULL DEFAULT 0`)
+	} else {
+		_, _ = d.db.ExecContext(ctx, `ALTER TABLE spell_templates ADD COLUMN runtime_ability_id INTEGER NOT NULL DEFAULT 0`)
+	}
+}
+
+// migrateV21 seeds one scripted phased-boss encounter baseline for Forest Trolls
+// (abilities + profile + loadouts + profile bindings).
+func (d *DB) migrateV21(ctx context.Context) {
+	exec := func(sql string, args ...any) {
+		_, _ = d.db.ExecContext(ctx, d.q(sql), args...)
+	}
+
+	insertAbility := func(
+		name string,
+		cooldownMs int64,
+		rangeMax float64,
+		windupMs int64,
+		recoverMs int64,
+		parryWindowMs int64,
+		baseMin int32,
+		baseMax int32,
+		armorPiercePct float64,
+		telegraphRadius float64,
+		telegraphColor string,
+		allowedTags string,
+	) {
+		exec(`
+			INSERT INTO ability_templates (
+				name, family, resource_type, resource_cost, cooldown_ms,
+				range_min, range_max, windup_ms, impact_delay_ms, recover_ms,
+				parry_window_ms, interruptible, base_damage_min, base_damage_max,
+				damage_stat_scale_json, armor_pierce_pct, crit_policy_json,
+				telegraph_type, telegraph_radius, telegraph_color_rgba,
+				action_windup, action_impact, action_recover,
+				allow_action_override, allowed_action_tags_json,
+				vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, enabled
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(name) DO NOTHING
+		`,
+			name, "melee_special", "none", 0, cooldownMs,
+			0.0, rangeMax, windupMs, 0, recoverMs,
+			parryWindowMs, true, baseMin, baseMax,
+			"", armorPiercePct, "",
+			"ring_close", telegraphRadius, telegraphColor,
+			"Attack", "Attack", "Idle",
+			true, allowedTags,
+			0, 0, 0, 0, true,
+		)
+	}
+
+	insertAbility("forest_troll_crushing_blow_v1", 6000, 2.8, 1100, 450, 240, 25, 40, 20, 2.8, "1,0.2,0.2,0.75", `["heavy","slam"]`)
+	insertAbility("forest_troll_brutal_slam_v1", 8500, 3.0, 1400, 500, 260, 38, 58, 35, 3.2, "1,0.45,0.15,0.75", `["heavy","slam"]`)
+	insertAbility("forest_troll_enrage_cleave_v1", 5000, 3.2, 850, 350, 180, 50, 75, 45, 3.4, "1,0.1,0.1,0.85", `["heavy","enrage"]`)
+
+	exec(`
+		INSERT INTO npc_combat_profiles (
+			name, global_gcd_ms, decision_tick_ms, aggro_style, allow_chain_cast, max_consecutive_specials, enabled
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO NOTHING
+	`, "forest_troll_boss_profile_v1", 550, 180, "default", true, 2, true)
+
+	// Bind the boss profile to all Forest Troll spawn rows (idempotent).
+	exec(`
+		INSERT INTO npc_profile_bindings (npc_spawn_id, actor_def_id, profile_id, enabled)
+		SELECT ns.id, 0, p.id, 1
+		  FROM npc_spawns ns
+		  JOIN npc_combat_profiles p ON p.name = ?
+		 WHERE ns.name = ?
+		   AND NOT EXISTS (
+			   SELECT 1
+			     FROM npc_profile_bindings b
+			    WHERE b.npc_spawn_id = ns.id
+			      AND b.profile_id = p.id
+		   )
+	`, "forest_troll_boss_profile_v1", "Forest Troll")
+
+	// Also bind by actor_def_id for Hunger (spawn point mobs in Training Camp).
+	// This makes the runtime profile work even when NPCs are spawned from
+	// spawn_point_mobs (which do not map to npc_spawns.id at runtime).
+	exec(`
+		INSERT INTO npc_profile_bindings (npc_spawn_id, actor_def_id, profile_id, enabled)
+		SELECT 0, ad.actor_def_id, p.id, 1
+		  FROM (
+			   SELECT DISTINCT actor_def_id
+			     FROM spawn_point_mobs
+			    WHERE name = ?
+			      AND actor_def_id > 0
+			   UNION
+			   SELECT DISTINCT actor_def_id
+			     FROM npc_spawns
+			    WHERE name = ?
+			      AND actor_def_id > 0
+		  ) ad
+		  JOIN npc_combat_profiles p ON p.name = ?
+		 WHERE NOT EXISTS (
+			 SELECT 1
+			   FROM npc_profile_bindings b
+			  WHERE b.actor_def_id = ad.actor_def_id
+			    AND b.profile_id = p.id
+		 )
+	`, "Hunger", "Hunger", "forest_troll_boss_profile_v1")
+
+	insertLoadout := func(
+		abilityName string,
+		priority int,
+		weight int,
+		minDistance float64,
+		maxDistance float64,
+		minTargetHPPct float64,
+		maxTargetHPPct float64,
+		phaseTag string,
+		conditionLua string,
+	) {
+		exec(`
+			INSERT INTO npc_ability_loadouts (
+				npc_spawn_id, actor_def_id, ability_id, priority, weight,
+				min_distance, max_distance, min_target_hp_pct, max_target_hp_pct,
+				phase_tag, condition_lua, enabled
+			)
+			SELECT ns.id, 0, a.id, ?, ?, ?, ?, ?, ?, ?, ?, 1
+			  FROM npc_spawns ns
+			  JOIN ability_templates a ON a.name = ?
+			 WHERE ns.name = ?
+			   AND NOT EXISTS (
+				   SELECT 1
+				     FROM npc_ability_loadouts l
+				    WHERE l.npc_spawn_id = ns.id
+				      AND l.ability_id = a.id
+				      AND l.phase_tag = ?
+				      AND l.priority = ?
+			   )
+		`,
+			priority, weight, minDistance, maxDistance, minTargetHPPct, maxTargetHPPct, phaseTag, conditionLua,
+			abilityName, "Forest Troll", phaseTag, priority,
+		)
+	}
+
+	insertLoadoutForActorDefByName := func(
+		npcName string,
+		abilityName string,
+		priority int,
+		weight int,
+		minDistance float64,
+		maxDistance float64,
+		minTargetHPPct float64,
+		maxTargetHPPct float64,
+		phaseTag string,
+		conditionLua string,
+	) {
+		exec(`
+			INSERT INTO npc_ability_loadouts (
+				npc_spawn_id, actor_def_id, ability_id, priority, weight,
+				min_distance, max_distance, min_target_hp_pct, max_target_hp_pct,
+				phase_tag, condition_lua, enabled
+			)
+			SELECT 0, ad.actor_def_id, a.id, ?, ?, ?, ?, ?, ?, ?, ?, 1
+			  FROM (
+				   SELECT DISTINCT actor_def_id
+				     FROM spawn_point_mobs
+				    WHERE name = ?
+				      AND actor_def_id > 0
+				   UNION
+				   SELECT DISTINCT actor_def_id
+				     FROM npc_spawns
+				    WHERE name = ?
+				      AND actor_def_id > 0
+			  ) ad
+			  JOIN ability_templates a ON a.name = ?
+			 WHERE NOT EXISTS (
+				 SELECT 1
+				   FROM npc_ability_loadouts l
+				  WHERE l.actor_def_id = ad.actor_def_id
+				    AND l.ability_id = a.id
+				    AND l.phase_tag = ?
+				    AND l.priority = ?
+			 )
+		`,
+			priority, weight, minDistance, maxDistance, minTargetHPPct, maxTargetHPPct, phaseTag, conditionLua,
+			npcName, npcName, abilityName, phaseTag, priority,
+		)
+	}
+
+	insertLoadout("forest_troll_crushing_blow_v1", 300, 100, 0.0, 2.8, 0, 100, "phase_1", "distance <= 2.8 and npc_hp_pct > 66")
+	insertLoadout("forest_troll_brutal_slam_v1", 320, 100, 0.0, 3.0, 0, 100, "phase_2", "distance <= 3.0 and npc_hp_pct <= 66 and npc_hp_pct > 33")
+	insertLoadout("forest_troll_enrage_cleave_v1", 340, 100, 0.0, 3.2, 0, 100, "phase_3,enrage", "distance <= 3.2 and npc_hp_pct <= 33")
+
+	// Hunger encounter in Training Camp (spawn point mobs) via actor_def_id.
+	insertLoadoutForActorDefByName("Hunger", "forest_troll_crushing_blow_v1", 300, 100, 0.0, 2.8, 0, 100, "phase_1", "distance <= 2.8 and npc_hp_pct > 66")
+	insertLoadoutForActorDefByName("Hunger", "forest_troll_brutal_slam_v1", 320, 100, 0.0, 3.0, 0, 100, "phase_2", "distance <= 3.0 and npc_hp_pct <= 66 and npc_hp_pct > 33")
+	insertLoadoutForActorDefByName("Hunger", "forest_troll_enrage_cleave_v1", 340, 100, 0.0, 3.2, 0, 100, "phase_3,enrage", "distance <= 3.2 and npc_hp_pct <= 33")
 }
 
 // LoadWorldObjects returns all placed static world objects from zone_scenery with resolved model paths.

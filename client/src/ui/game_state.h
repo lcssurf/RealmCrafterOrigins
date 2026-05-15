@@ -50,8 +50,10 @@ struct PlayerState {
     float       yaw        = 0.f;
     int32_t     health     = 0;
     int32_t     healthMax  = 0;
-    int32_t     energy     = 0;
-    int32_t     energyMax  = 0;
+    int32_t     mana       = 0;
+    int32_t     manaMax    = 0;
+    int32_t     stamina    = 0;
+    int32_t     staminaMax = 0;
     uint16_t    level      = 1;
     uint32_t    xp         = 0;
     uint32_t    xp_next    = 100;

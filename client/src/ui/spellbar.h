@@ -14,7 +14,7 @@ struct SpellSlot {
     uint8_t     aoe_type    = 0;  // 0=single 1=around_target 2=ground_target
     float       aoe_radius  = 0.f;
     float       range       = 0.f; // max cast range (0 = unlimited)
-    uint16_t    ep_cost     = 0;
+    uint16_t    mp_cost     = 0;
     uint32_t    cooldown_ms = 0;
     float       last_cast   = -99999.f;
 };
@@ -34,13 +34,13 @@ public:
 
     void Clear();
     void AddSpell(uint16_t id, const std::string& name, uint8_t spell_type,
-                  uint16_t ep_cost, uint32_t cooldown_ms,
+                  uint16_t mp_cost, uint32_t cooldown_ms,
                   uint8_t aoe_type = 0, float aoe_radius = 0.f, float range = 0.f);
 
     // Render the spell bar.
     // target_dist: distance to combat_target in world units (pass 0 if no target).
     void Render(int screen_w, int screen_h, uint32_t combat_target,
-                float now, bool player_dead, int32_t player_ep,
+                float now, bool player_dead, int32_t player_mp,
                 float target_dist = 0.f);
 
     // Updated each Render() call — read by main to draw world-space circles.
