@@ -3322,7 +3322,7 @@ int main() {
 
                     const double loading_elapsed_ms =
                         (glfwGetTime() - world_entry_loading_start) * 1000.0;
-                    constexpr double kGateAbsoluteTimeoutMs = 10000.0;
+                    constexpr double kGateAbsoluteTimeoutMs = 5000.0;
                     const bool world_objects_ready = world_entry_world_objects_received;
                     const bool core_done =
                         world_objects_ready &&
@@ -3347,7 +3347,7 @@ int main() {
                     const bool absolute_timeout = loading_elapsed_ms >= kGateAbsoluteTimeoutMs;
                     const bool timeout = soft_timeout || absolute_timeout;
                     if (ready_enough || timeout) {
-                        const char* gate_reason = ready_enough ? "core_ready"
+                        const char* gate_reason = ready_enough ? "all_done"
                             : (!world_objects_ready ? "timeout_wait_worldobjects"
                                                     : (absolute_timeout ? "absolute_timeout" : "timeout"));
                         if (SceneDebugLogsEnabled()) {
