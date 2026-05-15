@@ -49,6 +49,8 @@ public:
     void Resize(int w, int h);
 
     void LoadEnvironment(const std::string& hdr_path);
+    void ForceReloadEnvironment();
+    bool ConsumeLoadEnvironmentSkipped(std::string* out_path = nullptr);
 
     void BeginStaticScene();
     StaticMeshHandle UploadStaticMesh(const std::vector<Vertex>&   vertices,
@@ -107,6 +109,10 @@ private:
     bool static_scene_open_ = false;
 
     std::unique_ptr<Texture2D> envMap_hdri_;
+    std::string last_env_path_;
+    std::string last_skipped_env_path_;
+    bool force_reload_environment_ = false;
+    bool last_load_environment_skipped_ = false;
     GLuint irradianceMap_ = 0;
 
     // IBL cubemap suite (replaces the equirectangular 2D approach).

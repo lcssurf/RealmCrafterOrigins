@@ -230,6 +230,14 @@ public:
               "\",\"dur_us\":" + std::to_string(dur_us));
     }
 
+    void LogLoadEnvironmentSkipped(const char* callsite,
+                                   const std::string& path) {
+        if (!EntryActive()) return;
+        LogKV("load_environment_skipped",
+              ",\"callsite\":\"" + Escape(callsite ? callsite : "") +
+              "\",\"path\":\"" + Escape(path) + "\"");
+    }
+
     void LogClientWorldReady(uint32_t total_ms, uint32_t client_init_ms) {
         if (!EntryActive()) return;
         client_world_ready_us_ = NowUs();
@@ -2736,7 +2744,14 @@ int main() {
                     const auto env_us = static_cast<uint64_t>(
                         std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - env_t0).count());
-                    perf_entry.LogLoadEnvironment("area_config_immediate", path, env_us);
+                    std::string skipped_path;
+                    if (engine.ConsumeLoadEnvironmentSkipped(&skipped_path)) {
+                        perf_entry.LogLoadEnvironmentSkipped(
+                            "area_config_immediate",
+                            skipped_path.empty() ? path : skipped_path);
+                    } else {
+                        perf_entry.LogLoadEnvironment("area_config_immediate", path, env_us);
+                    }
                     pending_area_skybox_hdr.clear();
                 }
                 break;
@@ -2959,7 +2974,14 @@ int main() {
                         std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - t0).count());
                     perf_entry.LogLazyStage("load_environment_initial", dur_us, true);
-                    perf_entry.LogLoadEnvironment("init_default", path, dur_us);
+                    std::string skipped_path;
+                    if (engine.ConsumeLoadEnvironmentSkipped(&skipped_path)) {
+                        perf_entry.LogLoadEnvironmentSkipped(
+                            "init_default",
+                            skipped_path.empty() ? path : skipped_path);
+                    } else {
+                        perf_entry.LogLoadEnvironment("init_default", path, dur_us);
+                    }
                 }
                 pipeline = std::make_unique<rco::renderer::Pipeline>(engine);
                 pipeline->SetCharacterReadability(active_character_readability_tuning);
@@ -3130,7 +3152,14 @@ int main() {
                     const auto env_us = static_cast<uint64_t>(
                         std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - env_t0).count());
-                    perf_entry.LogLoadEnvironment("area_apply_pending", path, env_us);
+                    std::string skipped_path;
+                    if (engine.ConsumeLoadEnvironmentSkipped(&skipped_path)) {
+                        perf_entry.LogLoadEnvironmentSkipped(
+                            "area_apply_pending",
+                            skipped_path.empty() ? path : skipped_path);
+                    } else {
+                        perf_entry.LogLoadEnvironment("area_apply_pending", path, env_us);
+                    }
                     pending_area_skybox_hdr.clear();
                     if (SceneDebugLogsEnabled()) {
                         std::fprintf(stderr,

@@ -294,6 +294,10 @@ void Engine::Shutdown() {
     if (brdfLUT_)         { glDeleteTextures(1, &brdfLUT_);         brdfLUT_         = 0; }
     if (iblCubeVAO_)      { glDeleteVertexArrays(1, &iblCubeVAO_);  iblCubeVAO_      = 0; }
     if (iblCubeVBO_)      { glDeleteBuffers(1, &iblCubeVBO_);       iblCubeVBO_      = 0; }
+    last_env_path_.clear();
+    last_skipped_env_path_.clear();
+    force_reload_environment_ = false;
+    last_load_environment_skipped_ = false;
 }
 
 Engine::~Engine() {
@@ -581,6 +585,18 @@ void Engine::createVAO_() {
 // Generates: envCubemap_ (radiance), irradianceCube_ (diffuse), prefilterCube_
 // (specular w/ roughness mips), and brdfLUT_ (split-sum BRDF integration).
 void Engine::LoadEnvironment(const std::string& hdr_path) {
+    last_load_environment_skipped_ = false;
+    last_skipped_env_path_.clear();
+    if (!force_reload_environment_ &&
+        !last_env_path_.empty() &&
+        last_env_path_ == hdr_path) {
+        last_load_environment_skipped_ = true;
+        last_skipped_env_path_ = hdr_path;
+        std::fprintf(stderr, "[ibl] LoadEnvironment '%s' skipped (unchanged)\n", hdr_path.c_str());
+        return;
+    }
+    force_reload_environment_ = false;
+
     std::fprintf(stderr, "[ibl] LoadEnvironment '%s' start\n", hdr_path.c_str());
     const HdrLumaStats luma = ComputeHdrLumaStats(hdr_path);
     const float iblClamp = ComputeIblClamp(luma);
@@ -746,6 +762,19 @@ void Engine::LoadEnvironment(const std::string& hdr_path) {
 
     std::fprintf(stderr, "[ibl] envCube=%u irrCube=%u prefilter=%u brdfLUT=%u\n",
                  envCubemap_, irradianceCube_, prefilterCube_, brdfLUT_);
+    last_env_path_ = hdr_path;
+}
+
+void Engine::ForceReloadEnvironment() {
+    force_reload_environment_ = true;
+}
+
+bool Engine::ConsumeLoadEnvironmentSkipped(std::string* out_path) {
+    if (!last_load_environment_skipped_) return false;
+    if (out_path) *out_path = last_skipped_env_path_;
+    last_load_environment_skipped_ = false;
+    last_skipped_env_path_.clear();
+    return true;
 }
 
 // ---------------------------------------------------------------------------
