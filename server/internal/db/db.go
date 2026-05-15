@@ -254,6 +254,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV19(ctx)
 	d.migrateV20(ctx)
 	d.migrateV21(ctx)
+	d.migrateV22(ctx)
 
 	return d, nil
 }
@@ -4503,6 +4504,31 @@ func (d *DB) migrateV21(ctx context.Context) {
 	insertLoadoutForActorDefByName("Hunger", "forest_troll_crushing_blow_v1", 300, 100, 0.0, 2.8, 0, 100, "phase_1", "distance <= 2.8 and npc_hp_pct > 66")
 	insertLoadoutForActorDefByName("Hunger", "forest_troll_brutal_slam_v1", 320, 100, 0.0, 3.0, 0, 100, "phase_2", "distance <= 3.0 and npc_hp_pct <= 66 and npc_hp_pct > 33")
 	insertLoadoutForActorDefByName("Hunger", "forest_troll_enrage_cleave_v1", 340, 100, 0.0, 3.2, 0, 100, "phase_3,enrage", "distance <= 3.2 and npc_hp_pct <= 33")
+}
+
+// migrateV22 creates weapon_kits table for weapon-based player skill kits.
+func (d *DB) migrateV22(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+
+	if d.driver == "postgres" {
+		exec(`CREATE TABLE IF NOT EXISTS weapon_kits (
+			id           SERIAL PRIMARY KEY,
+			weapon_type  VARCHAR(32) NOT NULL UNIQUE,
+			display_name VARCHAR(64) NOT NULL DEFAULT '',
+			description  TEXT NOT NULL DEFAULT '',
+			enabled      BOOLEAN NOT NULL DEFAULT TRUE
+		)`)
+	} else {
+		exec(`CREATE TABLE IF NOT EXISTS weapon_kits (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			weapon_type  TEXT NOT NULL UNIQUE,
+			display_name TEXT NOT NULL DEFAULT '',
+			description  TEXT NOT NULL DEFAULT '',
+			enabled      INTEGER NOT NULL DEFAULT 1
+		)`)
+	}
+
+	exec(`CREATE INDEX IF NOT EXISTS idx_weapon_kits_weapon_type ON weapon_kits(weapon_type)`)
 }
 
 // LoadWorldObjects returns all placed static world objects from zone_scenery with resolved model paths.
