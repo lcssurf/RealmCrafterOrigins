@@ -1066,18 +1066,21 @@ int main() {
     std::vector<std::string> static_model_prewarm_queue;
     std::size_t static_model_prewarm_cursor = 0;
     constexpr std::size_t kStaticInitSampleWindow = 256;
-    std::vector<uint64_t> static_init_samples_us;
-    static_init_samples_us.reserve(kStaticInitSampleWindow);
-    auto record_static_init_sample = [&](uint64_t dur_us) {
+    std::vector<uint64_t> static_init_hit_samples_us;
+    std::vector<uint64_t> static_init_miss_samples_us;
+    static_init_hit_samples_us.reserve(kStaticInitSampleWindow);
+    static_init_miss_samples_us.reserve(kStaticInitSampleWindow);
+    auto record_static_init_sample = [&](uint64_t dur_us, bool cache_hit) {
         if (dur_us == 0) return;
-        if (static_init_samples_us.size() >= kStaticInitSampleWindow) {
-            static_init_samples_us.erase(static_init_samples_us.begin());
+        auto& samples = cache_hit ? static_init_hit_samples_us : static_init_miss_samples_us;
+        if (samples.size() >= kStaticInitSampleWindow) {
+            samples.erase(samples.begin());
         }
-        static_init_samples_us.push_back(dur_us);
+        samples.push_back(dur_us);
     };
-    auto estimate_static_init_p99_us = [&]() -> double {
-        if (static_init_samples_us.empty()) return 0.0;
-        std::vector<uint64_t> sorted = static_init_samples_us;
+    auto estimate_static_hit_init_p99_us = [&]() -> double {
+        if (static_init_hit_samples_us.empty()) return 0.0;
+        std::vector<uint64_t> sorted = static_init_hit_samples_us;
         std::sort(sorted.begin(), sorted.end());
         const double pos = (static_cast<double>(sorted.size() - 1) * 0.99);
         const std::size_t lo = static_cast<std::size_t>(std::floor(pos));
@@ -3239,7 +3242,6 @@ int main() {
                                 std::chrono::steady_clock::now() - init_t0).count());
                         perf_entry.LogActorInit(
                             "core_preload", obj.model_path, warm_cached, false, init_us, frame_index);
-                        record_static_init_sample(init_us);
                         obj.actor->position = {obj.x, obj.y, obj.z};
                         obj.actor->yaw      = obj.yaw;
                         obj.actor->scale    = obj.scale;
@@ -3305,7 +3307,6 @@ int main() {
                                         std::chrono::steady_clock::now() - init_t0).count());
                                 perf_entry.LogActorInit(
                                     "loading_global", obj.model_path, warm_cached, false, init_us, frame_index);
-                                record_static_init_sample(init_us);
                                 obj.actor->position = {obj.x, obj.y, obj.z};
                                 obj.actor->yaw      = obj.yaw;
                                 obj.actor->scale    = obj.scale;
@@ -3406,11 +3407,9 @@ int main() {
                     const double kStaticInitBudgetMs = loading_preset.static_init_budget_ms;
                     constexpr double kFrameSoftLimitMs = 16.0; // ~60 FPS
                     constexpr double kFrameHardLimitMs = 22.0; // below ~45 FPS: pause streaming
-                    const int kMaxColdLoadsPerFrame = loading_preset.static_max_cold_loads_per_frame;
-                    const auto init_start_tp = std::chrono::steady_clock::now();
                     int initialized = 0;
                     int pending = 0;
-                    int cold_loads = 0;
+                    bool miss_used_this_frame = false;
                     const double frame_ms = dt * 1000.0;
                     int max_inits_this_frame = kStaticInitPerFrame;
                     double init_budget_ms = kStaticInitBudgetMs;
@@ -3422,16 +3421,19 @@ int main() {
                         init_budget_ms = 1.0;
                     }
                     // Calibrate throughput from real data: use rolling p99 of
-                    // static Actor::Init so budget picks a safe count/frame.
-                    const double static_init_p99_us = estimate_static_init_p99_us();
-                    if (max_inits_this_frame > 0 &&
+                    // cache hits only, so rare cold-load misses do not throttle
+                    // the steady-state streaming budget.
+                    const double static_hit_init_p99_us = estimate_static_hit_init_p99_us();
+                    if (frame_ms <= kFrameSoftLimitMs &&
+                        max_inits_this_frame > 0 &&
                         init_budget_ms > 0.0 &&
-                        static_init_p99_us > 0.0) {
+                        static_hit_init_p99_us > 0.0) {
                         const int budget_cap = static_cast<int>(
-                            std::floor((init_budget_ms * 1000.0) / static_init_p99_us));
-                        max_inits_this_frame = (std::min)(
-                            max_inits_this_frame, (std::max)(1, budget_cap));
+                            std::floor((init_budget_ms * 1000.0) / static_hit_init_p99_us));
+                        const int adaptive_cap = std::clamp(budget_cap, 4, 128);
+                        max_inits_this_frame = (std::min)(kStaticInitPerFrame, adaptive_cap);
                     }
+                    double budget_ms_remaining = init_budget_ms;
 
                     // Camera-aware streaming:
                     // 1) prefer objects in front of camera
@@ -3459,21 +3461,16 @@ int main() {
                     pending = static_cast<int>(candidates.size());
 
                     if (max_inits_this_frame > 0 && !candidates.empty()) {
-                        const std::size_t take = std::min<std::size_t>(
-                            static_cast<std::size_t>(max_inits_this_frame), candidates.size());
-                        std::partial_sort(
-                            candidates.begin(), candidates.begin() + take, candidates.end(),
+                        std::sort(candidates.begin(), candidates.end(),
                             [](const auto& a, const auto& b) { return a.first < b.first; });
 
-                        for (std::size_t n = 0; n < take; ++n) {
-                            auto elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(
-                                std::chrono::steady_clock::now() - init_start_tp).count() / 1000.0;
-                            if (elapsed_ms >= init_budget_ms) break;
-
+                        for (std::size_t n = 0; n < candidates.size(); ++n) {
+                            if (initialized >= max_inits_this_frame) break;
+                            if (budget_ms_remaining <= 0.0) break;
                             auto& obj = world_static_objects[candidates[n].second];
                             const bool warm_cached =
                                 static_cast<bool>(rco::renderer::ModelCachePeek(obj.model_path));
-                            if (!warm_cached && cold_loads >= kMaxColdLoadsPerFrame) continue;
+                            if (!warm_cached && miss_used_this_frame) break;
                             obj.actor = std::make_unique<rco::renderer::Actor>();
                             const auto init_t0 = std::chrono::steady_clock::now();
                             {
@@ -3490,11 +3487,12 @@ int main() {
                                 true,
                                 init_us,
                                 frame_index);
-                            record_static_init_sample(init_us);
+                            record_static_init_sample(init_us, warm_cached);
                             obj.actor->position = {obj.x, obj.y, obj.z};
                             obj.actor->yaw      = obj.yaw;
                             obj.actor->scale    = obj.scale;
-                            if (!warm_cached) ++cold_loads;
+                            if (!warm_cached) miss_used_this_frame = true;
+                            budget_ms_remaining -= static_cast<double>(init_us) / 1000.0;
                             ++initialized;
                         }
                     }
