@@ -577,15 +577,21 @@ void WeaponKitsTab::Draw(sqlite3* db) {
         need_fetch_abilities_ = false;
     }
 
-    if (ImGui::Button("Refresh")) {
-        need_fetch_kits_ = true;
-        need_fetch_abilities_ = true;
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", status_msg_);
-    ImGui::Separator();
+	if (ImGui::Button("Refresh")) {
+		need_fetch_kits_ = true;
+		need_fetch_abilities_ = true;
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("%s", status_msg_);
+	ImGui::Separator();
+	ImGui::TextWrapped(
+		"Weapon Kits are reusable sets of skills granted to the player when a kit-providing "
+		"item is equipped. Multiple items can grant the same kit (e.g., 'Rusty Sword' and "
+		"'Excalibur' can both grant the 'sword' kit)."
+	);
+	ImGui::Separator();
 
-    DrawList(db);
+	DrawList(db);
 
     ImGui::SameLine();
     ImGui::BeginChild("##kit_editor", {0.0f, 0.0f}, true);

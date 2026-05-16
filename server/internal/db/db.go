@@ -64,6 +64,23 @@ type WeaponKitAbility struct {
 	Enabled   bool
 }
 
+// PlayerKitAbilityEntry is one ability slot in an active kit.
+type PlayerKitAbilityEntry struct {
+	SlotIndex   int
+	AbilityID   int
+	AbilityName string // for logging/debug
+}
+
+// PlayerKitResolution holds the active weapon kit for a player and its abilities.
+// If no kit is active, HasKit is false and other fields are zero-values.
+type PlayerKitResolution struct {
+	HasKit         bool
+	KitID          int
+	KitKey         string
+	KitDisplayName string
+	Abilities      []PlayerKitAbilityEntry // ordered by slot_index
+}
+
 // CharacterItem mirrors the character_items table.
 type CharacterItem struct {
 	Slot         uint8
@@ -775,6 +792,274 @@ func (d *DB) SeedDefaultItems(ctx context.Context) error {
 	return nil
 }
 
+// SeedDefaultWeaponKits creates the default weapon kits (sword, bow) with their abilities.
+// Idempotent: base entries are inserted only when missing by unique key (name/kit_key),
+// and kit ability slots are reset to canonical seeded mappings each run.
+func (d *DB) SeedDefaultWeaponKits(ctx context.Context) error {
+	type abilitySeed struct {
+		Name               string
+		Family             string
+		ResourceType       string
+		ResourceCost       int
+		CooldownMs         int
+		RangeMin           float64
+		RangeMax           float64
+		WindupMs           int
+		ImpactDelayMs      int
+		RecoverMs          int
+		ParryWindowMs      int
+		Interruptible      bool
+		BaseDamageMin      int
+		BaseDamageMax      int
+		TelegraphType      string
+		TelegraphRadius    float64
+		TelegraphColorRGBA string
+		ActionWindup       string
+		ActionImpact       string
+		ActionRecover      string
+		Enabled            bool
+	}
+	type kitSeed struct {
+		KitKey      string
+		DisplayName string
+		Description string
+		Enabled     bool
+	}
+	type kitAbilitySeed struct {
+		KitKey      string
+		AbilityName string
+		SlotIndex   int
+		Enabled     bool
+	}
+
+	abilities := []abilitySeed{
+		{
+			Name:               "sword_slash",
+			Family:             "melee_basic",
+			ResourceType:       "stamina",
+			ResourceCost:       0,
+			CooldownMs:         600,
+			RangeMin:           0.0,
+			RangeMax:           2.5,
+			WindupMs:           200,
+			ImpactDelayMs:      0,
+			RecoverMs:          300,
+			ParryWindowMs:      0,
+			Interruptible:      true,
+			BaseDamageMin:      8,
+			BaseDamageMax:      14,
+			TelegraphType:      "none",
+			TelegraphRadius:    0.0,
+			TelegraphColorRGBA: "1,0.2,0.2,0.75",
+			ActionWindup:       "AttackBasic",
+			ActionImpact:       "AttackBasic",
+			ActionRecover:      "Idle",
+			Enabled:            true,
+		},
+		{
+			Name:               "sword_cleave",
+			Family:             "melee_special",
+			ResourceType:       "stamina",
+			ResourceCost:       20,
+			CooldownMs:         5000,
+			RangeMin:           0.0,
+			RangeMax:           3.0,
+			WindupMs:           700,
+			ImpactDelayMs:      50,
+			RecoverMs:          500,
+			ParryWindowMs:      250,
+			Interruptible:      true,
+			BaseDamageMin:      18,
+			BaseDamageMax:      28,
+			TelegraphType:      "cone",
+			TelegraphRadius:    3.0,
+			TelegraphColorRGBA: "1,0.4,0.2,0.75",
+			ActionWindup:       "AttackHeavyWindup",
+			ActionImpact:       "AttackHeavyImpact",
+			ActionRecover:      "Recover",
+			Enabled:            true,
+		},
+		{
+			Name:               "bow_quickshot",
+			Family:             "ranged_basic",
+			ResourceType:       "stamina",
+			ResourceCost:       5,
+			CooldownMs:         800,
+			RangeMin:           5.0,
+			RangeMax:           30.0,
+			WindupMs:           150,
+			ImpactDelayMs:      0,
+			RecoverMs:          250,
+			ParryWindowMs:      0,
+			Interruptible:      true,
+			BaseDamageMin:      6,
+			BaseDamageMax:      10,
+			TelegraphType:      "none",
+			TelegraphRadius:    0.0,
+			TelegraphColorRGBA: "1,0.2,0.2,0.75",
+			ActionWindup:       "BowDraw",
+			ActionImpact:       "BowRelease",
+			ActionRecover:      "Idle",
+			Enabled:            true,
+		},
+		{
+			Name:               "bow_aimedshot",
+			Family:             "ranged_special",
+			ResourceType:       "stamina",
+			ResourceCost:       25,
+			CooldownMs:         6000,
+			RangeMin:           8.0,
+			RangeMax:           40.0,
+			WindupMs:           1200,
+			ImpactDelayMs:      0,
+			RecoverMs:          500,
+			ParryWindowMs:      300,
+			Interruptible:      true,
+			BaseDamageMin:      30,
+			BaseDamageMax:      45,
+			TelegraphType:      "line",
+			TelegraphRadius:    1.0,
+			TelegraphColorRGBA: "1,0.2,0.2,0.75",
+			ActionWindup:       "BowAimWindup",
+			ActionImpact:       "BowAimRelease",
+			ActionRecover:      "Recover",
+			Enabled:            true,
+		},
+	}
+
+	kits := []kitSeed{
+		{
+			KitKey:      "sword",
+			DisplayName: "Sword",
+			Description: "One-handed sword combat. Fast strikes with a heavy cleave special.",
+			Enabled:     true,
+		},
+		{
+			KitKey:      "bow",
+			DisplayName: "Bow",
+			Description: "Ranged combat. Quick volleys with a charged aimed shot.",
+			Enabled:     true,
+		},
+	}
+
+	kitAbilities := []kitAbilitySeed{
+		{KitKey: "sword", AbilityName: "sword_slash", SlotIndex: 0, Enabled: true},
+		{KitKey: "sword", AbilityName: "sword_cleave", SlotIndex: 1, Enabled: true},
+		{KitKey: "bow", AbilityName: "bow_quickshot", SlotIndex: 0, Enabled: true},
+		{KitKey: "bow", AbilityName: "bow_aimedshot", SlotIndex: 1, Enabled: true},
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("db: SeedDefaultWeaponKits begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	insertAbilitySQL := d.q(`
+		INSERT INTO ability_templates (
+			name, family, resource_type, resource_cost, cooldown_ms,
+			range_min, range_max, windup_ms, impact_delay_ms, recover_ms,
+			parry_window_ms, interruptible, base_damage_min, base_damage_max,
+			damage_stat_scale_json, armor_pierce_pct, crit_policy_json,
+			telegraph_type, telegraph_radius, telegraph_color_rgba,
+			action_windup, action_impact, action_recover,
+			allow_action_override, allowed_action_tags_json,
+			vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, enabled
+		)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE NOT EXISTS (SELECT 1 FROM ability_templates WHERE name = ?)
+	`)
+	for _, a := range abilities {
+		interruptible := 0
+		if a.Interruptible {
+			interruptible = 1
+		}
+		enabled := 0
+		if a.Enabled {
+			enabled = 1
+		}
+		if _, err := tx.ExecContext(ctx, insertAbilitySQL,
+			a.Name, a.Family, a.ResourceType, a.ResourceCost, a.CooldownMs,
+			a.RangeMin, a.RangeMax, a.WindupMs, a.ImpactDelayMs, a.RecoverMs,
+			a.ParryWindowMs, interruptible, a.BaseDamageMin, a.BaseDamageMax,
+			"", 0.0, "",
+			a.TelegraphType, a.TelegraphRadius, a.TelegraphColorRGBA,
+			a.ActionWindup, a.ActionImpact, a.ActionRecover,
+			0, "",
+			0, 0, 0, 0, enabled,
+			a.Name,
+		); err != nil {
+			return fmt.Errorf("db: SeedDefaultWeaponKits insert ability %q: %w", a.Name, err)
+		}
+	}
+
+	abilityIDs := make(map[string]int, len(abilities))
+	for _, a := range abilities {
+		var id int
+		if err := tx.QueryRowContext(ctx, d.q(`SELECT id FROM ability_templates WHERE name = ?`), a.Name).Scan(&id); err != nil {
+			return fmt.Errorf("db: SeedDefaultWeaponKits lookup ability %q: %w", a.Name, err)
+		}
+		abilityIDs[a.Name] = id
+	}
+
+	insertKitSQL := d.q(`
+		INSERT INTO weapon_kits (kit_key, display_name, description, enabled)
+		SELECT ?, ?, ?, ?
+		WHERE NOT EXISTS (SELECT 1 FROM weapon_kits WHERE kit_key = ?)
+	`)
+	for _, k := range kits {
+		enabled := 0
+		if k.Enabled {
+			enabled = 1
+		}
+		if _, err := tx.ExecContext(ctx, insertKitSQL, k.KitKey, k.DisplayName, k.Description, enabled, k.KitKey); err != nil {
+			return fmt.Errorf("db: SeedDefaultWeaponKits insert kit %q: %w", k.KitKey, err)
+		}
+	}
+
+	kitIDs := make(map[string]int, len(kits))
+	for _, k := range kits {
+		var id int
+		if err := tx.QueryRowContext(ctx, d.q(`SELECT id FROM weapon_kits WHERE kit_key = ?`), k.KitKey).Scan(&id); err != nil {
+			return fmt.Errorf("db: SeedDefaultWeaponKits lookup kit %q: %w", k.KitKey, err)
+		}
+		kitIDs[k.KitKey] = id
+	}
+
+	for _, k := range kits {
+		kitID := kitIDs[k.KitKey]
+		if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM weapon_kit_abilities WHERE kit_id = ?`), kitID); err != nil {
+			return fmt.Errorf("db: SeedDefaultWeaponKits clear kit %q abilities: %w", k.KitKey, err)
+		}
+	}
+
+	insertKitAbilitySQL := d.q(`INSERT INTO weapon_kit_abilities (kit_id, ability_id, slot_index, enabled) VALUES (?, ?, ?, ?)`)
+	for _, entry := range kitAbilities {
+		kitID, ok := kitIDs[entry.KitKey]
+		if !ok || kitID <= 0 {
+			return fmt.Errorf("db: SeedDefaultWeaponKits missing kit ID for %q", entry.KitKey)
+		}
+		abilityID, ok := abilityIDs[entry.AbilityName]
+		if !ok || abilityID <= 0 {
+			return fmt.Errorf("db: SeedDefaultWeaponKits missing ability ID for %q", entry.AbilityName)
+		}
+		enabled := 0
+		if entry.Enabled {
+			enabled = 1
+		}
+		if _, err := tx.ExecContext(ctx, insertKitAbilitySQL, kitID, abilityID, entry.SlotIndex, enabled); err != nil {
+			return fmt.Errorf("db: SeedDefaultWeaponKits insert kit %q slot %d ability %q: %w",
+				entry.KitKey, entry.SlotIndex, entry.AbilityName, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("db: SeedDefaultWeaponKits commit: %w", err)
+	}
+	log.Printf("seed: weapon kits seeded")
+	return nil
+}
+
 // GiveStarterItems gives a newly created character their starting items if
 // they have no items yet.
 func (d *DB) GiveStarterItems(ctx context.Context, charID string) error {
@@ -838,6 +1123,90 @@ func (d *DB) GetEquippedStats(ctx context.Context, charID string) (weaponDamage,
 		armorLevel += al
 	}
 	return weaponDamage, armorLevel, rows.Err()
+}
+
+// ResolveActivePlayerKit returns the currently active weapon kit for a character.
+// Returns zero-value (HasKit=false) when no kit applies.
+func (d *DB) ResolveActivePlayerKit(ctx context.Context, charID string) (PlayerKitResolution, error) {
+	var out PlayerKitResolution
+
+	var kitKey string
+	err := d.db.QueryRowContext(ctx,
+		d.q(`SELECT it.weapon_kit
+		     FROM character_items ci
+		     JOIN item_templates it ON it.id = ci.item_id
+		     WHERE ci.character_id = ? AND ci.slot = 0
+		     LIMIT 1`),
+		charID,
+	).Scan(&kitKey)
+	if err == sql.ErrNoRows {
+		return out, nil
+	}
+	if err != nil {
+		return out, fmt.Errorf("db: ResolveActivePlayerKit weapon slot: %w", err)
+	}
+	kitKey = strings.TrimSpace(kitKey)
+	if kitKey == "" {
+		return out, nil
+	}
+
+	err = d.db.QueryRowContext(ctx,
+		d.q(`SELECT id, kit_key, display_name
+		     FROM weapon_kits
+		     WHERE kit_key = ? AND enabled = 1`),
+		kitKey,
+	).Scan(&out.KitID, &out.KitKey, &out.KitDisplayName)
+	if err == sql.ErrNoRows {
+		log.Printf("warn: character %s has item with weapon_kit=%q but kit not found or disabled", charID, kitKey)
+		return PlayerKitResolution{}, nil
+	}
+	if err != nil {
+		return PlayerKitResolution{}, fmt.Errorf("db: ResolveActivePlayerKit kit lookup: %w", err)
+	}
+
+	rows, err := d.db.QueryContext(ctx,
+		d.q(`SELECT wka.slot_index, wka.ability_id, at.name
+		     FROM weapon_kit_abilities wka
+		     JOIN ability_templates at ON at.id = wka.ability_id
+		     WHERE wka.kit_id = ? AND wka.enabled = 1 AND at.enabled = 1
+		     ORDER BY wka.slot_index`),
+		out.KitID,
+	)
+	if err != nil {
+		return PlayerKitResolution{}, fmt.Errorf("db: ResolveActivePlayerKit abilities: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var e PlayerKitAbilityEntry
+		if err := rows.Scan(&e.SlotIndex, &e.AbilityID, &e.AbilityName); err != nil {
+			return PlayerKitResolution{}, fmt.Errorf("db: ResolveActivePlayerKit scan ability: %w", err)
+		}
+		out.Abilities = append(out.Abilities, e)
+	}
+	if err := rows.Err(); err != nil {
+		return PlayerKitResolution{}, fmt.Errorf("db: ResolveActivePlayerKit abilities rows: %w", err)
+	}
+
+	out.HasKit = true
+	return out, nil
+}
+
+// ResolveActivePlayerAbilities returns active ability IDs ordered by slot_index.
+// Returns empty slice when the character has no active kit.
+func (d *DB) ResolveActivePlayerAbilities(ctx context.Context, charID string) ([]int, error) {
+	res, err := d.ResolveActivePlayerKit(ctx, charID)
+	if err != nil {
+		return nil, err
+	}
+	if !res.HasKit || len(res.Abilities) == 0 {
+		return []int{}, nil
+	}
+	out := make([]int, 0, len(res.Abilities))
+	for _, e := range res.Abilities {
+		out = append(out, e.AbilityID)
+	}
+	return out, nil
 }
 
 // GetInventory returns all items for a character.

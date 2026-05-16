@@ -151,6 +151,9 @@ func main() {
 	if err := database.SeedDefaultItems(ctx); err != nil {
 		log.Fatalf("main: seed items: %v", err)
 	}
+	if err := database.SeedDefaultWeaponKits(ctx); err != nil {
+		log.Fatalf("main: seed weapon kits: %v", err)
+	}
 
 	// Create Lua scripting registry and load scripts.
 	// Canonical path: dist/server/scripts/ (relative to exe, after anchor).
