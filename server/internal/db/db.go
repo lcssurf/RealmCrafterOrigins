@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"strconv"
@@ -38,10 +39,29 @@ type ItemTemplate struct {
 	SlotType     uint8 // equip slot: 0=weapon 1=shield 2=hat 3=chest 4=hands 5=belt 6=legs 7=feet 8=ring 9=amulet 255=backpack-only
 	WeaponDamage int16
 	ArmorLevel   int16
-	WeaponType   uint8 // 1=one-hand 2=two-hand 3=ranged
+	WeaponType   uint8  // 1=one-hand 2=two-hand 3=ranged
+	WeaponKit    string // kit_key reference in weapon_kits, "" if item is not a kit-providing weapon
 	MaxStack     uint8
 	ItemValue    int32
 	Stackable    bool
+}
+
+// WeaponKit defines a kit of skills granted by a weapon type (sword, bow, etc).
+type WeaponKit struct {
+	ID          int
+	KitKey      string // unique identifier ("sword", "bow", "staff", ...)
+	DisplayName string // user-facing name ("Sword", "Bow")
+	Description string
+	Enabled     bool
+}
+
+// WeaponKitAbility links an ability_template to a weapon_kit at a specific slot.
+type WeaponKitAbility struct {
+	ID        int
+	KitID     int // FK lógica para weapon_kits.id
+	AbilityID int // FK lógica para ability_templates.id
+	SlotIndex int // posição no hotbar (0 = primeiro)
+	Enabled   bool
 }
 
 // CharacterItem mirrors the character_items table.
@@ -255,6 +275,9 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV20(ctx)
 	d.migrateV21(ctx)
 	d.migrateV22(ctx)
+	d.migrateV23(ctx)
+	d.migrateV24(ctx)
+	d.migrateV25(ctx)
 
 	return d, nil
 }
@@ -739,11 +762,11 @@ func (d *DB) SeedDefaultItems(ctx context.Context) error {
 	for _, it := range items {
 		_, err := d.db.ExecContext(ctx,
 			d.q(`INSERT INTO item_templates
-			       (name, item_type, slot_type, weapon_damage, armor_level, weapon_type, max_stack, item_value, stackable)
-			     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+			       (name, item_type, slot_type, weapon_damage, armor_level, weapon_type, max_stack, item_value, stackable, weapon_kit)
+			     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 			     WHERE NOT EXISTS (SELECT 1 FROM item_templates WHERE name = ?)`),
 			it.name, it.itemType, it.slotType, it.weaponDamage, it.armorLevel,
-			it.weaponType, it.maxStack, it.itemValue, it.stackable, it.name,
+			it.weaponType, it.maxStack, it.itemValue, it.stackable, "", it.name,
 		)
 		if err != nil {
 			return fmt.Errorf("db: SeedDefaultItems %q: %w", it.name, err)
@@ -3099,7 +3122,7 @@ func (d *DB) GetItemAtSlot(ctx context.Context, charID string, slot uint8) (*Cha
 // LoadAllItemTemplates returns all item templates keyed by name.
 func (d *DB) LoadAllItemTemplates(ctx context.Context) (map[string]*ItemTemplate, error) {
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_type, max_stack, item_value, stackable
+		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_type, max_stack, item_value, stackable, weapon_kit
 		 FROM item_templates ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: LoadAllItemTemplates: %w", err)
@@ -3110,7 +3133,7 @@ func (d *DB) LoadAllItemTemplates(ctx context.Context) (map[string]*ItemTemplate
 		t := &ItemTemplate{}
 		var stackable int
 		if err := rows.Scan(&t.ID, &t.Name, &t.ItemType, &t.SlotType, &t.WeaponDamage,
-			&t.ArmorLevel, &t.WeaponType, &t.MaxStack, &t.ItemValue, &stackable); err != nil {
+			&t.ArmorLevel, &t.WeaponType, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit); err != nil {
 			return nil, err
 		}
 		t.Stackable = stackable != 0
@@ -3122,7 +3145,7 @@ func (d *DB) LoadAllItemTemplates(ctx context.Context) (map[string]*ItemTemplate
 // ListItemTemplates returns all item templates as a slice ordered by id.
 func (d *DB) ListItemTemplates(ctx context.Context) ([]*ItemTemplate, error) {
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_type, max_stack, item_value, stackable
+		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_type, max_stack, item_value, stackable, weapon_kit
 		 FROM item_templates ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: ListItemTemplates: %w", err)
@@ -3133,7 +3156,7 @@ func (d *DB) ListItemTemplates(ctx context.Context) ([]*ItemTemplate, error) {
 		t := &ItemTemplate{}
 		var stackable int
 		if err := rows.Scan(&t.ID, &t.Name, &t.ItemType, &t.SlotType, &t.WeaponDamage,
-			&t.ArmorLevel, &t.WeaponType, &t.MaxStack, &t.ItemValue, &stackable); err != nil {
+			&t.ArmorLevel, &t.WeaponType, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit); err != nil {
 			return nil, err
 		}
 		t.Stackable = stackable != 0
@@ -3149,9 +3172,9 @@ func (d *DB) CreateItemTemplate(ctx context.Context, t *ItemTemplate) (int, erro
 		stackable = 1
 	}
 	res, err := d.db.ExecContext(ctx,
-		`INSERT INTO item_templates (name, item_type, slot_type, weapon_damage, armor_level, weapon_type, max_stack, item_value, stackable)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponType, t.MaxStack, t.ItemValue, stackable)
+		`INSERT INTO item_templates (name, item_type, slot_type, weapon_damage, armor_level, weapon_type, max_stack, item_value, stackable, weapon_kit)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponType, t.MaxStack, t.ItemValue, stackable, t.WeaponKit)
 	if err != nil {
 		return 0, fmt.Errorf("db: CreateItemTemplate: %w", err)
 	}
@@ -3167,9 +3190,9 @@ func (d *DB) UpdateItemTemplate(ctx context.Context, t *ItemTemplate) error {
 	}
 	_, err := d.db.ExecContext(ctx,
 		`UPDATE item_templates
-		 SET name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, weapon_type=?, max_stack=?, item_value=?, stackable=?
+		 SET name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, weapon_type=?, max_stack=?, item_value=?, stackable=?, weapon_kit=?
 		 WHERE id=?`,
-		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponType, t.MaxStack, t.ItemValue, stackable, t.ID)
+		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponType, t.MaxStack, t.ItemValue, stackable, t.WeaponKit, t.ID)
 	if err != nil {
 		return fmt.Errorf("db: UpdateItemTemplate: %w", err)
 	}
@@ -3188,6 +3211,207 @@ func (d *DB) DeleteItemTemplate(ctx context.Context, id int) error {
 	_, err := d.db.ExecContext(ctx, `DELETE FROM item_templates WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("db: DeleteItemTemplate: %w", err)
+	}
+	return nil
+}
+
+// ListWeaponKits returns all weapon kits ordered by kit_key.
+func (d *DB) ListWeaponKits(ctx context.Context) ([]*WeaponKit, error) {
+	rows, err := d.db.QueryContext(ctx,
+		d.q(`SELECT id, kit_key, display_name, description,
+		            CASE WHEN enabled THEN 1 ELSE 0 END AS enabled
+		       FROM weapon_kits
+		      ORDER BY kit_key`))
+	if err != nil {
+		return nil, fmt.Errorf("db: ListWeaponKits: %w", err)
+	}
+	defer rows.Close()
+	var out []*WeaponKit
+	for rows.Next() {
+		k := &WeaponKit{}
+		var enabled int
+		if err := rows.Scan(&k.ID, &k.KitKey, &k.DisplayName, &k.Description, &enabled); err != nil {
+			return nil, fmt.Errorf("db: ListWeaponKits scan: %w", err)
+		}
+		k.Enabled = enabled != 0
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// GetWeaponKit returns a single weapon kit by kit_key, or nil if not found.
+func (d *DB) GetWeaponKit(ctx context.Context, kitKey string) (*WeaponKit, error) {
+	if strings.TrimSpace(kitKey) == "" {
+		return nil, fmt.Errorf("db: GetWeaponKit: kit_key is required")
+	}
+	k := &WeaponKit{}
+	var enabled int
+	err := d.db.QueryRowContext(ctx, d.q(`SELECT id, kit_key, display_name, description,
+	                                             CASE WHEN enabled THEN 1 ELSE 0 END AS enabled
+	                                        FROM weapon_kits
+	                                       WHERE kit_key = ?`), kitKey).
+		Scan(&k.ID, &k.KitKey, &k.DisplayName, &k.Description, &enabled)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: GetWeaponKit: %w", err)
+	}
+	k.Enabled = enabled != 0
+	return k, nil
+}
+
+// CreateWeaponKit inserts a new weapon kit and returns its ID.
+func (d *DB) CreateWeaponKit(ctx context.Context, k *WeaponKit) (int, error) {
+	if k == nil {
+		return 0, fmt.Errorf("db: CreateWeaponKit: kit is nil")
+	}
+	kitKey := strings.TrimSpace(k.KitKey)
+	if kitKey == "" {
+		return 0, fmt.Errorf("db: CreateWeaponKit: kit_key is required")
+	}
+	enabled := 0
+	if k.Enabled {
+		enabled = 1
+	}
+	res, err := d.db.ExecContext(ctx,
+		d.q(`INSERT INTO weapon_kits (kit_key, display_name, description, enabled)
+		     VALUES (?, ?, ?, ?)`),
+		kitKey, k.DisplayName, k.Description, enabled)
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "weapon_kits.kit_key") &&
+			(strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate")) {
+			return 0, fmt.Errorf("db: CreateWeaponKit: kit_key %q already exists", kitKey)
+		}
+		return 0, fmt.Errorf("db: CreateWeaponKit: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return int(id), nil
+}
+
+// UpdateWeaponKit updates an existing weapon kit by ID.
+func (d *DB) UpdateWeaponKit(ctx context.Context, k *WeaponKit) error {
+	if k == nil {
+		return fmt.Errorf("db: UpdateWeaponKit: kit is nil")
+	}
+	if strings.TrimSpace(k.KitKey) == "" {
+		return fmt.Errorf("db: UpdateWeaponKit: kit_key is required")
+	}
+	enabled := 0
+	if k.Enabled {
+		enabled = 1
+	}
+	_, err := d.db.ExecContext(ctx,
+		d.q(`UPDATE weapon_kits
+		        SET display_name = ?, description = ?, enabled = ?
+		      WHERE id = ?`),
+		k.DisplayName, k.Description, enabled, k.ID)
+	if err != nil {
+		return fmt.Errorf("db: UpdateWeaponKit: %w", err)
+	}
+	return nil
+}
+
+// DeleteWeaponKit soft-deletes a weapon kit by setting enabled=false.
+func (d *DB) DeleteWeaponKit(ctx context.Context, id int) error {
+	_, err := d.db.ExecContext(ctx,
+		d.q(`UPDATE weapon_kits SET enabled = ? WHERE id = ?`),
+		0, id)
+	if err != nil {
+		return fmt.Errorf("db: DeleteWeaponKit: %w", err)
+	}
+	return nil
+}
+
+// ListAbilitiesForKit returns all ability entries for a kit, ordered by slot_index.
+// Includes entries with enabled=false (caller decides whether to filter).
+func (d *DB) ListAbilitiesForKit(ctx context.Context, kitID int) ([]*WeaponKitAbility, error) {
+	if kitID <= 0 {
+		return nil, fmt.Errorf("db: ListAbilitiesForKit: kitID must be > 0")
+	}
+	rows, err := d.db.QueryContext(ctx, d.q(`SELECT id, kit_id, ability_id, slot_index,
+	                                                CASE WHEN enabled THEN 1 ELSE 0 END AS enabled
+	                                           FROM weapon_kit_abilities
+	                                          WHERE kit_id = ?
+	                                          ORDER BY slot_index`), kitID)
+	if err != nil {
+		return nil, fmt.Errorf("db: ListAbilitiesForKit: %w", err)
+	}
+	defer rows.Close()
+	var out []*WeaponKitAbility
+	for rows.Next() {
+		entry := &WeaponKitAbility{}
+		var enabled int
+		if err := rows.Scan(&entry.ID, &entry.KitID, &entry.AbilityID, &entry.SlotIndex, &enabled); err != nil {
+			return nil, fmt.Errorf("db: ListAbilitiesForKit scan: %w", err)
+		}
+		entry.Enabled = enabled != 0
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
+// SetKitAbilities atomically replaces all ability entries for a kit.
+// Operates within a single transaction: other readers see the previous state
+// until commit, then the new state. No partial state is visible.
+func (d *DB) SetKitAbilities(ctx context.Context, kitID int, abilities []*WeaponKitAbility) error {
+	if kitID <= 0 {
+		return fmt.Errorf("db: SetKitAbilities: kitID must be > 0")
+	}
+	usedSlots := make(map[int]struct{}, len(abilities))
+	for i, entry := range abilities {
+		if entry == nil {
+			return fmt.Errorf("db: SetKitAbilities: ability entry at index %d is nil", i)
+		}
+		if entry.AbilityID <= 0 {
+			return fmt.Errorf("db: SetKitAbilities: ability_id must be > 0 at index %d", i)
+		}
+		if entry.SlotIndex < 0 {
+			return fmt.Errorf("db: SetKitAbilities: slot_index must be >= 0 at index %d", i)
+		}
+		if _, exists := usedSlots[entry.SlotIndex]; exists {
+			return fmt.Errorf("db: SetKitAbilities: duplicate slot_index %d", entry.SlotIndex)
+		}
+		usedSlots[entry.SlotIndex] = struct{}{}
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("db: SetKitAbilities begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM weapon_kit_abilities WHERE kit_id = ?`), kitID); err != nil {
+		return fmt.Errorf("db: SetKitAbilities clear: %w", err)
+	}
+
+	for _, entry := range abilities {
+		enabled := 0
+		if entry.Enabled {
+			enabled = 1
+		}
+		if _, err := tx.ExecContext(ctx, d.q(`INSERT INTO weapon_kit_abilities (kit_id, ability_id, slot_index, enabled)
+		                                      VALUES (?, ?, ?, ?)`),
+			kitID, entry.AbilityID, entry.SlotIndex, enabled); err != nil {
+			return fmt.Errorf("db: SetKitAbilities insert slot %d ability %d: %w", entry.SlotIndex, entry.AbilityID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("db: SetKitAbilities commit: %w", err)
+	}
+	return nil
+}
+
+// ClearKitAbilities removes all ability entries for a kit.
+// Useful when permanently removing a kit (caller calls this before DeleteWeaponKit).
+func (d *DB) ClearKitAbilities(ctx context.Context, kitID int) error {
+	if kitID <= 0 {
+		return fmt.Errorf("db: ClearKitAbilities: kitID must be > 0")
+	}
+	if _, err := d.db.ExecContext(ctx, d.q(`DELETE FROM weapon_kit_abilities WHERE kit_id = ?`), kitID); err != nil {
+		return fmt.Errorf("db: ClearKitAbilities: %w", err)
 	}
 	return nil
 }
@@ -4513,22 +4737,160 @@ func (d *DB) migrateV22(ctx context.Context) {
 	if d.driver == "postgres" {
 		exec(`CREATE TABLE IF NOT EXISTS weapon_kits (
 			id           SERIAL PRIMARY KEY,
-			weapon_type  VARCHAR(32) NOT NULL UNIQUE,
+			kit_key      VARCHAR(32) NOT NULL UNIQUE,
 			display_name VARCHAR(64) NOT NULL DEFAULT '',
 			description  TEXT NOT NULL DEFAULT '',
 			enabled      BOOLEAN NOT NULL DEFAULT TRUE
 		)`)
+
+		exec(`DO $$
+		BEGIN
+			IF EXISTS (
+				SELECT 1
+				  FROM information_schema.columns
+				 WHERE table_name = 'weapon_kits'
+				   AND column_name = 'weapon_type'
+			) AND NOT EXISTS (
+				SELECT 1
+				  FROM information_schema.columns
+				 WHERE table_name = 'weapon_kits'
+				   AND column_name = 'kit_key'
+			) THEN
+				ALTER TABLE weapon_kits RENAME COLUMN weapon_type TO kit_key;
+			END IF;
+		END $$;`)
+
+		exec(`DO $$
+		BEGIN
+			IF EXISTS (
+				SELECT 1
+				  FROM pg_class
+				 WHERE relkind = 'i'
+				   AND relname = 'idx_weapon_kits_weapon_type'
+			) AND NOT EXISTS (
+				SELECT 1
+				  FROM pg_class
+				 WHERE relkind = 'i'
+				   AND relname = 'idx_weapon_kits_kit_key'
+			) THEN
+				ALTER INDEX idx_weapon_kits_weapon_type RENAME TO idx_weapon_kits_kit_key;
+			END IF;
+		END $$;`)
+
+		exec(`CREATE INDEX IF NOT EXISTS idx_weapon_kits_kit_key ON weapon_kits(kit_key)`)
 	} else {
 		exec(`CREATE TABLE IF NOT EXISTS weapon_kits (
 			id           INTEGER PRIMARY KEY AUTOINCREMENT,
-			weapon_type  TEXT NOT NULL UNIQUE,
+			kit_key      TEXT NOT NULL UNIQUE,
 			display_name TEXT NOT NULL DEFAULT '',
 			description  TEXT NOT NULL DEFAULT '',
 			enabled      INTEGER NOT NULL DEFAULT 1
 		)`)
+
+		// SQLite has no IF EXISTS for RENAME COLUMN; we attempt and ignore errors.
+		exec(`ALTER TABLE weapon_kits RENAME COLUMN weapon_type TO kit_key`)
+		// SQLite has no index rename statement; recreate under the new name.
+		exec(`DROP INDEX IF EXISTS idx_weapon_kits_weapon_type`)
+		exec(`CREATE INDEX IF NOT EXISTS idx_weapon_kits_kit_key ON weapon_kits(kit_key)`)
+	}
+}
+
+// migrateV23 adds weapon_kit to item_templates for weapon-skill kit mapping.
+func (d *DB) migrateV23(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+	if d.driver == "postgres" {
+		exec(`ALTER TABLE item_templates ADD COLUMN IF NOT EXISTS weapon_kit VARCHAR(32) NOT NULL DEFAULT ''`)
+	} else {
+		exec(`ALTER TABLE item_templates ADD COLUMN weapon_kit TEXT NOT NULL DEFAULT ''`)
+	}
+}
+
+// migrateV24 creates weapon_kit_abilities junction rows (kit -> ability per slot).
+func (d *DB) migrateV24(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+
+	if d.driver == "postgres" {
+		exec(`CREATE TABLE IF NOT EXISTS weapon_kit_abilities (
+			id         SERIAL PRIMARY KEY,
+			kit_id     INTEGER NOT NULL DEFAULT 0,
+			ability_id INTEGER NOT NULL DEFAULT 0,
+			slot_index INTEGER NOT NULL DEFAULT 0,
+			enabled    BOOLEAN NOT NULL DEFAULT TRUE
+		)`)
+	} else {
+		exec(`CREATE TABLE IF NOT EXISTS weapon_kit_abilities (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			kit_id     INTEGER NOT NULL DEFAULT 0,
+			ability_id INTEGER NOT NULL DEFAULT 0,
+			slot_index INTEGER NOT NULL DEFAULT 0,
+			enabled    INTEGER NOT NULL DEFAULT 1
+		)`)
 	}
 
-	exec(`CREATE INDEX IF NOT EXISTS idx_weapon_kits_weapon_type ON weapon_kits(weapon_type)`)
+	exec(`CREATE INDEX IF NOT EXISTS idx_wka_kit_id ON weapon_kit_abilities(kit_id)`)
+	exec(`CREATE INDEX IF NOT EXISTS idx_wka_ability_id ON weapon_kit_abilities(ability_id)`)
+	exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wka_kit_slot ON weapon_kit_abilities(kit_id, slot_index)`)
+}
+
+// migrateV25 repairs legacy SQLite weapon_kits schema where weapon_type was not
+// renamed to kit_key on existing databases.
+func (d *DB) migrateV25(ctx context.Context) {
+	if d.driver != "sqlite" {
+		return
+	}
+
+	hasOldColumn := false
+	hasNewColumn := false
+	rows, err := d.db.QueryContext(ctx, `PRAGMA table_info(weapon_kits)`)
+	if err != nil {
+		log.Printf("migrateV25: PRAGMA table_info(weapon_kits) failed: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			log.Printf("migrateV25: scan table_info row failed: %v", err)
+			continue
+		}
+		if name == "weapon_type" {
+			hasOldColumn = true
+		}
+		if name == "kit_key" {
+			hasNewColumn = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("migrateV25: table_info rows error: %v", err)
+	}
+
+	if !hasOldColumn || hasNewColumn {
+		return
+	}
+
+	exec := func(sql string) error {
+		_, err := d.db.ExecContext(ctx, sql)
+		if err != nil {
+			log.Printf("migrateV25: %s -> %v", sql, err)
+		}
+		return err
+	}
+
+	log.Printf("migrateV25: recreating weapon_kits table (had old 'weapon_type' column)")
+	_ = exec(`DROP INDEX IF EXISTS idx_weapon_kits_weapon_type`)
+	_ = exec(`DROP TABLE IF EXISTS weapon_kits`)
+	_ = exec(`CREATE TABLE IF NOT EXISTS weapon_kits (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		kit_key      TEXT NOT NULL UNIQUE,
+		display_name TEXT NOT NULL DEFAULT '',
+		description  TEXT NOT NULL DEFAULT '',
+		enabled      INTEGER NOT NULL DEFAULT 1
+	)`)
+	_ = exec(`CREATE INDEX IF NOT EXISTS idx_weapon_kits_kit_key ON weapon_kits(kit_key)`)
 }
 
 // LoadWorldObjects returns all placed static world objects from zone_scenery with resolved model paths.

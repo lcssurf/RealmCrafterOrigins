@@ -27,7 +27,7 @@ void ItemsTab::Fetch(sqlite3* db) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "SELECT id, name, item_type, slot_type, weapon_damage, armor_level, "
-        "       weapon_type, max_stack, item_value, stackable "
+        "       weapon_type, max_stack, item_value, stackable, weapon_kit "
         "FROM item_templates ORDER BY id";
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -47,11 +47,36 @@ void ItemsTab::Fetch(sqlite3* db) {
         t.max_stack     = sqlite3_column_int(stmt, 7);
         t.item_value    = sqlite3_column_int(stmt, 8);
         t.stackable     = sqlite3_column_int(stmt, 9) != 0;
+        const char* wk  = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
+        t.weapon_kit    = wk ? wk : "";
         items_.push_back(t);
     }
     sqlite3_finalize(stmt);
     std::snprintf(statusMsg_, sizeof(statusMsg_),
                   "Loaded %d items.", (int)items_.size());
+}
+
+void ItemsTab::FetchWeaponKitOptions(sqlite3* db) {
+    weapon_kit_options_.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT kit_key, display_name FROM weapon_kits "
+        "WHERE enabled=1 ORDER BY kit_key";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        WeaponKitOption opt;
+        const char* k = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        const char* d = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        opt.kit_key = k ? k : "";
+        opt.display_name = d ? d : "";
+        weapon_kit_options_.push_back(opt);
+    }
+    sqlite3_finalize(stmt);
 }
 
 bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
@@ -63,8 +88,8 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         const char* sql =
             "INSERT INTO item_templates "
             "(name, item_type, slot_type, weapon_damage, armor_level, "
-            " weapon_type, max_stack, item_value, stackable) "
-            "VALUES (?,?,?,?,?,?,?,?,?)";
+            " weapon_type, max_stack, item_value, stackable, weapon_kit) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)";
         rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) goto err;
         sqlite3_bind_text(stmt, 1, t.name.c_str(), -1, SQLITE_TRANSIENT);
@@ -76,6 +101,7 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         sqlite3_bind_int(stmt,  7, t.max_stack);
         sqlite3_bind_int(stmt,  8, t.item_value);
         sqlite3_bind_int(stmt,  9, t.stackable ? 1 : 0);
+        sqlite3_bind_text(stmt, 10, t.weapon_kit.c_str(), -1, SQLITE_TRANSIENT);
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE) goto err;
         t.id = (int)sqlite3_last_insert_rowid(db);
@@ -84,7 +110,7 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         const char* sql =
             "UPDATE item_templates SET "
             "name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, "
-            "weapon_type=?, max_stack=?, item_value=?, stackable=? "
+            "weapon_type=?, max_stack=?, item_value=?, stackable=?, weapon_kit=? "
             "WHERE id=?";
         rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) goto err;
@@ -97,7 +123,8 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         sqlite3_bind_int(stmt,  7, t.max_stack);
         sqlite3_bind_int(stmt,  8, t.item_value);
         sqlite3_bind_int(stmt,  9, t.stackable ? 1 : 0);
-        sqlite3_bind_int(stmt, 10, t.id);
+        sqlite3_bind_text(stmt, 10, t.weapon_kit.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 11, t.id);
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE) goto err;
     }
@@ -151,7 +178,7 @@ bool ItemsTab::Delete(sqlite3* db, int id) {
 // DrawFields — shared editor form
 // ---------------------------------------------------------------------------
 
-static bool DrawFields(ItemTemplate& t) {
+bool ItemsTab::DrawFields(ItemTemplate& t) {
     bool changed = false;
 
     char buf[128];
@@ -177,6 +204,54 @@ static bool DrawFields(ItemTemplate& t) {
         if (ImGui::InputInt("Armor Level", &t.armor_level)) changed = true;
     }
 
+    // Visible for all item types: any item may grant a kit in future design.
+    {
+        static char current_label_buf[256];
+        std::strcpy(current_label_buf, "(none)");
+        if (!t.weapon_kit.empty()) {
+            bool found = false;
+            for (const auto& opt : weapon_kit_options_) {
+                if (opt.kit_key == t.weapon_kit) {
+                    std::snprintf(current_label_buf, sizeof(current_label_buf), "%s [%s]",
+                        opt.display_name.empty() ? opt.kit_key.c_str() : opt.display_name.c_str(),
+                        opt.kit_key.c_str());
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                std::snprintf(current_label_buf, sizeof(current_label_buf), "[%s] (missing)",
+                    t.weapon_kit.c_str());
+            }
+        }
+        const char* current_label = current_label_buf;
+
+        if (ImGui::BeginCombo("Weapon Kit", current_label)) {
+            const bool none_sel = t.weapon_kit.empty();
+            if (ImGui::Selectable("(none)", none_sel)) {
+                t.weapon_kit = "";
+                changed = true;
+            }
+
+            for (const auto& opt : weapon_kit_options_) {
+                const bool sel = (opt.kit_key == t.weapon_kit);
+                char label[256];
+                std::snprintf(label, sizeof(label), "%s [%s]",
+                    opt.display_name.empty() ? opt.kit_key.c_str() : opt.display_name.c_str(),
+                    opt.kit_key.c_str());
+                if (ImGui::Selectable(label, sel)) {
+                    t.weapon_kit = opt.kit_key;
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Skills granted to the player when this item is equipped.\nOptional. Leave (none) for items that don't provide a kit.");
+        }
+    }
+
     if (ImGui::InputInt("Value (gold)",    &t.item_value))  changed = true;
     if (ImGui::InputInt("Max Stack",       &t.max_stack))   changed = true;
     if (ImGui::Checkbox("Stackable",       &t.stackable))   changed = true;
@@ -196,8 +271,9 @@ static bool DrawFields(ItemTemplate& t) {
 
 void ItemsTab::Draw(sqlite3* db) {
     if (needFetch_) { Fetch(db); needFetch_ = false; }
+    FetchWeaponKitOptions(db);
 
-    if (ImGui::Button("Refresh")) needFetch_ = true;
+    if (ImGui::Button("Refresh")) { needFetch_ = true; }
     ImGui::SameLine();
     if (ImGui::Button("New Item")) { newItem_ = {}; showNew_ = true; selected_ = -1; }
     ImGui::SameLine();
