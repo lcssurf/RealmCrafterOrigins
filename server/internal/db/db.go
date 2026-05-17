@@ -64,6 +64,15 @@ type WeaponKitAbility struct {
 	Enabled   bool
 }
 
+// EquipmentSlotConfig defines whether an equipment slot grants a skill kit,
+// and how many of those skills can be in the player's active loadout.
+type EquipmentSlotConfig struct {
+	SlotID             int // 0=weapon, 1=shield, etc. Canonical from item_templates.slot_type.
+	GivesKit           bool
+	MaxSkillsInLoadout int
+	Enabled            bool
+}
+
 // PlayerKitAbilityEntry is one ability slot in an active kit.
 type PlayerKitAbilityEntry struct {
 	SlotIndex   int
@@ -296,6 +305,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV23(ctx)
 	d.migrateV24(ctx)
 	d.migrateV25(ctx)
+	d.migrateV26(ctx)
 
 	return d, nil
 }
@@ -3786,6 +3796,97 @@ func (d *DB) ClearKitAbilities(ctx context.Context, kitID int) error {
 	return nil
 }
 
+// ListEquipmentSlotConfigs returns all slot configs ordered by slot_id.
+// Returns empty slice if table is empty (no seeds yet).
+func (d *DB) ListEquipmentSlotConfigs(ctx context.Context) ([]*EquipmentSlotConfig, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT slot_id,
+		       CASE WHEN gives_kit THEN 1 ELSE 0 END AS gives_kit,
+		       max_skills_in_loadout,
+		       CASE WHEN enabled THEN 1 ELSE 0 END AS enabled
+		  FROM equipment_slot_config
+		 ORDER BY slot_id`))
+	if err != nil {
+		return nil, fmt.Errorf("db: ListEquipmentSlotConfigs: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*EquipmentSlotConfig
+	for rows.Next() {
+		c := &EquipmentSlotConfig{}
+		var givesKit, enabled int
+		if err := rows.Scan(&c.SlotID, &givesKit, &c.MaxSkillsInLoadout, &enabled); err != nil {
+			return nil, fmt.Errorf("db: ListEquipmentSlotConfigs scan: %w", err)
+		}
+		c.GivesKit = givesKit != 0
+		c.Enabled = enabled != 0
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// GetEquipmentSlotConfig returns config for a specific slot, or nil if not found.
+// "Not found" means the slot has no config row.
+func (d *DB) GetEquipmentSlotConfig(ctx context.Context, slotID int) (*EquipmentSlotConfig, error) {
+	if slotID < 0 {
+		return nil, fmt.Errorf("db: GetEquipmentSlotConfig: slotID must be >= 0")
+	}
+	c := &EquipmentSlotConfig{}
+	var givesKit, enabled int
+	err := d.db.QueryRowContext(ctx, d.q(`
+		SELECT slot_id,
+		       CASE WHEN gives_kit THEN 1 ELSE 0 END AS gives_kit,
+		       max_skills_in_loadout,
+		       CASE WHEN enabled THEN 1 ELSE 0 END AS enabled
+		  FROM equipment_slot_config
+		 WHERE slot_id = ?`), slotID).
+		Scan(&c.SlotID, &givesKit, &c.MaxSkillsInLoadout, &enabled)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: GetEquipmentSlotConfig: %w", err)
+	}
+	c.GivesKit = givesKit != 0
+	c.Enabled = enabled != 0
+	return c, nil
+}
+
+// UpdateEquipmentSlotConfig upserts the config for a slot.
+func (d *DB) UpdateEquipmentSlotConfig(ctx context.Context, c *EquipmentSlotConfig) error {
+	if c == nil {
+		return fmt.Errorf("db: UpdateEquipmentSlotConfig: config is nil")
+	}
+	if c.SlotID < 0 {
+		return fmt.Errorf("db: UpdateEquipmentSlotConfig: slotID must be >= 0")
+	}
+	if c.MaxSkillsInLoadout < 0 {
+		return fmt.Errorf("db: UpdateEquipmentSlotConfig: max_skills_in_loadout must be >= 0")
+	}
+
+	givesKit := 0
+	if c.GivesKit {
+		givesKit = 1
+	}
+	enabled := 0
+	if c.Enabled {
+		enabled = 1
+	}
+
+	_, err := d.db.ExecContext(ctx, d.q(`
+		INSERT INTO equipment_slot_config (slot_id, gives_kit, max_skills_in_loadout, enabled)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(slot_id) DO UPDATE SET
+		    gives_kit = excluded.gives_kit,
+		    max_skills_in_loadout = excluded.max_skills_in_loadout,
+		    enabled = excluded.enabled`),
+		c.SlotID, givesKit, c.MaxSkillsInLoadout, enabled)
+	if err != nil {
+		return fmt.Errorf("db: UpdateEquipmentSlotConfig: %w", err)
+	}
+	return nil
+}
+
 // findEquipSlotFor returns the best equip slot index for the given slotType.
 // Prefers empty slots; falls back to the first valid slot if all occupied.
 func (d *DB) findEquipSlotFor(ctx context.Context, charID string, slotType uint8) uint8 {
@@ -5261,6 +5362,26 @@ func (d *DB) migrateV25(ctx context.Context) {
 		enabled      INTEGER NOT NULL DEFAULT 1
 	)`)
 	_ = exec(`CREATE INDEX IF NOT EXISTS idx_weapon_kits_kit_key ON weapon_kits(kit_key)`)
+}
+
+// migrateV26 creates equipment_slot_config for data-driven slot->kit/loadout limits.
+func (d *DB) migrateV26(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+	if d.driver == "postgres" {
+		exec(`CREATE TABLE IF NOT EXISTS equipment_slot_config (
+			slot_id               INTEGER PRIMARY KEY,
+			gives_kit             BOOLEAN NOT NULL DEFAULT FALSE,
+			max_skills_in_loadout INTEGER NOT NULL DEFAULT 0,
+			enabled               BOOLEAN NOT NULL DEFAULT TRUE
+		)`)
+	} else {
+		exec(`CREATE TABLE IF NOT EXISTS equipment_slot_config (
+			slot_id               INTEGER PRIMARY KEY,
+			gives_kit             INTEGER NOT NULL DEFAULT 0,
+			max_skills_in_loadout INTEGER NOT NULL DEFAULT 0,
+			enabled               INTEGER NOT NULL DEFAULT 1
+		)`)
+	}
 }
 
 // LoadWorldObjects returns all placed static world objects from zone_scenery with resolved model paths.
