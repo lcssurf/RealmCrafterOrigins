@@ -47,6 +47,7 @@
 #include "../ui/chat_bubbles.h"
 #include "../ui/controls_ui.h"
 #include "../gameplay/ingame_packet_gate.h"
+#include "../gameplay/skill_state.h"
 #include "../renderer/camera.h"
 #include "../renderer/terrain/terrain.h"
 #include "../renderer/actors/actor.h"
@@ -2484,6 +2485,12 @@ int main() {
                     spellbar.AddSpell(spell_id, name, spell_type, mp_cost, cooldown_ms,
                                       aoe_type, aoe_radius, range);
                 }
+                break;
+            }
+
+            case rco::net::kPSkillState: {
+                auto& state = rco::gameplay::MutablePlayerSkillState();
+                state.ApplyPacket(r);
                 break;
             }
 

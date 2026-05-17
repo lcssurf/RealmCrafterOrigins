@@ -11,7 +11,6 @@ bool HandleIngamePacketGate(uint16_t packet_type, rco::net::Reader& reader) {
         case rco::net::kPWeatherChange:
         case rco::net::kPProjectile:
         case rco::net::kPAppearanceUpdate:
-        case rco::net::kPSkillState:
         case rco::net::kPWeaponMasteryUpdate:
         case rco::net::kPStatusEffectDelta:
             return true;
