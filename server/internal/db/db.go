@@ -73,6 +73,15 @@ type EquipmentSlotConfig struct {
 	Enabled            bool
 }
 
+// CharacterSkillLoadout is one ability assigned to a slot in a character's kit loadout.
+type CharacterSkillLoadout struct {
+	ID          int
+	CharacterID string // UUID
+	KitID       int    // weapon_kits.id
+	SlotIndex   int    // 0..N-1 within this kit's hotbar contribution
+	AbilityID   int    // ability_templates.id
+}
+
 // PlayerKitAbilityEntry is one ability slot in an active kit.
 type PlayerKitAbilityEntry struct {
 	SlotIndex   int
@@ -307,6 +316,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV25(ctx)
 	d.migrateV26(ctx)
 	d.migrateV27(ctx)
+	d.migrateV28(ctx)
 
 	return d, nil
 }
@@ -1186,70 +1196,182 @@ func (d *DB) GetEquippedStats(ctx context.Context, charID string) (weaponDamage,
 	return weaponDamage, armorLevel, rows.Err()
 }
 
-// ResolveActivePlayerKit returns the currently active weapon kit for a character.
-// Returns zero-value (HasKit=false) when no kit applies.
+// ResolveActivePlayerKit resolves the player's active kit identity and aggregates
+// abilities from all equipped slots that are configured to grant kits.
+//
+// Identity (KitKey, KitDisplayName) comes from slot 0 (weapon) when available;
+// otherwise it falls back to the first contributing slot by slot_id order.
+//
+// Abilities are aggregated by slot order (weapon first, then chest/feet/etc),
+// respecting each slot's configured hotbar_slots_granted. Ability slot indexes
+// are reindexed globally for the player's hotbar (0..N-1).
+//
+// Currently this function uses the default pool fallback (first N abilities from
+// each kit pool) and does not apply character-specific loadouts yet.
+//
+// Returns zero-value (HasKit=false) when no active kit applies.
 func (d *DB) ResolveActivePlayerKit(ctx context.Context, charID string) (PlayerKitResolution, error) {
 	var out PlayerKitResolution
-
-	var kitKey string
-	err := d.db.QueryRowContext(ctx,
-		d.q(`SELECT it.weapon_kit
-		     FROM character_items ci
-		     JOIN item_templates it ON it.id = ci.item_id
-		     WHERE ci.character_id = ? AND ci.slot = 0
-		     LIMIT 1`),
-		charID,
-	).Scan(&kitKey)
-	if err == sql.ErrNoRows {
-		return out, nil
-	}
-	if err != nil {
-		return out, fmt.Errorf("db: ResolveActivePlayerKit weapon slot: %w", err)
-	}
-	kitKey = strings.TrimSpace(kitKey)
-	if kitKey == "" {
+	charID = strings.TrimSpace(charID)
+	if charID == "" {
 		return out, nil
 	}
 
-	err = d.db.QueryRowContext(ctx,
-		d.q(`SELECT id, kit_key, display_name
-		     FROM weapon_kits
-		     WHERE kit_key = ? AND enabled = 1`),
-		kitKey,
-	).Scan(&out.KitID, &out.KitKey, &out.KitDisplayName)
-	if err == sql.ErrNoRows {
-		log.Printf("warn: character %s has item with weapon_kit=%q but kit not found or disabled", charID, kitKey)
-		return PlayerKitResolution{}, nil
+	type slotGrantConfig struct {
+		SlotID             int
+		HotbarSlotsGranted int
 	}
+	slotRows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT slot_id, hotbar_slots_granted
+		  FROM equipment_slot_config
+		 WHERE gives_kit = 1 AND enabled = 1
+		 ORDER BY slot_id`))
 	if err != nil {
-		return PlayerKitResolution{}, fmt.Errorf("db: ResolveActivePlayerKit kit lookup: %w", err)
+		return out, fmt.Errorf("db: ResolveActivePlayerKit slot config: %w", err)
 	}
+	defer slotRows.Close()
 
-	rows, err := d.db.QueryContext(ctx,
-		d.q(`SELECT wka.slot_index, wka.ability_id, at.name, at.cooldown_ms
-		     FROM weapon_kit_abilities wka
-		     JOIN ability_templates at ON at.id = wka.ability_id
-		     WHERE wka.kit_id = ? AND wka.enabled = 1 AND at.enabled = 1
-		     ORDER BY wka.slot_index`),
-		out.KitID,
-	)
-	if err != nil {
-		return PlayerKitResolution{}, fmt.Errorf("db: ResolveActivePlayerKit abilities: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var e PlayerKitAbilityEntry
-		if err := rows.Scan(&e.SlotIndex, &e.AbilityID, &e.AbilityName, &e.CooldownMs); err != nil {
-			return PlayerKitResolution{}, fmt.Errorf("db: ResolveActivePlayerKit scan ability: %w", err)
+	var slotConfigs []slotGrantConfig
+	for slotRows.Next() {
+		var cfg slotGrantConfig
+		if err := slotRows.Scan(&cfg.SlotID, &cfg.HotbarSlotsGranted); err != nil {
+			return out, fmt.Errorf("db: ResolveActivePlayerKit scan slot config: %w", err)
 		}
-		out.Abilities = append(out.Abilities, e)
+		slotConfigs = append(slotConfigs, cfg)
 	}
-	if err := rows.Err(); err != nil {
-		return PlayerKitResolution{}, fmt.Errorf("db: ResolveActivePlayerKit abilities rows: %w", err)
+	if err := slotRows.Err(); err != nil {
+		return out, fmt.Errorf("db: ResolveActivePlayerKit slot config rows: %w", err)
+	}
+	if len(slotConfigs) == 0 {
+		return out, nil
 	}
 
-	out.HasKit = true
+	type equippedKitRow struct {
+		SlotID         int
+		ItemKitKey     string
+		KitID          int
+		KitKey         string
+		KitDisplayName string
+		ValidKit       bool
+	}
+	equippedBySlot := map[int]equippedKitRow{}
+	equippedRows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT ci.slot,
+		       TRIM(it.weapon_kit) AS item_kit_key,
+		       wk.id,
+		       wk.kit_key,
+		       wk.display_name
+		  FROM character_items ci
+		  JOIN item_templates it ON it.id = ci.item_id
+		  LEFT JOIN weapon_kits wk
+		    ON wk.kit_key = TRIM(it.weapon_kit)
+		   AND wk.enabled = 1
+		 WHERE ci.character_id = ?
+		   AND ci.slot < 14
+		   AND TRIM(it.weapon_kit) <> ''`), charID)
+	if err != nil {
+		return out, fmt.Errorf("db: ResolveActivePlayerKit equipped query: %w", err)
+	}
+	defer equippedRows.Close()
+
+	for equippedRows.Next() {
+		var row equippedKitRow
+		var kitID sql.NullInt64
+		var kitKey sql.NullString
+		var kitDisplayName sql.NullString
+		if err := equippedRows.Scan(&row.SlotID, &row.ItemKitKey, &kitID, &kitKey, &kitDisplayName); err != nil {
+			return out, fmt.Errorf("db: ResolveActivePlayerKit scan equipped: %w", err)
+		}
+		row.ItemKitKey = strings.TrimSpace(row.ItemKitKey)
+		if kitID.Valid {
+			row.ValidKit = true
+			row.KitID = int(kitID.Int64)
+			if kitKey.Valid {
+				row.KitKey = kitKey.String
+			}
+			if kitDisplayName.Valid {
+				row.KitDisplayName = kitDisplayName.String
+			}
+		}
+		equippedBySlot[row.SlotID] = row
+	}
+	if err := equippedRows.Err(); err != nil {
+		return out, fmt.Errorf("db: ResolveActivePlayerKit equipped rows: %w", err)
+	}
+
+	var (
+		identitySet         bool
+		weaponIdentity      equippedKitRow
+		fallbackIdentity    equippedKitRow
+		hasFallbackIdentity bool
+		globalSlotIndex     int
+	)
+
+	for _, cfg := range slotConfigs {
+		eq, ok := equippedBySlot[cfg.SlotID]
+		if !ok {
+			continue
+		}
+		if !eq.ValidKit {
+			log.Printf("warn: character %s has item in slot %d with weapon_kit=%q but kit not found or disabled", charID, cfg.SlotID, eq.ItemKitKey)
+			continue
+		}
+
+		if cfg.SlotID == 0 {
+			weaponIdentity = eq
+			identitySet = true
+		} else if !hasFallbackIdentity {
+			fallbackIdentity = eq
+			hasFallbackIdentity = true
+		}
+
+		if cfg.HotbarSlotsGranted <= 0 {
+			continue
+		}
+
+		abilityRows, err := d.db.QueryContext(ctx, d.q(`
+			SELECT at.id, at.name, at.cooldown_ms
+			  FROM weapon_kit_abilities wka
+			  JOIN ability_templates at ON at.id = wka.ability_id
+			 WHERE wka.kit_id = ?
+			   AND wka.enabled = 1
+			   AND at.enabled = 1
+			 ORDER BY wka.slot_index
+			 LIMIT ?`), eq.KitID, cfg.HotbarSlotsGranted)
+		if err != nil {
+			return out, fmt.Errorf("db: ResolveActivePlayerKit abilities for slot %d: %w", cfg.SlotID, err)
+		}
+
+		for abilityRows.Next() {
+			var entry PlayerKitAbilityEntry
+			if err := abilityRows.Scan(&entry.AbilityID, &entry.AbilityName, &entry.CooldownMs); err != nil {
+				abilityRows.Close()
+				return out, fmt.Errorf("db: ResolveActivePlayerKit scan ability for slot %d: %w", cfg.SlotID, err)
+			}
+			entry.SlotIndex = globalSlotIndex
+			globalSlotIndex++
+			out.Abilities = append(out.Abilities, entry)
+		}
+		if err := abilityRows.Err(); err != nil {
+			abilityRows.Close()
+			return out, fmt.Errorf("db: ResolveActivePlayerKit ability rows for slot %d: %w", cfg.SlotID, err)
+		}
+		abilityRows.Close()
+	}
+
+	switch {
+	case identitySet:
+		out.HasKit = true
+		out.KitID = weaponIdentity.KitID
+		out.KitKey = weaponIdentity.KitKey
+		out.KitDisplayName = weaponIdentity.KitDisplayName
+	case hasFallbackIdentity:
+		out.HasKit = true
+		out.KitID = fallbackIdentity.KitID
+		out.KitKey = fallbackIdentity.KitKey
+		out.KitDisplayName = fallbackIdentity.KitDisplayName
+	}
+
 	return out, nil
 }
 
@@ -3939,6 +4061,118 @@ func (d *DB) UpdateEquipmentSlotConfig(ctx context.Context, c *EquipmentSlotConf
 	return nil
 }
 
+// ListLoadoutForCharKit returns the loadout entries for a character+kit,
+// ordered by slot_index. Returns empty slice if loadout doesn't exist yet.
+func (d *DB) ListLoadoutForCharKit(ctx context.Context, charID string, kitID int) ([]*CharacterSkillLoadout, error) {
+	if strings.TrimSpace(charID) == "" {
+		return nil, fmt.Errorf("db: ListLoadoutForCharKit: characterID is required")
+	}
+	if kitID <= 0 {
+		return nil, fmt.Errorf("db: ListLoadoutForCharKit: kitID must be > 0")
+	}
+	rows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT id, character_id, kit_id, slot_index, ability_id
+		  FROM character_skill_loadouts
+		 WHERE character_id = ? AND kit_id = ?
+		 ORDER BY slot_index`), charID, kitID)
+	if err != nil {
+		return nil, fmt.Errorf("db: ListLoadoutForCharKit: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*CharacterSkillLoadout
+	for rows.Next() {
+		entry := &CharacterSkillLoadout{}
+		if err := rows.Scan(&entry.ID, &entry.CharacterID, &entry.KitID, &entry.SlotIndex, &entry.AbilityID); err != nil {
+			return nil, fmt.Errorf("db: ListLoadoutForCharKit scan: %w", err)
+		}
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
+// SetLoadoutForCharKit atomically replaces the loadout for a character+kit.
+// Operates within a single transaction: readers see the previous state until
+// commit, then the new state. No partial state is visible.
+func (d *DB) SetLoadoutForCharKit(ctx context.Context, charID string, kitID int, entries []*CharacterSkillLoadout) error {
+	if strings.TrimSpace(charID) == "" {
+		return fmt.Errorf("db: SetLoadoutForCharKit: characterID is required")
+	}
+	if kitID <= 0 {
+		return fmt.Errorf("db: SetLoadoutForCharKit: kitID must be > 0")
+	}
+
+	usedSlots := make(map[int]struct{}, len(entries))
+	for i, entry := range entries {
+		if entry == nil {
+			return fmt.Errorf("db: SetLoadoutForCharKit: entry at index %d is nil", i)
+		}
+		if entry.AbilityID <= 0 {
+			return fmt.Errorf("db: SetLoadoutForCharKit: abilityID must be > 0 at index %d", i)
+		}
+		if entry.SlotIndex < 0 {
+			return fmt.Errorf("db: SetLoadoutForCharKit: slot_index must be >= 0 at index %d", i)
+		}
+		if _, exists := usedSlots[entry.SlotIndex]; exists {
+			return fmt.Errorf("db: SetLoadoutForCharKit: duplicate slot_index %d", entry.SlotIndex)
+		}
+		usedSlots[entry.SlotIndex] = struct{}{}
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("db: SetLoadoutForCharKit begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM character_skill_loadouts WHERE character_id = ? AND kit_id = ?`), charID, kitID); err != nil {
+		return fmt.Errorf("db: SetLoadoutForCharKit clear: %w", err)
+	}
+
+	for _, entry := range entries {
+		if _, err := tx.ExecContext(ctx, d.q(`
+			INSERT INTO character_skill_loadouts (character_id, kit_id, slot_index, ability_id)
+			VALUES (?, ?, ?, ?)`),
+			charID, kitID, entry.SlotIndex, entry.AbilityID); err != nil {
+			return fmt.Errorf("db: SetLoadoutForCharKit insert slot %d ability %d: %w", entry.SlotIndex, entry.AbilityID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("db: SetLoadoutForCharKit commit: %w", err)
+	}
+	return nil
+}
+
+// ClearLoadoutForCharKit removes all loadout entries for a character+kit.
+func (d *DB) ClearLoadoutForCharKit(ctx context.Context, charID string, kitID int) error {
+	if strings.TrimSpace(charID) == "" {
+		return fmt.Errorf("db: ClearLoadoutForCharKit: characterID is required")
+	}
+	if kitID <= 0 {
+		return fmt.Errorf("db: ClearLoadoutForCharKit: kitID must be > 0")
+	}
+	if _, err := d.db.ExecContext(ctx, d.q(`
+		DELETE FROM character_skill_loadouts
+		 WHERE character_id = ? AND kit_id = ?`), charID, kitID); err != nil {
+		return fmt.Errorf("db: ClearLoadoutForCharKit: %w", err)
+	}
+	return nil
+}
+
+// DeleteAllLoadoutsForCharacter removes all loadout entries for a character.
+func (d *DB) DeleteAllLoadoutsForCharacter(ctx context.Context, charID string) error {
+	if strings.TrimSpace(charID) == "" {
+		return fmt.Errorf("db: DeleteAllLoadoutsForCharacter: characterID is required")
+	}
+	if _, err := d.db.ExecContext(ctx, d.q(`
+		DELETE FROM character_skill_loadouts
+		 WHERE character_id = ?`), charID); err != nil {
+		return fmt.Errorf("db: DeleteAllLoadoutsForCharacter: %w", err)
+	}
+	return nil
+}
+
 // findEquipSlotFor returns the best equip slot index for the given slotType.
 // Prefers empty slots; falls back to the first valid slot if all occupied.
 func (d *DB) findEquipSlotFor(ctx context.Context, charID string, slotType uint8) uint8 {
@@ -5489,6 +5723,30 @@ END $$;`)
 		log.Printf("migrateV27: renaming max_skills_in_loadout -> hotbar_slots_granted")
 		_, _ = d.db.ExecContext(ctx, `ALTER TABLE equipment_slot_config RENAME COLUMN max_skills_in_loadout TO hotbar_slots_granted`)
 	}
+}
+
+// migrateV28 creates character_skill_loadouts for per-character per-kit loadouts.
+func (d *DB) migrateV28(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+	if d.driver == "postgres" {
+		exec(`CREATE TABLE IF NOT EXISTS character_skill_loadouts (
+			id           SERIAL PRIMARY KEY,
+			character_id TEXT NOT NULL,
+			kit_id       INTEGER NOT NULL DEFAULT 0,
+			slot_index   INTEGER NOT NULL DEFAULT 0,
+			ability_id   INTEGER NOT NULL DEFAULT 0
+		)`)
+	} else {
+		exec(`CREATE TABLE IF NOT EXISTS character_skill_loadouts (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			character_id TEXT NOT NULL,
+			kit_id       INTEGER NOT NULL DEFAULT 0,
+			slot_index   INTEGER NOT NULL DEFAULT 0,
+			ability_id   INTEGER NOT NULL DEFAULT 0
+		)`)
+	}
+	exec(`CREATE INDEX IF NOT EXISTS idx_csl_char_kit ON character_skill_loadouts(character_id, kit_id)`)
+	exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_csl_char_kit_slot ON character_skill_loadouts(character_id, kit_id, slot_index)`)
 }
 
 // LoadWorldObjects returns all placed static world objects from zone_scenery with resolved model paths.
