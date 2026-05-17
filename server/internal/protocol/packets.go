@@ -193,9 +193,9 @@ const (
 
 // Skill loadout action opcodes for PSkillLoadoutAction.
 const (
-	SkillLoadoutActionEquip      uint8 = 1
-	SkillLoadoutActionUnequip    uint8 = 2
-	SkillLoadoutActionSwapPreset uint8 = 3
+	SkillLoadoutActionSetSlot   uint8 = 1
+	SkillLoadoutActionClearSlot uint8 = 2
+	SkillLoadoutActionClearKit  uint8 = 3
 )
 
 // HeaderSize is the size in bytes of a packet header:

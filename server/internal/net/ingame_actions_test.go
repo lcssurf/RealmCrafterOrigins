@@ -80,34 +80,34 @@ func TestCombatActionPayloadCodec(t *testing.T) {
 
 func TestSkillLoadoutActionPayloadCodec(t *testing.T) {
 	var w Writer
-	w.WriteUint8(protocol.SkillLoadoutActionEquip)
-	w.WriteUint16(501)
+	w.WriteUint8(protocol.SkillLoadoutActionSetSlot)
+	w.WriteUint32(5001)
 	w.WriteUint8(3)
-	w.WriteUint8(2)
+	w.WriteUint32(9001)
 
 	r := NewReader(w.Bytes())
 	action, err := r.ReadUint8()
 	if err != nil {
 		t.Fatalf("read action: %v", err)
 	}
-	skillID, err := r.ReadUint16()
+	kitID, err := r.ReadUint32()
 	if err != nil {
-		t.Fatalf("read skill id: %v", err)
+		t.Fatalf("read kit id: %v", err)
 	}
 	slot, err := r.ReadUint8()
 	if err != nil {
 		t.Fatalf("read slot: %v", err)
 	}
-	preset, err := r.ReadUint8()
+	abilityID, err := r.ReadUint32()
 	if err != nil {
-		t.Fatalf("read preset: %v", err)
+		t.Fatalf("read ability id: %v", err)
 	}
 
-	if action != protocol.SkillLoadoutActionEquip {
-		t.Fatalf("unexpected action: got=%d want=%d", action, protocol.SkillLoadoutActionEquip)
+	if action != protocol.SkillLoadoutActionSetSlot {
+		t.Fatalf("unexpected action: got=%d want=%d", action, protocol.SkillLoadoutActionSetSlot)
 	}
-	if skillID != 501 || slot != 3 || preset != 2 {
-		t.Fatalf("unexpected payload values: skill=%d slot=%d preset=%d", skillID, slot, preset)
+	if kitID != 5001 || slot != 3 || abilityID != 9001 {
+		t.Fatalf("unexpected payload values: kit=%d slot=%d ability=%d", kitID, slot, abilityID)
 	}
 }
 

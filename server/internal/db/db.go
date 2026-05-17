@@ -3813,6 +3813,52 @@ func (d *DB) GetWeaponKit(ctx context.Context, kitKey string) (*WeaponKit, error
 	return k, nil
 }
 
+// GetWeaponKitByID returns a single weapon kit by ID, or nil if not found.
+func (d *DB) GetWeaponKitByID(ctx context.Context, kitID int) (*WeaponKit, error) {
+	if kitID <= 0 {
+		return nil, fmt.Errorf("db: GetWeaponKitByID: kitID must be > 0")
+	}
+	k := &WeaponKit{}
+	var enabled int
+	err := d.db.QueryRowContext(ctx, d.q(`SELECT id, kit_key, display_name, description,
+	                                             CASE WHEN enabled THEN 1 ELSE 0 END AS enabled
+	                                        FROM weapon_kits
+	                                       WHERE id = ?`), kitID).
+		Scan(&k.ID, &k.KitKey, &k.DisplayName, &k.Description, &enabled)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: GetWeaponKitByID: %w", err)
+	}
+	k.Enabled = enabled != 0
+	return k, nil
+}
+
+// IsAbilityInKitPool reports whether the ability belongs to the enabled pool
+// of a given kit (weapon_kit_abilities.enabled=1 and ability_templates.enabled=1).
+func (d *DB) IsAbilityInKitPool(ctx context.Context, kitID, abilityID int) (bool, error) {
+	if kitID <= 0 {
+		return false, fmt.Errorf("db: IsAbilityInKitPool: kitID must be > 0")
+	}
+	if abilityID <= 0 {
+		return false, fmt.Errorf("db: IsAbilityInKitPool: abilityID must be > 0")
+	}
+	var count int
+	err := d.db.QueryRowContext(ctx, d.q(`
+		SELECT COUNT(*)
+		  FROM weapon_kit_abilities wka
+		  JOIN ability_templates at ON at.id = wka.ability_id
+		 WHERE wka.kit_id = ?
+		   AND wka.ability_id = ?
+		   AND wka.enabled = 1
+		   AND at.enabled = 1`), kitID, abilityID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("db: IsAbilityInKitPool: %w", err)
+	}
+	return count > 0, nil
+}
+
 // CreateWeaponKit inserts a new weapon kit and returns its ID.
 func (d *DB) CreateWeaponKit(ctx context.Context, k *WeaponKit) (int, error) {
 	if k == nil {
