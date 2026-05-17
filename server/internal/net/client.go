@@ -505,6 +505,7 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 
 	// Send known spells.
 	c.sendKnownSpells()
+	c.sendSkillState(ctx)
 
 	// Send current quest state after entering world.
 	_ = c.sendQuestLogSnapshot(ctx)
@@ -1029,6 +1030,9 @@ func (c *ClientConn) handleInventorySwap(ctx context.Context, payload []byte) er
 		c.actor.WeaponDamage = wdmg
 		c.actor.CachedArmor = armor
 	}
+	if slotA == 0 || slotB == 0 {
+		c.sendSkillState(ctx)
+	}
 	return c.sendInventory(ctx, c.actor.CharacterID)
 }
 
@@ -1069,6 +1073,9 @@ func (c *ClientConn) handleUseItem(ctx context.Context, payload []byte) error {
 		if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, c.actor.CharacterID); err == nil {
 			c.actor.WeaponDamage = wdmg
 			c.actor.CachedArmor = armor
+		}
+		if res.EquipSlot == 0 {
+			c.sendSkillState(ctx)
 		}
 	}
 
@@ -1151,6 +1158,68 @@ func (c *ClientConn) sendKnownSpells() {
 		w.WriteFloat32(def.AoERadius)
 	}
 	c.actor.Send(buildFramedPacket(protocol.PKnownSpells, w.Bytes()))
+}
+
+// sendSkillState resolves the active player kit snapshot and sends PSkillState.
+func (c *ClientConn) sendSkillState(ctx context.Context) {
+	if c == nil || c.server == nil || c.server.db == nil || c.actor == nil {
+		return
+	}
+	charID := c.actor.CharacterID
+	if charID == "" {
+		return
+	}
+
+	resolution, err := c.server.db.ResolveActivePlayerKit(ctx, charID)
+	if err != nil {
+		log.Printf("sendSkillState: resolve failed for char %s: %v", charID, err)
+		return
+	}
+
+	payload := PSkillStatePayload{
+		Version:        1,
+		HasKit:         resolution.HasKit,
+		KitKey:         resolution.KitKey,
+		KitDisplayName: resolution.KitDisplayName,
+		Abilities:      make([]PSkillStateAbility, 0, len(resolution.Abilities)),
+	}
+
+	for _, ab := range resolution.Abilities {
+		if ab.SlotIndex < 0 || ab.SlotIndex > 255 {
+			log.Printf("sendSkillState: skip invalid slot_index=%d for char=%s ability_id=%d", ab.SlotIndex, charID, ab.AbilityID)
+			continue
+		}
+		if ab.AbilityID < 0 {
+			log.Printf("sendSkillState: skip invalid ability_id=%d for char=%s", ab.AbilityID, charID)
+			continue
+		}
+		cdMs := ab.CooldownMs
+		if cdMs < 0 {
+			cdMs = 0
+		}
+		if cdMs > math.MaxUint32 {
+			cdMs = math.MaxUint32
+		}
+		payload.Abilities = append(payload.Abilities, PSkillStateAbility{
+			SlotIndex:           uint8(ab.SlotIndex),
+			AbilityID:           uint32(ab.AbilityID),
+			AbilityName:         ab.AbilityName,
+			CooldownMs:          uint32(cdMs),
+			CooldownRemainingMs: 0,
+		})
+	}
+
+	buf, err := EncodePSkillState(payload)
+	if err != nil {
+		log.Printf("sendSkillState: encode failed for char %s: %v", charID, err)
+		return
+	}
+	if err := c.sendPacket(protocol.PSkillState, buf); err != nil {
+		log.Printf("sendSkillState: send failed for char %s: %v", charID, err)
+		return
+	}
+	log.Printf("sendSkillState: sent for char=%s has_kit=%t kit=%s abilities=%d",
+		charID, payload.HasKit, payload.KitKey, len(payload.Abilities))
 }
 
 func (c *ClientConn) handleCastSpell(ctx context.Context, payload []byte) error {

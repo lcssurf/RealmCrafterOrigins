@@ -69,6 +69,7 @@ type PlayerKitAbilityEntry struct {
 	SlotIndex   int
 	AbilityID   int
 	AbilityName string // for logging/debug
+	CooldownMs  int64
 }
 
 // PlayerKitResolution holds the active weapon kit for a player and its abilities.
@@ -1165,7 +1166,7 @@ func (d *DB) ResolveActivePlayerKit(ctx context.Context, charID string) (PlayerK
 	}
 
 	rows, err := d.db.QueryContext(ctx,
-		d.q(`SELECT wka.slot_index, wka.ability_id, at.name
+		d.q(`SELECT wka.slot_index, wka.ability_id, at.name, at.cooldown_ms
 		     FROM weapon_kit_abilities wka
 		     JOIN ability_templates at ON at.id = wka.ability_id
 		     WHERE wka.kit_id = ? AND wka.enabled = 1 AND at.enabled = 1
@@ -1179,7 +1180,7 @@ func (d *DB) ResolveActivePlayerKit(ctx context.Context, charID string) (PlayerK
 
 	for rows.Next() {
 		var e PlayerKitAbilityEntry
-		if err := rows.Scan(&e.SlotIndex, &e.AbilityID, &e.AbilityName); err != nil {
+		if err := rows.Scan(&e.SlotIndex, &e.AbilityID, &e.AbilityName, &e.CooldownMs); err != nil {
 			return PlayerKitResolution{}, fmt.Errorf("db: ResolveActivePlayerKit scan ability: %w", err)
 		}
 		out.Abilities = append(out.Abilities, e)
