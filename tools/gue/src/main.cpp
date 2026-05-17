@@ -30,6 +30,7 @@
 #include "tabs/spells.h"
 #include "tabs/combat_abilities.h"
 #include "tabs/weapon_kits.h"
+#include "tabs/equipment_slots.h"
 #include "tabs/actors.h"
 #include "tabs/areas.h"
 #include "tabs/quests.h"
@@ -160,6 +161,7 @@ int main() {
     gue::SpellsTab       spellsTab;
     gue::CombatAbilitiesTab combatAbilitiesTab;
     gue::WeaponKitsTab   weaponKitsTab;
+    gue::EquipmentSlotsTab equipmentSlotsTab;
     gue::ActorsTab       actorsTab;
     gue::AreasTab        areasTab;
     gue::QuestsTab       questsTab;
@@ -274,6 +276,10 @@ int main() {
             }
             if (ImGui::BeginTabItem("Weapon Kits")) {
                 weaponKitsTab.Draw(db);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Equipment Slots")) {
+                equipmentSlotsTab.Draw(db);
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Assets")) {

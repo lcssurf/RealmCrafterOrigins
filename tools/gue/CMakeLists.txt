@@ -13,6 +13,7 @@ add_subdirectory(
 
 file(GLOB_RECURSE GUE_SOURCES "${CMAKE_SOURCE_DIR}/src/*.cpp")
 list(APPEND GUE_SOURCES "${CMAKE_SOURCE_DIR}/src/tabs/weapon_kits.cpp")
+list(APPEND GUE_SOURCES "${CMAKE_SOURCE_DIR}/src/tabs/equipment_slots.cpp")
 list(REMOVE_DUPLICATES GUE_SOURCES)
 add_executable(rco_gue ${GUE_SOURCES})
 

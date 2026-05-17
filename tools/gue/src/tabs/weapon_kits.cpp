@@ -585,9 +585,10 @@ void WeaponKitsTab::Draw(sqlite3* db) {
 	ImGui::TextDisabled("%s", status_msg_);
 	ImGui::Separator();
 	ImGui::TextWrapped(
-		"Weapon Kits are reusable sets of skills granted to the player when a kit-providing "
-		"item is equipped. Multiple items can grant the same kit (e.g., 'Rusty Sword' and "
-		"'Excalibur' can both grant the 'sword' kit)."
+		"Weapon Kits are reusable POOLS of skills granted when a kit-providing item is equipped. "
+		"Multiple items can grant the same kit (e.g., 'Rusty Sword' and 'Excalibur' both grant 'sword'). "
+		"The player chooses which skills from the pool to put in their hotbar; how many slots they have "
+		"is configured in 'Equipment Slots' tab."
 	);
 	ImGui::Separator();
 

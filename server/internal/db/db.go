@@ -69,7 +69,7 @@ type WeaponKitAbility struct {
 type EquipmentSlotConfig struct {
 	SlotID             int // 0=weapon, 1=shield, etc. Canonical from item_templates.slot_type.
 	GivesKit           bool
-	MaxSkillsInLoadout int
+	HotbarSlotsGranted int // number of player hotbar slots this equipment slot grants.
 	Enabled            bool
 }
 
@@ -306,6 +306,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV24(ctx)
 	d.migrateV25(ctx)
 	d.migrateV26(ctx)
+	d.migrateV27(ctx)
 
 	return d, nil
 }
@@ -1068,6 +1069,55 @@ func (d *DB) SeedDefaultWeaponKits(ctx context.Context) error {
 		return fmt.Errorf("db: SeedDefaultWeaponKits commit: %w", err)
 	}
 	log.Printf("seed: weapon kits seeded")
+	return nil
+}
+
+// SeedDefaultEquipmentSlotConfig populates equipment_slot_config with default
+// values for a new installation. Each row is inserted only if not already
+// present, preserving admin customizations done via GUE.
+//
+// Defaults (engine baseline):
+//   - slot 0 (weapon): gives_kit=true, hotbar_slots_granted=4
+//   - slot 3 (chest): gives_kit=true, hotbar_slots_granted=1
+//   - slot 7 (feet): gives_kit=true, hotbar_slots_granted=1
+//   - other slots: not seeded (caller via GUE can enable)
+func (d *DB) SeedDefaultEquipmentSlotConfig(ctx context.Context) error {
+	type defaultEntry struct {
+		slotID             int
+		givesKit           bool
+		hotbarSlotsGranted int
+	}
+	defaults := []defaultEntry{
+		{slotID: 0, givesKit: true, hotbarSlotsGranted: 4}, // Weapon
+		{slotID: 3, givesKit: true, hotbarSlotsGranted: 1}, // Chest
+		{slotID: 7, givesKit: true, hotbarSlotsGranted: 1}, // Feet
+	}
+
+	for _, entry := range defaults {
+		var exists int
+		if err := d.db.QueryRowContext(ctx, d.q(`
+			SELECT COUNT(*)
+			  FROM equipment_slot_config
+			 WHERE slot_id = ?`), entry.slotID).Scan(&exists); err != nil {
+			return fmt.Errorf("db: SeedDefaultEquipmentSlotConfig check slot %d: %w", entry.slotID, err)
+		}
+		if exists > 0 {
+			continue
+		}
+
+		givesKit := 0
+		if entry.givesKit {
+			givesKit = 1
+		}
+		if _, err := d.db.ExecContext(ctx, d.q(`
+			INSERT INTO equipment_slot_config (slot_id, gives_kit, hotbar_slots_granted, enabled)
+			VALUES (?, ?, ?, ?)`),
+			entry.slotID, givesKit, entry.hotbarSlotsGranted, 1); err != nil {
+			return fmt.Errorf("db: SeedDefaultEquipmentSlotConfig insert slot %d: %w", entry.slotID, err)
+		}
+	}
+
+	log.Printf("seed: equipment slot config seeded (admin customizations preserved)")
 	return nil
 }
 
@@ -3798,11 +3848,12 @@ func (d *DB) ClearKitAbilities(ctx context.Context, kitID int) error {
 
 // ListEquipmentSlotConfigs returns all slot configs ordered by slot_id.
 // Returns empty slice if table is empty (no seeds yet).
+// hotbar_slots_granted is how many hotbar slots this equipment slot grants.
 func (d *DB) ListEquipmentSlotConfigs(ctx context.Context) ([]*EquipmentSlotConfig, error) {
 	rows, err := d.db.QueryContext(ctx, d.q(`
 		SELECT slot_id,
 		       CASE WHEN gives_kit THEN 1 ELSE 0 END AS gives_kit,
-		       max_skills_in_loadout,
+		       hotbar_slots_granted,
 		       CASE WHEN enabled THEN 1 ELSE 0 END AS enabled
 		  FROM equipment_slot_config
 		 ORDER BY slot_id`))
@@ -3815,7 +3866,7 @@ func (d *DB) ListEquipmentSlotConfigs(ctx context.Context) ([]*EquipmentSlotConf
 	for rows.Next() {
 		c := &EquipmentSlotConfig{}
 		var givesKit, enabled int
-		if err := rows.Scan(&c.SlotID, &givesKit, &c.MaxSkillsInLoadout, &enabled); err != nil {
+		if err := rows.Scan(&c.SlotID, &givesKit, &c.HotbarSlotsGranted, &enabled); err != nil {
 			return nil, fmt.Errorf("db: ListEquipmentSlotConfigs scan: %w", err)
 		}
 		c.GivesKit = givesKit != 0
@@ -3827,6 +3878,7 @@ func (d *DB) ListEquipmentSlotConfigs(ctx context.Context) ([]*EquipmentSlotConf
 
 // GetEquipmentSlotConfig returns config for a specific slot, or nil if not found.
 // "Not found" means the slot has no config row.
+// hotbar_slots_granted is how many hotbar slots this equipment slot grants.
 func (d *DB) GetEquipmentSlotConfig(ctx context.Context, slotID int) (*EquipmentSlotConfig, error) {
 	if slotID < 0 {
 		return nil, fmt.Errorf("db: GetEquipmentSlotConfig: slotID must be >= 0")
@@ -3836,11 +3888,11 @@ func (d *DB) GetEquipmentSlotConfig(ctx context.Context, slotID int) (*Equipment
 	err := d.db.QueryRowContext(ctx, d.q(`
 		SELECT slot_id,
 		       CASE WHEN gives_kit THEN 1 ELSE 0 END AS gives_kit,
-		       max_skills_in_loadout,
+		       hotbar_slots_granted,
 		       CASE WHEN enabled THEN 1 ELSE 0 END AS enabled
 		  FROM equipment_slot_config
 		 WHERE slot_id = ?`), slotID).
-		Scan(&c.SlotID, &givesKit, &c.MaxSkillsInLoadout, &enabled)
+		Scan(&c.SlotID, &givesKit, &c.HotbarSlotsGranted, &enabled)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -3860,8 +3912,8 @@ func (d *DB) UpdateEquipmentSlotConfig(ctx context.Context, c *EquipmentSlotConf
 	if c.SlotID < 0 {
 		return fmt.Errorf("db: UpdateEquipmentSlotConfig: slotID must be >= 0")
 	}
-	if c.MaxSkillsInLoadout < 0 {
-		return fmt.Errorf("db: UpdateEquipmentSlotConfig: max_skills_in_loadout must be >= 0")
+	if c.HotbarSlotsGranted < 0 {
+		return fmt.Errorf("db: UpdateEquipmentSlotConfig: hotbar_slots_granted must be >= 0")
 	}
 
 	givesKit := 0
@@ -3874,13 +3926,13 @@ func (d *DB) UpdateEquipmentSlotConfig(ctx context.Context, c *EquipmentSlotConf
 	}
 
 	_, err := d.db.ExecContext(ctx, d.q(`
-		INSERT INTO equipment_slot_config (slot_id, gives_kit, max_skills_in_loadout, enabled)
+		INSERT INTO equipment_slot_config (slot_id, gives_kit, hotbar_slots_granted, enabled)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(slot_id) DO UPDATE SET
 		    gives_kit = excluded.gives_kit,
-		    max_skills_in_loadout = excluded.max_skills_in_loadout,
+		    hotbar_slots_granted = excluded.hotbar_slots_granted,
 		    enabled = excluded.enabled`),
-		c.SlotID, givesKit, c.MaxSkillsInLoadout, enabled)
+		c.SlotID, givesKit, c.HotbarSlotsGranted, enabled)
 	if err != nil {
 		return fmt.Errorf("db: UpdateEquipmentSlotConfig: %w", err)
 	}
@@ -5381,6 +5433,61 @@ func (d *DB) migrateV26(ctx context.Context) {
 			max_skills_in_loadout INTEGER NOT NULL DEFAULT 0,
 			enabled               INTEGER NOT NULL DEFAULT 1
 		)`)
+	}
+}
+
+// migrateV27 renames equipment_slot_config.max_skills_in_loadout to hotbar_slots_granted.
+// Idempotent: applies only when old exists and new does not.
+func (d *DB) migrateV27(ctx context.Context) {
+	if d.driver == "postgres" {
+		_, _ = d.db.ExecContext(ctx, `
+DO $$
+BEGIN
+	IF EXISTS (
+		SELECT 1
+		  FROM information_schema.columns
+		 WHERE table_name = 'equipment_slot_config'
+		   AND column_name = 'max_skills_in_loadout'
+	) AND NOT EXISTS (
+		SELECT 1
+		  FROM information_schema.columns
+		 WHERE table_name = 'equipment_slot_config'
+		   AND column_name = 'hotbar_slots_granted'
+	) THEN
+		ALTER TABLE equipment_slot_config
+		RENAME COLUMN max_skills_in_loadout TO hotbar_slots_granted;
+	END IF;
+END $$;`)
+		return
+	}
+
+	hasOld := false
+	hasNew := false
+	rows, err := d.db.QueryContext(ctx, `PRAGMA table_info(equipment_slot_config)`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			continue
+		}
+		if name == "max_skills_in_loadout" {
+			hasOld = true
+		}
+		if name == "hotbar_slots_granted" {
+			hasNew = true
+		}
+	}
+
+	if hasOld && !hasNew {
+		log.Printf("migrateV27: renaming max_skills_in_loadout -> hotbar_slots_granted")
+		_, _ = d.db.ExecContext(ctx, `ALTER TABLE equipment_slot_config RENAME COLUMN max_skills_in_loadout TO hotbar_slots_granted`)
 	}
 }
 

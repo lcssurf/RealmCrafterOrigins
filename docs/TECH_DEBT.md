@@ -74,6 +74,17 @@ Bug "Create não funciona" custou ~2h de diagnóstico.
 
 **Quando atacar:** já em vigor para próximos commits.
 
+## 7. Lição: nomenclatura captura intent
+
+Durante Commit 14 da feature Weapon Kits, criei coluna `max_skills_in_loadout`
+em equipment_slot_config. Nome ambíguo: sugere "tamanho do pool de skills disponíveis"
+ao mesmo tempo que "quantos slots no hotbar". Renomeei para `hotbar_slots_granted`
+no Commit 15.5 quando a confusão ficou explícita.
+
+Lição para próximos schemas: ao nomear campo, pergunte "este nome distingue de
+todos os outros conceitos similares no sistema?". Se há ambiguidade conceitual,
+o nome carrega o débito.
+
 ---
 
 Reportar:
