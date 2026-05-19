@@ -210,6 +210,7 @@ func main() {
 				abilities = append(abilities, world.AbilityTemplate{
 					ID:                    row.ID,
 					Name:                  row.Name,
+					Description:           row.Description,
 					Family:                row.Family,
 					Category:              row.Category,
 					ResourceType:          row.ResourceType,

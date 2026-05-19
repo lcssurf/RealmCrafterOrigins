@@ -10,6 +10,7 @@ namespace gue {
 struct CombatAbilityTemplate {
     int         id = 0;
     std::string name;
+    std::string description;
     std::string family = "melee_special";
     std::string category = "damage";
     std::string resource_type = "none";

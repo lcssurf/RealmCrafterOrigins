@@ -2630,7 +2630,9 @@ int main() {
 
             case rco::net::kPSkillState: {
                 auto& state = rco::gameplay::MutablePlayerSkillState();
-                state.ApplyPacket(r);
+                if (state.ApplyPacket(r)) {
+                    skill_hotbar.OnSkillStateUpdated(state);
+                }
                 break;
             }
 

@@ -64,6 +64,7 @@ void SkillLoadoutScreen::Render(int screen_w, int screen_h) {
     std::vector<const rco::gameplay::SkillStateAbility*> by_slot(
         static_cast<std::size_t>(slot_count), nullptr);
     std::unordered_map<uint32_t, uint8_t> level_by_ability_id;
+    std::unordered_map<uint32_t, std::string> description_by_ability_id;
     for (const auto& ab : state.abilities()) {
         const int idx = static_cast<int>(ab.slot_index);
         if (idx >= 0 && idx < slot_count) {
@@ -71,6 +72,9 @@ void SkillLoadoutScreen::Render(int screen_w, int screen_h) {
         }
         if (ab.ability_id != 0) {
             level_by_ability_id[ab.ability_id] = ab.mastery_level;
+            if (!ab.description.empty()) {
+                description_by_ability_id[ab.ability_id] = ab.description;
+            }
         }
     }
 
@@ -146,7 +150,23 @@ void SkillLoadoutScreen::Render(int screen_w, int screen_h) {
                     }
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Cooldown: %u ms", ab.cooldown_ms);
+                    const auto desc_it = description_by_ability_id.find(ab.ability_id);
+                    const bool has_desc = (desc_it != description_by_ability_id.end() &&
+                                           !desc_it->second.empty());
+                    ImGui::BeginTooltip();
+                    ImGui::Text("%s", ab.ability_name.c_str());
+                    if (has_desc) {
+                        ImGui::Separator();
+                        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 360.0f);
+                        ImGui::TextUnformatted(desc_it->second.c_str());
+                        ImGui::PopTextWrapPos();
+                    } else {
+                        ImGui::Separator();
+                        ImGui::TextDisabled("No description available.");
+                    }
+                    ImGui::Separator();
+                    ImGui::Text("Cooldown: %u ms", ab.cooldown_ms);
+                    ImGui::EndTooltip();
                 }
             }
         }
@@ -171,6 +191,26 @@ void SkillLoadoutScreen::Render(int screen_w, int screen_h) {
                     on_clear_slot(active_kit_id, static_cast<uint8_t>(i));
                     std::snprintf(status_msg_, sizeof(status_msg_),
                                   "Clear request sent: slot %d.", i + 1);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::BeginTooltip();
+                    ImGui::Text("%s", slot_ab->ability_name.c_str());
+                    if (!slot_ab->description.empty()) {
+                        ImGui::Separator();
+                        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 360.0f);
+                        ImGui::TextUnformatted(slot_ab->description.c_str());
+                        ImGui::PopTextWrapPos();
+                    }
+                    ImGui::Separator();
+                    ImGui::Text("Cooldown: %u ms", slot_ab->cooldown_ms);
+                    if (slot_ab->mastery_level > 0 && slot_ab->mastery_max_level > 0) {
+                        if (slot_ab->mastery_level >= slot_ab->mastery_max_level) {
+                            ImGui::TextColored(ImVec4(1.f, 0.84f, 0.f, 1.f), "MAX LEVEL");
+                        } else {
+                            ImGui::Text("XP: %u / %u", slot_ab->mastery_xp, slot_ab->mastery_xp_for_next);
+                        }
+                    }
+                    ImGui::EndTooltip();
                 }
             } else {
                 ImGui::BeginDisabled();

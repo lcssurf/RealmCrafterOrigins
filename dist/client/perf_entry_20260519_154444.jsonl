@@ -1,0 +1,42 @@
+{"event":"entry_start","entry_id":1,"ts_us":5875574,"entry_rel_us":16,"slot":0}
+{"event":"packet_arrival","entry_id":1,"ts_us":5891528,"entry_rel_us":15970,"packet":"PStartGame"}
+{"event":"packet_arrival","entry_id":1,"ts_us":5892185,"entry_rel_us":16627,"packet":"PAreaConfig"}
+{"event":"lazy_stage","entry_id":1,"ts_us":5982207,"entry_rel_us":106649,"stage":"engine_init","dur_us":89685,"ok":true}
+{"event":"lazy_stage","entry_id":1,"ts_us":6484480,"entry_rel_us":608922,"stage":"load_environment_initial","dur_us":502260,"ok":true}
+{"event":"load_environment_call","entry_id":1,"ts_us":6484497,"entry_rel_us":608939,"callsite":"init_default","path":"assets/ibl/default.hdr","dur_us":502260}
+{"event":"lazy_stage","entry_id":1,"ts_us":6512472,"entry_rel_us":636914,"stage":"terrain_init","dur_us":27827,"ok":true}
+{"event":"model_cache_get","entry_id":1,"ts_us":6637070,"entry_rel_us":761512,"path":"assets/models/Dwarf Idle.fbx","hit":false,"context":"lazy_player_init"}
+{"event":"lazy_stage","entry_id":1,"ts_us":6637095,"entry_rel_us":761537,"stage":"player_actor_init","dur_us":124592,"ok":true}
+{"event":"actor_init","entry_id":1,"ts_us":6637103,"entry_rel_us":761545,"stage":"lazy_player_init","model":"assets/models/Dwarf Idle.fbx","cache_hit":false,"post_loading":false,"dur_us":124592,"frame":344}
+{"event":"lazy_stage","entry_id":1,"ts_us":8802465,"entry_rel_us":2926907,"stage":"terrain_load_from_editor","dur_us":730681,"ok":true}
+{"event":"lazy_stage","entry_id":1,"ts_us":8802977,"entry_rel_us":2927419,"stage":"coldata_load","dur_us":499,"ok":true}
+{"event":"client_world_ready_sent","entry_id":1,"ts_us":8803111,"entry_rel_us":2927553,"total_ms":2927,"client_init_ms":2911}
+{"event":"load_environment_skipped","entry_id":1,"ts_us":8803231,"entry_rel_us":2927673,"callsite":"area_apply_pending","path":"assets/ibl/default.hdr"}
+{"event":"rebuild_materials","entry_id":1,"ts_us":8803306,"entry_rel_us":2927748,"stage":"coalesced_frame_loading","post_loading":false,"dur_us":28,"frame":344}
+{"event":"lazy_stage","entry_id":1,"ts_us":8803311,"entry_rel_us":2927753,"stage":"rebuild_materials_initial","dur_us":28,"ok":true}
+{"event":"rebuild_materials","entry_id":1,"ts_us":8803314,"entry_rel_us":2927756,"stage":"rebuild_materials_initial","post_loading":false,"dur_us":28,"frame":344}
+{"event":"model_cache_get","entry_id":1,"ts_us":9179393,"entry_rel_us":3303835,"path":"assets/models/hunger/nightmare_creature_1.glb","hit":false,"context":"npc_lazy_init"}
+{"event":"actor_init","entry_id":1,"ts_us":9179421,"entry_rel_us":3303863,"stage":"npc_lazy_init","model":"assets/models/hunger/nightmare_creature_1.glb","cache_hit":false,"post_loading":false,"dur_us":375991,"frame":344}
+{"event":"model_cache_get","entry_id":1,"ts_us":9179432,"entry_rel_us":3303874,"path":"assets/models/hunger/nightmare_creature_1.glb","hit":true,"context":"npc_lazy_init"}
+{"event":"actor_init","entry_id":1,"ts_us":9179437,"entry_rel_us":3303879,"stage":"npc_lazy_init","model":"assets/models/hunger/nightmare_creature_1.glb","cache_hit":true,"post_loading":false,"dur_us":5,"frame":344}
+{"event":"model_cache_get","entry_id":1,"ts_us":9179443,"entry_rel_us":3303885,"path":"assets/models/hunger/nightmare_creature_1.glb","hit":true,"context":"npc_lazy_init"}
+{"event":"actor_init","entry_id":1,"ts_us":9179446,"entry_rel_us":3303888,"stage":"npc_lazy_init","model":"assets/models/hunger/nightmare_creature_1.glb","cache_hit":true,"post_loading":false,"dur_us":2,"frame":344}
+{"event":"model_cache_get","entry_id":1,"ts_us":9179451,"entry_rel_us":3303893,"path":"assets/models/hunger/nightmare_creature_1.glb","hit":true,"context":"npc_lazy_init"}
+{"event":"actor_init","entry_id":1,"ts_us":9179455,"entry_rel_us":3303897,"stage":"npc_lazy_init","model":"assets/models/hunger/nightmare_creature_1.glb","cache_hit":true,"post_loading":false,"dur_us":3,"frame":344}
+{"event":"model_cache_get","entry_id":1,"ts_us":9179459,"entry_rel_us":3303901,"path":"assets/models/hunger/nightmare_creature_1.glb","hit":true,"context":"npc_lazy_init"}
+{"event":"actor_init","entry_id":1,"ts_us":9179462,"entry_rel_us":3303904,"stage":"npc_lazy_init","model":"assets/models/hunger/nightmare_creature_1.glb","cache_hit":true,"post_loading":false,"dur_us":2,"frame":344}
+{"event":"model_cache_get","entry_id":1,"ts_us":9179517,"entry_rel_us":3303959,"path":"assets/models/hunger/nightmare_creature_1.glb","hit":true,"context":"npc_lazy_init"}
+{"event":"actor_init","entry_id":1,"ts_us":9179522,"entry_rel_us":3303964,"stage":"npc_lazy_init","model":"assets/models/hunger/nightmare_creature_1.glb","cache_hit":true,"post_loading":false,"dur_us":4,"frame":344}
+{"event":"model_cache_get","entry_id":1,"ts_us":9179527,"entry_rel_us":3303969,"path":"assets/models/Dwarf Idle.fbx","hit":true,"context":"npc_lazy_init"}
+{"event":"actor_init","entry_id":1,"ts_us":9179531,"entry_rel_us":3303973,"stage":"npc_lazy_init","model":"assets/models/Dwarf Idle.fbx","cache_hit":true,"post_loading":false,"dur_us":3,"frame":344}
+{"event":"model_cache_get","entry_id":1,"ts_us":9179553,"entry_rel_us":3303995,"path":"assets/models/hunger/nightmare_creature_1.glb","hit":true,"context":"npc_lazy_init"}
+{"event":"actor_init","entry_id":1,"ts_us":9179556,"entry_rel_us":3303998,"stage":"npc_lazy_init","model":"assets/models/hunger/nightmare_creature_1.glb","cache_hit":true,"post_loading":false,"dur_us":3,"frame":344}
+{"event":"model_cache_get","entry_id":1,"ts_us":9179560,"entry_rel_us":3304002,"path":"assets/models/hunger/nightmare_creature_1.glb","hit":true,"context":"npc_lazy_init"}
+{"event":"actor_init","entry_id":1,"ts_us":9179562,"entry_rel_us":3304004,"stage":"npc_lazy_init","model":"assets/models/hunger/nightmare_creature_1.glb","cache_hit":true,"post_loading":false,"dur_us":2,"frame":344}
+{"event":"model_cache_get","entry_id":1,"ts_us":9179566,"entry_rel_us":3304008,"path":"assets/models/hunger/nightmare_creature_1.glb","hit":true,"context":"npc_lazy_init"}
+{"event":"actor_init","entry_id":1,"ts_us":9179569,"entry_rel_us":3304011,"stage":"npc_lazy_init","model":"assets/models/hunger/nightmare_creature_1.glb","cache_hit":true,"post_loading":false,"dur_us":2,"frame":344}
+{"event":"model_cache_get","entry_id":1,"ts_us":9179602,"entry_rel_us":3304044,"path":"assets/models/hunger/nightmare_creature_1.glb","hit":true,"context":"npc_lazy_init"}
+{"event":"actor_init","entry_id":1,"ts_us":9179605,"entry_rel_us":3304047,"stage":"npc_lazy_init","model":"assets/models/hunger/nightmare_creature_1.glb","cache_hit":true,"post_loading":false,"dur_us":3,"frame":344}
+{"event":"rebuild_materials","entry_id":1,"ts_us":9191846,"entry_rel_us":3316288,"stage":"coalesced_frame_loading","post_loading":false,"dur_us":19,"frame":345}
+{"event":"gate_release","entry_id":1,"ts_us":10892747,"entry_rel_us":5017189,"reason":"timeout_wait_worldobjects","core_total":0,"core_done":0,"pending_total":0,"elapsed_ms":5001.052}
+{"event":"entry_finalize","entry_id":1,"ts_us":11193727,"entry_rel_us":5318169,"reason":"idle_after_last_init","world_ready_us":8803110,"last_actor_init_us":9179605,"streaming_tail_us":376495}

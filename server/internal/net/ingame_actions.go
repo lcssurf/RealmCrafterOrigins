@@ -279,6 +279,7 @@ func (c *ClientConn) handleCastSkillSlot(ctx context.Context, payload []byte) er
 			charID, slotIndex, abilityID, targetRID, reason)
 		return nil
 	}
+	c.sendSkillState(ctx)
 
 	// Provoke defensive/aggressive NPC target on successful cast start.
 	area, ok := c.server.world.GetArea(c.actor.AreaName)

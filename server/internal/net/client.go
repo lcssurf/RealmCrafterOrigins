@@ -1285,14 +1285,19 @@ func (c *ClientConn) sendSkillState(ctx context.Context) {
 	}
 
 	cachedLevels := make(map[int]int)
+	cooldownStartedAtByAbilityID := make(map[int]int64)
 	c.actor.Mu.Lock()
 	for abilityID, level := range c.actor.SkillLevels {
 		cachedLevels[abilityID] = level
 	}
+	for abilityID, lastCastAt := range c.actor.AbilityCooldowns {
+		cooldownStartedAtByAbilityID[abilityID] = lastCastAt
+	}
 	c.actor.Mu.Unlock()
+	nowMs := time.Now().UnixMilli()
 
 	payload := PSkillStatePayload{
-		Version:        2,
+		Version:        3,
 		HasKit:         resolution.HasKit,
 		KitID:          0,
 		KitKey:         resolution.KitKey,
@@ -1322,8 +1327,10 @@ func (c *ClientConn) sendSkillState(ctx context.Context) {
 
 		maxLevel := 10
 		var abilityTemplate *world.AbilityTemplate
+		abilityDescription := ""
 		if tpl, ok := world.GetAbilityTemplateByID(ab.AbilityID); ok {
 			abilityTemplate = &tpl
+			abilityDescription = tpl.Description
 			if tpl.MasteryMaxLevel > 0 {
 				maxLevel = tpl.MasteryMaxLevel
 			}
@@ -1372,16 +1379,39 @@ func (c *ClientConn) sendSkillState(ctx context.Context) {
 			}
 		}
 
+		cooldownRemainingMs := uint32(0)
+		if lastCastAt, ok := cooldownStartedAtByAbilityID[ab.AbilityID]; ok && lastCastAt > 0 {
+			effectiveCooldownMs := int64(cdMs)
+			if abilityTemplate != nil {
+				effectiveCooldownMs = world.EffectiveCooldownMs(c.actor, *abilityTemplate)
+			}
+			if effectiveCooldownMs > 0 {
+				elapsed := nowMs - lastCastAt
+				if elapsed < 0 {
+					elapsed = 0
+				}
+				if elapsed < effectiveCooldownMs {
+					remaining := effectiveCooldownMs - elapsed
+					if remaining > math.MaxUint32 {
+						cooldownRemainingMs = math.MaxUint32
+					} else {
+						cooldownRemainingMs = uint32(remaining)
+					}
+				}
+			}
+		}
+
 		payload.Abilities = append(payload.Abilities, PSkillStateAbility{
 			SlotIndex:           uint8(ab.SlotIndex),
 			AbilityID:           uint32(ab.AbilityID),
 			AbilityName:         ab.AbilityName,
 			CooldownMs:          uint32(cdMs),
-			CooldownRemainingMs: 0,
+			CooldownRemainingMs: cooldownRemainingMs,
 			MasteryLevel:        uint8(level),
 			MasteryXP:           masteryXP,
 			MasteryXPForNext:    masteryXPForNext,
 			MasteryMaxLevel:     uint8(maxLevel),
+			Description:         abilityDescription,
 		})
 	}
 

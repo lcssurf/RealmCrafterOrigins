@@ -65,6 +65,14 @@ bool DrawAbilityFields(CombatAbilityTemplate& row) {
         changed = true;
     }
 
+    ImGui::TextUnformatted("Description");
+    char description_buf[2048] = {};
+    std::strncpy(description_buf, row.description.c_str(), sizeof(description_buf) - 1);
+    if (ImGui::InputTextMultiline("##ability_description", description_buf, sizeof(description_buf), {-1.0f, 64.0f})) {
+        row.description = description_buf;
+        changed = true;
+    }
+
     char family_buf[64] = {};
     std::strncpy(family_buf, row.family.c_str(), sizeof(family_buf) - 1);
     if (ImGui::InputText("Family", family_buf, sizeof(family_buf))) {
@@ -301,6 +309,7 @@ void CombatAbilitiesTab::EnsureTables(sqlite3* db) {
         "CREATE TABLE IF NOT EXISTS ability_templates ("
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "  name TEXT NOT NULL UNIQUE,"
+        "  description TEXT NOT NULL DEFAULT '',"
         "  family TEXT NOT NULL DEFAULT 'melee_special',"
         "  resource_type TEXT NOT NULL DEFAULT 'none',"
         "  resource_cost INTEGER NOT NULL DEFAULT 0,"
@@ -436,6 +445,8 @@ void CombatAbilitiesTab::EnsureTables(sqlite3* db) {
         if (err) sqlite3_free(err);
     };
 
+    add_column_if_missing("ability_templates", "description",
+        "description TEXT NOT NULL DEFAULT ''");
     add_column_if_missing("ability_templates", "category",
         "category TEXT NOT NULL DEFAULT 'damage'");
     add_column_if_missing("ability_templates", "mastery_xp_per_use",
@@ -539,7 +550,7 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
 
     sqlite3_stmt* stmt = nullptr;
     const char* sql =
-        "SELECT id, name, family, category, resource_type, resource_cost, cooldown_ms, "
+        "SELECT id, name, description, family, category, resource_type, resource_cost, cooldown_ms, "
         "       range_min, range_max, windup_ms, impact_delay_ms, recover_ms, "
         "       parry_window_ms, interruptible, base_damage_min, base_damage_max, "
         "       damage_stat_scale_json, armor_pierce_pct, crit_policy_json, "
@@ -561,42 +572,43 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
         CombatAbilityTemplate row;
         row.id = sqlite3_column_int(stmt, 0);
         if (const auto* text = sqlite3_column_text(stmt, 1)) row.name = reinterpret_cast<const char*>(text);
-        if (const auto* text = sqlite3_column_text(stmt, 2)) row.family = reinterpret_cast<const char*>(text);
-        if (const auto* text = sqlite3_column_text(stmt, 3)) row.category = reinterpret_cast<const char*>(text);
-        if (const auto* text = sqlite3_column_text(stmt, 4)) row.resource_type = reinterpret_cast<const char*>(text);
-        row.resource_cost = sqlite3_column_int(stmt, 5);
-        row.cooldown_ms = sqlite3_column_int(stmt, 6);
-        row.range_min = static_cast<float>(sqlite3_column_double(stmt, 7));
-        row.range_max = static_cast<float>(sqlite3_column_double(stmt, 8));
-        row.windup_ms = sqlite3_column_int(stmt, 9);
-        row.impact_delay_ms = sqlite3_column_int(stmt, 10);
-        row.recover_ms = sqlite3_column_int(stmt, 11);
-        row.parry_window_ms = sqlite3_column_int(stmt, 12);
-        row.interruptible = sqlite3_column_int(stmt, 13) != 0;
-        row.base_damage_min = sqlite3_column_int(stmt, 14);
-        row.base_damage_max = sqlite3_column_int(stmt, 15);
-        if (const auto* text = sqlite3_column_text(stmt, 16)) row.damage_stat_scale_json = reinterpret_cast<const char*>(text);
-        row.armor_pierce_pct = static_cast<float>(sqlite3_column_double(stmt, 17));
-        if (const auto* text = sqlite3_column_text(stmt, 18)) row.crit_policy_json = reinterpret_cast<const char*>(text);
-        if (const auto* text = sqlite3_column_text(stmt, 19)) row.telegraph_type = reinterpret_cast<const char*>(text);
-        row.telegraph_radius = static_cast<float>(sqlite3_column_double(stmt, 20));
-        if (const auto* text = sqlite3_column_text(stmt, 21)) row.telegraph_color_rgba = reinterpret_cast<const char*>(text);
-        if (const auto* text = sqlite3_column_text(stmt, 22)) row.action_windup = reinterpret_cast<const char*>(text);
-        if (const auto* text = sqlite3_column_text(stmt, 23)) row.action_impact = reinterpret_cast<const char*>(text);
-        if (const auto* text = sqlite3_column_text(stmt, 24)) row.action_recover = reinterpret_cast<const char*>(text);
-        row.allow_action_override = sqlite3_column_int(stmt, 25) != 0;
-        if (const auto* text = sqlite3_column_text(stmt, 26)) row.allowed_action_tags_json = reinterpret_cast<const char*>(text);
-        row.vfx_id_windup = sqlite3_column_int(stmt, 27);
-        row.vfx_id_impact = sqlite3_column_int(stmt, 28);
-        row.sfx_id_windup = sqlite3_column_int(stmt, 29);
-        row.sfx_id_impact = sqlite3_column_int(stmt, 30);
-        row.mastery_xp_per_use = sqlite3_column_int(stmt, 31);
-        row.mastery_max_level = sqlite3_column_int(stmt, 32);
-        if (const auto* text = sqlite3_column_text(stmt, 33)) row.mastery_xp_curve_type = reinterpret_cast<const char*>(text);
-        row.mastery_xp_curve_base = sqlite3_column_int(stmt, 34);
-        row.mastery_primary_bonus_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 35));
-        row.mastery_cooldown_redux_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 36));
-        row.enabled = sqlite3_column_int(stmt, 37) != 0;
+        if (const auto* text = sqlite3_column_text(stmt, 2)) row.description = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 3)) row.family = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 4)) row.category = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 5)) row.resource_type = reinterpret_cast<const char*>(text);
+        row.resource_cost = sqlite3_column_int(stmt, 6);
+        row.cooldown_ms = sqlite3_column_int(stmt, 7);
+        row.range_min = static_cast<float>(sqlite3_column_double(stmt, 8));
+        row.range_max = static_cast<float>(sqlite3_column_double(stmt, 9));
+        row.windup_ms = sqlite3_column_int(stmt, 10);
+        row.impact_delay_ms = sqlite3_column_int(stmt, 11);
+        row.recover_ms = sqlite3_column_int(stmt, 12);
+        row.parry_window_ms = sqlite3_column_int(stmt, 13);
+        row.interruptible = sqlite3_column_int(stmt, 14) != 0;
+        row.base_damage_min = sqlite3_column_int(stmt, 15);
+        row.base_damage_max = sqlite3_column_int(stmt, 16);
+        if (const auto* text = sqlite3_column_text(stmt, 17)) row.damage_stat_scale_json = reinterpret_cast<const char*>(text);
+        row.armor_pierce_pct = static_cast<float>(sqlite3_column_double(stmt, 18));
+        if (const auto* text = sqlite3_column_text(stmt, 19)) row.crit_policy_json = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 20)) row.telegraph_type = reinterpret_cast<const char*>(text);
+        row.telegraph_radius = static_cast<float>(sqlite3_column_double(stmt, 21));
+        if (const auto* text = sqlite3_column_text(stmt, 22)) row.telegraph_color_rgba = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 23)) row.action_windup = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 24)) row.action_impact = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 25)) row.action_recover = reinterpret_cast<const char*>(text);
+        row.allow_action_override = sqlite3_column_int(stmt, 26) != 0;
+        if (const auto* text = sqlite3_column_text(stmt, 27)) row.allowed_action_tags_json = reinterpret_cast<const char*>(text);
+        row.vfx_id_windup = sqlite3_column_int(stmt, 28);
+        row.vfx_id_impact = sqlite3_column_int(stmt, 29);
+        row.sfx_id_windup = sqlite3_column_int(stmt, 30);
+        row.sfx_id_impact = sqlite3_column_int(stmt, 31);
+        row.mastery_xp_per_use = sqlite3_column_int(stmt, 32);
+        row.mastery_max_level = sqlite3_column_int(stmt, 33);
+        if (const auto* text = sqlite3_column_text(stmt, 34)) row.mastery_xp_curve_type = reinterpret_cast<const char*>(text);
+        row.mastery_xp_curve_base = sqlite3_column_int(stmt, 35);
+        row.mastery_primary_bonus_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 36));
+        row.mastery_cooldown_redux_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 37));
+        row.enabled = sqlite3_column_int(stmt, 38) != 0;
         abilities_.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
@@ -966,6 +978,7 @@ bool CombatAbilitiesTab::ValidateProfileBinding(sqlite3* db, const NPCProfileBin
 
 bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     row.name = TrimCopy(row.name);
+    row.description = TrimCopy(row.description);
     row.family = TrimCopy(row.family);
     row.category = ToLowerCopy(TrimCopy(row.category));
     row.resource_type = TrimCopy(row.resource_type);
@@ -1009,7 +1022,7 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     if (is_new) {
         const char* sql =
             "INSERT INTO ability_templates ("
-            "name, family, category, resource_type, resource_cost, cooldown_ms, "
+            "name, description, family, category, resource_type, resource_cost, cooldown_ms, "
             "range_min, range_max, windup_ms, impact_delay_ms, recover_ms, "
             "parry_window_ms, interruptible, base_damage_min, base_damage_max, "
             "damage_stat_scale_json, armor_pierce_pct, crit_policy_json, "
@@ -1019,7 +1032,7 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
             "vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, "
             "mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type, "
             "mastery_xp_curve_base, mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, enabled"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
             SetStatus("Ability create error: %s", sqlite3_errmsg(db));
@@ -1028,7 +1041,7 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     } else {
         const char* sql =
             "UPDATE ability_templates SET "
-            "name=?, family=?, category=?, resource_type=?, resource_cost=?, cooldown_ms=?, "
+            "name=?, description=?, family=?, category=?, resource_type=?, resource_cost=?, cooldown_ms=?, "
             "range_min=?, range_max=?, windup_ms=?, impact_delay_ms=?, recover_ms=?, "
             "parry_window_ms=?, interruptible=?, base_damage_min=?, base_damage_max=?, "
             "damage_stat_scale_json=?, armor_pierce_pct=?, crit_policy_json=?, "
@@ -1047,44 +1060,45 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     }
 
     sqlite3_bind_text(stmt, 1, row.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, row.family.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, row.category.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 4, row.resource_type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 5, row.resource_cost);
-    sqlite3_bind_int(stmt, 6, row.cooldown_ms);
-    sqlite3_bind_double(stmt, 7, row.range_min);
-    sqlite3_bind_double(stmt, 8, row.range_max);
-    sqlite3_bind_int(stmt, 9, row.windup_ms);
-    sqlite3_bind_int(stmt, 10, row.impact_delay_ms);
-    sqlite3_bind_int(stmt, 11, row.recover_ms);
-    sqlite3_bind_int(stmt, 12, row.parry_window_ms);
-    sqlite3_bind_int(stmt, 13, row.interruptible ? 1 : 0);
-    sqlite3_bind_int(stmt, 14, row.base_damage_min);
-    sqlite3_bind_int(stmt, 15, row.base_damage_max);
-    sqlite3_bind_text(stmt, 16, row.damage_stat_scale_json.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_double(stmt, 17, row.armor_pierce_pct);
-    sqlite3_bind_text(stmt, 18, row.crit_policy_json.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 19, row.telegraph_type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_double(stmt, 20, row.telegraph_radius);
-    sqlite3_bind_text(stmt, 21, row.telegraph_color_rgba.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 22, row.action_windup.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 23, row.action_impact.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 24, row.action_recover.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 25, row.allow_action_override ? 1 : 0);
-    sqlite3_bind_text(stmt, 26, row.allowed_action_tags_json.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 27, row.vfx_id_windup);
-    sqlite3_bind_int(stmt, 28, row.vfx_id_impact);
-    sqlite3_bind_int(stmt, 29, row.sfx_id_windup);
-    sqlite3_bind_int(stmt, 30, row.sfx_id_impact);
-    sqlite3_bind_int(stmt, 31, row.mastery_xp_per_use);
-    sqlite3_bind_int(stmt, 32, row.mastery_max_level);
-    sqlite3_bind_text(stmt, 33, row.mastery_xp_curve_type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 34, row.mastery_xp_curve_base);
-    sqlite3_bind_double(stmt, 35, row.mastery_primary_bonus_per_lvl);
-    sqlite3_bind_double(stmt, 36, row.mastery_cooldown_redux_per_lvl);
-    sqlite3_bind_int(stmt, 37, row.enabled ? 1 : 0);
+    sqlite3_bind_text(stmt, 2, row.description.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, row.family.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, row.category.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, row.resource_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 6, row.resource_cost);
+    sqlite3_bind_int(stmt, 7, row.cooldown_ms);
+    sqlite3_bind_double(stmt, 8, row.range_min);
+    sqlite3_bind_double(stmt, 9, row.range_max);
+    sqlite3_bind_int(stmt, 10, row.windup_ms);
+    sqlite3_bind_int(stmt, 11, row.impact_delay_ms);
+    sqlite3_bind_int(stmt, 12, row.recover_ms);
+    sqlite3_bind_int(stmt, 13, row.parry_window_ms);
+    sqlite3_bind_int(stmt, 14, row.interruptible ? 1 : 0);
+    sqlite3_bind_int(stmt, 15, row.base_damage_min);
+    sqlite3_bind_int(stmt, 16, row.base_damage_max);
+    sqlite3_bind_text(stmt, 17, row.damage_stat_scale_json.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 18, row.armor_pierce_pct);
+    sqlite3_bind_text(stmt, 19, row.crit_policy_json.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 20, row.telegraph_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 21, row.telegraph_radius);
+    sqlite3_bind_text(stmt, 22, row.telegraph_color_rgba.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 23, row.action_windup.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 24, row.action_impact.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 25, row.action_recover.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 26, row.allow_action_override ? 1 : 0);
+    sqlite3_bind_text(stmt, 27, row.allowed_action_tags_json.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 28, row.vfx_id_windup);
+    sqlite3_bind_int(stmt, 29, row.vfx_id_impact);
+    sqlite3_bind_int(stmt, 30, row.sfx_id_windup);
+    sqlite3_bind_int(stmt, 31, row.sfx_id_impact);
+    sqlite3_bind_int(stmt, 32, row.mastery_xp_per_use);
+    sqlite3_bind_int(stmt, 33, row.mastery_max_level);
+    sqlite3_bind_text(stmt, 34, row.mastery_xp_curve_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 35, row.mastery_xp_curve_base);
+    sqlite3_bind_double(stmt, 36, row.mastery_primary_bonus_per_lvl);
+    sqlite3_bind_double(stmt, 37, row.mastery_cooldown_redux_per_lvl);
+    sqlite3_bind_int(stmt, 38, row.enabled ? 1 : 0);
     if (!is_new) {
-        sqlite3_bind_int(stmt, 38, row.id);
+        sqlite3_bind_int(stmt, 39, row.id);
     }
 
     rc = sqlite3_step(stmt);

@@ -13,7 +13,7 @@ bool SkillState::ApplyPacket(rco::net::Reader& r) {
         std::fprintf(stderr, "[SKILL_STATE] underflow reading version\n");
         return false;
     }
-    if (version != 1 && version != 2) {
+    if (version != 1 && version != 2 && version != 3) {
         std::fprintf(stderr, "[SKILL_STATE] unsupported version %u, ignoring\n",
                      static_cast<unsigned>(version));
         return false;
@@ -34,11 +34,14 @@ bool SkillState::ApplyPacket(rco::net::Reader& r) {
         a.ability_name = r.ReadString();
         a.cooldown_ms = r.ReadU32();
         a.cooldown_remaining_ms = r.ReadU32();
-        if (version == 2) {
+        if (version >= 2) {
             a.mastery_level = r.ReadU8();
             a.mastery_xp = r.ReadU32();
             a.mastery_xp_for_next = r.ReadU32();
             a.mastery_max_level = r.ReadU8();
+        }
+        if (version >= 3) {
+            a.description = r.ReadString();
         }
         abilities.push_back(std::move(a));
     }

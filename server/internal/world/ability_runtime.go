@@ -10,6 +10,7 @@ import (
 type AbilityTemplate struct {
 	ID                    int
 	Name                  string
+	Description           string
 	Family                string
 	Category              string
 	ResourceType          string

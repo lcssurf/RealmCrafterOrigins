@@ -903,6 +903,12 @@ func effectiveCooldownMs(actor *Actor, ability AbilityTemplate) int64 {
 	return int64(float64(base) * cdMul)
 }
 
+// EffectiveCooldownMs returns the runtime cooldown for the actor+ability pair,
+// including mastery cooldown reduction rules for player damage abilities.
+func EffectiveCooldownMs(actor *Actor, ability AbilityTemplate) int64 {
+	return effectiveCooldownMs(actor, ability)
+}
+
 func abilityOnCooldown(npc *Actor, ability AbilityTemplate, now int64) bool {
 	if ability.ID <= 0 {
 		return false

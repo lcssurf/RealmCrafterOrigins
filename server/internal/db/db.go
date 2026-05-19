@@ -361,6 +361,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV28(ctx)
 	d.migrateV29(ctx)
 	d.migrateV30(ctx)
+	d.migrateV31(ctx)
 
 	return d, nil
 }
@@ -1734,6 +1735,7 @@ type SpellRow struct {
 type AbilityTemplateRow struct {
 	ID                         int
 	Name                       string
+	Description                string
 	Family                     string
 	Category                   string
 	ResourceType               string
@@ -1834,7 +1836,7 @@ func (d *DB) LoadSpells(ctx context.Context) ([]SpellRow, error) {
 // LoadAbilityTemplates returns all ability templates ordered by id.
 func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT id, name, family, category, resource_type, resource_cost, cooldown_ms,
+		SELECT id, name, description, family, category, resource_type, resource_cost, cooldown_ms,
 		       range_min, range_max, windup_ms, impact_delay_ms, recover_ms,
 		       parry_window_ms, interruptible, base_damage_min, base_damage_max,
 		       damage_stat_scale_json, armor_pierce_pct, crit_policy_json,
@@ -1859,7 +1861,7 @@ func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, er
 		var allowOverrideRaw interface{}
 		var enabledRaw interface{}
 		if err := rows.Scan(
-			&r.ID, &r.Name, &r.Family, &r.Category, &r.ResourceType, &r.ResourceCost, &r.CooldownMs,
+			&r.ID, &r.Name, &r.Description, &r.Family, &r.Category, &r.ResourceType, &r.ResourceCost, &r.CooldownMs,
 			&r.RangeMin, &r.RangeMax, &r.WindupMs, &r.ImpactDelayMs, &r.RecoverMs,
 			&r.ParryWindowMs, &interruptibleRaw, &r.BaseDamageMin, &r.BaseDamageMax,
 			&r.DamageStatScaleJSON, &r.ArmorPiercePct, &r.CritPolicyJSON,
@@ -6522,6 +6524,71 @@ func (d *DB) migrateV30(ctx context.Context) {
 		    SET category = 'damage'
 		  WHERE base_damage_min > 0`); err != nil {
 		log.Printf("migrateV30: bootstrap category='damage' failed: %v", err)
+	}
+}
+
+// migrateV31 adds an optional gameplay-facing description field to
+// ability_templates so clients can show "what this skill does" in tooltips.
+func (d *DB) migrateV31(ctx context.Context) {
+	hasDescription := false
+	if d.driver == "postgres" {
+		rows, err := d.db.QueryContext(ctx, `
+			SELECT column_name
+			  FROM information_schema.columns
+			 WHERE table_name = 'ability_templates'`)
+		if err != nil {
+			log.Printf("migrateV31: information_schema.columns failed: %v", err)
+			return
+		}
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(name), "description") {
+				hasDescription = true
+				break
+			}
+		}
+		_ = rows.Close()
+	} else {
+		rows, err := d.db.QueryContext(ctx, `PRAGMA table_info(ability_templates)`)
+		if err != nil {
+			log.Printf("migrateV31: PRAGMA table_info(ability_templates) failed: %v", err)
+			return
+		}
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt sql.NullString
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(name), "description") {
+				hasDescription = true
+				break
+			}
+		}
+		_ = rows.Close()
+	}
+
+	if !hasDescription {
+		stmt := `ALTER TABLE ability_templates ADD COLUMN description TEXT NOT NULL DEFAULT ''`
+		if d.driver == "postgres" {
+			stmt = `ALTER TABLE ability_templates ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`
+		}
+		if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+			log.Printf("migrateV31: add description failed: %v", err)
+		}
+	}
+
+	// Defensive normalization for legacy rows.
+	if _, err := d.db.ExecContext(ctx, `
+		UPDATE ability_templates
+		   SET description = ''
+		 WHERE description IS NULL`); err != nil {
+		log.Printf("migrateV31: normalize description failed: %v", err)
 	}
 }
 
