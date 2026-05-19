@@ -253,7 +253,10 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
     // Right-click has dual use:
     // 1) placement/context in zone editing
     // 2) freelook/fly camera
-    // If this click is for placement/context, suppress fly until RMB release.
+    //
+    // We resolve this like Unreal: start a pending RMB gesture on press,
+    // promote to fly once drag/time threshold is crossed, otherwise treat as
+    // a click action on release.
     const bool scnArmedIntent = (zoneMode_ == kModeScenery &&
                                  scnModelId_ != 0 &&
                                  xformMode_ == kXFormSelect);
@@ -263,20 +266,51 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
          zoneMode_ != kModeEnviro &&
          zoneMode_ != kModeOther &&
          zoneMode_ != kModeTerrain);
-    const bool rmbPlacementClick =
-        (vpHovered_ && ImGui::IsMouseClicked(1) && !altDown &&
-         (wantsRmbAddMenu || wantsRmbDirectPlace));
+    bool rmbClickAction = false;
+    ImVec2 rmbClickPos = ImGui::GetMousePos();
 
-    if (!rmbDown) suppressMouseLookUntilRmbRelease_ = false;
-    if (rmbPlacementClick) suppressMouseLookUntilRmbRelease_ = true;
+    const bool rmbPressedInViewport = vpHovered_ && ImGui::IsMouseClicked(1) && !altDown;
+    if (rmbPressedInViewport) {
+        rmbGesturePending_ = true;
+        rmbGestureDidFly_ = false;
+        rmbGestureStartPos_ = ImGui::GetMousePos();
+        rmbGestureStartTime_ = ImGui::GetTime();
+    }
 
-    // RMB engage / disengage freelook
-    if (vpHovered_ && ImGui::IsMouseClicked(1) && !altDown &&
-        !suppressMouseLookUntilRmbRelease_) {
-        mouseLook_ = true;
+    if (rmbGesturePending_ && rmbDown && !altDown) {
+        const ImVec2 mp = ImGui::GetMousePos();
+        const float dx = mp.x - rmbGestureStartPos_.x;
+        const float dy = mp.y - rmbGestureStartPos_.y;
+        const float moveSq = dx * dx + dy * dy;
+        const double heldSec = ImGui::GetTime() - rmbGestureStartTime_;
+        constexpr float kRmbHoldMoveThresholdPx = 4.0f;
+        constexpr double kRmbHoldTimeThresholdSec = 0.12;
+        if (moveSq >= (kRmbHoldMoveThresholdPx * kRmbHoldMoveThresholdPx) ||
+            heldSec >= kRmbHoldTimeThresholdSec) {
+            rmbGestureDidFly_ = true;
+        }
+    }
+
+    // On release, if the gesture never became fly, execute click behavior.
+    if (rmbGesturePending_ && !rmbDown && rmbWasDown_) {
+        if (!rmbGestureDidFly_) {
+            const ImVec2 mp = ImGui::GetMousePos();
+            const bool releaseInViewport =
+                mp.x >= vpOrigin_.x && mp.x <= (vpOrigin_.x + vpSize_.x) &&
+                mp.y >= vpOrigin_.y && mp.y <= (vpOrigin_.y + vpSize_.y);
+            if (releaseInViewport) {
+                rmbClickAction = true;
+                rmbClickPos = mp;
+            }
+        }
+        rmbGesturePending_ = false;
+        rmbGestureDidFly_ = false;
+    }
+
+    mouseLook_ = rmbGesturePending_ && rmbGestureDidFly_ && rmbDown && !altDown;
+    if (mouseLook_) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_None);
     }
-    if (!rmbDown) mouseLook_ = false;
 
     // MMB pan
     if (vpHovered_ && ImGui::IsMouseClicked(2)) mmbPan_ = true;
@@ -331,7 +365,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         // ── Alt + LMB orbit ───────────────────────────────────────────────
         if (altOrbit_) {
             float dist = glm::length(cam_.pos - orbitTarget_);
-            cam_.yaw   += io.MouseDelta.x * cam_.sens;
+            cam_.yaw   -= io.MouseDelta.x * cam_.sens;
             cam_.pitch += io.MouseDelta.y * cam_.sens;
             cam_.pitch  = std::clamp(cam_.pitch, -89.f, 89.f);
             cam_.pos    = orbitTarget_ - cam_.Forward() * dist;
@@ -368,9 +402,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         }
     }
 
-    // mouseLook_ used downstream to suppress selection / placement clicks.
-    // Redefine: true while RMB is held (freelook active, not alt-dolly).
-    mouseLook_ = rmbDown && !altDown && !suppressMouseLookUntilRmbRelease_;
+    // mouseLook_ stays latched from the RMB gesture resolver above.
 
     // Selection — LMB click (select mode)
     if (vpHovered_ && ImGui::IsMouseClicked(0) && xformMode_ == kXFormSelect) {
@@ -844,16 +876,14 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         // Keep mode armed so the user can keep clicking to place more.
     }
 
-    // RMB context menu (non-terrain, non-armed modes).
-    if (vpHovered_ && ImGui::IsMouseClicked(1) && !mouseLook_) {
-        ImVec2 mp  = ImGui::GetMousePos();
-        float  vpX = mp.x - vpOrigin_.x;
-        float  vpY = mp.y - vpOrigin_.y;
-        if (xformMode_ == kXFormSelect && !scnArmed) {
+    // RMB context / placement action (resolved on release when gesture did not become fly).
+    if (rmbClickAction && !mouseLook_) {
+        float vpX = rmbClickPos.x - vpOrigin_.x;
+        float vpY = rmbClickPos.y - vpOrigin_.y;
+        if (wantsRmbAddMenu && !scnArmed) {
             pendingPlacePos_ = RaycastScene(vpX, vpY);
             ImGui::OpenPopup("##vp_add_ctx");
-        } else if (!scnArmed && zoneMode_ != kModeEnviro
-                   && zoneMode_ != kModeOther && zoneMode_ != kModeTerrain) {
+        } else if (wantsRmbDirectPlace && !scnArmed) {
             PlaceObject(RaycastScene(vpX, vpY), db, media);
         }
     }
@@ -908,6 +938,9 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         }
         ImGui::EndPopup();
     }
+
+    // Keep previous RMB state for press/release edge detection on next frame.
+    rmbWasDown_ = rmbDown;
 }
 
 // ─── Selected-object transform helpers ──────────────────────────────────────

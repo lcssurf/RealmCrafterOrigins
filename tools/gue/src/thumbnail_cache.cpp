@@ -37,9 +37,12 @@ std::filesystem::path ThumbnailCache::CacheDir() {
 
 std::string ThumbnailCache::CachePath(
         int id, std::filesystem::file_time_type mtime) const {
+    // Bump when thumbnail rendering changes so old cached previews are rebuilt.
+    static constexpr int kThumbBakeVersion = 2;
     auto ns = mtime.time_since_epoch().count();
     char buf[128];
-    std::snprintf(buf, sizeof(buf), "%lld_%d.jpg", (long long)ns, id);
+    std::snprintf(buf, sizeof(buf), "%lld_%d_v%d.jpg",
+                  (long long)ns, id, kThumbBakeVersion);
     return (cacheDir_ / buf).string();
 }
 
@@ -286,7 +289,8 @@ void main() {
         glm::vec3 ctr=(bmin+bmax)*0.5f;
         float rad=std::max(glm::length(bmax-bmin)*0.5f,0.01f);
         float dist=(rad/0.454f)*1.2f;
-        float yaw=glm::radians(-40.f), pitch=glm::radians(22.f);
+        // Use the opposite orbit side so asset thumbnails face the expected front.
+        float yaw=glm::radians(140.f), pitch=glm::radians(22.f);
         glm::vec3 eye=ctr+glm::vec3(
             dist*std::cos(pitch)*std::sin(yaw),
             dist*std::sin(pitch),

@@ -87,8 +87,10 @@ func (s *Server) grantPlayerSkillXP(charID string, abilityID int) {
 		return
 	}
 
+	var client *ClientConn
 	if progress.Level > oldLevel {
-		if client := s.findClientByCharacterID(charID); client != nil && client.actor != nil {
+		client = s.findClientByCharacterID(charID)
+		if client != nil && client.actor != nil {
 			client.actor.Mu.Lock()
 			if client.actor.SkillLevels == nil {
 				client.actor.SkillLevels = make(map[int]int)
@@ -98,8 +100,15 @@ func (s *Server) grantPlayerSkillXP(charID string, abilityID int) {
 		}
 		log.Printf("mastery: char=%s ability=%d LEVEL UP %d->%d xp=%d",
 			charID, abilityID, oldLevel, progress.Level, progress.XP)
-		return
+	} else {
+		log.Printf("mastery: char=%s ability=%d xp=%d level=%d",
+			charID, abilityID, progress.XP, progress.Level)
 	}
-	log.Printf("mastery: char=%s ability=%d xp=%d level=%d",
-		charID, abilityID, progress.XP, progress.Level)
+
+	if client == nil {
+		client = s.findClientByCharacterID(charID)
+	}
+	if client != nil {
+		client.sendSkillState(ctx)
+	}
 }

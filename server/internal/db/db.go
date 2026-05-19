@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -311,6 +312,19 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 		if _, err := raw.ExecContext(ctx, "PRAGMA foreign_keys = ON;"); err != nil {
 			_ = raw.Close()
 			return nil, fmt.Errorf("db: sqlite pragma: %w", err)
+		}
+		// Improve writer concurrency and busy handling for live gameplay writes.
+		if _, err := raw.ExecContext(ctx, "PRAGMA journal_mode = WAL;"); err != nil {
+			_ = raw.Close()
+			return nil, fmt.Errorf("db: sqlite pragma journal_mode: %w", err)
+		}
+		if _, err := raw.ExecContext(ctx, "PRAGMA busy_timeout = 5000;"); err != nil {
+			_ = raw.Close()
+			return nil, fmt.Errorf("db: sqlite pragma busy_timeout: %w", err)
+		}
+		if _, err := raw.ExecContext(ctx, "PRAGMA synchronous = NORMAL;"); err != nil {
+			_ = raw.Close()
+			return nil, fmt.Errorf("db: sqlite pragma synchronous: %w", err)
 		}
 	}
 
@@ -4454,17 +4468,80 @@ func (d *DB) UpsertCharacterSkillProgress(ctx context.Context, p *CharacterSkill
 		return fmt.Errorf("db: UpsertCharacterSkillProgress: level must be >= 1")
 	}
 
-	_, err := d.db.ExecContext(ctx, d.q(`
-		INSERT INTO character_skill_progress (character_id, ability_id, xp, level)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(character_id, ability_id) DO UPDATE SET
-		    xp = excluded.xp,
-		    level = excluded.level`),
-		p.CharacterID, p.AbilityID, p.XP, p.Level)
-	if err != nil {
-		return fmt.Errorf("db: UpsertCharacterSkillProgress: %w", err)
+	const maxAttempts = 3
+	backoffs := [...]time.Duration{
+		10 * time.Millisecond,
+		50 * time.Millisecond,
+		200 * time.Millisecond,
 	}
-	return nil
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		_, err := d.db.ExecContext(ctx, d.q(`
+			INSERT INTO character_skill_progress (character_id, ability_id, xp, level)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(character_id, ability_id) DO UPDATE SET
+			    xp = excluded.xp,
+			    level = excluded.level`),
+			p.CharacterID, p.AbilityID, p.XP, p.Level)
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("db: UpsertCharacterSkillProgress succeeded after retry attempts=%d char=%s ability=%d",
+					attempt-1, p.CharacterID, p.AbilityID)
+			}
+			return nil
+		}
+
+		if !isSQLiteBusyError(err) {
+			return fmt.Errorf("db: UpsertCharacterSkillProgress: %w", err)
+		}
+
+		lastErr = err
+		if attempt == maxAttempts {
+			break
+		}
+
+		wait := backoffs[attempt-1]
+		log.Printf("db: UpsertCharacterSkillProgress busy retry attempt=%d/%d char=%s ability=%d wait=%s err=%v",
+			attempt, maxAttempts, p.CharacterID, p.AbilityID, wait, err)
+
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("db: UpsertCharacterSkillProgress canceled while retrying: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("db: UpsertCharacterSkillProgress: sqlite busy/locked after %d attempts: %w", maxAttempts, lastErr)
+	}
+	return fmt.Errorf("db: UpsertCharacterSkillProgress: failed after %d attempts", maxAttempts)
+}
+
+func isSQLiteBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// modernc.org/sqlite exposes errors with Code() int; extended result codes
+	// keep the primary code in the low byte.
+	var sqliteCoder interface{ Code() int }
+	if errors.As(err, &sqliteCoder) {
+		primaryCode := sqliteCoder.Code() & 0xff
+		if primaryCode == 5 || primaryCode == 6 { // SQLITE_BUSY / SQLITE_LOCKED
+			return true
+		}
+	}
+
+	msgUpper := strings.ToUpper(err.Error())
+	msgLower := strings.ToLower(err.Error())
+	return strings.Contains(msgUpper, "SQLITE_BUSY") ||
+		strings.Contains(msgUpper, "SQLITE_LOCKED") ||
+		strings.Contains(msgLower, "database is locked")
 }
 
 // GetSkillProgressionConfig returns the singleton config.

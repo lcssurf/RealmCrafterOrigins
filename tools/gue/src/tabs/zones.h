@@ -157,7 +157,11 @@ private:
     // Viewport interaction
     bool      vpHovered_   = false;
     bool      mouseLook_   = false;
-    bool      suppressMouseLookUntilRmbRelease_ = false;
+    bool      rmbGesturePending_ = false;
+    bool      rmbGestureDidFly_ = false;
+    bool      rmbWasDown_ = false;
+    ImVec2    rmbGestureStartPos_ = {0.f, 0.f};
+    double    rmbGestureStartTime_ = 0.0;
     bool      mmbPan_      = false;
     bool      altOrbit_    = false;
     bool      altDolly_    = false;

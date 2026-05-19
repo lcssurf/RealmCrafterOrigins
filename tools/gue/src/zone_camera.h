@@ -59,7 +59,8 @@ struct ZoneCamera {
         if (up)    pos += u * speed * dt;
         if (down)  pos -= u * speed * dt;
 
-        yaw   += mouseDX * sens;
+        // Unreal-style feel: moving mouse right yaws camera to the right.
+        yaw   -= mouseDX * sens;
         pitch += mouseDY * sens;
         pitch  = std::clamp(pitch, -89.f, 89.f);
     }

@@ -127,3 +127,20 @@ Decidir futuro:
 - GUE deixa de criar tabela (assume que server ja criou) - mais simples
 - GUE e server compartilham migrations via arquivo SQL unico - mais robusto
 - Manter status quo, aceitar duplicacao consciente
+
+## 14. Retry de SQLite BUSY aplicado apenas em UpsertCharacterSkillProgress
+
+Hotfix 30.5 adicionou retry-with-backoff em `UpsertCharacterSkillProgress`
+porque essa funcao e chamada em hot path (hook de combat) e perdia XP.
+
+Outras funcoes de escrita podem ter o mesmo problema mas nao foram protegidas:
+- AbilityCooldowns (in-memory, sem risco de SQLite)
+- ApplyDamage (HP em memoria; se persistido futuramente, candidato)
+- Updates em LastCombatAt (em memoria)
+
+Padrao sugerido para futuro: criar helper `d.executeWithRetry(ctx, query, args...)`
+que aplique retry automatico para `ExecContext`. Migrar funcoes criticas conforme
+necessario.
+
+Trigger: quando aparecer outro caso de "dado perdido por BUSY", migrar mais
+funcoes para o helper.
