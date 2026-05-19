@@ -82,11 +82,39 @@ type CharacterSkillLoadout struct {
 	AbilityID   int    // ability_templates.id
 }
 
+// CharacterSkillProgress tracks per-character per-ability XP and level.
+type CharacterSkillProgress struct {
+	ID          int
+	CharacterID string
+	AbilityID   int
+	XP          int
+	Level       int
+}
+
+// SkillProgressionConfig holds engine-wide rules for skill leveling.
+// Singleton: there's only ever one row (id=1).
+type SkillProgressionConfig struct {
+	ID                    int
+	XPPerUse              int
+	MaxLevel              int
+	XPCurveType           string // "linear" or "exponential"
+	XPCurveBase           int
+	DamageBonusPerLevel   float64
+	CooldownReduxPerLevel float64
+}
+
 // PlayerKitAbilityEntry is one ability slot in an active kit.
 type PlayerKitAbilityEntry struct {
 	SlotIndex   int
 	AbilityID   int
 	AbilityName string // for logging/debug
+	CooldownMs  int64
+}
+
+// KitPoolAbilityEntry is one enabled ability available in a kit pool.
+type KitPoolAbilityEntry struct {
+	AbilityID   int
+	AbilityName string
 	CooldownMs  int64
 }
 
@@ -317,6 +345,8 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV26(ctx)
 	d.migrateV27(ctx)
 	d.migrateV28(ctx)
+	d.migrateV29(ctx)
+	d.migrateV30(ctx)
 
 	return d, nil
 }
@@ -1131,6 +1161,30 @@ func (d *DB) SeedDefaultEquipmentSlotConfig(ctx context.Context) error {
 	return nil
 }
 
+// SeedDefaultSkillProgressionConfig inserts default mastery progression config
+// if no row exists yet. Existing admin-edited config is preserved.
+func (d *DB) SeedDefaultSkillProgressionConfig(ctx context.Context) error {
+	var count int
+	if err := d.db.QueryRowContext(ctx, d.q(`
+		SELECT COUNT(*)
+		  FROM skill_progression_config`)).Scan(&count); err != nil {
+		return fmt.Errorf("seed skill_progression_config check: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	if _, err := d.db.ExecContext(ctx, d.q(`
+		INSERT INTO skill_progression_config
+		(id, xp_per_use, max_level, xp_curve_type, xp_curve_base, damage_bonus_per_level, cooldown_redux_per_level)
+		VALUES (1, ?, ?, ?, ?, ?, ?)`),
+		10, 10, "linear", 100, 0.03, 0.01); err != nil {
+		return fmt.Errorf("seed skill_progression_config insert: %w", err)
+	}
+	log.Printf("seed: skill progression config seeded (defaults)")
+	return nil
+}
+
 // GiveStarterItems gives a newly created character their starting items if
 // they have no items yet.
 func (d *DB) GiveStarterItems(ctx context.Context, charID string) error {
@@ -1196,6 +1250,88 @@ func (d *DB) GetEquippedStats(ctx context.Context, charID string) (weaponDamage,
 	return weaponDamage, armorLevel, rows.Err()
 }
 
+// resolveSlotAbilities returns abilities for one equipped kit contribution.
+// It first applies the character's personal loadout for the kit; if there is
+// no personal loadout yet, it falls back to the kit default pool (first N by
+// weapon_kit_abilities.slot_index). Disabled/missing abilities in an existing
+// personal loadout are skipped silently.
+func (d *DB) resolveSlotAbilities(ctx context.Context, charID string, kitID, limit int) ([]PlayerKitAbilityEntry, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	loadout, err := d.ListLoadoutForCharKit(ctx, charID, kitID)
+	if err != nil {
+		return nil, fmt.Errorf("db: resolveSlotAbilities loadout: %w", err)
+	}
+
+	if len(loadout) > 0 {
+		out := make([]PlayerKitAbilityEntry, 0, limit)
+		for _, entry := range loadout {
+			if entry.SlotIndex < 0 {
+				continue
+			}
+			if entry.SlotIndex >= limit {
+				break
+			}
+
+			var (
+				name      string
+				cooldown  int64
+				isEnabled int
+			)
+			err := d.db.QueryRowContext(ctx, d.q(`
+				SELECT name, cooldown_ms, CASE WHEN enabled THEN 1 ELSE 0 END AS enabled
+				  FROM ability_templates
+				 WHERE id = ?`), entry.AbilityID).Scan(&name, &cooldown, &isEnabled)
+			if err == sql.ErrNoRows {
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("db: resolveSlotAbilities ability lookup id=%d: %w", entry.AbilityID, err)
+			}
+			if isEnabled == 0 {
+				continue
+			}
+
+			out = append(out, PlayerKitAbilityEntry{
+				SlotIndex:   entry.SlotIndex,
+				AbilityID:   entry.AbilityID,
+				AbilityName: name,
+				CooldownMs:  cooldown,
+			})
+		}
+		return out, nil
+	}
+
+	rows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT wka.slot_index, wka.ability_id, at.name, at.cooldown_ms
+		  FROM weapon_kit_abilities wka
+		  JOIN ability_templates at ON at.id = wka.ability_id
+		 WHERE wka.kit_id = ?
+		   AND wka.enabled = 1
+		   AND at.enabled = 1
+		 ORDER BY wka.slot_index
+		 LIMIT ?`), kitID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: resolveSlotAbilities default pool: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]PlayerKitAbilityEntry, 0, limit)
+	for rows.Next() {
+		var entry PlayerKitAbilityEntry
+		if err := rows.Scan(&entry.SlotIndex, &entry.AbilityID, &entry.AbilityName, &entry.CooldownMs); err != nil {
+			return nil, fmt.Errorf("db: resolveSlotAbilities default pool scan: %w", err)
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: resolveSlotAbilities default pool rows: %w", err)
+	}
+	return out, nil
+}
+
 // ResolveActivePlayerKit resolves the player's active kit identity and aggregates
 // abilities from all equipped slots that are configured to grant kits.
 //
@@ -1206,8 +1342,9 @@ func (d *DB) GetEquippedStats(ctx context.Context, charID string) (weaponDamage,
 // respecting each slot's configured hotbar_slots_granted. Ability slot indexes
 // are reindexed globally for the player's hotbar (0..N-1).
 //
-// Currently this function uses the default pool fallback (first N abilities from
-// each kit pool) and does not apply character-specific loadouts yet.
+// For each contributing kit, this function first applies the character's
+// personal loadout (if present) and falls back to default pool ordering
+// (first N abilities) when personal loadout does not exist yet.
 //
 // Returns zero-value (HasKit=false) when no active kit applies.
 func (d *DB) ResolveActivePlayerKit(ctx context.Context, charID string) (PlayerKitResolution, error) {
@@ -1329,34 +1466,16 @@ func (d *DB) ResolveActivePlayerKit(ctx context.Context, charID string) (PlayerK
 			continue
 		}
 
-		abilityRows, err := d.db.QueryContext(ctx, d.q(`
-			SELECT at.id, at.name, at.cooldown_ms
-			  FROM weapon_kit_abilities wka
-			  JOIN ability_templates at ON at.id = wka.ability_id
-			 WHERE wka.kit_id = ?
-			   AND wka.enabled = 1
-			   AND at.enabled = 1
-			 ORDER BY wka.slot_index
-			 LIMIT ?`), eq.KitID, cfg.HotbarSlotsGranted)
+		slotAbilities, err := d.resolveSlotAbilities(ctx, charID, eq.KitID, cfg.HotbarSlotsGranted)
 		if err != nil {
 			return out, fmt.Errorf("db: ResolveActivePlayerKit abilities for slot %d: %w", cfg.SlotID, err)
 		}
 
-		for abilityRows.Next() {
-			var entry PlayerKitAbilityEntry
-			if err := abilityRows.Scan(&entry.AbilityID, &entry.AbilityName, &entry.CooldownMs); err != nil {
-				abilityRows.Close()
-				return out, fmt.Errorf("db: ResolveActivePlayerKit scan ability for slot %d: %w", cfg.SlotID, err)
-			}
+		for _, entry := range slotAbilities {
 			entry.SlotIndex = globalSlotIndex
 			globalSlotIndex++
 			out.Abilities = append(out.Abilities, entry)
 		}
-		if err := abilityRows.Err(); err != nil {
-			abilityRows.Close()
-			return out, fmt.Errorf("db: ResolveActivePlayerKit ability rows for slot %d: %w", cfg.SlotID, err)
-		}
-		abilityRows.Close()
 	}
 
 	switch {
@@ -1599,37 +1718,44 @@ type SpellRow struct {
 
 // AbilityTemplateRow mirrors one row in ability_templates.
 type AbilityTemplateRow struct {
-	ID                    int
-	Name                  string
-	Family                string
-	ResourceType          string
-	ResourceCost          int32
-	CooldownMs            int64
-	RangeMin              float32
-	RangeMax              float32
-	WindupMs              int64
-	ImpactDelayMs         int64
-	RecoverMs             int64
-	ParryWindowMs         int64
-	Interruptible         bool
-	BaseDamageMin         int32
-	BaseDamageMax         int32
-	DamageStatScaleJSON   string
-	ArmorPiercePct        float32
-	CritPolicyJSON        string
-	TelegraphType         string
-	TelegraphRadius       float32
-	TelegraphColorRGBA    string
-	ActionWindup          string
-	ActionImpact          string
-	ActionRecover         string
-	AllowActionOverride   bool
-	AllowedActionTagsJSON string
-	VFXIDWindup           int
-	VFXIDImpact           int
-	SFXIDWindup           int
-	SFXIDImpact           int
-	Enabled               bool
+	ID                         int
+	Name                       string
+	Family                     string
+	Category                   string
+	ResourceType               string
+	ResourceCost               int32
+	CooldownMs                 int64
+	RangeMin                   float32
+	RangeMax                   float32
+	WindupMs                   int64
+	ImpactDelayMs              int64
+	RecoverMs                  int64
+	ParryWindowMs              int64
+	Interruptible              bool
+	BaseDamageMin              int32
+	BaseDamageMax              int32
+	DamageStatScaleJSON        string
+	ArmorPiercePct             float32
+	CritPolicyJSON             string
+	TelegraphType              string
+	TelegraphRadius            float32
+	TelegraphColorRGBA         string
+	ActionWindup               string
+	ActionImpact               string
+	ActionRecover              string
+	AllowActionOverride        bool
+	AllowedActionTagsJSON      string
+	VFXIDWindup                int
+	VFXIDImpact                int
+	SFXIDWindup                int
+	SFXIDImpact                int
+	MasteryXPPerUse            int
+	MasteryMaxLevel            int
+	MasteryXPCurveType         string
+	MasteryXPCurveBase         int
+	MasteryPrimaryBonusPerLvl  float64
+	MasteryCooldownReduxPerLvl float64
+	Enabled                    bool
 }
 
 // NPCAbilityLoadoutRow mirrors one row in npc_ability_loadouts.
@@ -1694,7 +1820,7 @@ func (d *DB) LoadSpells(ctx context.Context) ([]SpellRow, error) {
 // LoadAbilityTemplates returns all ability templates ordered by id.
 func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT id, name, family, resource_type, resource_cost, cooldown_ms,
+		SELECT id, name, family, category, resource_type, resource_cost, cooldown_ms,
 		       range_min, range_max, windup_ms, impact_delay_ms, recover_ms,
 		       parry_window_ms, interruptible, base_damage_min, base_damage_max,
 		       damage_stat_scale_json, armor_pierce_pct, crit_policy_json,
@@ -1702,7 +1828,9 @@ func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, er
 		       action_windup, action_impact, action_recover,
 		       allow_action_override, allowed_action_tags_json,
 		       vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact,
-		       enabled
+		       mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type,
+		       mastery_xp_curve_base, mastery_primary_bonus_per_lvl,
+		       mastery_cooldown_redux_per_lvl, enabled
 		  FROM ability_templates
 		 ORDER BY id`)
 	if err != nil {
@@ -1717,7 +1845,7 @@ func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, er
 		var allowOverrideRaw interface{}
 		var enabledRaw interface{}
 		if err := rows.Scan(
-			&r.ID, &r.Name, &r.Family, &r.ResourceType, &r.ResourceCost, &r.CooldownMs,
+			&r.ID, &r.Name, &r.Family, &r.Category, &r.ResourceType, &r.ResourceCost, &r.CooldownMs,
 			&r.RangeMin, &r.RangeMax, &r.WindupMs, &r.ImpactDelayMs, &r.RecoverMs,
 			&r.ParryWindowMs, &interruptibleRaw, &r.BaseDamageMin, &r.BaseDamageMax,
 			&r.DamageStatScaleJSON, &r.ArmorPiercePct, &r.CritPolicyJSON,
@@ -1725,6 +1853,9 @@ func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, er
 			&r.ActionWindup, &r.ActionImpact, &r.ActionRecover,
 			&allowOverrideRaw, &r.AllowedActionTagsJSON,
 			&r.VFXIDWindup, &r.VFXIDImpact, &r.SFXIDWindup, &r.SFXIDImpact,
+			&r.MasteryXPPerUse, &r.MasteryMaxLevel, &r.MasteryXPCurveType,
+			&r.MasteryXPCurveBase, &r.MasteryPrimaryBonusPerLvl,
+			&r.MasteryCooldownReduxPerLvl,
 			&enabledRaw,
 		); err != nil {
 			return nil, fmt.Errorf("db: LoadAbilityTemplates scan: %w", err)
@@ -3859,6 +3990,39 @@ func (d *DB) IsAbilityInKitPool(ctx context.Context, kitID, abilityID int) (bool
 	return count > 0, nil
 }
 
+// ListEnabledKitPoolAbilities returns enabled abilities for a kit pool ordered by slot_index.
+// Only entries with weapon_kit_abilities.enabled=true and ability_templates.enabled=true are returned.
+func (d *DB) ListEnabledKitPoolAbilities(ctx context.Context, kitID int) ([]KitPoolAbilityEntry, error) {
+	if kitID <= 0 {
+		return nil, fmt.Errorf("db: ListEnabledKitPoolAbilities: kitID must be > 0")
+	}
+	rows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT wka.ability_id, at.name, at.cooldown_ms
+		  FROM weapon_kit_abilities wka
+		  JOIN ability_templates at ON at.id = wka.ability_id
+		 WHERE wka.kit_id = ?
+		   AND wka.enabled = 1
+		   AND at.enabled = 1
+		 ORDER BY wka.slot_index`), kitID)
+	if err != nil {
+		return nil, fmt.Errorf("db: ListEnabledKitPoolAbilities: %w", err)
+	}
+	defer rows.Close()
+
+	var out []KitPoolAbilityEntry
+	for rows.Next() {
+		var entry KitPoolAbilityEntry
+		if err := rows.Scan(&entry.AbilityID, &entry.AbilityName, &entry.CooldownMs); err != nil {
+			return nil, fmt.Errorf("db: ListEnabledKitPoolAbilities scan: %w", err)
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: ListEnabledKitPoolAbilities rows: %w", err)
+	}
+	return out, nil
+}
+
 // CreateWeaponKit inserts a new weapon kit and returns its ID.
 func (d *DB) CreateWeaponKit(ctx context.Context, k *WeaponKit) (int, error) {
 	if k == nil {
@@ -4217,6 +4381,241 @@ func (d *DB) DeleteAllLoadoutsForCharacter(ctx context.Context, charID string) e
 		return fmt.Errorf("db: DeleteAllLoadoutsForCharacter: %w", err)
 	}
 	return nil
+}
+
+// GetCharacterSkillProgress returns the progress row for a (char, ability).
+// Returns nil if no row exists (player never used this skill).
+func (d *DB) GetCharacterSkillProgress(ctx context.Context, charID string, abilityID int) (*CharacterSkillProgress, error) {
+	if strings.TrimSpace(charID) == "" {
+		return nil, fmt.Errorf("db: GetCharacterSkillProgress: characterID is required")
+	}
+	if abilityID <= 0 {
+		return nil, fmt.Errorf("db: GetCharacterSkillProgress: abilityID must be > 0")
+	}
+
+	row := &CharacterSkillProgress{}
+	err := d.db.QueryRowContext(ctx, d.q(`
+		SELECT id, character_id, ability_id, xp, level
+		  FROM character_skill_progress
+		 WHERE character_id = ? AND ability_id = ?`), charID, abilityID).
+		Scan(&row.ID, &row.CharacterID, &row.AbilityID, &row.XP, &row.Level)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: GetCharacterSkillProgress: %w", err)
+	}
+	return row, nil
+}
+
+// ListCharacterSkillProgress returns all progress rows for a character.
+// Ordered by ability_id. Empty slice if player has no progress yet.
+func (d *DB) ListCharacterSkillProgress(ctx context.Context, charID string) ([]*CharacterSkillProgress, error) {
+	if strings.TrimSpace(charID) == "" {
+		return nil, fmt.Errorf("db: ListCharacterSkillProgress: characterID is required")
+	}
+
+	rows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT id, character_id, ability_id, xp, level
+		  FROM character_skill_progress
+		 WHERE character_id = ?
+		 ORDER BY ability_id`), charID)
+	if err != nil {
+		return nil, fmt.Errorf("db: ListCharacterSkillProgress: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*CharacterSkillProgress
+	for rows.Next() {
+		entry := &CharacterSkillProgress{}
+		if err := rows.Scan(&entry.ID, &entry.CharacterID, &entry.AbilityID, &entry.XP, &entry.Level); err != nil {
+			return nil, fmt.Errorf("db: ListCharacterSkillProgress scan: %w", err)
+		}
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
+// UpsertCharacterSkillProgress creates or updates a progress row.
+func (d *DB) UpsertCharacterSkillProgress(ctx context.Context, p *CharacterSkillProgress) error {
+	if p == nil {
+		return fmt.Errorf("db: UpsertCharacterSkillProgress: progress is nil")
+	}
+	if strings.TrimSpace(p.CharacterID) == "" {
+		return fmt.Errorf("db: UpsertCharacterSkillProgress: characterID is required")
+	}
+	if p.AbilityID <= 0 {
+		return fmt.Errorf("db: UpsertCharacterSkillProgress: abilityID must be > 0")
+	}
+	if p.XP < 0 {
+		return fmt.Errorf("db: UpsertCharacterSkillProgress: xp must be >= 0")
+	}
+	if p.Level < 1 {
+		return fmt.Errorf("db: UpsertCharacterSkillProgress: level must be >= 1")
+	}
+
+	_, err := d.db.ExecContext(ctx, d.q(`
+		INSERT INTO character_skill_progress (character_id, ability_id, xp, level)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(character_id, ability_id) DO UPDATE SET
+		    xp = excluded.xp,
+		    level = excluded.level`),
+		p.CharacterID, p.AbilityID, p.XP, p.Level)
+	if err != nil {
+		return fmt.Errorf("db: UpsertCharacterSkillProgress: %w", err)
+	}
+	return nil
+}
+
+// GetSkillProgressionConfig returns the singleton config.
+// If none exists, creates default and returns it.
+func (d *DB) GetSkillProgressionConfig(ctx context.Context) (*SkillProgressionConfig, error) {
+	load := func() (*SkillProgressionConfig, error) {
+		cfg := &SkillProgressionConfig{}
+		err := d.db.QueryRowContext(ctx, d.q(`
+			SELECT id, xp_per_use, max_level, xp_curve_type, xp_curve_base,
+			       damage_bonus_per_level, cooldown_redux_per_level
+			  FROM skill_progression_config
+			 ORDER BY id
+			 LIMIT 1`)).
+			Scan(&cfg.ID, &cfg.XPPerUse, &cfg.MaxLevel, &cfg.XPCurveType, &cfg.XPCurveBase,
+				&cfg.DamageBonusPerLevel, &cfg.CooldownReduxPerLevel)
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return cfg, nil
+	}
+
+	cfg, err := load()
+	if err != nil {
+		return nil, fmt.Errorf("db: GetSkillProgressionConfig: %w", err)
+	}
+	if cfg != nil {
+		return cfg, nil
+	}
+
+	if err := d.SeedDefaultSkillProgressionConfig(ctx); err != nil {
+		return nil, err
+	}
+	cfg, err = load()
+	if err != nil {
+		return nil, fmt.Errorf("db: GetSkillProgressionConfig: %w", err)
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("db: GetSkillProgressionConfig: config row missing after seed")
+	}
+	return cfg, nil
+}
+
+// UpdateSkillProgressionConfig updates the singleton config (id=1).
+func (d *DB) UpdateSkillProgressionConfig(ctx context.Context, c *SkillProgressionConfig) error {
+	if c == nil {
+		return fmt.Errorf("db: UpdateSkillProgressionConfig: config is nil")
+	}
+	if c.XPPerUse <= 0 {
+		return fmt.Errorf("db: UpdateSkillProgressionConfig: xp_per_use must be > 0")
+	}
+	if c.MaxLevel < 1 {
+		return fmt.Errorf("db: UpdateSkillProgressionConfig: max_level must be >= 1")
+	}
+	if c.XPCurveBase <= 0 {
+		return fmt.Errorf("db: UpdateSkillProgressionConfig: xp_curve_base must be > 0")
+	}
+	curveType := strings.ToLower(strings.TrimSpace(c.XPCurveType))
+	if curveType == "" {
+		curveType = "linear"
+	}
+	if curveType != "linear" && curveType != "exponential" {
+		return fmt.Errorf("db: UpdateSkillProgressionConfig: unsupported xp_curve_type %q", c.XPCurveType)
+	}
+
+	_, err := d.db.ExecContext(ctx, d.q(`
+		INSERT INTO skill_progression_config
+		    (id, xp_per_use, max_level, xp_curve_type, xp_curve_base, damage_bonus_per_level, cooldown_redux_per_level)
+		VALUES (1, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+		    xp_per_use = excluded.xp_per_use,
+		    max_level = excluded.max_level,
+		    xp_curve_type = excluded.xp_curve_type,
+		    xp_curve_base = excluded.xp_curve_base,
+		    damage_bonus_per_level = excluded.damage_bonus_per_level,
+		    cooldown_redux_per_level = excluded.cooldown_redux_per_level`),
+		c.XPPerUse, c.MaxLevel, curveType, c.XPCurveBase, c.DamageBonusPerLevel, c.CooldownReduxPerLevel)
+	if err != nil {
+		return fmt.Errorf("db: UpdateSkillProgressionConfig: %w", err)
+	}
+	return nil
+}
+
+// XPRequiredForLevel returns the total XP required to reach a given level.
+// Level 1 requires 0 XP.
+func XPRequiredForLevel(level int, cfg *SkillProgressionConfig) int {
+	if level <= 1 || cfg == nil {
+		return 0
+	}
+
+	base := cfg.XPCurveBase
+	if base <= 0 {
+		base = 100
+	}
+
+	curveType := strings.ToLower(strings.TrimSpace(cfg.XPCurveType))
+	switch curveType {
+	case "exponential":
+		return int(math.Round(float64(base) * math.Pow(1.5, float64(level-1))))
+	default: // linear + fallback
+		return base * (level - 1)
+	}
+}
+
+// XPRequiredForLevelFromAbility returns the total XP required to reach a level
+// using the mastery curve configured on the ability template itself.
+// Level 1 requires 0 XP.
+func XPRequiredForLevelFromAbility(level int, ability *world.AbilityTemplate) int {
+	if level <= 1 || ability == nil {
+		return 0
+	}
+
+	base := ability.MasteryXPCurveBase
+	if base <= 0 {
+		base = 100
+	}
+
+	curveType := strings.ToLower(strings.TrimSpace(ability.MasteryXPCurveType))
+	switch curveType {
+	case "exponential":
+		return int(math.Round(float64(base) * math.Pow(1.5, float64(level-1))))
+	default: // linear + fallback
+		return base * (level - 1)
+	}
+}
+
+// CalculateLevelFromXP returns the mastery level for the provided cumulative XP.
+// The result is capped to cfg.MaxLevel and never less than level 1.
+func CalculateLevelFromXP(xp int, cfg *SkillProgressionConfig) int {
+	if cfg == nil {
+		return 1
+	}
+	if xp < 0 {
+		xp = 0
+	}
+
+	maxLevel := cfg.MaxLevel
+	if maxLevel < 1 {
+		maxLevel = 1
+	}
+
+	level := 1
+	for next := 2; next <= maxLevel; next++ {
+		if xp < XPRequiredForLevel(next, cfg) {
+			break
+		}
+		level = next
+	}
+	return level
 }
 
 // findEquipSlotFor returns the best equip slot index for the given slotType.
@@ -5793,6 +6192,260 @@ func (d *DB) migrateV28(ctx context.Context) {
 	}
 	exec(`CREATE INDEX IF NOT EXISTS idx_csl_char_kit ON character_skill_loadouts(character_id, kit_id)`)
 	exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_csl_char_kit_slot ON character_skill_loadouts(character_id, kit_id, slot_index)`)
+}
+
+// migrateV29 creates mastery progression tables:
+// - character_skill_progress (per-character, per-ability xp/level)
+// - skill_progression_config (singleton tuning row)
+func (d *DB) migrateV29(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+	if d.driver == "postgres" {
+		exec(`CREATE TABLE IF NOT EXISTS character_skill_progress (
+			id           SERIAL PRIMARY KEY,
+			character_id TEXT    NOT NULL,
+			ability_id   INTEGER NOT NULL DEFAULT 0,
+			xp           INTEGER NOT NULL DEFAULT 0,
+			level        INTEGER NOT NULL DEFAULT 1
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS skill_progression_config (
+			id                       SERIAL PRIMARY KEY,
+			xp_per_use               INTEGER NOT NULL DEFAULT 10,
+			max_level                INTEGER NOT NULL DEFAULT 10,
+			xp_curve_type            TEXT    NOT NULL DEFAULT 'linear',
+			xp_curve_base            INTEGER NOT NULL DEFAULT 100,
+			damage_bonus_per_level   REAL    NOT NULL DEFAULT 0.03,
+			cooldown_redux_per_level REAL    NOT NULL DEFAULT 0.01
+		)`)
+	} else {
+		exec(`CREATE TABLE IF NOT EXISTS character_skill_progress (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			character_id TEXT    NOT NULL,
+			ability_id   INTEGER NOT NULL DEFAULT 0,
+			xp           INTEGER NOT NULL DEFAULT 0,
+			level        INTEGER NOT NULL DEFAULT 1
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS skill_progression_config (
+			id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+			xp_per_use               INTEGER NOT NULL DEFAULT 10,
+			max_level                INTEGER NOT NULL DEFAULT 10,
+			xp_curve_type            TEXT    NOT NULL DEFAULT 'linear',
+			xp_curve_base            INTEGER NOT NULL DEFAULT 100,
+			damage_bonus_per_level   REAL    NOT NULL DEFAULT 0.03,
+			cooldown_redux_per_level REAL    NOT NULL DEFAULT 0.01
+		)`)
+	}
+	exec(`CREATE INDEX IF NOT EXISTS idx_csp_char ON character_skill_progress(character_id)`)
+	exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_csp_char_ability ON character_skill_progress(character_id, ability_id)`)
+}
+
+// migrateV30 adds per-skill mastery config columns to ability_templates.
+// It backfills existing rows from the global skill_progression_config template
+// only when mastery columns are first introduced, preserving later manual edits.
+func (d *DB) migrateV30(ctx context.Context) {
+	type progressionDefaults struct {
+		xpPerUse      int
+		maxLevel      int
+		curveType     string
+		curveBase     int
+		damageBonus   float64
+		cooldownRedux float64
+	}
+
+	defaults := progressionDefaults{
+		xpPerUse:      10,
+		maxLevel:      10,
+		curveType:     "linear",
+		curveBase:     100,
+		damageBonus:   0.03,
+		cooldownRedux: 0.01,
+	}
+
+	// Global config is now a template source for new per-skill mastery columns.
+	var curveTypeRaw string
+	err := d.db.QueryRowContext(ctx, d.q(`
+		SELECT xp_per_use, max_level, xp_curve_type, xp_curve_base, damage_bonus_per_level, cooldown_redux_per_level
+		  FROM skill_progression_config
+		 ORDER BY id
+		 LIMIT 1`),
+	).Scan(
+		&defaults.xpPerUse,
+		&defaults.maxLevel,
+		&curveTypeRaw,
+		&defaults.curveBase,
+		&defaults.damageBonus,
+		&defaults.cooldownRedux,
+	)
+	if err != nil && err != sql.ErrNoRows {
+		log.Printf("migrateV30: load skill_progression_config template failed: %v", err)
+	}
+
+	curveTypeRaw = strings.ToLower(strings.TrimSpace(curveTypeRaw))
+	if curveTypeRaw == "linear" || curveTypeRaw == "exponential" {
+		defaults.curveType = curveTypeRaw
+	}
+	if defaults.xpPerUse <= 0 {
+		defaults.xpPerUse = 10
+	}
+	if defaults.maxLevel <= 0 {
+		defaults.maxLevel = 10
+	}
+	if defaults.curveBase <= 0 {
+		defaults.curveBase = 100
+	}
+	if defaults.damageBonus < 0 {
+		defaults.damageBonus = 0
+	}
+	if defaults.cooldownRedux < 0 {
+		defaults.cooldownRedux = 0
+	}
+
+	hasCol := map[string]bool{}
+	if d.driver == "postgres" {
+		rows, err := d.db.QueryContext(ctx, `
+			SELECT column_name
+			  FROM information_schema.columns
+			 WHERE table_name = 'ability_templates'`)
+		if err != nil {
+			log.Printf("migrateV30: information_schema.columns failed: %v", err)
+			return
+		}
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				continue
+			}
+			hasCol[strings.ToLower(strings.TrimSpace(name))] = true
+		}
+		_ = rows.Close()
+	} else {
+		rows, err := d.db.QueryContext(ctx, `PRAGMA table_info(ability_templates)`)
+		if err != nil {
+			log.Printf("migrateV30: PRAGMA table_info(ability_templates) failed: %v", err)
+			return
+		}
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt sql.NullString
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+				continue
+			}
+			hasCol[strings.ToLower(strings.TrimSpace(name))] = true
+		}
+		_ = rows.Close()
+	}
+
+	addColumn := func(columnName, pgSQL, sqliteSQL string) {
+		key := strings.ToLower(strings.TrimSpace(columnName))
+		if hasCol[key] {
+			return
+		}
+		sqlStmt := sqliteSQL
+		if d.driver == "postgres" {
+			sqlStmt = pgSQL
+		}
+		if _, err := d.db.ExecContext(ctx, sqlStmt); err != nil {
+			log.Printf("migrateV30: add column %s failed: %v", columnName, err)
+			return
+		}
+		hasCol[key] = true
+	}
+
+	addColumn(
+		"category",
+		`ALTER TABLE ability_templates ADD COLUMN category TEXT NOT NULL DEFAULT 'damage'`,
+		`ALTER TABLE ability_templates ADD COLUMN category TEXT NOT NULL DEFAULT 'damage'`,
+	)
+	addColumn(
+		"mastery_xp_per_use",
+		`ALTER TABLE ability_templates ADD COLUMN mastery_xp_per_use INTEGER NOT NULL DEFAULT 10`,
+		`ALTER TABLE ability_templates ADD COLUMN mastery_xp_per_use INTEGER NOT NULL DEFAULT 10`,
+	)
+	addColumn(
+		"mastery_max_level",
+		`ALTER TABLE ability_templates ADD COLUMN mastery_max_level INTEGER NOT NULL DEFAULT 10`,
+		`ALTER TABLE ability_templates ADD COLUMN mastery_max_level INTEGER NOT NULL DEFAULT 10`,
+	)
+	addColumn(
+		"mastery_xp_curve_type",
+		`ALTER TABLE ability_templates ADD COLUMN mastery_xp_curve_type TEXT NOT NULL DEFAULT 'linear'`,
+		`ALTER TABLE ability_templates ADD COLUMN mastery_xp_curve_type TEXT NOT NULL DEFAULT 'linear'`,
+	)
+	addColumn(
+		"mastery_xp_curve_base",
+		`ALTER TABLE ability_templates ADD COLUMN mastery_xp_curve_base INTEGER NOT NULL DEFAULT 100`,
+		`ALTER TABLE ability_templates ADD COLUMN mastery_xp_curve_base INTEGER NOT NULL DEFAULT 100`,
+	)
+	addColumn(
+		"mastery_primary_bonus_per_lvl",
+		`ALTER TABLE ability_templates ADD COLUMN mastery_primary_bonus_per_lvl DOUBLE PRECISION NOT NULL DEFAULT 0.03`,
+		`ALTER TABLE ability_templates ADD COLUMN mastery_primary_bonus_per_lvl REAL NOT NULL DEFAULT 0.03`,
+	)
+	addColumn(
+		"mastery_cooldown_redux_per_lvl",
+		`ALTER TABLE ability_templates ADD COLUMN mastery_cooldown_redux_per_lvl DOUBLE PRECISION NOT NULL DEFAULT 0.01`,
+		`ALTER TABLE ability_templates ADD COLUMN mastery_cooldown_redux_per_lvl REAL NOT NULL DEFAULT 0.01`,
+	)
+
+	// Normalize/backfill existing rows (idempotent) in case legacy rows were left
+	// with NULL/empty/zero values after column add behavior differences.
+	if _, err := d.db.ExecContext(ctx, `
+		UPDATE ability_templates
+		   SET category = 'damage'
+		 WHERE category IS NULL OR TRIM(category) = ''`); err != nil {
+		log.Printf("migrateV30: normalize category failed: %v", err)
+	}
+
+	if _, err := d.db.ExecContext(ctx, d.q(`
+		UPDATE ability_templates
+		   SET mastery_xp_per_use = ?
+		 WHERE mastery_xp_per_use IS NULL OR mastery_xp_per_use <= 0`), defaults.xpPerUse); err != nil {
+		log.Printf("migrateV30: normalize mastery_xp_per_use failed: %v", err)
+	}
+
+	if _, err := d.db.ExecContext(ctx, d.q(`
+		UPDATE ability_templates
+		   SET mastery_max_level = ?
+		 WHERE mastery_max_level IS NULL OR mastery_max_level <= 0`), defaults.maxLevel); err != nil {
+		log.Printf("migrateV30: normalize mastery_max_level failed: %v", err)
+	}
+
+	if _, err := d.db.ExecContext(ctx, d.q(`
+		UPDATE ability_templates
+		   SET mastery_xp_curve_type = ?
+		 WHERE mastery_xp_curve_type IS NULL OR TRIM(mastery_xp_curve_type) = ''`), defaults.curveType); err != nil {
+		log.Printf("migrateV30: normalize mastery_xp_curve_type failed: %v", err)
+	}
+
+	if _, err := d.db.ExecContext(ctx, d.q(`
+		UPDATE ability_templates
+		   SET mastery_xp_curve_base = ?
+		 WHERE mastery_xp_curve_base IS NULL OR mastery_xp_curve_base <= 0`), defaults.curveBase); err != nil {
+		log.Printf("migrateV30: normalize mastery_xp_curve_base failed: %v", err)
+	}
+
+	if _, err := d.db.ExecContext(ctx, d.q(`
+		UPDATE ability_templates
+		   SET mastery_primary_bonus_per_lvl = ?
+		 WHERE mastery_primary_bonus_per_lvl IS NULL OR mastery_primary_bonus_per_lvl = 0`), defaults.damageBonus); err != nil {
+		log.Printf("migrateV30: normalize mastery_primary_bonus_per_lvl failed: %v", err)
+	}
+
+	if _, err := d.db.ExecContext(ctx, d.q(`
+		UPDATE ability_templates
+		   SET mastery_cooldown_redux_per_lvl = ?
+		 WHERE mastery_cooldown_redux_per_lvl IS NULL OR mastery_cooldown_redux_per_lvl = 0`), defaults.cooldownRedux); err != nil {
+		log.Printf("migrateV30: normalize mastery_cooldown_redux_per_lvl failed: %v", err)
+	}
+
+	// Defensive bootstrap: legacy attack abilities should remain damage category.
+	if _, err := d.db.ExecContext(ctx,
+		`UPDATE ability_templates
+		    SET category = 'damage'
+		  WHERE base_damage_min > 0`); err != nil {
+		log.Printf("migrateV30: bootstrap category='damage' failed: %v", err)
+	}
 }
 
 // LoadWorldObjects returns all placed static world objects from zone_scenery with resolved model paths.

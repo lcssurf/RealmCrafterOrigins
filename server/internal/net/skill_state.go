@@ -4,12 +4,16 @@ import (
 	"fmt"
 )
 
-const pSkillStateVersion1 uint8 = 1
+const (
+	pSkillStateVersion1 uint8 = 1
+	pSkillStateVersion2 uint8 = 2
+)
 
 // PSkillStatePayload is the server->client payload for packet 129.
 type PSkillStatePayload struct {
 	Version        uint8
 	HasKit         bool
+	KitID          uint32
 	KitKey         string
 	KitDisplayName string
 	Abilities      []PSkillStateAbility
@@ -22,11 +26,15 @@ type PSkillStateAbility struct {
 	AbilityName         string
 	CooldownMs          uint32
 	CooldownRemainingMs uint32
+	MasteryLevel        uint8
+	MasteryXP           uint32
+	MasteryXPForNext    uint32
+	MasteryMaxLevel     uint8
 }
 
 // EncodePSkillState serializes the payload to wire format.
 func EncodePSkillState(p PSkillStatePayload) ([]byte, error) {
-	if p.Version != pSkillStateVersion1 {
+	if p.Version != pSkillStateVersion1 && p.Version != pSkillStateVersion2 {
 		return nil, fmt.Errorf("PSkillState: unsupported version %d", p.Version)
 	}
 	if len(p.Abilities) > 255 {
@@ -35,7 +43,9 @@ func EncodePSkillState(p PSkillStatePayload) ([]byte, error) {
 
 	kitKey := p.KitKey
 	kitDisplayName := p.KitDisplayName
+	kitID := p.KitID
 	if !p.HasKit {
+		kitID = 0
 		kitKey = ""
 		kitDisplayName = ""
 	}
@@ -47,6 +57,7 @@ func EncodePSkillState(p PSkillStatePayload) ([]byte, error) {
 	} else {
 		w.WriteUint8(0)
 	}
+	w.WriteUint32(kitID)
 
 	if len(kitKey) > 65535 {
 		return nil, fmt.Errorf("PSkillState: kit_key too long (%d > 65535)", len(kitKey))
@@ -67,6 +78,12 @@ func EncodePSkillState(p PSkillStatePayload) ([]byte, error) {
 		w.WriteString(a.AbilityName)
 		w.WriteUint32(a.CooldownMs)
 		w.WriteUint32(a.CooldownRemainingMs)
+		if p.Version == pSkillStateVersion2 {
+			w.WriteUint8(a.MasteryLevel)
+			w.WriteUint32(a.MasteryXP)
+			w.WriteUint32(a.MasteryXPForNext)
+			w.WriteUint8(a.MasteryMaxLevel)
+		}
 	}
 	return w.Bytes(), nil
 }
@@ -80,7 +97,7 @@ func DecodePSkillState(buf []byte) (PSkillStatePayload, error) {
 	if err != nil {
 		return out, fmt.Errorf("PSkillState: read version: %w", err)
 	}
-	if version != pSkillStateVersion1 {
+	if version != pSkillStateVersion1 && version != pSkillStateVersion2 {
 		return out, fmt.Errorf("PSkillState: unsupported version %d", version)
 	}
 	out.Version = version
@@ -93,6 +110,10 @@ func DecodePSkillState(buf []byte) (PSkillStatePayload, error) {
 		return out, fmt.Errorf("PSkillState: invalid has_kit value %d", hasKitByte)
 	}
 	out.HasKit = hasKitByte == 1
+	out.KitID, err = r.ReadUint32()
+	if err != nil {
+		return out, fmt.Errorf("PSkillState: read kit_id: %w", err)
+	}
 
 	out.KitKey, err = r.ReadString()
 	if err != nil {
@@ -129,6 +150,24 @@ func DecodePSkillState(buf []byte) (PSkillStatePayload, error) {
 		a.CooldownRemainingMs, err = r.ReadUint32()
 		if err != nil {
 			return out, fmt.Errorf("PSkillState: read abilities[%d].cooldown_remaining_ms: %w", i, err)
+		}
+		if version == pSkillStateVersion2 {
+			a.MasteryLevel, err = r.ReadUint8()
+			if err != nil {
+				return out, fmt.Errorf("PSkillState: read abilities[%d].mastery_level: %w", i, err)
+			}
+			a.MasteryXP, err = r.ReadUint32()
+			if err != nil {
+				return out, fmt.Errorf("PSkillState: read abilities[%d].mastery_xp: %w", i, err)
+			}
+			a.MasteryXPForNext, err = r.ReadUint32()
+			if err != nil {
+				return out, fmt.Errorf("PSkillState: read abilities[%d].mastery_xp_for_next: %w", i, err)
+			}
+			a.MasteryMaxLevel, err = r.ReadUint8()
+			if err != nil {
+				return out, fmt.Errorf("PSkillState: read abilities[%d].mastery_max_level: %w", i, err)
+			}
 		}
 		out.Abilities = append(out.Abilities, a)
 	}

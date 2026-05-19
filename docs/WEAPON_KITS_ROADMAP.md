@@ -71,6 +71,19 @@ Game designer pode mudar via GUE (tabela `equipment_slot_config`).
 - 29: Cliente: mostrar nível e XP no tooltip do hotbar
 - 30: Cliente: tela de progressão por skill
 
+## Backlog pós-Commit 30 (adiado)
+
+Polimento visual do SkillLoadoutScreen e SkillHotbar foi adiado.
+
+- Background com tema da engine (não cinza ImGui padrão)
+- Botões com hover state visualmente claro
+- Indicação visual de slot vazio (não apenas texto)
+- Ícones por skill (depende de feature de assets)
+- Toast para mensagens de erro (em vez de status no header)
+- Espaçamento e padding consistente
+
+Quando fazer: após Commit 30 (mastery completo) ou quando incomodar.
+
 ## Total estimado
 
 ~30 commits. Atualmente em Commit 14 (Fase 3 começando).
@@ -91,4 +104,3 @@ Após Commit 30: migrar spell_templates → ability_templates e aposentar SpellB
 legado (TECH_DEBT item 2).
 
 ---
-

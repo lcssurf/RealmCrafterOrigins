@@ -9,3 +9,12 @@ preset = "high"
 # Quando true, gera arquivos perf_entry_<timestamp>.jsonl na pasta do cliente.
 # Override temporario por ambiente: RCO_PERF_ENTRY=1 / 0.
 entry_log_enabled = true
+
+[input]
+# How to release the mouse cursor for UI interaction during action mode.
+# Valid values: "hold" (default), "toggle"
+cursor_release_mode = "toggle"
+
+# Key that releases the cursor. Default: left_alt
+# Valid values: left_alt, right_alt, left_ctrl, right_ctrl, tab
+cursor_release_key = "left_alt"

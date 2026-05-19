@@ -11,6 +11,7 @@ type AbilityTemplate struct {
 	ID                    int
 	Name                  string
 	Family                string
+	Category              string
 	ResourceType          string
 	ResourceCost          int32
 	CooldownMs            int64
@@ -38,6 +39,12 @@ type AbilityTemplate struct {
 	VFXIDImpact           int
 	SFXIDWindup           int
 	SFXIDImpact           int
+	MasteryXPPerUse       int
+	MasteryMaxLevel       int
+	MasteryXPCurveType    string
+	MasteryXPCurveBase    int
+	MasteryPrimaryBonusPerLvl  float64
+	MasteryCooldownReduxPerLvl float64
 	Enabled               bool
 }
 
@@ -192,6 +199,11 @@ func resolveAbilityTemplate(abilityID int) (AbilityTemplate, bool) {
 	defer abilityRuntimeMu.RUnlock()
 	t, ok := abilityTemplatesByID[abilityID]
 	return t, ok
+}
+
+// GetAbilityTemplateByID returns one ability template from the in-memory runtime catalog.
+func GetAbilityTemplateByID(abilityID int) (AbilityTemplate, bool) {
+	return resolveAbilityTemplate(abilityID)
 }
 
 func resolveNPCAbilityLoadout(spawnID, actorDefID int) []NPCAbilityLoadoutEntry {

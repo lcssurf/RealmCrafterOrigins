@@ -67,6 +67,7 @@ type Actor struct {
 	LastAbilityDecisionAt int64         // unix ms of last special/script decision evaluation
 	SpecialChainCount     int           // consecutive special casts in current chain window
 	AbilityCooldowns      map[int]int64 // last cast start (unix ms) by ability id
+	SkillLevels           map[int]int   // mastery level by ability id (player runtime cache)
 
 	// Combat config — set once at spawn, then read-only.
 	SpawnID         int // source npc_spawns.id when spawned from authored spawn rows
@@ -195,6 +196,7 @@ func NewActor() *Actor {
 		SendCh:           make(chan []byte, sendChSize),
 		done:             make(chan struct{}),
 		AbilityCooldowns: make(map[int]int64),
+		SkillLevels:      make(map[int]int),
 	}
 }
 

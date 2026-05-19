@@ -41,12 +41,15 @@
 #include "../ui/floating_numbers.h"
 #include "../ui/ui_texture.h"
 #include "../ui/spellbar.h"
+#include "../ui/skill_hotbar.h"
 #include "../ui/spell_effects.h"
 #include "../ui/quest_log.h"
 #include "../ui/party_panel.h"
 #include "../ui/chat_bubbles.h"
 #include "../ui/controls_ui.h"
+#include "../ui/skill_loadout_screen.h"
 #include "../gameplay/ingame_packet_gate.h"
+#include "../gameplay/kit_pool.h"
 #include "../gameplay/skill_state.h"
 #include "../renderer/camera.h"
 #include "../renderer/terrain/terrain.h"
@@ -121,6 +124,100 @@ static bool ReadConfigBool(const char* section_name,
         return ParseConfigBool(val, out_value);
     }
     return false;
+}
+
+static bool ReadConfigString(const char* section_name,
+                             const char* key_name,
+                             std::string& out_value) {
+    std::ifstream f("config.toml");
+    if (!f) return false;
+
+    bool in_section = false;
+    std::string line;
+    while (std::getline(f, line)) {
+        const auto hash = line.find('#');
+        if (hash != std::string::npos) line = line.substr(0, hash);
+        line = TrimConfigToken(std::move(line));
+        if (line.empty()) continue;
+
+        if (line.front() == '[' && line.back() == ']') {
+            const std::string section = TrimConfigToken(line.substr(1, line.size() - 2));
+            in_section = (section == section_name);
+            continue;
+        }
+        if (!in_section) continue;
+
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = TrimConfigToken(line.substr(0, eq));
+        if (key != key_name) continue;
+
+        std::string val = TrimConfigToken(line.substr(eq + 1));
+        if (val.size() >= 2 && val.front() == '"' && val.back() == '"') {
+            val = val.substr(1, val.size() - 2);
+        }
+        out_value = val;
+        return true;
+    }
+    return false;
+}
+
+enum class CursorReleaseMode {
+    Hold,
+    Toggle,
+};
+
+struct InputConfig {
+    CursorReleaseMode cursor_release_mode = CursorReleaseMode::Hold;
+    int cursor_release_key_glfw = GLFW_KEY_LEFT_ALT;
+    std::string cursor_release_key_name = "left_alt";
+};
+
+static int MapCursorReleaseKey(std::string name) {
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (name == "left_alt") return GLFW_KEY_LEFT_ALT;
+    if (name == "right_alt") return GLFW_KEY_RIGHT_ALT;
+    if (name == "left_ctrl") return GLFW_KEY_LEFT_CONTROL;
+    if (name == "right_ctrl") return GLFW_KEY_RIGHT_CONTROL;
+    if (name == "tab") return GLFW_KEY_TAB;
+    return GLFW_KEY_LEFT_ALT;
+}
+
+static CursorReleaseMode MapCursorReleaseMode(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (s == "toggle") return CursorReleaseMode::Toggle;
+    return CursorReleaseMode::Hold;
+}
+
+static const char* CursorReleaseKeyLabel(int key) {
+    switch (key) {
+    case GLFW_KEY_LEFT_ALT:
+    case GLFW_KEY_RIGHT_ALT:
+        return "Alt";
+    case GLFW_KEY_LEFT_CONTROL:
+    case GLFW_KEY_RIGHT_CONTROL:
+        return "Ctrl";
+    case GLFW_KEY_TAB:
+        return "Tab";
+    default:
+        return "Alt";
+    }
+}
+
+static InputConfig ResolveInputConfig() {
+    InputConfig cfg{};
+    std::string mode_raw;
+    if (ReadConfigString("input", "cursor_release_mode", mode_raw)) {
+        cfg.cursor_release_mode = MapCursorReleaseMode(mode_raw);
+    }
+    std::string key_raw;
+    if (ReadConfigString("input", "cursor_release_key", key_raw)) {
+        cfg.cursor_release_key_name = key_raw;
+        cfg.cursor_release_key_glfw = MapCursorReleaseKey(key_raw);
+    }
+    return cfg;
 }
 
 static bool SceneDebugLogsEnabled() {
@@ -990,14 +1087,17 @@ int main() {
     rco::ui::Inventory       inventory;
     rco::ui::FloatingNumbers float_nums;
     rco::ui::SpellBar        spellbar;
+    rco::ui::SkillHotbar     skill_hotbar;
     rco::ui::SpellEffects    spell_fx;
     rco::ui::QuestLog        quest_log;
     rco::ui::PartyPanel      party_panel;
     rco::ui::ChatBubbles     chat_bubbles;
     rco::ui::ControlsUI      controls_ui;
+    rco::ui::SkillLoadoutScreen skill_loadout_screen;
 
     rco::renderer::ParticleSystem particles;
     rco::audio::AudioSystem       audio;
+    const InputConfig input_config = ResolveInputConfig();
     const LoadingPresetConfig loading_preset = ResolveLoadingPreset();
     const rco::renderer::Pipeline::CharacterReadabilityTuning character_readability_tuning =
         ResolveCharacterReadabilityTuning();
@@ -1183,12 +1283,49 @@ int main() {
         conn.SendPacket(rco::net::kPPartyAction, w);
     };
 
+    skill_loadout_screen.on_set_slot = [&](uint32_t kit_id, uint8_t slot_index, uint32_t ability_id) {
+        if (!conn.IsConnected()) return;
+        rco::net::Writer w;
+        w.WriteU8(rco::net::kSkillLoadoutActionSetSlot);
+        w.WriteU32(kit_id);
+        w.WriteU8(slot_index);
+        w.WriteU32(ability_id);
+        conn.SendPacket(rco::net::kPSkillLoadoutAction, w);
+    };
+    skill_loadout_screen.on_clear_slot = [&](uint32_t kit_id, uint8_t slot_index) {
+        if (!conn.IsConnected()) return;
+        rco::net::Writer w;
+        w.WriteU8(rco::net::kSkillLoadoutActionClearSlot);
+        w.WriteU32(kit_id);
+        w.WriteU8(slot_index);
+        w.WriteU32(0);
+        conn.SendPacket(rco::net::kPSkillLoadoutAction, w);
+    };
+    skill_loadout_screen.on_clear_kit = [&](uint32_t kit_id) {
+        if (!conn.IsConnected()) return;
+        rco::net::Writer w;
+        w.WriteU8(rco::net::kSkillLoadoutActionClearKit);
+        w.WriteU32(kit_id);
+        w.WriteU8(0);
+        w.WriteU32(0);
+        conn.SendPacket(rco::net::kPSkillLoadoutAction, w);
+    };
+
     auto send_combat_action = [&](uint8_t action, uint32_t target_rid) {
         if (!conn.IsConnected()) return;
         rco::net::Writer w;
         w.WriteU8(action);
         w.WriteU32(target_rid);
         conn.SendPacket(rco::net::kPCombatAction, w);
+    };
+
+    auto send_cast_skill_slot = [&](uint8_t slot_index, uint32_t target_rid) {
+        if (!conn.IsConnected()) return;
+        rco::net::Writer w;
+        w.WriteU8(1); // version
+        w.WriteU8(slot_index);
+        w.WriteU32(target_rid);
+        conn.SendPacket(rco::net::kPCastSkillSlot, w);
     };
 
     auto rebind_player_anim_controller = [&]() -> bool {
@@ -1980,6 +2117,9 @@ int main() {
                 quest_log.Clear();
                 quest_log.journal_visible = false;
                 party_panel.Clear();
+                rco::gameplay::MutablePlayerSkillState().Clear();
+                rco::gameplay::MutableActiveKitPool().Clear();
+                skill_loadout_screen.SetOpen(false);
                 dodge_roll_active = false;
                 dodge_roll_pending = false;
                 special_parry_telegraphs.clear();
@@ -2494,6 +2634,12 @@ int main() {
                 break;
             }
 
+            case rco::net::kPKitPool: {
+                auto& pool = rco::gameplay::MutableActiveKitPool();
+                pool.ApplyPacket(r);
+                break;
+            }
+
             case rco::net::kPDialog: {
                 dialog.npc_name = r.ReadString();
                 dialog.text     = r.ReadString();
@@ -2887,6 +3033,9 @@ int main() {
             quest_log.Clear();
             quest_log.journal_visible = false;
             party_panel.Clear();
+            rco::gameplay::MutablePlayerSkillState().Clear();
+            rco::gameplay::MutableActiveKitPool().Clear();
+            skill_loadout_screen.SetOpen(false);
             dodge_roll_active = false;
             dodge_roll_pending = false;
             special_parry_telegraphs.clear();
@@ -2914,6 +3063,8 @@ int main() {
     double ms_rmb_down_time = 0.0;
     double ms_rmb_down_x = 0.0, ms_rmb_down_y = 0.0;
     int    cursor_mode_last = GLFW_CURSOR_NORMAL;
+    bool   cursor_toggle_state = false;
+    bool   cursor_key_was_pressed = false;
     uint64_t frame_index = 0;
 
     while (!window.ShouldClose()) {
@@ -2935,13 +3086,28 @@ int main() {
 
         // Cursor policy: action-only gameplay keeps mouse captured; menus/UI stay normal.
         {
+            const bool force_cursor_unlock =
+                (state == rco::GameState::InGame && skill_loadout_screen.IsOpen());
             if (state == rco::GameState::InGame) {
-                action_cursor_unlocked =
-                    glfwGetKey(window.Handle(), GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
-                    glfwGetKey(window.Handle(), GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
+                const bool key_now_pressed =
+                    glfwGetKey(window.Handle(), input_config.cursor_release_key_glfw) == GLFW_PRESS;
+
+                if (input_config.cursor_release_mode == CursorReleaseMode::Hold) {
+                    action_cursor_unlocked = key_now_pressed;
+                } else {
+                    if (key_now_pressed && !cursor_key_was_pressed) {
+                        cursor_toggle_state = !cursor_toggle_state;
+                    }
+                    action_cursor_unlocked = cursor_toggle_state;
+                }
+                cursor_key_was_pressed = key_now_pressed;
+            } else {
+                cursor_toggle_state = false;
+                cursor_key_was_pressed = false;
+                action_cursor_unlocked = false;
             }
             const int desired_cursor_mode =
-                (state == rco::GameState::InGame && !action_cursor_unlocked)
+                (state == rco::GameState::InGame && !(action_cursor_unlocked || force_cursor_unlock))
                     ? GLFW_CURSOR_DISABLED
                     : GLFW_CURSOR_NORMAL;
             if (cursor_mode_last != desired_cursor_mode) {
@@ -3517,6 +3683,7 @@ int main() {
                 }
 
                 GLFWwindow* w = window.Handle();
+                const bool skill_loadout_open = skill_loadout_screen.IsOpen();
 
                 // ---- Mouse orbit (Action mode only) ----
                 {
@@ -3531,10 +3698,11 @@ int main() {
                         glfwGetCursorPos(w, &ms_rmb_down_x, &ms_rmb_down_y);
                         ms_rmb_down_time = now;
                         ms_rmb_defense_candidate = conn.IsConnected() && !player_dead &&
+                                                   !skill_loadout_open &&
                                                    !io_state.WantCaptureMouse &&
                                                    !io_state.WantTextInput;
                     } else if (!cur_rmb && ms_rmb_prev) {
-                        if (ms_rmb_defense_candidate && !io_state.WantCaptureMouse) {
+                        if (ms_rmb_defense_candidate && !skill_loadout_open && !io_state.WantCaptureMouse) {
                             double rx, ry;
                             glfwGetCursorPos(w, &rx, &ry);
                             const float moved = std::hypot(
@@ -3612,7 +3780,7 @@ int main() {
                 }
 
                 // ---- Player movement (keyboard, click-to-move, gravity, slope, jump) ----
-                if (!ImGui::GetIO().WantCaptureKeyboard) {
+                if (!ImGui::GetIO().WantCaptureKeyboard && !skill_loadout_open) {
                     bool rmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
                     bool lmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
 
@@ -4390,6 +4558,7 @@ int main() {
 
                     // Ground-AoE click: consume LMB click and fire the spell.
                     if (ms_lmb_click && spellbar.pending_ground_spell != 0
+                        && !skill_loadout_open
                         && !ImGui::GetIO().WantCaptureMouse) {
                         if (spellbar.on_cast_ground)
                             spellbar.on_cast_ground(spellbar.pending_ground_spell,
@@ -4397,7 +4566,7 @@ int main() {
                         spellbar.pending_ground_spell = 0;
                         ms_lmb_click = false;
                     } else
-                    if (ms_lmb_click && !player_dead && !ImGui::GetIO().WantCaptureMouse) {
+                    if (ms_lmb_click && !player_dead && !skill_loadout_open && !ImGui::GetIO().WantCaptureMouse) {
                         double mx, my;
                         glfwGetCursorPos(w, &mx, &my);
                         float best_dist2 = 55.f * 55.f;
@@ -4451,7 +4620,7 @@ int main() {
                 {
                     static bool tab_prev = false;
                     bool tab_cur = glfwGetKey(w, GLFW_KEY_TAB) == GLFW_PRESS;
-                    if (tab_cur && !tab_prev && !player_dead) {
+                    if (tab_cur && !tab_prev && !player_dead && !skill_loadout_open) {
                         // Build list sorted by screen-space distance to centre.
                         float sw = (float)window.Width(), sh = (float)window.Height();
                         float best = 1e9f; uint32_t best_id = 0;
@@ -4490,6 +4659,7 @@ int main() {
                 // Auto-attack: send PAttackActor every ~0.85 s while target is selected.
                 static constexpr double kAutoAttackInterval = 0.85;
                 if (combat_target && !player_dead && conn.IsConnected()
+                    && !skill_loadout_open
                     && now - last_attack_sent >= kAutoAttackInterval) {
                     rco::net::Writer aw;
                     aw.WriteU32(combat_target);
@@ -4597,7 +4767,14 @@ int main() {
                 ImGui::Text("Gold: %u    Pos: %.1f, %.1f, %.1f    [ACTION]",
                     player_gold, player.x, player.y, player.z);
                 ImGui::TextDisabled("[Action] Mouse=cam  WASD=move  AD=strafe  Shift=sprint  NumLk=autorun");
-                ImGui::TextDisabled("Hold Alt to unlock cursor for UI.");
+                {
+                    const char* key_label = CursorReleaseKeyLabel(input_config.cursor_release_key_glfw);
+                    if (input_config.cursor_release_mode == CursorReleaseMode::Hold) {
+                        ImGui::TextDisabled("Hold %s to unlock cursor for UI.", key_label);
+                    } else {
+                        ImGui::TextDisabled("Press %s to toggle cursor lock.", key_label);
+                    }
+                }
                 ImGui::TextDisabled("Combat: Tap RMB moving = Dodge Roll (W/A/S/D direction), still = Guard");
                 ImGui::End();
 
@@ -4616,23 +4793,64 @@ int main() {
                     dl->AddLine({cx, cy + kGap}, {cx, cy + kArm}, col, kThick);
                 }
 
-                // Toggle bag with I, character sheet with C, controls with K,
-                // quest journal with J, party panel with P.
+                // Skill hotbar cast (1-9): client sends slot index, server resolves ability
+                // authoritatively from active loadout.
+                const bool skill_loadout_open_hotbar = skill_loadout_screen.IsOpen();
+                if (!player_dead && !skill_loadout_open_hotbar && !ImGui::GetIO().WantTextInput) {
+                    const auto& skill_state = rco::gameplay::PlayerSkillState();
+                    int hotbar_key_slots = 4;
+                    for (const auto& ab : skill_state.abilities()) {
+                        hotbar_key_slots = (std::max)(hotbar_key_slots, static_cast<int>(ab.slot_index) + 1);
+                    }
+                    hotbar_key_slots = std::clamp(hotbar_key_slots, 1, 9);
+
+                    for (int i = 0; i < hotbar_key_slots; ++i) {
+                        const ImGuiKey key = static_cast<ImGuiKey>(ImGuiKey_1 + i);
+                        if (!ImGui::IsKeyPressed(key, false)) continue;
+
+                        bool has_ability = false;
+                        for (const auto& ab : skill_state.abilities()) {
+                            if (static_cast<int>(ab.slot_index) == i) {
+                                has_ability = true;
+                                break;
+                            }
+                        }
+                        if (!has_ability) continue;
+
+                        if (combat_target == 0) {
+                            static double s_last_no_target_log_at = -9999.0;
+                            if (now - s_last_no_target_log_at >= 0.6) {
+                                std::fprintf(stderr, "[cast] no target selected\n");
+                                std::fflush(stderr);
+                                s_last_no_target_log_at = now;
+                            }
+                            continue;
+                        }
+
+                        send_cast_skill_slot(static_cast<uint8_t>(i), combat_target);
+                    }
+                }
+
+                // Toggle bag with I, character sheet with C, skill loadout with K,
+                // controls/help with F1, quest journal with J, party panel with P.
                 if (ImGui::IsKeyPressed(ImGuiKey_I) && !player_dead && !ImGui::GetIO().WantTextInput)
                     inventory.bag_visible = !inventory.bag_visible;
                 if (ImGui::IsKeyPressed(ImGuiKey_C) && !player_dead && !ImGui::GetIO().WantTextInput)
                     inventory.char_visible = !inventory.char_visible;
-                if (ImGui::IsKeyPressed(ImGuiKey_K) && !ImGui::GetIO().WantTextInput)
+                if (ImGui::IsKeyPressed(ImGuiKey_K) && !player_dead && !ImGui::GetIO().WantTextInput)
+                    skill_loadout_screen.Toggle();
+                if (ImGui::IsKeyPressed(ImGuiKey_F1) && !ImGui::GetIO().WantTextInput)
                     controls_ui.Toggle();
                 if (ImGui::IsKeyPressed(ImGuiKey_J) && !ImGui::GetIO().WantTextInput)
                     quest_log.journal_visible = !quest_log.journal_visible;
                 if (ImGui::IsKeyPressed(ImGuiKey_P) && !ImGui::GetIO().WantTextInput)
                     party_panel.visible = !party_panel.visible;
 
-                // Close shop and controls window with Escape
+                // Close shop and helper windows with Escape
                 if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
                     shop.open = false;
                     controls_ui.SetVisible(false);
+                    skill_loadout_screen.SetOpen(false);
                     quest_log.journal_visible = false;
                 }
 
@@ -4744,6 +4962,7 @@ int main() {
                 controls_ui.Draw(player.name);
                 quest_log.Render(window.Width(), window.Height());
                 party_panel.Render(window.Width(), window.Height());
+                skill_loadout_screen.Render(window.Width(), window.Height());
 
                 // Death overlay.
                 if (player_dead) {
@@ -4826,8 +5045,10 @@ int main() {
                     }
                 }
                 spellbar.Render(window.Width(), window.Height(),
-                                combat_target, static_cast<float>(now), player_dead,
+                                combat_target, static_cast<float>(now),
+                                player_dead || skill_loadout_screen.IsOpen(),
                                 player.mana, target_dist_for_spells);
+                skill_hotbar.Render(window.Width(), window.Height());
 
                 // Range / AoE preview circles (drawn when hovering a spell slot).
                 if (renderer_ready && spellbar.hovered_range > 0.f) {

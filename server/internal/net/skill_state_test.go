@@ -8,7 +8,7 @@ import (
 
 func TestEncodeDecodePSkillState_NoKit(t *testing.T) {
 	p := PSkillStatePayload{
-		Version: 1,
+		Version: 2,
 		HasKit:  false,
 	}
 	buf, err := EncodePSkillState(p)
@@ -21,6 +21,9 @@ func TestEncodeDecodePSkillState_NoKit(t *testing.T) {
 	}
 	if decoded.HasKit {
 		t.Fatalf("decoded.HasKit = true, want false")
+	}
+	if decoded.KitID != 0 {
+		t.Fatalf("decoded.KitID = %d, want 0", decoded.KitID)
 	}
 	if decoded.KitKey != "" {
 		t.Fatalf("decoded.KitKey = %q, want empty", decoded.KitKey)
@@ -35,13 +38,34 @@ func TestEncodeDecodePSkillState_NoKit(t *testing.T) {
 
 func TestEncodeDecodePSkillState_SwordKit(t *testing.T) {
 	p := PSkillStatePayload{
-		Version:        1,
+		Version:        2,
 		HasKit:         true,
+		KitID:          7,
 		KitKey:         "sword",
 		KitDisplayName: "Sword",
 		Abilities: []PSkillStateAbility{
-			{SlotIndex: 0, AbilityID: 1, AbilityName: "sword_slash", CooldownMs: 600, CooldownRemainingMs: 0},
-			{SlotIndex: 1, AbilityID: 2, AbilityName: "sword_cleave", CooldownMs: 5000, CooldownRemainingMs: 0},
+			{
+				SlotIndex:           0,
+				AbilityID:           1,
+				AbilityName:         "sword_slash",
+				CooldownMs:          600,
+				CooldownRemainingMs: 0,
+				MasteryLevel:        3,
+				MasteryXP:           250,
+				MasteryXPForNext:    300,
+				MasteryMaxLevel:     10,
+			},
+			{
+				SlotIndex:           1,
+				AbilityID:           2,
+				AbilityName:         "sword_cleave",
+				CooldownMs:          5000,
+				CooldownRemainingMs: 0,
+				MasteryLevel:        1,
+				MasteryXP:           0,
+				MasteryXPForNext:    100,
+				MasteryMaxLevel:     10,
+			},
 		},
 	}
 
@@ -55,6 +79,35 @@ func TestEncodeDecodePSkillState_SwordKit(t *testing.T) {
 	}
 	if !reflect.DeepEqual(decoded, p) {
 		t.Fatalf("roundtrip mismatch:\n got: %#v\nwant: %#v", decoded, p)
+	}
+}
+
+func TestDecodePSkillState_V1BackwardCompatDefaultsMastery(t *testing.T) {
+	p := PSkillStatePayload{
+		Version:        1,
+		HasKit:         true,
+		KitID:          7,
+		KitKey:         "sword",
+		KitDisplayName: "Sword",
+		Abilities: []PSkillStateAbility{
+			{SlotIndex: 0, AbilityID: 1, AbilityName: "sword_slash", CooldownMs: 600, CooldownRemainingMs: 0},
+		},
+	}
+	buf, err := EncodePSkillState(p)
+	if err != nil {
+		t.Fatalf("EncodePSkillState: %v", err)
+	}
+
+	decoded, err := DecodePSkillState(buf)
+	if err != nil {
+		t.Fatalf("DecodePSkillState: %v", err)
+	}
+	if len(decoded.Abilities) != 1 {
+		t.Fatalf("len(decoded.Abilities) = %d, want 1", len(decoded.Abilities))
+	}
+	got := decoded.Abilities[0]
+	if got.MasteryLevel != 0 || got.MasteryXP != 0 || got.MasteryXPForNext != 0 || got.MasteryMaxLevel != 0 {
+		t.Fatalf("expected v1 mastery defaults zero, got %+v", got)
 	}
 }
 
@@ -73,7 +126,7 @@ func TestDecodePSkillState_UnsupportedVersion(t *testing.T) {
 
 func TestEncodePSkillState_StringTooLongU16(t *testing.T) {
 	p := PSkillStatePayload{
-		Version: 1,
+		Version: 2,
 		HasKit:  true,
 		KitKey:  strings.Repeat("x", 65536),
 	}

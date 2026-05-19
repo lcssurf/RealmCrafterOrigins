@@ -7,6 +7,7 @@ import (
 
 	"realm-crafter/server/internal/db"
 	"realm-crafter/server/internal/protocol"
+	"realm-crafter/server/internal/world"
 )
 
 // handleQuestAction processes PQuestAction (C->S).
@@ -161,9 +162,141 @@ func (c *ClientConn) handleSkillLoadoutAction(ctx context.Context, payload []byt
 		return nil
 	}
 
-	c.sendSkillState(ctx)
+	c.sendSkillSnapshots(ctx)
 	log.Printf("skill-loadout: char=%s action=%d kit=%d slot=%d ability=%d ok",
 		charID, action, kitID, slot, abilityID)
+	return nil
+}
+
+// handleCastSkillSlot processes PCastSkillSlot (C->S).
+//
+// Contract v1:
+//
+//	version(u8) + slot_index(u8) + target_rid(u32)
+//
+// Server resolves ability_id from the authoritative active loadout snapshot
+// (ResolveActivePlayerKit) and starts cast through cast_intent runtime.
+func (c *ClientConn) handleCastSkillSlot(ctx context.Context, payload []byte) error {
+	r := NewReader(payload)
+	version, err := r.ReadUint8()
+	if err != nil {
+		return nil
+	}
+	slotIndex, err := r.ReadUint8()
+	if err != nil {
+		return nil
+	}
+	targetRID, err := r.ReadUint32()
+	if err != nil {
+		return nil
+	}
+
+	if c.actor == nil || c.actor.IsDead() {
+		return nil
+	}
+	if version != 1 {
+		log.Printf("skill-cast: char=%s rejected: unsupported version=%d", c.actor.CharacterID, version)
+		return nil
+	}
+	if slotIndex >= 16 {
+		log.Printf("skill-cast: char=%s rejected: slot_index=%d out of bounds", c.actor.CharacterID, slotIndex)
+		return nil
+	}
+	if targetRID == 0 {
+		log.Printf("skill-cast: char=%s rejected: target_rid=0", c.actor.CharacterID)
+		return nil
+	}
+	if c.server == nil || c.server.db == nil {
+		return nil
+	}
+	charID := c.actor.CharacterID
+	if charID == "" {
+		return nil
+	}
+
+	resolution, err := c.server.db.ResolveActivePlayerKit(ctx, charID)
+	if err != nil {
+		log.Printf("skill-cast: char=%s resolve active kit failed: %v", charID, err)
+		return nil
+	}
+	if !resolution.HasKit {
+		log.Printf("skill-cast: char=%s rejected: no active kit", charID)
+		return nil
+	}
+
+	abilityID := 0
+	for _, ab := range resolution.Abilities {
+		if ab.SlotIndex == int(slotIndex) {
+			abilityID = ab.AbilityID
+			break
+		}
+	}
+	if abilityID <= 0 {
+		log.Printf("skill-cast: char=%s rejected: slot_index=%d has no ability", charID, slotIndex)
+		return nil
+	}
+
+	reasonTag := "player_hotbar"
+	actionOverride := ""
+	clientTraceID := fmt.Sprintf("hotbar_slot_%d", slotIndex)
+	if c.server.scripting != nil {
+		area, ok := c.server.world.GetArea(c.actor.AreaName)
+		if ok {
+			var target *world.Actor
+			target, _ = area.GetActor(targetRID)
+			advice := c.server.scripting.DispatchPlayerBeforeCastIntent(
+				area,
+				c.actor,
+				target,
+				abilityID,
+				reasonTag,
+			)
+			if advice.Cancel {
+				log.Printf("skill-cast: char=%s cancelled by script slot=%d ability=%d target=%d",
+					charID, slotIndex, abilityID, targetRID)
+				return nil
+			}
+			if advice.ReasonTag != "" {
+				reasonTag = advice.ReasonTag
+			}
+			actionOverride = advice.ActionOverride
+			if advice.ClientTraceID != "" {
+				clientTraceID = advice.ClientTraceID
+			}
+		}
+	}
+
+	started, reason := world.TryStartPlayerCastByRID(c.server.world, world.CastIntent{
+		CasterRID:      c.actor.RuntimeID,
+		TargetRID:      targetRID,
+		AbilityID:      abilityID,
+		ActionOverride: actionOverride,
+		ReasonTag:      reasonTag,
+		ClientTraceID:  clientTraceID,
+	})
+	if !started {
+		log.Printf("skill-cast: char=%s rejected: slot=%d ability=%d target=%d reason=%s",
+			charID, slotIndex, abilityID, targetRID, reason)
+		return nil
+	}
+
+	// Provoke defensive/aggressive NPC target on successful cast start.
+	area, ok := c.server.world.GetArea(c.actor.AreaName)
+	if ok {
+		target, _ := area.GetActor(targetRID)
+		if target != nil && target.IsNPC {
+			target.Mu.Lock()
+			if target.AIMode == world.AIWait &&
+				(target.Aggressiveness == 1 || target.Aggressiveness == 2) {
+				target.AIMode = world.AIChase
+				target.AITarget = c.actor
+			}
+			target.Mu.Unlock()
+		}
+	}
+
+	log.Printf("skill-cast: char=%s slot=%d ability=%d target=%d started",
+		charID, slotIndex, abilityID, targetRID)
 	return nil
 }
 

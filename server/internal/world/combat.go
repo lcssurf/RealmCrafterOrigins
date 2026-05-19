@@ -304,6 +304,98 @@ func BroadcastAttack(area *Area, attacker, target *Actor, damage int32, isCrit b
 	return dead
 }
 
+// resolveActorWindup resolves a previously armed special windup for any actor.
+//
+// Returns handled=true when an active windup was present (including while still
+// charging). killedTarget is true when the impact kills the current target.
+func resolveActorWindup(area *Area, actor, target *Actor, now int64) (handled bool, killedTarget bool) {
+	if area == nil || actor == nil || target == nil {
+		return false, false
+	}
+
+	actor.Mu.Lock()
+	windupUntil := actor.SpecialWindupUntil
+	windupTarget := actor.SpecialTargetRID
+	windupAbilityID := actor.SpecialAbilityID
+	windupActionOverride := actor.SpecialActionOverride
+	actor.Mu.Unlock()
+
+	if windupUntil <= 0 {
+		return false, false
+	}
+	if now < windupUntil {
+		return true, false
+	}
+	ability := resolveSpecialAbilityTemplate(windupAbilityID)
+
+	// Clear windup first so impact resolves exactly once.
+	actor.Mu.Lock()
+	actor.SpecialWindupUntil = 0
+	actor.SpecialTargetRID = 0
+	actor.SpecialAbilityID = 0
+	actor.SpecialActionOverride = ""
+	actor.SpecialReasonTag = ""
+	actor.SpecialClientTraceID = ""
+	actor.Mu.Unlock()
+
+	// If target changed mid-windup, resolve against the originally telegraphed target.
+	if windupTarget != 0 {
+		if target == nil || target.RuntimeID != windupTarget {
+			forced, ok := area.GetActor(windupTarget)
+			if !ok || forced == nil {
+				return true, false
+			}
+			target = forced
+		}
+	}
+	if target == nil || target.IsDead() {
+		return true, false
+	}
+	if !inSpecialRange(actor, target, ability.RangeMin, ability.RangeMax) {
+		// Target escaped the special impact radius.
+		return true, false
+	}
+
+	target.Mu.Lock()
+	parryActive := target.ParryUntil > now
+	parryAge := now - target.LastParryAt
+	parryWindow := ability.ParryWindowMs
+	if parryWindow <= 0 {
+		parryWindow = npcSpecialParryExactMs
+	}
+	if parryActive && parryAge >= 0 && parryAge <= parryWindow {
+		// Consume the parry so the same window doesn't double-count.
+		target.ParryUntil = 0
+		target.LastCombatAt = now
+		target.Mu.Unlock()
+
+		BroadcastCombatEvent(area, combatEventSpecialParry, actor.RuntimeID, target.RuntimeID, int16(parryAge), "")
+		if recover := resolveStageAction(windupActionOverride, ability.ActionRecover, "Idle"); recover != "" {
+			BroadcastAnimate(area, actor, recover)
+		}
+		return true, false
+	}
+	target.Mu.Unlock()
+
+	if impact := resolveStageAction(windupActionOverride, ability.ActionImpact, "Attack"); impact != "" {
+		BroadcastAnimate(area, actor, impact)
+	}
+	damage := specialAttackDamage(actor, target, ability)
+	hp, justDied := ApplyDamage(target, damage, actor.RuntimeID)
+	BroadcastFloatingNumber(area, target, int16(damage), 0)
+	BroadcastHPUpdate(area, target, hp)
+	BroadcastCombatEvent(area, combatEventSpecialHit, actor.RuntimeID, target.RuntimeID, int16(damage), "")
+	if !actor.IsNPC && actor.CharacterID != "" {
+		runSpecialHitHook(area, actor, target, windupAbilityID)
+	}
+	if justDied {
+		BroadcastAnimate(area, target, "Death")
+		BroadcastActorDead(area, target.RuntimeID, actor.RuntimeID)
+		runSpecialKillHook(area, actor, target)
+	}
+	return true, justDied
+}
+
 // ProcessNPCSpecialAttack runs the NPC "special/parry-check" flow.
 //
 // Returns handled=true when a special is active/started/resolved and normal melee
@@ -315,89 +407,18 @@ func ProcessNPCSpecialAttack(area *Area, npc, target *Actor, now int64) (handled
 	}
 
 	npc.Mu.Lock()
-	windupUntil := npc.SpecialWindupUntil
-	windupTarget := npc.SpecialTargetRID
-	windupAbilityID := npc.SpecialAbilityID
-	windupActionOverride := npc.SpecialActionOverride
 	lastSpecialAt := npc.LastSpecialAt
 	if npc.AbilityCooldowns == nil {
 		npc.AbilityCooldowns = make(map[int]int64)
 	}
 	npc.Mu.Unlock()
 
-	// 1) Resolve active windup.
-	if windupUntil > 0 {
-		if now < windupUntil {
-			return true, false
-		}
-		ability := resolveSpecialAbilityTemplate(windupAbilityID)
-
-		// Clear windup first so impact resolves exactly once.
-		npc.Mu.Lock()
-		npc.SpecialWindupUntil = 0
-		npc.SpecialTargetRID = 0
-		npc.SpecialAbilityID = 0
-		npc.SpecialActionOverride = ""
-		npc.SpecialReasonTag = ""
-		npc.SpecialClientTraceID = ""
-		npc.Mu.Unlock()
-
-		// If chase target changed mid-windup, resolve against the originally telegraphed target.
-		if windupTarget != 0 {
-			if target == nil || target.RuntimeID != windupTarget {
-				forced, ok := area.GetActor(windupTarget)
-				if !ok || forced == nil {
-					return true, false
-				}
-				target = forced
-			}
-		}
-		if target == nil || target.IsDead() {
-			return true, false
-		}
-		if !inSpecialRange(npc, target, ability.RangeMin, ability.RangeMax) {
-			// Target escaped the special impact radius.
-			return true, false
-		}
-
-		target.Mu.Lock()
-		parryActive := target.ParryUntil > now
-		parryAge := now - target.LastParryAt
-		parryWindow := ability.ParryWindowMs
-		if parryWindow <= 0 {
-			parryWindow = npcSpecialParryExactMs
-		}
-		if parryActive && parryAge >= 0 && parryAge <= parryWindow {
-			// Consume the parry so the same window doesn't double-count.
-			target.ParryUntil = 0
-			target.LastCombatAt = now
-			target.Mu.Unlock()
-
-			BroadcastCombatEvent(area, combatEventSpecialParry, npc.RuntimeID, target.RuntimeID, int16(parryAge), "")
-			if recover := resolveStageAction(windupActionOverride, ability.ActionRecover, "Idle"); recover != "" {
-				BroadcastAnimate(area, npc, recover)
-			}
-			return true, false
-		}
-		target.Mu.Unlock()
-
-		if impact := resolveStageAction(windupActionOverride, ability.ActionImpact, "Attack"); impact != "" {
-			BroadcastAnimate(area, npc, impact)
-		}
-		damage := specialAttackDamage(npc, target, ability)
-		hp, justDied := ApplyDamage(target, damage, npc.RuntimeID)
-		BroadcastFloatingNumber(area, target, int16(damage), 0)
-		BroadcastHPUpdate(area, target, hp)
-		BroadcastCombatEvent(area, combatEventSpecialHit, npc.RuntimeID, target.RuntimeID, int16(damage), "")
-		if justDied {
-			BroadcastAnimate(area, target, "Death")
-			BroadcastActorDead(area, target.RuntimeID, npc.RuntimeID)
-			runSpecialKillHook(area, npc, target)
-		}
-		return true, justDied
+	// 1) Resolve active windup (shared flow for any actor).
+	if handled, killed := resolveActorWindup(area, npc, target, now); handled {
+		return true, killed
 	}
 
-	// 2) No active windup: maybe start a new special from configured loadouts.
+	// 2) No active windup: NPC-only decision and cast start.
 	intent, ok := selectNPCSpecialIntent(npc, target, now, lastSpecialAt)
 	if !ok {
 		return false, false
@@ -464,7 +485,7 @@ func selectNPCSpecialIntent(npc, target *Actor, now, lastSpecialAt int64) (npcSp
 		if !evaluateConditionLua(slot.ConditionLua, evalCtx) {
 			continue
 		}
-		if abilityOnCooldown(npc, ability.ID, ability.CooldownMs, now) {
+		if abilityOnCooldown(npc, ability, now) {
 			continue
 		}
 		if !inSpecialRange(npc, target, resolveSpecialMinRange(slot, ability), resolveSpecialMaxRange(npc, slot, ability)) {
@@ -841,12 +862,57 @@ func rollLoadoutWeight(weight int) bool {
 	}
 }
 
-func abilityOnCooldown(npc *Actor, abilityID int, cooldownMs, now int64) bool {
-	if abilityID <= 0 || cooldownMs <= 0 {
+func getPlayerSkillLevel(actor *Actor, abilityID int) int {
+	if actor == nil || abilityID <= 0 {
+		return 1
+	}
+	actor.Mu.Lock()
+	defer actor.Mu.Unlock()
+	if actor.SkillLevels == nil {
+		return 1
+	}
+	level, ok := actor.SkillLevels[abilityID]
+	if !ok || level < 1 {
+		return 1
+	}
+	return level
+}
+
+func effectiveCooldownMs(actor *Actor, ability AbilityTemplate) int64 {
+	base := ability.CooldownMs
+	if base <= 0 {
+		return base
+	}
+	if actor == nil || actor.IsNPC || actor.CharacterID == "" {
+		return base
+	}
+	if !strings.EqualFold(strings.TrimSpace(ability.Category), "damage") {
+		return base
+	}
+
+	level := getPlayerSkillLevel(actor, ability.ID)
+	if level <= 1 {
+		return base
+	}
+
+	levelBonus := float64(level - 1)
+	cdMul := 1.0 - ability.MasteryCooldownReduxPerLvl*levelBonus
+	if cdMul < 0.1 {
+		cdMul = 0.1
+	}
+	return int64(float64(base) * cdMul)
+}
+
+func abilityOnCooldown(npc *Actor, ability AbilityTemplate, now int64) bool {
+	if ability.ID <= 0 {
+		return false
+	}
+	cooldownMs := effectiveCooldownMs(npc, ability)
+	if cooldownMs <= 0 {
 		return false
 	}
 	npc.Mu.Lock()
-	last := npc.AbilityCooldowns[abilityID]
+	last := npc.AbilityCooldowns[ability.ID]
 	npc.Mu.Unlock()
 	return now-last < cooldownMs
 }
@@ -960,6 +1026,19 @@ func specialAttackDamage(npc, target *Actor, ability AbilityTemplate) int32 {
 
 	if ability.BaseDamageMin > 0 && dmg < ability.BaseDamageMin {
 		dmg = ability.BaseDamageMin
+	}
+
+	// Player mastery runtime currently applies only to damage-category skills.
+	if !npc.IsNPC && npc.CharacterID != "" && strings.EqualFold(strings.TrimSpace(ability.Category), "damage") {
+		level := getPlayerSkillLevel(npc, ability.ID)
+		if level > 1 {
+			levelBonus := float64(level - 1)
+			dmgMul := 1.0 + ability.MasteryPrimaryBonusPerLvl*levelBonus
+			dmg = int32(float64(dmg) * dmgMul)
+			if dmg < 1 {
+				dmg = 1
+			}
+		}
 	}
 	return dmg
 }

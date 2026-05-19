@@ -76,6 +76,7 @@ func NewServer(cfg *Config, database *db.DB, accts *accounts.Service, w *world.W
 		clientsByRuntimeID: make(map[uint32]*ClientConn),
 	}
 	world.SetSpecialKillHook(s.handleSpecialKill)
+	world.SetSpecialHitHook(s.handleSpecialHit)
 	return s
 }
 

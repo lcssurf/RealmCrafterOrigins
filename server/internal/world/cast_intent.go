@@ -166,7 +166,7 @@ func canActorStartAbilityNow(caster, target *Actor, abilityID int, now int64) st
 	if now-lastSpecialAt < globalGCDMs {
 		return "global_gcd"
 	}
-	if abilityOnCooldown(caster, abilityID, ability.CooldownMs, now) {
+	if abilityOnCooldown(caster, ability, now) {
 		return "ability_cooldown"
 	}
 	if !inSpecialRange(caster, target, ability.RangeMin, ability.RangeMax) {

@@ -675,6 +675,42 @@ func (a *Area) tickAI() {
 			}
 		}
 	}
+
+	// Resolve pending special windups for players.
+	for _, player := range players {
+		player.Mu.Lock()
+		windupUntil := player.SpecialWindupUntil
+		targetRID := player.SpecialTargetRID
+		player.Mu.Unlock()
+
+		if windupUntil == 0 {
+			continue
+		}
+
+		if targetRID == 0 {
+			player.Mu.Lock()
+			player.SpecialWindupUntil = 0
+			player.SpecialTargetRID = 0
+			player.SpecialAbilityID = 0
+			player.Mu.Unlock()
+			continue
+		}
+
+		a.Mu.RLock()
+		target := a.actors[targetRID]
+		a.Mu.RUnlock()
+		if target == nil {
+			// Target left the area; clear pending special state.
+			player.Mu.Lock()
+			player.SpecialWindupUntil = 0
+			player.SpecialTargetRID = 0
+			player.SpecialAbilityID = 0
+			player.Mu.Unlock()
+			continue
+		}
+
+		resolveActorWindup(a, player, target, now)
+	}
 	_ = toKill
 }
 

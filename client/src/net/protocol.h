@@ -73,6 +73,8 @@ constexpr uint16_t kPCombatEvent       = 128; // S->C: combat feedback events
 constexpr uint16_t kPSkillState        = 129; // S->C: skill state snapshot
 constexpr uint16_t kPWeaponMasteryUpdate = 130; // S->C: weapon mastery progression delta
 constexpr uint16_t kPStatusEffectDelta = 131; // S->C: status effect add/update/remove
+constexpr uint16_t kPKitPool           = 132; // S->C: active kit full ability pool snapshot
+constexpr uint16_t kPCastSkillSlot     = 133; // C->S: cast active loadout skill by hotbar slot
 
 // ---------------------------------------------------------------------------
 // Result codes
@@ -146,9 +148,14 @@ constexpr uint8_t kCombatEventSpecialWindup    = 11;
 constexpr uint8_t kCombatEventSpecialParry     = 12;
 constexpr uint8_t kCombatEventSpecialHit       = 13;
 
-constexpr uint8_t kSkillLoadoutActionEquip      = 1;
-constexpr uint8_t kSkillLoadoutActionUnequip    = 2;
-constexpr uint8_t kSkillLoadoutActionSwapPreset = 3;
+constexpr uint8_t kSkillLoadoutActionSetSlot   = 1;
+constexpr uint8_t kSkillLoadoutActionClearSlot = 2;
+constexpr uint8_t kSkillLoadoutActionClearKit  = 3;
+
+// Legacy aliases kept for compatibility with older call-sites.
+constexpr uint8_t kSkillLoadoutActionEquip      = kSkillLoadoutActionSetSlot;
+constexpr uint8_t kSkillLoadoutActionUnequip    = kSkillLoadoutActionClearSlot;
+constexpr uint8_t kSkillLoadoutActionSwapPreset = kSkillLoadoutActionClearKit;
 
 // ---------------------------------------------------------------------------
 // Frame layout: [uint16 type LE][uint32 payloadLen LE][payload bytes]

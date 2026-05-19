@@ -11,6 +11,7 @@ struct CombatAbilityTemplate {
     int         id = 0;
     std::string name;
     std::string family = "melee_special";
+    std::string category = "damage";
     std::string resource_type = "none";
     int         resource_cost = 0;
     int         cooldown_ms = 2000;
@@ -38,6 +39,12 @@ struct CombatAbilityTemplate {
     int         vfx_id_impact = 0;
     int         sfx_id_windup = 0;
     int         sfx_id_impact = 0;
+    int         mastery_xp_per_use = 10;
+    int         mastery_max_level = 10;
+    std::string mastery_xp_curve_type = "linear";
+    int         mastery_xp_curve_base = 100;
+    float       mastery_primary_bonus_per_lvl = 0.03f;
+    float       mastery_cooldown_redux_per_lvl = 0.01f;
     bool        enabled = true;
 };
 
@@ -95,6 +102,15 @@ struct ProfileOption {
     std::string label;
 };
 
+struct ProgressionDefaults {
+    int         xp_per_use = 10;
+    int         max_level = 10;
+    std::string xp_curve_type = "linear";
+    int         xp_curve_base = 100;
+    float       damage_bonus_per_level = 0.03f;
+    float       cooldown_redux_per_level = 0.01f;
+};
+
 class CombatAbilitiesTab {
 public:
     void Draw(sqlite3* db);
@@ -108,6 +124,7 @@ private:
     void FetchProfileBindings(sqlite3* db);
     void FetchNPCSpawns(sqlite3* db);
     void FetchActorDefs(sqlite3* db);
+    void LoadDefaultsIfNeeded(sqlite3* db);
 
     bool SaveAbility(sqlite3* db, CombatAbilityTemplate& row);
     bool DeleteAbility(sqlite3* db, int ability_id);
@@ -131,6 +148,7 @@ private:
     void SetStatus(const char* fmt, ...);
 
     bool tables_ensured_ = false;
+    bool defaults_loaded_ = false;
     bool need_fetch_ = true;
 
     int select_ability_after_fetch_ = 0;
@@ -171,6 +189,7 @@ private:
     NPCProfileBinding editing_profile_binding_;
 
     char status_msg_[256] = {};
+    ProgressionDefaults defaults_;
 };
 
 } // namespace gue

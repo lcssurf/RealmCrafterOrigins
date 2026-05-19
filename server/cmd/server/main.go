@@ -157,6 +157,9 @@ func main() {
 	if err := database.SeedDefaultEquipmentSlotConfig(ctx); err != nil {
 		log.Fatalf("main: seed equipment slot config: %v", err)
 	}
+	if err := database.SeedDefaultSkillProgressionConfig(ctx); err != nil {
+		log.Fatalf("main: seed skill progression config: %v", err)
+	}
 
 	// Create Lua scripting registry and load scripts.
 	// Canonical path: dist/server/scripts/ (relative to exe, after anchor).
@@ -208,6 +211,7 @@ func main() {
 					ID:                    row.ID,
 					Name:                  row.Name,
 					Family:                row.Family,
+					Category:              row.Category,
 					ResourceType:          row.ResourceType,
 					ResourceCost:          row.ResourceCost,
 					CooldownMs:            row.CooldownMs,
@@ -235,6 +239,12 @@ func main() {
 					VFXIDImpact:           row.VFXIDImpact,
 					SFXIDWindup:           row.SFXIDWindup,
 					SFXIDImpact:           row.SFXIDImpact,
+					MasteryXPPerUse:       row.MasteryXPPerUse,
+					MasteryMaxLevel:       row.MasteryMaxLevel,
+					MasteryXPCurveType:    row.MasteryXPCurveType,
+					MasteryXPCurveBase:    row.MasteryXPCurveBase,
+					MasteryPrimaryBonusPerLvl:  row.MasteryPrimaryBonusPerLvl,
+					MasteryCooldownReduxPerLvl: row.MasteryCooldownReduxPerLvl,
 					Enabled:               row.Enabled,
 				})
 			}

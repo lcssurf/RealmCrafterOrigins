@@ -38,6 +38,23 @@ bool ExistsID(sqlite3* db, const char* sql, int id) {
     return count > 0;
 }
 
+std::string ToLowerCopy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
+bool IsAllowedCategory(const std::string& category) {
+    static const char* kAllowed[] = {
+        "damage", "heal", "buff", "debuff", "mobility", "utility", "summon"
+    };
+    const std::string normalized = ToLowerCopy(TrimCopy(category));
+    for (const char* c : kAllowed) {
+        if (normalized == c) return true;
+    }
+    return false;
+}
+
 bool DrawAbilityFields(CombatAbilityTemplate& row) {
     bool changed = false;
 
@@ -162,6 +179,76 @@ bool DrawAbilityFields(CombatAbilityTemplate& row) {
     if (ImGui::InputInt("SFX Windup", &row.sfx_id_windup)) changed = true;
     if (ImGui::InputInt("SFX Impact", &row.sfx_id_impact)) changed = true;
 
+    ImGui::Separator();
+    ImGui::TextUnformatted("Category & Mastery");
+
+    static const char* kCategories[] = {
+        "damage", "heal", "buff", "debuff", "mobility", "utility", "summon"
+    };
+    int category_idx = 0;
+    for (int i = 0; i < static_cast<int>(sizeof(kCategories) / sizeof(kCategories[0])); ++i) {
+        if (row.category == kCategories[i]) {
+            category_idx = i;
+            break;
+        }
+    }
+    if (ImGui::Combo("Category", &category_idx, kCategories,
+                     static_cast<int>(sizeof(kCategories) / sizeof(kCategories[0])))) {
+        row.category = kCategories[category_idx];
+        changed = true;
+    }
+
+    if (row.category != "damage") {
+        ImGui::TextColored(
+            ImVec4(0.9f, 0.7f, 0.3f, 1.0f),
+            "Runtime does not yet implement '%s' category. Schema only.",
+            row.category.c_str());
+    }
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Mastery Progression");
+    if (ImGui::InputInt("XP per Use", &row.mastery_xp_per_use)) changed = true;
+    if (ImGui::InputInt("Max Level", &row.mastery_max_level)) changed = true;
+
+    static const char* kCurves[] = {"linear", "exponential"};
+    int curve_idx = (row.mastery_xp_curve_type == "exponential") ? 1 : 0;
+    if (ImGui::Combo("XP Curve Type", &curve_idx, kCurves,
+                     static_cast<int>(sizeof(kCurves) / sizeof(kCurves[0])))) {
+        row.mastery_xp_curve_type = kCurves[curve_idx];
+        changed = true;
+    }
+
+    if (ImGui::InputInt("XP Curve Base", &row.mastery_xp_curve_base)) changed = true;
+
+    if (ImGui::SliderFloat("Primary Bonus per Level (%)",
+                           &row.mastery_primary_bonus_per_lvl, 0.0f, 0.5f, "%.3f")) {
+        changed = true;
+    }
+    if (ImGui::IsItemHovered()) {
+        if (row.category == "damage") {
+            ImGui::SetTooltip("Damage multiplier per level above 1.\nE.g., 0.03 = +3%% damage per level.");
+        } else if (row.category == "heal") {
+            ImGui::SetTooltip("Heal amount multiplier per level above 1.");
+        } else {
+            ImGui::SetTooltip("Primary bonus (meaning depends on category).");
+        }
+    }
+
+    if (ImGui::SliderFloat("Cooldown Reduction per Level (%)",
+                           &row.mastery_cooldown_redux_per_lvl, 0.0f, 0.1f, "%.3f")) {
+        changed = true;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Cooldown reduction per level above 1.\nE.g., 0.01 = -1%% cooldown per level.");
+    }
+
+    if (row.mastery_max_level > 1) {
+        const float max_bonus = row.mastery_primary_bonus_per_lvl * static_cast<float>(row.mastery_max_level - 1);
+        const float max_cd_redux = row.mastery_cooldown_redux_per_lvl * static_cast<float>(row.mastery_max_level - 1);
+        ImGui::TextDisabled("At max level (%d): +%.0f%% bonus, -%.0f%% cooldown",
+            row.mastery_max_level, max_bonus * 100.0f, max_cd_redux * 100.0f);
+    }
+
     if (ImGui::Checkbox("Enabled", &row.enabled)) changed = true;
 
     if (row.resource_cost < 0) row.resource_cost = 0;
@@ -180,6 +267,20 @@ bool DrawAbilityFields(CombatAbilityTemplate& row) {
     if (row.vfx_id_impact < 0) row.vfx_id_impact = 0;
     if (row.sfx_id_windup < 0) row.sfx_id_windup = 0;
     if (row.sfx_id_impact < 0) row.sfx_id_impact = 0;
+    row.category = ToLowerCopy(TrimCopy(row.category));
+    if (!IsAllowedCategory(row.category)) row.category = "damage";
+    if (row.mastery_xp_per_use < 1) row.mastery_xp_per_use = 1;
+    if (row.mastery_max_level < 1) row.mastery_max_level = 1;
+    if (row.mastery_max_level > 100) row.mastery_max_level = 100;
+    row.mastery_xp_curve_type = ToLowerCopy(TrimCopy(row.mastery_xp_curve_type));
+    if (row.mastery_xp_curve_type != "linear" && row.mastery_xp_curve_type != "exponential") {
+        row.mastery_xp_curve_type = "linear";
+    }
+    if (row.mastery_xp_curve_base < 1) row.mastery_xp_curve_base = 1;
+    if (row.mastery_primary_bonus_per_lvl < 0.f) row.mastery_primary_bonus_per_lvl = 0.f;
+    if (row.mastery_primary_bonus_per_lvl > 0.5f) row.mastery_primary_bonus_per_lvl = 0.5f;
+    if (row.mastery_cooldown_redux_per_lvl < 0.f) row.mastery_cooldown_redux_per_lvl = 0.f;
+    if (row.mastery_cooldown_redux_per_lvl > 0.1f) row.mastery_cooldown_redux_per_lvl = 0.1f;
 
     return changed;
 }
@@ -299,7 +400,98 @@ void CombatAbilitiesTab::EnsureTables(sqlite3* db) {
         "ON npc_profile_bindings(profile_id)",
         nullptr, nullptr, nullptr);
 
+    auto has_column = [&](const char* table, const char* column) -> bool {
+        char pragma_sql[256];
+        std::snprintf(pragma_sql, sizeof(pragma_sql), "PRAGMA table_info(%s)", table);
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, pragma_sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            return false;
+        }
+        bool found = false;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char* name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            if (name != nullptr && std::strcmp(name, column) == 0) {
+                found = true;
+                break;
+            }
+        }
+        sqlite3_finalize(stmt);
+        return found;
+    };
+
+    auto add_column_if_missing = [&](const char* table, const char* column, const char* column_sql) {
+        if (has_column(table, column)) {
+            return;
+        }
+        char alter_sql[512];
+        std::snprintf(alter_sql, sizeof(alter_sql), "ALTER TABLE %s ADD COLUMN %s", table, column_sql);
+        char* err = nullptr;
+        const int rc = sqlite3_exec(db, alter_sql, nullptr, nullptr, &err);
+        if (rc != SQLITE_OK) {
+            const bool duplicate = (err != nullptr) && (std::strstr(err, "duplicate column name") != nullptr);
+            if (!duplicate) {
+                SetStatus("Schema update error (%s): %s", column, err ? err : "unknown error");
+            }
+        }
+        if (err) sqlite3_free(err);
+    };
+
+    add_column_if_missing("ability_templates", "category",
+        "category TEXT NOT NULL DEFAULT 'damage'");
+    add_column_if_missing("ability_templates", "mastery_xp_per_use",
+        "mastery_xp_per_use INTEGER NOT NULL DEFAULT 10");
+    add_column_if_missing("ability_templates", "mastery_max_level",
+        "mastery_max_level INTEGER NOT NULL DEFAULT 10");
+    add_column_if_missing("ability_templates", "mastery_xp_curve_type",
+        "mastery_xp_curve_type TEXT NOT NULL DEFAULT 'linear'");
+    add_column_if_missing("ability_templates", "mastery_xp_curve_base",
+        "mastery_xp_curve_base INTEGER NOT NULL DEFAULT 100");
+    add_column_if_missing("ability_templates", "mastery_primary_bonus_per_lvl",
+        "mastery_primary_bonus_per_lvl REAL NOT NULL DEFAULT 0.03");
+    add_column_if_missing("ability_templates", "mastery_cooldown_redux_per_lvl",
+        "mastery_cooldown_redux_per_lvl REAL NOT NULL DEFAULT 0.01");
+
     tables_ensured_ = true;
+}
+
+void CombatAbilitiesTab::LoadDefaultsIfNeeded(sqlite3* db) {
+    if (defaults_loaded_ || !db) return;
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT xp_per_use, max_level, xp_curve_type, xp_curve_base, "
+        "       damage_bonus_per_level, cooldown_redux_per_level "
+        "FROM skill_progression_config "
+        "ORDER BY id LIMIT 1";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        defaults_loaded_ = true;
+        return;
+    }
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        defaults_.xp_per_use = sqlite3_column_int(stmt, 0);
+        defaults_.max_level = sqlite3_column_int(stmt, 1);
+        if (const auto* text = sqlite3_column_text(stmt, 2)) {
+            defaults_.xp_curve_type = reinterpret_cast<const char*>(text);
+        }
+        defaults_.xp_curve_base = sqlite3_column_int(stmt, 3);
+        defaults_.damage_bonus_per_level = static_cast<float>(sqlite3_column_double(stmt, 4));
+        defaults_.cooldown_redux_per_level = static_cast<float>(sqlite3_column_double(stmt, 5));
+    }
+    sqlite3_finalize(stmt);
+
+    if (defaults_.xp_per_use < 1) defaults_.xp_per_use = 10;
+    if (defaults_.max_level < 1) defaults_.max_level = 10;
+    defaults_.xp_curve_type = ToLowerCopy(TrimCopy(defaults_.xp_curve_type));
+    if (defaults_.xp_curve_type != "linear" && defaults_.xp_curve_type != "exponential") {
+        defaults_.xp_curve_type = "linear";
+    }
+    if (defaults_.xp_curve_base < 1) defaults_.xp_curve_base = 100;
+    if (defaults_.damage_bonus_per_level < 0.f) defaults_.damage_bonus_per_level = 0.03f;
+    if (defaults_.cooldown_redux_per_level < 0.f) defaults_.cooldown_redux_per_level = 0.01f;
+
+    defaults_loaded_ = true;
 }
 
 void CombatAbilitiesTab::FetchNPCSpawns(sqlite3* db) {
@@ -347,14 +539,17 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
 
     sqlite3_stmt* stmt = nullptr;
     const char* sql =
-        "SELECT id, name, family, resource_type, resource_cost, cooldown_ms, "
+        "SELECT id, name, family, category, resource_type, resource_cost, cooldown_ms, "
         "       range_min, range_max, windup_ms, impact_delay_ms, recover_ms, "
         "       parry_window_ms, interruptible, base_damage_min, base_damage_max, "
         "       damage_stat_scale_json, armor_pierce_pct, crit_policy_json, "
         "       telegraph_type, telegraph_radius, telegraph_color_rgba, "
         "       action_windup, action_impact, action_recover, "
         "       allow_action_override, allowed_action_tags_json, "
-        "       vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, enabled "
+        "       vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, "
+        "       mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type, "
+        "       mastery_xp_curve_base, mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, "
+        "       enabled "
         "FROM ability_templates ORDER BY id";
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -367,34 +562,41 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
         row.id = sqlite3_column_int(stmt, 0);
         if (const auto* text = sqlite3_column_text(stmt, 1)) row.name = reinterpret_cast<const char*>(text);
         if (const auto* text = sqlite3_column_text(stmt, 2)) row.family = reinterpret_cast<const char*>(text);
-        if (const auto* text = sqlite3_column_text(stmt, 3)) row.resource_type = reinterpret_cast<const char*>(text);
-        row.resource_cost = sqlite3_column_int(stmt, 4);
-        row.cooldown_ms = sqlite3_column_int(stmt, 5);
-        row.range_min = static_cast<float>(sqlite3_column_double(stmt, 6));
-        row.range_max = static_cast<float>(sqlite3_column_double(stmt, 7));
-        row.windup_ms = sqlite3_column_int(stmt, 8);
-        row.impact_delay_ms = sqlite3_column_int(stmt, 9);
-        row.recover_ms = sqlite3_column_int(stmt, 10);
-        row.parry_window_ms = sqlite3_column_int(stmt, 11);
-        row.interruptible = sqlite3_column_int(stmt, 12) != 0;
-        row.base_damage_min = sqlite3_column_int(stmt, 13);
-        row.base_damage_max = sqlite3_column_int(stmt, 14);
-        if (const auto* text = sqlite3_column_text(stmt, 15)) row.damage_stat_scale_json = reinterpret_cast<const char*>(text);
-        row.armor_pierce_pct = static_cast<float>(sqlite3_column_double(stmt, 16));
-        if (const auto* text = sqlite3_column_text(stmt, 17)) row.crit_policy_json = reinterpret_cast<const char*>(text);
-        if (const auto* text = sqlite3_column_text(stmt, 18)) row.telegraph_type = reinterpret_cast<const char*>(text);
-        row.telegraph_radius = static_cast<float>(sqlite3_column_double(stmt, 19));
-        if (const auto* text = sqlite3_column_text(stmt, 20)) row.telegraph_color_rgba = reinterpret_cast<const char*>(text);
-        if (const auto* text = sqlite3_column_text(stmt, 21)) row.action_windup = reinterpret_cast<const char*>(text);
-        if (const auto* text = sqlite3_column_text(stmt, 22)) row.action_impact = reinterpret_cast<const char*>(text);
-        if (const auto* text = sqlite3_column_text(stmt, 23)) row.action_recover = reinterpret_cast<const char*>(text);
-        row.allow_action_override = sqlite3_column_int(stmt, 24) != 0;
-        if (const auto* text = sqlite3_column_text(stmt, 25)) row.allowed_action_tags_json = reinterpret_cast<const char*>(text);
-        row.vfx_id_windup = sqlite3_column_int(stmt, 26);
-        row.vfx_id_impact = sqlite3_column_int(stmt, 27);
-        row.sfx_id_windup = sqlite3_column_int(stmt, 28);
-        row.sfx_id_impact = sqlite3_column_int(stmt, 29);
-        row.enabled = sqlite3_column_int(stmt, 30) != 0;
+        if (const auto* text = sqlite3_column_text(stmt, 3)) row.category = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 4)) row.resource_type = reinterpret_cast<const char*>(text);
+        row.resource_cost = sqlite3_column_int(stmt, 5);
+        row.cooldown_ms = sqlite3_column_int(stmt, 6);
+        row.range_min = static_cast<float>(sqlite3_column_double(stmt, 7));
+        row.range_max = static_cast<float>(sqlite3_column_double(stmt, 8));
+        row.windup_ms = sqlite3_column_int(stmt, 9);
+        row.impact_delay_ms = sqlite3_column_int(stmt, 10);
+        row.recover_ms = sqlite3_column_int(stmt, 11);
+        row.parry_window_ms = sqlite3_column_int(stmt, 12);
+        row.interruptible = sqlite3_column_int(stmt, 13) != 0;
+        row.base_damage_min = sqlite3_column_int(stmt, 14);
+        row.base_damage_max = sqlite3_column_int(stmt, 15);
+        if (const auto* text = sqlite3_column_text(stmt, 16)) row.damage_stat_scale_json = reinterpret_cast<const char*>(text);
+        row.armor_pierce_pct = static_cast<float>(sqlite3_column_double(stmt, 17));
+        if (const auto* text = sqlite3_column_text(stmt, 18)) row.crit_policy_json = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 19)) row.telegraph_type = reinterpret_cast<const char*>(text);
+        row.telegraph_radius = static_cast<float>(sqlite3_column_double(stmt, 20));
+        if (const auto* text = sqlite3_column_text(stmt, 21)) row.telegraph_color_rgba = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 22)) row.action_windup = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 23)) row.action_impact = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 24)) row.action_recover = reinterpret_cast<const char*>(text);
+        row.allow_action_override = sqlite3_column_int(stmt, 25) != 0;
+        if (const auto* text = sqlite3_column_text(stmt, 26)) row.allowed_action_tags_json = reinterpret_cast<const char*>(text);
+        row.vfx_id_windup = sqlite3_column_int(stmt, 27);
+        row.vfx_id_impact = sqlite3_column_int(stmt, 28);
+        row.sfx_id_windup = sqlite3_column_int(stmt, 29);
+        row.sfx_id_impact = sqlite3_column_int(stmt, 30);
+        row.mastery_xp_per_use = sqlite3_column_int(stmt, 31);
+        row.mastery_max_level = sqlite3_column_int(stmt, 32);
+        if (const auto* text = sqlite3_column_text(stmt, 33)) row.mastery_xp_curve_type = reinterpret_cast<const char*>(text);
+        row.mastery_xp_curve_base = sqlite3_column_int(stmt, 34);
+        row.mastery_primary_bonus_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 35));
+        row.mastery_cooldown_redux_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 36));
+        row.enabled = sqlite3_column_int(stmt, 37) != 0;
         abilities_.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
@@ -765,6 +967,7 @@ bool CombatAbilitiesTab::ValidateProfileBinding(sqlite3* db, const NPCProfileBin
 bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     row.name = TrimCopy(row.name);
     row.family = TrimCopy(row.family);
+    row.category = ToLowerCopy(TrimCopy(row.category));
     row.resource_type = TrimCopy(row.resource_type);
     row.telegraph_type = TrimCopy(row.telegraph_type);
     row.telegraph_color_rgba = TrimCopy(row.telegraph_color_rgba);
@@ -774,13 +977,24 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     row.damage_stat_scale_json = TrimCopy(row.damage_stat_scale_json);
     row.crit_policy_json = TrimCopy(row.crit_policy_json);
     row.allowed_action_tags_json = TrimCopy(row.allowed_action_tags_json);
+    row.mastery_xp_curve_type = ToLowerCopy(TrimCopy(row.mastery_xp_curve_type));
     if (row.family.empty()) row.family = "melee_special";
+    if (!IsAllowedCategory(row.category)) row.category = "damage";
     if (row.resource_type.empty()) row.resource_type = "none";
     if (row.telegraph_type.empty()) row.telegraph_type = "ring_close";
     if (row.telegraph_color_rgba.empty()) row.telegraph_color_rgba = "1,0.2,0.2,0.75";
     if (row.action_windup.empty()) row.action_windup = "Attack";
     if (row.action_impact.empty()) row.action_impact = "Attack";
     if (row.action_recover.empty()) row.action_recover = "Idle";
+    if (row.mastery_xp_per_use < 1) row.mastery_xp_per_use = 1;
+    if (row.mastery_max_level < 1) row.mastery_max_level = 1;
+    if (row.mastery_max_level > 100) row.mastery_max_level = 100;
+    if (row.mastery_xp_curve_type != "linear" && row.mastery_xp_curve_type != "exponential") {
+        row.mastery_xp_curve_type = "linear";
+    }
+    if (row.mastery_xp_curve_base < 1) row.mastery_xp_curve_base = 1;
+    row.mastery_primary_bonus_per_lvl = std::clamp(row.mastery_primary_bonus_per_lvl, 0.0f, 0.5f);
+    row.mastery_cooldown_redux_per_lvl = std::clamp(row.mastery_cooldown_redux_per_lvl, 0.0f, 0.1f);
 
     std::string validation_error;
     const bool is_new = (row.id == 0);
@@ -795,15 +1009,17 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     if (is_new) {
         const char* sql =
             "INSERT INTO ability_templates ("
-            "name, family, resource_type, resource_cost, cooldown_ms, "
+            "name, family, category, resource_type, resource_cost, cooldown_ms, "
             "range_min, range_max, windup_ms, impact_delay_ms, recover_ms, "
             "parry_window_ms, interruptible, base_damage_min, base_damage_max, "
             "damage_stat_scale_json, armor_pierce_pct, crit_policy_json, "
             "telegraph_type, telegraph_radius, telegraph_color_rgba, "
             "action_windup, action_impact, action_recover, "
             "allow_action_override, allowed_action_tags_json, "
-            "vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, enabled"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+            "vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, "
+            "mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type, "
+            "mastery_xp_curve_base, mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, enabled"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
             SetStatus("Ability create error: %s", sqlite3_errmsg(db));
@@ -812,14 +1028,16 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     } else {
         const char* sql =
             "UPDATE ability_templates SET "
-            "name=?, family=?, resource_type=?, resource_cost=?, cooldown_ms=?, "
+            "name=?, family=?, category=?, resource_type=?, resource_cost=?, cooldown_ms=?, "
             "range_min=?, range_max=?, windup_ms=?, impact_delay_ms=?, recover_ms=?, "
             "parry_window_ms=?, interruptible=?, base_damage_min=?, base_damage_max=?, "
             "damage_stat_scale_json=?, armor_pierce_pct=?, crit_policy_json=?, "
             "telegraph_type=?, telegraph_radius=?, telegraph_color_rgba=?, "
             "action_windup=?, action_impact=?, action_recover=?, "
             "allow_action_override=?, allowed_action_tags_json=?, "
-            "vfx_id_windup=?, vfx_id_impact=?, sfx_id_windup=?, sfx_id_impact=?, enabled=? "
+            "vfx_id_windup=?, vfx_id_impact=?, sfx_id_windup=?, sfx_id_impact=?, "
+            "mastery_xp_per_use=?, mastery_max_level=?, mastery_xp_curve_type=?, "
+            "mastery_xp_curve_base=?, mastery_primary_bonus_per_lvl=?, mastery_cooldown_redux_per_lvl=?, enabled=? "
             "WHERE id=?";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -830,36 +1048,43 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
 
     sqlite3_bind_text(stmt, 1, row.name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, row.family.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, row.resource_type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 4, row.resource_cost);
-    sqlite3_bind_int(stmt, 5, row.cooldown_ms);
-    sqlite3_bind_double(stmt, 6, row.range_min);
-    sqlite3_bind_double(stmt, 7, row.range_max);
-    sqlite3_bind_int(stmt, 8, row.windup_ms);
-    sqlite3_bind_int(stmt, 9, row.impact_delay_ms);
-    sqlite3_bind_int(stmt, 10, row.recover_ms);
-    sqlite3_bind_int(stmt, 11, row.parry_window_ms);
-    sqlite3_bind_int(stmt, 12, row.interruptible ? 1 : 0);
-    sqlite3_bind_int(stmt, 13, row.base_damage_min);
-    sqlite3_bind_int(stmt, 14, row.base_damage_max);
-    sqlite3_bind_text(stmt, 15, row.damage_stat_scale_json.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_double(stmt, 16, row.armor_pierce_pct);
-    sqlite3_bind_text(stmt, 17, row.crit_policy_json.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 18, row.telegraph_type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_double(stmt, 19, row.telegraph_radius);
-    sqlite3_bind_text(stmt, 20, row.telegraph_color_rgba.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 21, row.action_windup.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 22, row.action_impact.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 23, row.action_recover.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 24, row.allow_action_override ? 1 : 0);
-    sqlite3_bind_text(stmt, 25, row.allowed_action_tags_json.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 26, row.vfx_id_windup);
-    sqlite3_bind_int(stmt, 27, row.vfx_id_impact);
-    sqlite3_bind_int(stmt, 28, row.sfx_id_windup);
-    sqlite3_bind_int(stmt, 29, row.sfx_id_impact);
-    sqlite3_bind_int(stmt, 30, row.enabled ? 1 : 0);
+    sqlite3_bind_text(stmt, 3, row.category.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, row.resource_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 5, row.resource_cost);
+    sqlite3_bind_int(stmt, 6, row.cooldown_ms);
+    sqlite3_bind_double(stmt, 7, row.range_min);
+    sqlite3_bind_double(stmt, 8, row.range_max);
+    sqlite3_bind_int(stmt, 9, row.windup_ms);
+    sqlite3_bind_int(stmt, 10, row.impact_delay_ms);
+    sqlite3_bind_int(stmt, 11, row.recover_ms);
+    sqlite3_bind_int(stmt, 12, row.parry_window_ms);
+    sqlite3_bind_int(stmt, 13, row.interruptible ? 1 : 0);
+    sqlite3_bind_int(stmt, 14, row.base_damage_min);
+    sqlite3_bind_int(stmt, 15, row.base_damage_max);
+    sqlite3_bind_text(stmt, 16, row.damage_stat_scale_json.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 17, row.armor_pierce_pct);
+    sqlite3_bind_text(stmt, 18, row.crit_policy_json.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 19, row.telegraph_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 20, row.telegraph_radius);
+    sqlite3_bind_text(stmt, 21, row.telegraph_color_rgba.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 22, row.action_windup.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 23, row.action_impact.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 24, row.action_recover.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 25, row.allow_action_override ? 1 : 0);
+    sqlite3_bind_text(stmt, 26, row.allowed_action_tags_json.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 27, row.vfx_id_windup);
+    sqlite3_bind_int(stmt, 28, row.vfx_id_impact);
+    sqlite3_bind_int(stmt, 29, row.sfx_id_windup);
+    sqlite3_bind_int(stmt, 30, row.sfx_id_impact);
+    sqlite3_bind_int(stmt, 31, row.mastery_xp_per_use);
+    sqlite3_bind_int(stmt, 32, row.mastery_max_level);
+    sqlite3_bind_text(stmt, 33, row.mastery_xp_curve_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 34, row.mastery_xp_curve_base);
+    sqlite3_bind_double(stmt, 35, row.mastery_primary_bonus_per_lvl);
+    sqlite3_bind_double(stmt, 36, row.mastery_cooldown_redux_per_lvl);
+    sqlite3_bind_int(stmt, 37, row.enabled ? 1 : 0);
     if (!is_new) {
-        sqlite3_bind_int(stmt, 31, row.id);
+        sqlite3_bind_int(stmt, 38, row.id);
     }
 
     rc = sqlite3_step(stmt);
@@ -1206,6 +1431,7 @@ const char* CombatAbilitiesTab::ProfileNameByID(int profile_id) const {
 
 void CombatAbilitiesTab::Draw(sqlite3* db) {
     if (!db) return;
+    LoadDefaultsIfNeeded(db);
     if (need_fetch_) {
         FetchAll(db);
         need_fetch_ = false;
@@ -1217,6 +1443,14 @@ void CombatAbilitiesTab::Draw(sqlite3* db) {
     ImGui::SameLine();
     ImGui::TextDisabled("%s", status_msg_);
     ImGui::Separator();
+    ImGui::TextWrapped(
+        "Define each skill's mastery: how XP scales, what bonus it grants per level, "
+        "and what category it belongs to. Defaults come from skill_progression_config "
+        "(global template) but each skill is autonomous.");
+    ImGui::TextWrapped(
+        "Note: only 'damage' category has runtime implementation. Other categories "
+        "are schema-only - assigning them won't make skills work yet.");
+    ImGui::Separator();
 
     if (!ImGui::BeginTabBar("##combat_ability_tabs")) {
         return;
@@ -1227,6 +1461,13 @@ void CombatAbilitiesTab::Draw(sqlite3* db) {
             show_new_ability_ = true;
             show_new_loadout_ = false;
             new_ability_ = {};
+            new_ability_.category = "damage";
+            new_ability_.mastery_xp_per_use = defaults_.xp_per_use;
+            new_ability_.mastery_max_level = defaults_.max_level;
+            new_ability_.mastery_xp_curve_type = defaults_.xp_curve_type;
+            new_ability_.mastery_xp_curve_base = defaults_.xp_curve_base;
+            new_ability_.mastery_primary_bonus_per_lvl = defaults_.damage_bonus_per_level;
+            new_ability_.mastery_cooldown_redux_per_lvl = defaults_.cooldown_redux_per_level;
             selected_ability_ = -1;
             dirty_ability_ = false;
         }

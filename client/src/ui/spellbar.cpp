@@ -124,21 +124,6 @@ void SpellBar::Render(int screen_w, int screen_h, uint32_t combat_target,
             border = IM_COL32(60, 60, 90, 180);
         dl->AddRect(p0, p1, border, 5.f, 0, awaiting ? 2.5f : 1.5f);
 
-        // --- Hotkey trigger (1–9) ---
-        if (!player_dead && (i + 1) <= 9 && !ImGui::GetIO().WantTextInput) {
-            ImGuiKey key = static_cast<ImGuiKey>(ImGuiKey_1 + i);
-            if (ImGui::IsKeyPressed(key, false)) {
-                if (off_cd && has_mp && has_tgt && in_range) {
-                    if (is_ground) {
-                        pending_ground_spell = s.id;
-                        s.last_cast = now;
-                    } else if (on_cast) {
-                        on_cast(s.id, is_heal ? 0 : combat_target);
-                        s.last_cast = now;
-                    }
-                }
-            }
-        }
         // ESC cancels ground targeting
         if (pending_ground_spell == s.id &&
             ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {

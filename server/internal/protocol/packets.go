@@ -72,6 +72,8 @@ const (
 	PSkillState          uint16 = 129 // S->C: skill state snapshot
 	PWeaponMasteryUpdate uint16 = 130 // S->C: weapon mastery progression delta
 	PStatusEffectDelta   uint16 = 131 // S->C: status effect add/update/remove
+	PKitPool             uint16 = 132 // S->C: active kit full ability pool snapshot
+	PCastSkillSlot       uint16 = 133 // C->S: cast active loadout skill by hotbar slot
 )
 
 // EmitterType values for PCreateEmitter.

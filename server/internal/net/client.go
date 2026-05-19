@@ -35,6 +35,8 @@ const (
 	StateConnected     = 0
 	StateAuthenticated = 1
 	StateInGame        = 2
+
+	weaponSwapCombatLockWindowMs = int64(5_000)
 )
 
 // ClientConn manages a single player's QUIC connection through a state machine:
@@ -188,6 +190,8 @@ func (c *ClientConn) dispatchInGamePacket(ctx context.Context, pktType uint16, p
 		return c.handleCombatAction(ctx, payload)
 	case protocol.PSkillLoadoutAction:
 		return c.handleSkillLoadoutAction(ctx, payload)
+	case protocol.PCastSkillSlot:
+		return c.handleCastSkillSlot(ctx, payload)
 	case protocol.PClientWorldReady:
 		return c.handleClientWorldReady(payload)
 	case protocol.PPing:
@@ -409,6 +413,20 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 		actor.CachedArmor = armor
 	}
 	actor.SpellCooldowns = make(map[uint16]int64)
+	if progressRows, err := c.server.db.ListCharacterSkillProgress(ctx, char.ID); err == nil {
+		actor.Mu.Lock()
+		actor.SkillLevels = make(map[int]int, len(progressRows))
+		for _, p := range progressRows {
+			level := p.Level
+			if level < 1 {
+				level = 1
+			}
+			actor.SkillLevels[p.AbilityID] = level
+		}
+		actor.Mu.Unlock()
+	} else {
+		log.Printf("client: start game: load mastery cache char=%s: %v", char.ID, err)
+	}
 
 	// Resolve player appearance from the actor def (same path as NPCs).
 	log.Printf("client: handleStartGame actor_def_id=%d for char %q", char.ActorDefID, char.Name)
@@ -505,7 +523,7 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 
 	// Send known spells.
 	c.sendKnownSpells()
-	c.sendSkillState(ctx)
+	c.sendSkillSnapshots(ctx)
 
 	// Send current quest state after entering world.
 	_ = c.sendQuestLogSnapshot(ctx)
@@ -1011,6 +1029,42 @@ func (c *ClientConn) sendInventory(ctx context.Context, charID string) error {
 	return c.sendPacket(protocol.PInventoryUpdate, w.Bytes())
 }
 
+func (c *ClientConn) inCombat(now int64) bool {
+	if c == nil || c.actor == nil {
+		return false
+	}
+	c.actor.Mu.Lock()
+	lastCombatAt := c.actor.LastCombatAt
+	c.actor.Mu.Unlock()
+	return lastCombatAt > 0 && now-lastCombatAt < weaponSwapCombatLockWindowMs
+}
+
+func (c *ClientConn) clearWeaponWindup() {
+	if c == nil || c.actor == nil {
+		return
+	}
+	c.actor.Mu.Lock()
+	c.actor.SpecialWindupUntil = 0
+	c.actor.SpecialTargetRID = 0
+	c.actor.SpecialAbilityID = 0
+	c.actor.SpecialActionOverride = ""
+	c.actor.SpecialReasonTag = ""
+	c.actor.SpecialClientTraceID = ""
+	c.actor.SpecialChainCount = 0
+	c.actor.Mu.Unlock()
+}
+
+func (c *ClientConn) sendSystemChatMessage(text string) {
+	if c == nil || c.actor == nil || text == "" {
+		return
+	}
+	var w Writer
+	w.WriteUint8(0)
+	w.WriteString("")
+	w.WriteString(text)
+	_ = c.sendPacket(protocol.PChatMessage, w.Bytes())
+}
+
 func (c *ClientConn) handleInventorySwap(ctx context.Context, payload []byte) error {
 	r := NewReader(payload)
 	slotA, err := r.ReadUint8()
@@ -1022,18 +1076,31 @@ func (c *ClientConn) handleInventorySwap(ctx context.Context, payload []byte) er
 		return err
 	}
 
-	if err := c.server.db.SwapInventorySlots(ctx, c.actor.CharacterID, slotA, slotB); err != nil {
-		log.Printf("client: inventory swap %d↔%d: %v", slotA, slotB, err)
+	charID := c.actor.CharacterID
+	weaponSlotAffected := slotA == 0 || slotB == 0
+	now := time.Now().UnixMilli()
+	if weaponSlotAffected && c.inCombat(now) {
+		log.Printf("inventory-swap: char=%s rejected: in combat", charID)
+		c.sendSystemChatMessage("Cannot change weapons in combat.")
+		return c.sendInventory(ctx, charID)
+	}
+
+	swapErr := c.server.db.SwapInventorySlots(ctx, charID, slotA, slotB)
+	if swapErr != nil {
+		log.Printf("client: inventory swap %d↔%d: %v", slotA, slotB, swapErr)
+	} else if weaponSlotAffected {
+		// Weapon changed: pending windup belongs to previous weapon, cancel it.
+		c.clearWeaponWindup()
 	}
 	// Refresh equipped combat stats after any equip change.
-	if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, c.actor.CharacterID); err == nil {
+	if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, charID); err == nil {
 		c.actor.WeaponDamage = wdmg
 		c.actor.CachedArmor = armor
 	}
-	if slotA == 0 || slotB == 0 {
-		c.sendSkillState(ctx)
+	if swapErr == nil && weaponSlotAffected {
+		c.sendSkillSnapshots(ctx)
 	}
-	return c.sendInventory(ctx, c.actor.CharacterID)
+	return c.sendInventory(ctx, charID)
 }
 
 func (c *ClientConn) handleUseItem(ctx context.Context, payload []byte) error {
@@ -1043,7 +1110,27 @@ func (c *ClientConn) handleUseItem(ctx context.Context, payload []byte) error {
 		return err
 	}
 
-	res, err := c.server.db.UseItem(ctx, c.actor.CharacterID, slot)
+	charID := c.actor.CharacterID
+	wouldEquipWeapon := false
+	if slot >= 14 {
+		items, invErr := c.server.db.GetInventory(ctx, charID)
+		if invErr == nil {
+			for _, ci := range items {
+				if ci != nil && ci.Slot == slot && ci.SlotType == 0 && ci.ItemType != 2 {
+					wouldEquipWeapon = true
+					break
+				}
+			}
+		}
+	}
+	now := time.Now().UnixMilli()
+	if wouldEquipWeapon && c.inCombat(now) {
+		log.Printf("use-item: char=%s rejected: weapon change in combat", charID)
+		c.sendSystemChatMessage("Cannot change weapons in combat.")
+		return c.sendInventory(ctx, charID)
+	}
+
+	res, err := c.server.db.UseItem(ctx, charID, slot)
 	if err != nil {
 		log.Printf("client: use item slot %d: %v", slot, err)
 		return nil // not fatal — just ignore
@@ -1070,16 +1157,18 @@ func (c *ClientConn) handleUseItem(ctx context.Context, payload []byte) error {
 
 	// Equip change: refresh cached combat stats.
 	if res.EquipSlot != 0xFF {
-		if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, c.actor.CharacterID); err == nil {
+		if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, charID); err == nil {
 			c.actor.WeaponDamage = wdmg
 			c.actor.CachedArmor = armor
 		}
 		if res.EquipSlot == 0 {
-			c.sendSkillState(ctx)
+			// Weapon changed: pending windup belongs to previous weapon, cancel it.
+			c.clearWeaponWindup()
+			c.sendSkillSnapshots(ctx)
 		}
 	}
 
-	return c.sendInventory(ctx, c.actor.CharacterID)
+	return c.sendInventory(ctx, charID)
 }
 
 func (c *ClientConn) handleRespawnPlayer(ctx context.Context) error {
@@ -1160,6 +1249,12 @@ func (c *ClientConn) sendKnownSpells() {
 	c.actor.Send(buildFramedPacket(protocol.PKnownSpells, w.Bytes()))
 }
 
+// sendSkillSnapshots sends both active hotbar state and active kit pool snapshots.
+func (c *ClientConn) sendSkillSnapshots(ctx context.Context) {
+	c.sendSkillState(ctx)
+	c.sendKitPool(ctx)
+}
+
 // sendSkillState resolves the active player kit snapshot and sends PSkillState.
 func (c *ClientConn) sendSkillState(ctx context.Context) {
 	if c == nil || c.server == nil || c.server.db == nil || c.actor == nil {
@@ -1176,12 +1271,36 @@ func (c *ClientConn) sendSkillState(ctx context.Context) {
 		return
 	}
 
+	progressByAbilityID := make(map[int]*db.CharacterSkillProgress)
+	progressRows, err := c.server.db.ListCharacterSkillProgress(ctx, charID)
+	if err != nil {
+		log.Printf("sendSkillState: load progress failed for char %s: %v", charID, err)
+	} else {
+		for _, row := range progressRows {
+			if row == nil || row.AbilityID <= 0 {
+				continue
+			}
+			progressByAbilityID[row.AbilityID] = row
+		}
+	}
+
+	cachedLevels := make(map[int]int)
+	c.actor.Mu.Lock()
+	for abilityID, level := range c.actor.SkillLevels {
+		cachedLevels[abilityID] = level
+	}
+	c.actor.Mu.Unlock()
+
 	payload := PSkillStatePayload{
-		Version:        1,
+		Version:        2,
 		HasKit:         resolution.HasKit,
+		KitID:          0,
 		KitKey:         resolution.KitKey,
 		KitDisplayName: resolution.KitDisplayName,
 		Abilities:      make([]PSkillStateAbility, 0, len(resolution.Abilities)),
+	}
+	if resolution.KitID > 0 {
+		payload.KitID = uint32(resolution.KitID)
 	}
 
 	for _, ab := range resolution.Abilities {
@@ -1200,12 +1319,69 @@ func (c *ClientConn) sendSkillState(ctx context.Context) {
 		if cdMs > math.MaxUint32 {
 			cdMs = math.MaxUint32
 		}
+
+		maxLevel := 10
+		var abilityTemplate *world.AbilityTemplate
+		if tpl, ok := world.GetAbilityTemplateByID(ab.AbilityID); ok {
+			abilityTemplate = &tpl
+			if tpl.MasteryMaxLevel > 0 {
+				maxLevel = tpl.MasteryMaxLevel
+			}
+		}
+		if maxLevel < 1 {
+			maxLevel = 1
+		}
+		if maxLevel > math.MaxUint8 {
+			maxLevel = math.MaxUint8
+		}
+
+		level := 1
+		if cachedLevel, ok := cachedLevels[ab.AbilityID]; ok && cachedLevel > 0 {
+			level = cachedLevel
+		} else if row := progressByAbilityID[ab.AbilityID]; row != nil && row.Level > 0 {
+			level = row.Level
+		}
+		if level < 1 {
+			level = 1
+		}
+		if level > maxLevel {
+			level = maxLevel
+		}
+		if level > math.MaxUint8 {
+			level = math.MaxUint8
+		}
+
+		var masteryXP uint32
+		if row := progressByAbilityID[ab.AbilityID]; row != nil && row.XP > 0 {
+			if row.XP > math.MaxUint32 {
+				masteryXP = math.MaxUint32
+			} else {
+				masteryXP = uint32(row.XP)
+			}
+		}
+
+		var masteryXPForNext uint32
+		if abilityTemplate != nil && level < maxLevel {
+			nextXP := db.XPRequiredForLevelFromAbility(level+1, abilityTemplate)
+			if nextXP > 0 {
+				if nextXP > math.MaxUint32 {
+					masteryXPForNext = math.MaxUint32
+				} else {
+					masteryXPForNext = uint32(nextXP)
+				}
+			}
+		}
+
 		payload.Abilities = append(payload.Abilities, PSkillStateAbility{
 			SlotIndex:           uint8(ab.SlotIndex),
 			AbilityID:           uint32(ab.AbilityID),
 			AbilityName:         ab.AbilityName,
 			CooldownMs:          uint32(cdMs),
 			CooldownRemainingMs: 0,
+			MasteryLevel:        uint8(level),
+			MasteryXP:           masteryXP,
+			MasteryXPForNext:    masteryXPForNext,
+			MasteryMaxLevel:     uint8(maxLevel),
 		})
 	}
 
@@ -1218,8 +1394,75 @@ func (c *ClientConn) sendSkillState(ctx context.Context) {
 		log.Printf("sendSkillState: send failed for char %s: %v", charID, err)
 		return
 	}
-	log.Printf("sendSkillState: sent for char=%s has_kit=%t kit=%s abilities=%d",
-		charID, payload.HasKit, payload.KitKey, len(payload.Abilities))
+	log.Printf("sendSkillState: sent for char=%s has_kit=%t kit_id=%d kit=%s abilities=%d",
+		charID, payload.HasKit, payload.KitID, payload.KitKey, len(payload.Abilities))
+}
+
+// sendKitPool resolves the active kit identity and sends its full enabled ability pool.
+func (c *ClientConn) sendKitPool(ctx context.Context) {
+	if c == nil || c.server == nil || c.server.db == nil || c.actor == nil {
+		return
+	}
+	charID := c.actor.CharacterID
+	if charID == "" {
+		return
+	}
+
+	resolution, err := c.server.db.ResolveActivePlayerKit(ctx, charID)
+	if err != nil {
+		log.Printf("sendKitPool: resolve failed for char %s: %v", charID, err)
+		return
+	}
+
+	payload := PKitPoolPayload{
+		Version:        1,
+		KitID:          0,
+		KitKey:         "",
+		KitDisplayName: "",
+		Abilities:      nil,
+	}
+	if resolution.HasKit && resolution.KitID > 0 {
+		poolEntries, err := c.server.db.ListEnabledKitPoolAbilities(ctx, resolution.KitID)
+		if err != nil {
+			log.Printf("sendKitPool: list pool failed for char=%s kit_id=%d: %v", charID, resolution.KitID, err)
+			return
+		}
+
+		payload.KitID = uint32(resolution.KitID)
+		payload.KitKey = resolution.KitKey
+		payload.KitDisplayName = resolution.KitDisplayName
+		payload.Abilities = make([]PKitPoolAbility, 0, len(poolEntries))
+		for _, ab := range poolEntries {
+			if ab.AbilityID < 0 {
+				log.Printf("sendKitPool: skip invalid ability_id=%d for char=%s kit_id=%d", ab.AbilityID, charID, resolution.KitID)
+				continue
+			}
+			cdMs := ab.CooldownMs
+			if cdMs < 0 {
+				cdMs = 0
+			}
+			if cdMs > math.MaxUint32 {
+				cdMs = math.MaxUint32
+			}
+			payload.Abilities = append(payload.Abilities, PKitPoolAbility{
+				AbilityID:   uint32(ab.AbilityID),
+				AbilityName: ab.AbilityName,
+				CooldownMs:  uint32(cdMs),
+			})
+		}
+	}
+
+	buf, err := EncodePKitPool(payload)
+	if err != nil {
+		log.Printf("sendKitPool: encode failed for char %s: %v", charID, err)
+		return
+	}
+	if err := c.sendPacket(protocol.PKitPool, buf); err != nil {
+		log.Printf("sendKitPool: send failed for char %s: %v", charID, err)
+		return
+	}
+	log.Printf("sendKitPool: sent for char=%s kit_id=%d kit=%s abilities=%d",
+		charID, payload.KitID, payload.KitKey, len(payload.Abilities))
 }
 
 func (c *ClientConn) handleCastSpell(ctx context.Context, payload []byte) error {

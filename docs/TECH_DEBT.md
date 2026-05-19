@@ -91,3 +91,39 @@ Reportar:
 - Path completo do arquivo criado
 - Confirmação que conteúdo bate exatamente com o pedido
 - Sem modificar outros arquivos
+
+## 11. Categorias de skill nao-damage sem runtime
+
+Schema de `ability_templates` suporta categories: `damage`, `heal`, `buff`, `debuff`, `mobility`, `utility`, `summon`.
+Mas o runtime de combate so processa `damage` hoje.
+
+Quando a primeira skill de outra categoria for criada, o runtime precisa ser estendido:
+- `heal`: aplicar cura no target (nao dano negativo)
+- `buff`: aplicar status effect com duracao no caster/ally
+- `debuff`: status effect no target
+- `mobility`: movimento fisico (dash/charge) com regras de cancelamento
+- `utility`: efeitos diversos (taunt, interrupt, etc)
+- `summon`: spawn de pet/companion temporario
+
+Mastery tambem precisa adaptar semantica de `mastery_primary_bonus_per_lvl` por categoria
+(dano, cura, duracao/potencia, etc).
+
+## 12. Ability templates editadas via GUE nao recarregam runtime
+
+Hoje, mudancas em `ability_templates` via GUE exigem restart do server para recarregar
+o catalogo runtime.
+
+Quando edicao de skills em tempo de execucao virar frequente, precisamos de um mecanismo
+seguro de reload (manual trigger, versionamento ou hot-reload controlado) para evitar
+divergencia entre DB e runtime ativo.
+
+## 13. Schema de ability_templates duplicado entre server e GUE
+
+Server cria tabela via `migrateV19` + `migrateV30`. GUE tambem cria via
+`EnsureTables` em `combat_abilities.cpp`. Quando schema mudar (novos campos),
+precisa atualizar 2 lugares - risco de divergencia.
+
+Decidir futuro:
+- GUE deixa de criar tabela (assume que server ja criou) - mais simples
+- GUE e server compartilham migrations via arquivo SQL unico - mais robusto
+- Manter status quo, aceitar duplicacao consciente
