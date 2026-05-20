@@ -77,7 +77,6 @@ func (w *World) NextRuntimeID() uint32 {
 
 // SpawnNPC creates a static NPC actor and registers it in the given area.
 func (w *World) SpawnNPC(area *Area, name, race, class string, level int, x, y, z, yaw float32) *Actor {
-	hp := int32(50 + level*10)
 	npc := NewActor()
 	npc.RuntimeID     = w.NextRuntimeID()
 	npc.Name          = name
@@ -87,15 +86,23 @@ func (w *World) SpawnNPC(area *Area, name, race, class string, level int, x, y, 
 	npc.X, npc.Y, npc.Z = x, y, z
 	npc.Yaw           = yaw
 	npc.AreaName      = area.Name
-	npc.Health        = hp
-	npc.HealthMax     = hp
 	npc.IsNPC         = true
 	npc.Aggressiveness  = 1   // defensive: fights back when attacked
 	npc.AggressiveRange = 10.0
 	npc.AttackRange     = 2.0 // tight melee; override after spawn for ranged NPCs
 	npc.Radius          = 0.4
-	npc.Strength      = int32(level) * 3
 	npc.WeaponDamage  = int32(level) * 2
+	base := int32(level) * 3
+	npc.SetPrimaryStats(PrimaryStats{
+		STR: base,
+		DEX: base,
+		INT: base,
+		WIS: base,
+		PER: base,
+	})
+	RecomputeDerivedStats(npc)
+	npc.Health = npc.HealthMax
+	npc.Energy = npc.EnergyMax
 	npc.SpawnX, npc.SpawnY, npc.SpawnZ, npc.SpawnYaw = x, y, z, yaw
 	npc.SpawnAreaName = area.Name
 	npc.RespawnDelay  = 30_000 // 30 s

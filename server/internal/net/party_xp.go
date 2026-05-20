@@ -164,7 +164,7 @@ func (c *ClientConn) awardXPGain(ctx context.Context, gain int64) error {
 	curLevel := int(c.actor.Level)
 	c.actor.Mu.Unlock()
 
-	newXP, newLevel, leveled := world.ProcessXP(curXP, curLevel, gain)
+	newXP, newLevel, leveled := world.ProcessXPSinceLevel(curXP, curLevel, gain)
 	hpMax, epMax, strength := world.StatsByLevel(newLevel)
 
 	if err := c.server.db.SaveXP(ctx, c.actor.CharacterID, newXP, newLevel, hpMax, epMax); err != nil {
@@ -182,6 +182,14 @@ func (c *ClientConn) awardXPGain(ctx context.Context, gain int64) error {
 		c.actor.Strength = strength
 	}
 	c.actor.Mu.Unlock()
+	if leveled {
+		c.actor.SetPrimaryStats(c.primaryStatsForLevel(ctx, newLevel))
+		world.RecomputeDerivedStats(c.actor)
+		c.actor.Mu.Lock()
+		c.actor.Health = c.actor.HealthMax
+		c.actor.Energy = c.actor.EnergyMax
+		c.actor.Mu.Unlock()
+	}
 
 	return c.sendXPUpdate()
 }

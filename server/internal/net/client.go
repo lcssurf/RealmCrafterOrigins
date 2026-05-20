@@ -39,6 +39,45 @@ const (
 	weaponSwapCombatLockWindowMs = int64(5_000)
 )
 
+func fallbackPrimaryStatsForLevel(level int) world.PrimaryStats {
+	if level < 1 {
+		level = 1
+	}
+	base := int32(level) * 3
+	return world.PrimaryStats{
+		STR: base,
+		DEX: base,
+		INT: base,
+		WIS: base,
+		PER: base,
+	}
+}
+
+func (c *ClientConn) primaryStatsForLevel(ctx context.Context, level int) world.PrimaryStats {
+	fallback := fallbackPrimaryStatsForLevel(level)
+	if c == nil || c.server == nil || c.server.db == nil {
+		return fallback
+	}
+
+	row, err := c.server.db.GetCharacterPrimaryStatsForLevel(ctx, level)
+	if err != nil {
+		log.Printf("stats: load primary stats failed level=%d: %v (using fallback)", level, err)
+		return fallback
+	}
+	if row == nil {
+		log.Printf("stats: missing primary stats row level=%d (using fallback)", level)
+		return fallback
+	}
+
+	return world.PrimaryStats{
+		STR: row.Strength,
+		DEX: row.Dexterity,
+		INT: row.Intelligence,
+		WIS: row.Wisdom,
+		PER: row.Perception,
+	}
+}
+
 // ClientConn manages a single player's QUIC connection through a state machine:
 //
 //	StateConnected → StateAuthenticated → StateInGame
@@ -412,6 +451,8 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 		actor.WeaponDamage = wdmg
 		actor.CachedArmor = armor
 	}
+	actor.SetPrimaryStats(c.primaryStatsForLevel(ctx, int(actor.Level)))
+	world.RecomputeDerivedStats(actor)
 	actor.SpellCooldowns = make(map[uint16]int64)
 	if progressRows, err := c.server.db.ListCharacterSkillProgress(ctx, char.ID); err == nil {
 		actor.Mu.Lock()
@@ -966,7 +1007,13 @@ func (c *ClientConn) sendXPUpdate() error {
 	hpMax := c.actor.HealthMax
 	c.actor.Mu.Unlock()
 
-	xpNext := world.XPToLevel(int(level) + 1)
+	xpNext := int64(0)
+	if int(level) < world.MaxLevel {
+		xpNext = world.XPToLevel(int(level)+1) - world.XPToLevel(int(level))
+		if xpNext < 0 {
+			xpNext = 0
+		}
+	}
 
 	var w Writer
 	w.WriteUint16(level)
@@ -1094,8 +1141,13 @@ func (c *ClientConn) handleInventorySwap(ctx context.Context, payload []byte) er
 	}
 	// Refresh equipped combat stats after any equip change.
 	if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, charID); err == nil {
+		c.actor.Mu.Lock()
 		c.actor.WeaponDamage = wdmg
 		c.actor.CachedArmor = armor
+		c.actor.Mu.Unlock()
+		if swapErr == nil && weaponSlotAffected {
+			world.RecomputeDerivedStats(c.actor)
+		}
 	}
 	if swapErr == nil && weaponSlotAffected {
 		c.sendSkillSnapshots(ctx)
@@ -1158,8 +1210,11 @@ func (c *ClientConn) handleUseItem(ctx context.Context, payload []byte) error {
 	// Equip change: refresh cached combat stats.
 	if res.EquipSlot != 0xFF {
 		if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, charID); err == nil {
+			c.actor.Mu.Lock()
 			c.actor.WeaponDamage = wdmg
 			c.actor.CachedArmor = armor
+			c.actor.Mu.Unlock()
+			world.RecomputeDerivedStats(c.actor)
 		}
 		if res.EquipSlot == 0 {
 			// Weapon changed: pending windup belongs to previous weapon, cancel it.
@@ -1369,12 +1424,14 @@ func (c *ClientConn) sendSkillState(ctx context.Context) {
 
 		var masteryXPForNext uint32
 		if abilityTemplate != nil && level < maxLevel {
-			nextXP := db.XPRequiredForLevelFromAbility(level+1, abilityTemplate)
-			if nextXP > 0 {
-				if nextXP > math.MaxUint32 {
+			curXPRequired := db.XPRequiredForLevelFromAbility(level, abilityTemplate)
+			nextXPRequired := db.XPRequiredForLevelFromAbility(level+1, abilityTemplate)
+			deltaXP := nextXPRequired - curXPRequired
+			if deltaXP > 0 {
+				if deltaXP > math.MaxUint32 {
 					masteryXPForNext = math.MaxUint32
 				} else {
-					masteryXPForNext = uint32(nextXP)
+					masteryXPForNext = uint32(deltaXP)
 				}
 			}
 		}

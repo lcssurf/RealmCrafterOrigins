@@ -37,20 +37,6 @@ func (s *Server) grantPlayerSkillXP(charID string, abilityID int) {
 	if xpPerUse <= 0 {
 		xpPerUse = 10
 	}
-	progression := &db.SkillProgressionConfig{
-		MaxLevel:    ability.MasteryMaxLevel,
-		XPCurveType: ability.MasteryXPCurveType,
-		XPCurveBase: ability.MasteryXPCurveBase,
-	}
-	if progression.MaxLevel <= 0 {
-		progression.MaxLevel = 10
-	}
-	if progression.XPCurveBase <= 0 {
-		progression.XPCurveBase = 100
-	}
-	if strings.TrimSpace(progression.XPCurveType) == "" {
-		progression.XPCurveType = "linear"
-	}
 
 	ctx := context.Background()
 
@@ -72,15 +58,12 @@ func (s *Server) grantPlayerSkillXP(charID string, abilityID int) {
 	if oldLevel < 1 {
 		oldLevel = 1
 	}
-
-	progress.XP += xpPerUse
-	if progress.XP < 0 {
-		progress.XP = 0
-	}
-	progress.Level = db.CalculateLevelFromXP(progress.XP, progression)
-	if progress.Level < 1 {
-		progress.Level = 1
-	}
+	progress.XP, progress.Level, _ = db.ProcessMasteryXPSinceLevel(
+		progress.XP,
+		progress.Level,
+		xpPerUse,
+		&ability,
+	)
 
 	if err := s.db.UpsertCharacterSkillProgress(ctx, progress); err != nil {
 		log.Printf("mastery: upsert failed char=%s ability=%d err=%v", charID, abilityID, err)

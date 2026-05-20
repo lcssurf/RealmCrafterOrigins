@@ -104,6 +104,36 @@ type SkillProgressionConfig struct {
 	CooldownReduxPerLevel float64
 }
 
+// CharacterProgressionConfig defines global character level progression rules.
+// Singleton: there should only be one row (id=1).
+type CharacterProgressionConfig struct {
+	ID            int
+	MaxLevel      int
+	XPCurveType   string
+	XPCurveBase   int
+	XPCurveFactor float64
+}
+
+// CharacterPrimaryStatsLevel stores the primary stats granted at a given level.
+type CharacterPrimaryStatsLevel struct {
+	Level        int
+	Strength     int32
+	Dexterity    int32
+	Intelligence int32
+	Wisdom       int32
+	Perception   int32
+}
+
+// KillXPScalingConfig defines kill XP scaling knobs.
+// Singleton: there should only be one row (id=1).
+type KillXPScalingConfig struct {
+	ID                   int
+	BaseXPPerNPCLevel    int
+	LevelDiffCoefficient float64
+	MultiplierMin        float64
+	MultiplierMax        float64
+}
+
 // PlayerKitAbilityEntry is one ability slot in an active kit.
 type PlayerKitAbilityEntry struct {
 	SlotIndex   int
@@ -362,6 +392,8 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV29(ctx)
 	d.migrateV30(ctx)
 	d.migrateV31(ctx)
+	d.migrateV32(ctx)
+	d.migrateV33(ctx)
 
 	return d, nil
 }
@@ -1197,6 +1229,85 @@ func (d *DB) SeedDefaultSkillProgressionConfig(ctx context.Context) error {
 		return fmt.Errorf("seed skill_progression_config insert: %w", err)
 	}
 	log.Printf("seed: skill progression config seeded (defaults)")
+	return nil
+}
+
+// SeedDefaultCharacterProgressionConfig inserts default character progression
+// config if none exists yet. Existing admin-edited config is preserved.
+func (d *DB) SeedDefaultCharacterProgressionConfig(ctx context.Context) error {
+	var count int
+	if err := d.db.QueryRowContext(ctx, d.q(`
+		SELECT COUNT(*)
+		  FROM character_progression_config`)).Scan(&count); err != nil {
+		return fmt.Errorf("seed character_progression_config check: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	if _, err := d.db.ExecContext(ctx, d.q(`
+		INSERT INTO character_progression_config
+		(id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor)
+		VALUES (1, ?, ?, ?, ?)`),
+		60, "quadratic", 100, 1.3); err != nil {
+		return fmt.Errorf("seed character_progression_config insert: %w", err)
+	}
+	log.Printf("seed: character progression config seeded (defaults)")
+	return nil
+}
+
+// SeedDefaultCharacterPrimaryStatsPerLevel inserts default primary stat rows
+// (levels 1..60) if table is empty. Existing rows are preserved.
+func (d *DB) SeedDefaultCharacterPrimaryStatsPerLevel(ctx context.Context) error {
+	var count int
+	if err := d.db.QueryRowContext(ctx, d.q(`
+		SELECT COUNT(*)
+		  FROM character_primary_stats_per_level`)).Scan(&count); err != nil {
+		return fmt.Errorf("seed character_primary_stats_per_level check: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	for level := 1; level <= 60; level++ {
+		stats := &CharacterPrimaryStatsLevel{
+			Level:        level,
+			Strength:     int32(level * 3),
+			Dexterity:    int32(level * 3),
+			Intelligence: int32(level * 3),
+			Wisdom:       int32(level * 3),
+			Perception:   int32(level * 3),
+		}
+		if err := d.UpsertCharacterPrimaryStatsLevel(ctx, stats); err != nil {
+			return fmt.Errorf("seed character_primary_stats_per_level row %d: %w", level, err)
+		}
+	}
+
+	log.Printf("seed: character primary stats per level seeded (defaults)")
+	return nil
+}
+
+// SeedDefaultKillXPScalingConfig inserts default kill XP scaling config if
+// none exists yet. Existing admin-edited config is preserved.
+func (d *DB) SeedDefaultKillXPScalingConfig(ctx context.Context) error {
+	var count int
+	if err := d.db.QueryRowContext(ctx, d.q(`
+		SELECT COUNT(*)
+		  FROM kill_xp_scaling_config`)).Scan(&count); err != nil {
+		return fmt.Errorf("seed kill_xp_scaling_config check: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	if _, err := d.db.ExecContext(ctx, d.q(`
+		INSERT INTO kill_xp_scaling_config
+		(id, base_xp_per_npc_level, level_diff_coefficient, multiplier_min, multiplier_max)
+		VALUES (1, ?, ?, ?, ?)`),
+		25, 0.1, 0.0, 2.0); err != nil {
+		return fmt.Errorf("seed kill_xp_scaling_config insert: %w", err)
+	}
+	log.Printf("seed: kill xp scaling config seeded (defaults)")
 	return nil
 }
 
@@ -3345,7 +3456,7 @@ func (d *DB) TurnInQuest(ctx context.Context, charID string, questID int) (*Ques
 	newLevel := curLevel
 	leveled := false
 	if totalXP > 0 {
-		newXP, newLevel, leveled = world.ProcessXP(curXP, curLevel, totalXP)
+		newXP, newLevel, leveled = world.ProcessXPSinceLevel(curXP, curLevel, totalXP)
 	}
 	hpMax, epMax, strength := world.StatsByLevel(newLevel)
 
@@ -4546,6 +4657,242 @@ func isSQLiteBusyError(err error) bool {
 		strings.Contains(msgLower, "database is locked")
 }
 
+// GetCharacterProgressionConfig returns the singleton character progression
+// config. If none exists, seeds defaults and returns the new row.
+func (d *DB) GetCharacterProgressionConfig(ctx context.Context) (*CharacterProgressionConfig, error) {
+	load := func() (*CharacterProgressionConfig, error) {
+		cfg := &CharacterProgressionConfig{}
+		err := d.db.QueryRowContext(ctx, d.q(`
+			SELECT id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor
+			  FROM character_progression_config
+			 ORDER BY id
+			 LIMIT 1`)).
+			Scan(&cfg.ID, &cfg.MaxLevel, &cfg.XPCurveType, &cfg.XPCurveBase, &cfg.XPCurveFactor)
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return cfg, nil
+	}
+
+	cfg, err := load()
+	if err != nil {
+		return nil, fmt.Errorf("db: GetCharacterProgressionConfig: %w", err)
+	}
+	if cfg != nil {
+		return cfg, nil
+	}
+
+	if err := d.SeedDefaultCharacterProgressionConfig(ctx); err != nil {
+		return nil, err
+	}
+	cfg, err = load()
+	if err != nil {
+		return nil, fmt.Errorf("db: GetCharacterProgressionConfig: %w", err)
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("db: GetCharacterProgressionConfig: config row missing after seed")
+	}
+	return cfg, nil
+}
+
+// UpdateCharacterProgressionConfig updates the singleton character progression
+// config (id=1).
+func (d *DB) UpdateCharacterProgressionConfig(ctx context.Context, c *CharacterProgressionConfig) error {
+	if c == nil {
+		return fmt.Errorf("db: UpdateCharacterProgressionConfig: config is nil")
+	}
+	if c.MaxLevel < 1 {
+		return fmt.Errorf("db: UpdateCharacterProgressionConfig: max_level must be >= 1")
+	}
+	if c.XPCurveBase <= 0 {
+		return fmt.Errorf("db: UpdateCharacterProgressionConfig: xp_curve_base must be > 0")
+	}
+	if c.XPCurveFactor <= 0 {
+		return fmt.Errorf("db: UpdateCharacterProgressionConfig: xp_curve_factor must be > 0")
+	}
+
+	curveType := strings.ToLower(strings.TrimSpace(c.XPCurveType))
+	if curveType == "" {
+		curveType = "quadratic"
+	}
+	switch curveType {
+	case "quadratic", "linear", "exponential":
+	default:
+		return fmt.Errorf("db: UpdateCharacterProgressionConfig: unsupported xp_curve_type %q", c.XPCurveType)
+	}
+
+	_, err := d.db.ExecContext(ctx, d.q(`
+		INSERT INTO character_progression_config
+		    (id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor)
+		VALUES (1, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+		    max_level = excluded.max_level,
+		    xp_curve_type = excluded.xp_curve_type,
+		    xp_curve_base = excluded.xp_curve_base,
+		    xp_curve_factor = excluded.xp_curve_factor`),
+		c.MaxLevel, curveType, c.XPCurveBase, c.XPCurveFactor)
+	if err != nil {
+		return fmt.Errorf("db: UpdateCharacterProgressionConfig: %w", err)
+	}
+	return nil
+}
+
+// GetCharacterPrimaryStatsForLevel returns primary stat values for one level.
+// Returns nil when no row exists for that level.
+func (d *DB) GetCharacterPrimaryStatsForLevel(ctx context.Context, level int) (*CharacterPrimaryStatsLevel, error) {
+	if level < 1 {
+		return nil, fmt.Errorf("db: GetCharacterPrimaryStatsForLevel: level must be >= 1")
+	}
+
+	row := &CharacterPrimaryStatsLevel{}
+	err := d.db.QueryRowContext(ctx, d.q(`
+		SELECT level, strength, dexterity, intelligence, wisdom, perception
+		  FROM character_primary_stats_per_level
+		 WHERE level = ?`), level).
+		Scan(&row.Level, &row.Strength, &row.Dexterity, &row.Intelligence, &row.Wisdom, &row.Perception)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: GetCharacterPrimaryStatsForLevel: %w", err)
+	}
+	return row, nil
+}
+
+// ListCharacterPrimaryStatsPerLevel returns all configured level rows ordered
+// by level ascending.
+func (d *DB) ListCharacterPrimaryStatsPerLevel(ctx context.Context) ([]*CharacterPrimaryStatsLevel, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT level, strength, dexterity, intelligence, wisdom, perception
+		  FROM character_primary_stats_per_level
+		 ORDER BY level`))
+	if err != nil {
+		return nil, fmt.Errorf("db: ListCharacterPrimaryStatsPerLevel: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*CharacterPrimaryStatsLevel
+	for rows.Next() {
+		entry := &CharacterPrimaryStatsLevel{}
+		if err := rows.Scan(
+			&entry.Level, &entry.Strength, &entry.Dexterity,
+			&entry.Intelligence, &entry.Wisdom, &entry.Perception,
+		); err != nil {
+			return nil, fmt.Errorf("db: ListCharacterPrimaryStatsPerLevel scan: %w", err)
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: ListCharacterPrimaryStatsPerLevel rows: %w", err)
+	}
+	return out, nil
+}
+
+// UpsertCharacterPrimaryStatsLevel inserts or updates one level row.
+func (d *DB) UpsertCharacterPrimaryStatsLevel(ctx context.Context, s *CharacterPrimaryStatsLevel) error {
+	if s == nil {
+		return fmt.Errorf("db: UpsertCharacterPrimaryStatsLevel: stats is nil")
+	}
+	if s.Level < 1 {
+		return fmt.Errorf("db: UpsertCharacterPrimaryStatsLevel: level must be >= 1")
+	}
+	if s.Strength < 0 || s.Dexterity < 0 || s.Intelligence < 0 || s.Wisdom < 0 || s.Perception < 0 {
+		return fmt.Errorf("db: UpsertCharacterPrimaryStatsLevel: stats must be >= 0")
+	}
+
+	_, err := d.db.ExecContext(ctx, d.q(`
+		INSERT INTO character_primary_stats_per_level
+		    (level, strength, dexterity, intelligence, wisdom, perception)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(level) DO UPDATE SET
+		    strength = excluded.strength,
+		    dexterity = excluded.dexterity,
+		    intelligence = excluded.intelligence,
+		    wisdom = excluded.wisdom,
+		    perception = excluded.perception`),
+		s.Level, s.Strength, s.Dexterity, s.Intelligence, s.Wisdom, s.Perception)
+	if err != nil {
+		return fmt.Errorf("db: UpsertCharacterPrimaryStatsLevel: %w", err)
+	}
+	return nil
+}
+
+// GetKillXPScalingConfig returns the singleton kill XP scaling config.
+// If none exists, seeds defaults and returns the new row.
+func (d *DB) GetKillXPScalingConfig(ctx context.Context) (*KillXPScalingConfig, error) {
+	load := func() (*KillXPScalingConfig, error) {
+		cfg := &KillXPScalingConfig{}
+		err := d.db.QueryRowContext(ctx, d.q(`
+			SELECT id, base_xp_per_npc_level, level_diff_coefficient, multiplier_min, multiplier_max
+			  FROM kill_xp_scaling_config
+			 ORDER BY id
+			 LIMIT 1`)).
+			Scan(&cfg.ID, &cfg.BaseXPPerNPCLevel, &cfg.LevelDiffCoefficient, &cfg.MultiplierMin, &cfg.MultiplierMax)
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return cfg, nil
+	}
+
+	cfg, err := load()
+	if err != nil {
+		return nil, fmt.Errorf("db: GetKillXPScalingConfig: %w", err)
+	}
+	if cfg != nil {
+		return cfg, nil
+	}
+
+	if err := d.SeedDefaultKillXPScalingConfig(ctx); err != nil {
+		return nil, err
+	}
+	cfg, err = load()
+	if err != nil {
+		return nil, fmt.Errorf("db: GetKillXPScalingConfig: %w", err)
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("db: GetKillXPScalingConfig: config row missing after seed")
+	}
+	return cfg, nil
+}
+
+// UpdateKillXPScalingConfig updates the singleton kill XP scaling config
+// (id=1).
+func (d *DB) UpdateKillXPScalingConfig(ctx context.Context, c *KillXPScalingConfig) error {
+	if c == nil {
+		return fmt.Errorf("db: UpdateKillXPScalingConfig: config is nil")
+	}
+	if c.BaseXPPerNPCLevel < 0 {
+		return fmt.Errorf("db: UpdateKillXPScalingConfig: base_xp_per_npc_level must be >= 0")
+	}
+	if c.MultiplierMin < 0 {
+		return fmt.Errorf("db: UpdateKillXPScalingConfig: multiplier_min must be >= 0")
+	}
+	if c.MultiplierMax < c.MultiplierMin {
+		return fmt.Errorf("db: UpdateKillXPScalingConfig: multiplier_max must be >= multiplier_min")
+	}
+
+	_, err := d.db.ExecContext(ctx, d.q(`
+		INSERT INTO kill_xp_scaling_config
+		    (id, base_xp_per_npc_level, level_diff_coefficient, multiplier_min, multiplier_max)
+		VALUES (1, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+		    base_xp_per_npc_level = excluded.base_xp_per_npc_level,
+		    level_diff_coefficient = excluded.level_diff_coefficient,
+		    multiplier_min = excluded.multiplier_min,
+		    multiplier_max = excluded.multiplier_max`),
+		c.BaseXPPerNPCLevel, c.LevelDiffCoefficient, c.MultiplierMin, c.MultiplierMax)
+	if err != nil {
+		return fmt.Errorf("db: UpdateKillXPScalingConfig: %w", err)
+	}
+	return nil
+}
+
 // GetSkillProgressionConfig returns the singleton config.
 // If none exists, creates default and returns it.
 func (d *DB) GetSkillProgressionConfig(ctx context.Context) (*SkillProgressionConfig, error) {
@@ -4670,6 +5017,51 @@ func XPRequiredForLevelFromAbility(level int, ability *world.AbilityTemplate) in
 	default: // linear + fallback
 		return base * (level - 1)
 	}
+}
+
+// ProcessMasteryXPSinceLevel applies XP gain when mastery XP is stored as
+// "since last level". Returns (newXP, newLevel, leveled).
+func ProcessMasteryXPSinceLevel(currentXP int, currentLevel int, gain int, ability *world.AbilityTemplate) (newXP int, newLevel int, leveled bool) {
+	if currentLevel < 1 {
+		currentLevel = 1
+	}
+	if currentXP < 0 {
+		currentXP = 0
+	}
+	if gain <= 0 {
+		return currentXP, currentLevel, false
+	}
+
+	maxLevel := 10
+	if ability != nil && ability.MasteryMaxLevel > 0 {
+		maxLevel = ability.MasteryMaxLevel
+	}
+	if maxLevel < 1 {
+		maxLevel = 1
+	}
+
+	newXP = currentXP + gain
+	newLevel = currentLevel
+
+	for newLevel < maxLevel {
+		curThreshold := XPRequiredForLevelFromAbility(newLevel, ability)
+		nextThreshold := XPRequiredForLevelFromAbility(newLevel+1, ability)
+		delta := nextThreshold - curThreshold
+		if delta <= 0 {
+			break
+		}
+		if newXP < delta {
+			break
+		}
+		newXP -= delta
+		newLevel++
+		leveled = true
+	}
+
+	if newXP < 0 {
+		newXP = 0
+	}
+	return
 }
 
 // CalculateLevelFromXP returns the mastery level for the provided cumulative XP.
@@ -6590,6 +6982,212 @@ func (d *DB) migrateV31(ctx context.Context) {
 		 WHERE description IS NULL`); err != nil {
 		log.Printf("migrateV31: normalize description failed: %v", err)
 	}
+}
+
+// migrateV32 creates character progression/stats/xp scaling config tables.
+func (d *DB) migrateV32(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+
+	if d.driver == "postgres" {
+		exec(`CREATE TABLE IF NOT EXISTS character_progression_config (
+			id              SERIAL PRIMARY KEY,
+			max_level       INTEGER NOT NULL DEFAULT 60,
+			xp_curve_type   TEXT    NOT NULL DEFAULT 'quadratic',
+			xp_curve_base   INTEGER NOT NULL DEFAULT 100,
+			xp_curve_factor REAL    NOT NULL DEFAULT 1.3
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS character_primary_stats_per_level (
+			level        INTEGER PRIMARY KEY,
+			strength     INTEGER NOT NULL,
+			dexterity    INTEGER NOT NULL,
+			intelligence INTEGER NOT NULL,
+			wisdom       INTEGER NOT NULL,
+			perception   INTEGER NOT NULL
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS kill_xp_scaling_config (
+			id                     SERIAL PRIMARY KEY,
+			base_xp_per_npc_level  INTEGER NOT NULL DEFAULT 25,
+			level_diff_coefficient REAL    NOT NULL DEFAULT 0.1,
+			multiplier_min         REAL    NOT NULL DEFAULT 0.0,
+			multiplier_max         REAL    NOT NULL DEFAULT 2.0
+		)`)
+	} else {
+		exec(`CREATE TABLE IF NOT EXISTS character_progression_config (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			max_level       INTEGER NOT NULL DEFAULT 60,
+			xp_curve_type   TEXT    NOT NULL DEFAULT 'quadratic',
+			xp_curve_base   INTEGER NOT NULL DEFAULT 100,
+			xp_curve_factor REAL    NOT NULL DEFAULT 1.3
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS character_primary_stats_per_level (
+			level        INTEGER PRIMARY KEY,
+			strength     INTEGER NOT NULL,
+			dexterity    INTEGER NOT NULL,
+			intelligence INTEGER NOT NULL,
+			wisdom       INTEGER NOT NULL,
+			perception   INTEGER NOT NULL
+		)`)
+		exec(`CREATE TABLE IF NOT EXISTS kill_xp_scaling_config (
+			id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+			base_xp_per_npc_level  INTEGER NOT NULL DEFAULT 25,
+			level_diff_coefficient REAL    NOT NULL DEFAULT 0.1,
+			multiplier_min         REAL    NOT NULL DEFAULT 0.0,
+			multiplier_max         REAL    NOT NULL DEFAULT 2.0
+		)`)
+	}
+}
+
+// migrateV33 converts character and mastery XP storage from cumulative totals
+// to "XP since last level" and marks completion in meta.
+func (d *DB) migrateV33(ctx context.Context) {
+	const conversionDoneKey = "migration_v33_xp_since_level_done"
+
+	if _, err := d.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		log.Printf("migrateV33: ensure meta table failed: %v", err)
+		return
+	}
+
+	var doneValue string
+	doneErr := d.db.QueryRowContext(ctx, d.q(`SELECT value FROM meta WHERE key = ?`), conversionDoneKey).Scan(&doneValue)
+	if doneErr != nil && doneErr != sql.ErrNoRows {
+		log.Printf("migrateV33: read meta flag failed: %v", doneErr)
+		return
+	}
+	if doneErr == nil && strings.TrimSpace(doneValue) == "1" {
+		return
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("migrateV33: begin tx failed: %v", err)
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	charUpdates := 0
+	charRows, err := tx.QueryContext(ctx, d.q(`SELECT id, xp, level FROM characters`))
+	if err != nil {
+		log.Printf("migrateV33: query characters failed: %v", err)
+		return
+	}
+	for charRows.Next() {
+		var (
+			charID string
+			xp     int64
+			level  int
+		)
+		if err := charRows.Scan(&charID, &xp, &level); err != nil {
+			_ = charRows.Close()
+			log.Printf("migrateV33: scan character row failed: %v", err)
+			return
+		}
+		if level < 1 {
+			level = 1
+		}
+		threshold := world.XPToLevel(level)
+		xpSinceLevel := xp - threshold
+		if xpSinceLevel < 0 {
+			xpSinceLevel = 0
+		}
+		if xpSinceLevel == xp {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, d.q(`UPDATE characters SET xp = ? WHERE id = ?`), xpSinceLevel, charID); err != nil {
+			_ = charRows.Close()
+			log.Printf("migrateV33: update characters xp failed (char=%s): %v", charID, err)
+			return
+		}
+		charUpdates++
+	}
+	if err := charRows.Err(); err != nil {
+		_ = charRows.Close()
+		log.Printf("migrateV33: iterate characters failed: %v", err)
+		return
+	}
+	_ = charRows.Close()
+
+	masteryUpdates := 0
+	masteryRows, err := tx.QueryContext(ctx, d.q(`
+		SELECT csp.id, csp.xp, csp.level,
+		       at.mastery_xp_curve_type,
+		       at.mastery_xp_curve_base
+		  FROM character_skill_progress csp
+		  LEFT JOIN ability_templates at ON at.id = csp.ability_id`))
+	if err != nil {
+		log.Printf("migrateV33: query character_skill_progress failed: %v", err)
+		return
+	}
+	for masteryRows.Next() {
+		var (
+			rowID     int
+			xp        int64
+			level     int
+			curveType sql.NullString
+			curveBase sql.NullInt64
+		)
+		if err := masteryRows.Scan(&rowID, &xp, &level, &curveType, &curveBase); err != nil {
+			_ = masteryRows.Close()
+			log.Printf("migrateV33: scan mastery row failed: %v", err)
+			return
+		}
+		if level < 1 {
+			level = 1
+		}
+		ability := &world.AbilityTemplate{
+			MasteryXPCurveType: "linear",
+			MasteryXPCurveBase: 100,
+		}
+		if curveType.Valid {
+			s := strings.ToLower(strings.TrimSpace(curveType.String))
+			if s != "" {
+				ability.MasteryXPCurveType = s
+			}
+		}
+		if curveBase.Valid && curveBase.Int64 > 0 {
+			ability.MasteryXPCurveBase = int(curveBase.Int64)
+		}
+
+		threshold := int64(XPRequiredForLevelFromAbility(level, ability))
+		xpSinceLevel := xp - threshold
+		if xpSinceLevel < 0 {
+			xpSinceLevel = 0
+		}
+		if xpSinceLevel == xp {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, d.q(`UPDATE character_skill_progress SET xp = ? WHERE id = ?`), xpSinceLevel, rowID); err != nil {
+			_ = masteryRows.Close()
+			log.Printf("migrateV33: update mastery xp failed (row=%d): %v", rowID, err)
+			return
+		}
+		masteryUpdates++
+	}
+	if err := masteryRows.Err(); err != nil {
+		_ = masteryRows.Close()
+		log.Printf("migrateV33: iterate character_skill_progress failed: %v", err)
+		return
+	}
+	_ = masteryRows.Close()
+
+	if _, err := tx.ExecContext(ctx, d.q(`
+		INSERT INTO meta (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
+		conversionDoneKey, "1"); err != nil {
+		log.Printf("migrateV33: write meta flag failed: %v", err)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("migrateV33: commit failed: %v", err)
+		return
+	}
+
+	log.Printf("migrateV33: converted XP storage to since-level (characters=%d mastery_rows=%d)", charUpdates, masteryUpdates)
 }
 
 // LoadWorldObjects returns all placed static world objects from zone_scenery with resolved model paths.

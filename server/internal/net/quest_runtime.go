@@ -361,6 +361,7 @@ func (c *ClientConn) applyQuestTurnInResult(ctx context.Context, turnIn *db.Ques
 		return
 	}
 
+	leveled := false
 	c.actor.Mu.Lock()
 	if turnIn.GoldChanged {
 		c.actor.Gold = turnIn.NewGold
@@ -369,6 +370,7 @@ func (c *ClientConn) applyQuestTurnInResult(ctx context.Context, turnIn *db.Ques
 		c.actor.XP = turnIn.NewXP
 		c.actor.Level = uint16(turnIn.NewLevel)
 		if turnIn.Leveled {
+			leveled = true
 			c.actor.HealthMax = turnIn.NewHPMax
 			c.actor.EnergyMax = turnIn.NewEPMax
 			c.actor.Health = turnIn.NewHPMax
@@ -377,6 +379,14 @@ func (c *ClientConn) applyQuestTurnInResult(ctx context.Context, turnIn *db.Ques
 		}
 	}
 	c.actor.Mu.Unlock()
+	if leveled {
+		c.actor.SetPrimaryStats(c.primaryStatsForLevel(ctx, turnIn.NewLevel))
+		world.RecomputeDerivedStats(c.actor)
+		c.actor.Mu.Lock()
+		c.actor.Health = c.actor.HealthMax
+		c.actor.Energy = c.actor.EnergyMax
+		c.actor.Mu.Unlock()
+	}
 
 	if turnIn.ItemsChanged {
 		if err := c.sendInventory(ctx, c.actor.CharacterID); err != nil {
@@ -494,7 +504,7 @@ func (c *ClientConn) awardXPAmount(ctx context.Context, gain int64) error {
 	curLevel := int(c.actor.Level)
 	c.actor.Mu.Unlock()
 
-	newXP, newLevel, leveled := world.ProcessXP(curXP, curLevel, gain)
+	newXP, newLevel, leveled := world.ProcessXPSinceLevel(curXP, curLevel, gain)
 	hpMax, epMax, strength := world.StatsByLevel(newLevel)
 
 	if err := c.server.db.SaveXP(ctx, c.actor.CharacterID, newXP, newLevel, hpMax, epMax); err != nil {
@@ -512,5 +522,13 @@ func (c *ClientConn) awardXPAmount(ctx context.Context, gain int64) error {
 		c.actor.Strength = strength
 	}
 	c.actor.Mu.Unlock()
+	if leveled {
+		c.actor.SetPrimaryStats(c.primaryStatsForLevel(ctx, newLevel))
+		world.RecomputeDerivedStats(c.actor)
+		c.actor.Mu.Lock()
+		c.actor.Health = c.actor.HealthMax
+		c.actor.Energy = c.actor.EnergyMax
+		c.actor.Mu.Unlock()
+	}
 	return c.sendXPUpdate()
 }

@@ -77,7 +77,9 @@ type Actor struct {
 	AggressiveRange float32 // detection radius; NPC starts chasing when player enters this
 	AttackRange     float32 // radius at which NPC can land an attack (melee ~2, ranged ~20)
 	Radius          float32
-	Strength        int32
+	Primary         PrimaryStats // 5 primary stats (runtime source of truth)
+	Derived         DerivedStats // cached computed stats from Primary + level + gear
+	Strength        int32        // legacy mirror of Primary.STR (temporary migration field)
 	WeaponDamage    int32
 	CachedArmor     int32
 
@@ -198,6 +200,15 @@ func NewActor() *Actor {
 		AbilityCooldowns: make(map[int]int64),
 		SkillLevels:      make(map[int]int),
 	}
+}
+
+// SetPrimaryStats atomically updates all primary stats and keeps legacy
+// Strength synchronized for compatibility during migration.
+func (a *Actor) SetPrimaryStats(p PrimaryStats) {
+	a.Mu.Lock()
+	a.Primary = p
+	a.Strength = p.STR
+	a.Mu.Unlock()
 }
 
 // ActorType returns the type byte sent in PNewActor.

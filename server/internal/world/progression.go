@@ -55,3 +55,36 @@ func ProcessXP(currentXP int64, currentLevel int, gain int64) (newXP int64, newL
 	}
 	return
 }
+
+// ProcessXPSinceLevel applies XP gain when XP is stored as "since last level".
+// Returns (newXP, newLevel, leveled).
+func ProcessXPSinceLevel(currentXP int64, currentLevel int, gain int64) (newXP int64, newLevel int, leveled bool) {
+	if currentLevel < 1 {
+		currentLevel = 1
+	}
+	if currentXP < 0 {
+		currentXP = 0
+	}
+	if gain <= 0 {
+		return currentXP, currentLevel, false
+	}
+
+	newXP = currentXP + gain
+	newLevel = currentLevel
+
+	for newLevel < MaxLevel {
+		curThreshold := XPToLevel(newLevel)
+		nextThreshold := XPToLevel(newLevel + 1)
+		delta := nextThreshold - curThreshold
+		if delta <= 0 {
+			break
+		}
+		if newXP < delta {
+			break
+		}
+		newXP -= delta
+		newLevel++
+		leveled = true
+	}
+	return
+}

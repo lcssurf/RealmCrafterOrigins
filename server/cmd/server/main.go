@@ -160,6 +160,15 @@ func main() {
 	if err := database.SeedDefaultSkillProgressionConfig(ctx); err != nil {
 		log.Fatalf("main: seed skill progression config: %v", err)
 	}
+	if err := database.SeedDefaultCharacterProgressionConfig(ctx); err != nil {
+		log.Fatalf("main: seed char progression config: %v", err)
+	}
+	if err := database.SeedDefaultCharacterPrimaryStatsPerLevel(ctx); err != nil {
+		log.Fatalf("main: seed char primary stats per level: %v", err)
+	}
+	if err := database.SeedDefaultKillXPScalingConfig(ctx); err != nil {
+		log.Fatalf("main: seed kill xp scaling config: %v", err)
+	}
 
 	// Create Lua scripting registry and load scripts.
 	// Canonical path: dist/server/scripts/ (relative to exe, after anchor).
