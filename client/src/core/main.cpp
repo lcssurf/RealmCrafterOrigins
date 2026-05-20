@@ -2452,7 +2452,10 @@ int main() {
                     if (!player_dead && is_death_action) {
                         break; // stale death packet after respawn
                     }
-                    player_anim_ctrl.RequestState(action_id);
+                    if (!player_anim_ctrl.RequestState(action_id)) {
+                        std::fprintf(stderr, "[anim] player rejected action_id=%u\n",
+                                     static_cast<unsigned>(action_id));
+                    }
                     break;
                 }
                 auto it = world_actors.find(rid);
@@ -2485,7 +2488,10 @@ int main() {
                         if (was_dead && !player_dead) {
                             bool reset_ok = false;
                             if (player_anim_ctrl.IsReady()) {
-                                reset_ok = player_anim_ctrl.RequestStateByName("Idle");
+                                // TECH_DEBT: idle_action_id should come from appearance
+                                // bindings ("Idle") rather than a fixed index.
+                                constexpr uint8_t idle_action_id = 0;
+                                reset_ok = player_anim_ctrl.ForceState(idle_action_id);
                             }
                             if (!reset_ok) {
                                 reset_ok = rebind_player_anim_controller();

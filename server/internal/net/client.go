@@ -1247,6 +1247,14 @@ func (c *ClientConn) handleRespawnPlayer(ctx context.Context) error {
 	c.actor.GuardUntil = 0
 	c.actor.ParryUntil = 0
 	c.actor.DodgeUntil = 0
+	c.actor.SpecialWindupUntil = 0
+	c.actor.SpecialTargetRID = 0
+	c.actor.SpecialAbilityID = 0
+	c.actor.SpecialActionOverride = ""
+	c.actor.SpecialReasonTag = ""
+	c.actor.SpecialClientTraceID = ""
+	c.actor.SpecialChainCount = 0
+	c.actor.AbilityCooldowns = make(map[int]int64)
 	c.actor.LastCombatAt = 0
 	c.actor.X = c.actor.SpawnX
 	c.actor.Y = c.actor.SpawnY

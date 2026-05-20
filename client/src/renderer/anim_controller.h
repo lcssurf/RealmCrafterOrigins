@@ -73,6 +73,9 @@ public:
     // Returns false if id is out of range or lower-priority than current.
     bool RequestState(uint8_t action_id);
 
+    // Force a state transition by action_id, bypassing priority-block checks.
+    bool ForceState(uint8_t action_id);
+
     // Convenience: request by name.
     bool RequestStateByName(const std::string& action);
 

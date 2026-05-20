@@ -72,6 +72,10 @@ bool AnimController::RequestState(uint8_t new_id) {
     return RequestStateImpl_(new_id, /*force=*/false);
 }
 
+bool AnimController::ForceState(uint8_t new_id) {
+    return RequestStateImpl_(new_id, /*force=*/true);
+}
+
 bool AnimController::RequestStateImpl_(uint8_t new_id, bool force) {
     if (bindings_.empty() || new_id >= static_cast<uint8_t>(bindings_.size())) {
         if (log_enabled)
@@ -81,7 +85,7 @@ bool AnimController::RequestStateImpl_(uint8_t new_id, bool force) {
     }
 
     // No-op if already in this state and not finished
-    if (new_id == current_id_ && !active_.finished) {
+    if (!force && new_id == current_id_ && !active_.finished) {
         return true;
     }
 

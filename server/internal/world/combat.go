@@ -2,6 +2,7 @@ package world
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"strconv"
@@ -1084,8 +1085,11 @@ func BroadcastAnimate(area *Area, actor *Actor, actionName string) {
 		}
 	}
 	if actionID == 0xFF {
+		log.Printf("animate: warning actor=%d action=%q action_id=%d missing_action_binding=true",
+			actor.RuntimeID, actionName, -1)
 		return
 	}
+	log.Printf("animate: actor=%d action=%q action_id=%d", actor.RuntimeID, actionName, actionID)
 	actor.Mu.Lock()
 	actor.CurrentAction = actionName
 	actor.Mu.Unlock()
