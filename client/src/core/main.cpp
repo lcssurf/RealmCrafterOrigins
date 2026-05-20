@@ -42,6 +42,7 @@
 #include "../ui/ui_texture.h"
 #include "../ui/spellbar.h"
 #include "../ui/skill_hotbar.h"
+#include "../ui/util.h"
 #include "../ui/spell_effects.h"
 #include "../ui/quest_log.h"
 #include "../ui/party_panel.h"
@@ -2579,17 +2580,34 @@ int main() {
             }
 
             case rco::net::kPXPUpdate: {
-                uint16_t lvl     = r.ReadU16();
-                uint32_t xp      = r.ReadU32();
-                uint32_t xp_next = r.ReadU32();
+                const uint8_t version_or_level_lo = r.ReadU8();
+                uint16_t lvl = 1;
+                uint32_t xp = 0;
+                uint32_t xp_current_level = 0;
+                uint32_t xp_next = 100;
+                if (version_or_level_lo == 2) {
+                    lvl = r.ReadU16();
+                    xp = r.ReadU32();
+                    xp_current_level = r.ReadU32();
+                    xp_next = r.ReadU32();
+                } else {
+                    const uint8_t level_hi = r.ReadU8();
+                    lvl = static_cast<uint16_t>(version_or_level_lo) |
+                          (static_cast<uint16_t>(level_hi) << 8);
+                    xp = r.ReadU32();
+                    xp_next = r.ReadU32();
+                    std::fprintf(stderr, "[xp] legacy PXPUpdate payload received; assuming v1\n");
+                }
                 if (!r.OK()) break;
                 if (lvl > player.level && player.level > 0)
                     audio.PlaySfx(rco::audio::SfxId::LevelUp);
                 player.level   = lvl;
                 player.xp      = xp;
+                player.xp_current_level = xp_current_level;
                 player.xp_next = xp_next;
                 inventory.stat_level   = lvl;
                 inventory.stat_xp      = xp;
+                inventory.stat_xp_current_level = xp_current_level;
                 inventory.stat_xp_next = xp_next;
                 break;
             }
@@ -4743,7 +4761,7 @@ int main() {
 
                 // HUD
                 ImGui::SetNextWindowPos({10.f, 10.f}, ImGuiCond_Always);
-                ImGui::SetNextWindowSize({300.f, 142.f}, ImGuiCond_Always);
+                ImGui::SetNextWindowSize({300.f, 156.f}, ImGuiCond_Always);
                 ImGui::SetNextWindowBgAlpha(0.55f);
                 ImGui::Begin("##hud", nullptr,
                     ImGuiWindowFlags_NoDecoration  |
@@ -4757,11 +4775,16 @@ int main() {
                     player.stamina, player.staminaMax);
                 // XP bar
                 {
-                    float xp_ratio = player.xp_next > 0
-                        ? static_cast<float>(player.xp) / player.xp_next
-                        : 1.f;
-                    char xp_lbl[32];
-                    snprintf(xp_lbl, sizeof(xp_lbl), "XP %u / %u", player.xp, player.xp_next);
+                    const float xp_ratio = rco::ui::ProgressBetweenThresholds(
+                        player.xp, player.xp_current_level, player.xp_next);
+                    char pct_lbl[24];
+                    snprintf(pct_lbl, sizeof(pct_lbl), "%.1f%%", xp_ratio * 100.0f);
+                    const std::string xp_value = rco::ui::AbbreviateNumber(player.xp);
+                    const std::string xp_next_value = rco::ui::AbbreviateNumber(player.xp_next);
+                    char xp_lbl[64];
+                    snprintf(xp_lbl, sizeof(xp_lbl), "%s / %s",
+                             xp_value.c_str(), xp_next_value.c_str());
+                    ImGui::TextDisabled("XP %s", pct_lbl);
                     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.2f, 0.6f, 1.f, 1.f));
                     ImGui::ProgressBar(xp_ratio, {-1.f, 10.f}, xp_lbl);
                     ImGui::PopStyleColor();

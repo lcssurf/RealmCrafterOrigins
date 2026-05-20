@@ -42,8 +42,10 @@ struct CombatAbilityTemplate {
     int         sfx_id_impact = 0;
     int         mastery_xp_per_use = 10;
     int         mastery_max_level = 10;
-    std::string mastery_xp_curve_type = "linear";
-    int         mastery_xp_curve_base = 100;
+    std::string mastery_xp_curve_type = "irregular";
+    int         mastery_xp_curve_base = 40;
+    float       mastery_xp_curve_exponent = 2.0f;
+    float       mastery_xp_irregularity = 0.5f;
     float       mastery_primary_bonus_per_lvl = 0.03f;
     float       mastery_cooldown_redux_per_lvl = 0.01f;
     bool        enabled = true;
@@ -106,8 +108,10 @@ struct ProfileOption {
 struct ProgressionDefaults {
     int         xp_per_use = 10;
     int         max_level = 10;
-    std::string xp_curve_type = "linear";
-    int         xp_curve_base = 100;
+    std::string xp_curve_type = "irregular";
+    int         xp_curve_base = 40;
+    float       xp_curve_exponent = 2.0f;
+    float       xp_irregularity = 0.5f;
     float       damage_bonus_per_level = 0.03f;
     float       cooldown_redux_per_level = 0.01f;
 };

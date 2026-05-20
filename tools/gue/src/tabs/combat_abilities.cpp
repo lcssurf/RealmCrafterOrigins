@@ -55,6 +55,15 @@ bool IsAllowedCategory(const std::string& category) {
     return false;
 }
 
+bool IsAllowedCurveType(const std::string& curve_type) {
+    static const char* kAllowed[] = {"irregular", "linear", "quadratic", "exponential"};
+    const std::string normalized = ToLowerCopy(TrimCopy(curve_type));
+    for (const char* c : kAllowed) {
+        if (normalized == c) return true;
+    }
+    return false;
+}
+
 bool DrawAbilityFields(CombatAbilityTemplate& row) {
     bool changed = false;
 
@@ -218,8 +227,14 @@ bool DrawAbilityFields(CombatAbilityTemplate& row) {
     if (ImGui::InputInt("XP per Use", &row.mastery_xp_per_use)) changed = true;
     if (ImGui::InputInt("Max Level", &row.mastery_max_level)) changed = true;
 
-    static const char* kCurves[] = {"linear", "exponential"};
-    int curve_idx = (row.mastery_xp_curve_type == "exponential") ? 1 : 0;
+    static const char* kCurves[] = {"irregular", "linear", "quadratic", "exponential"};
+    int curve_idx = 0;
+    for (int i = 0; i < static_cast<int>(sizeof(kCurves) / sizeof(kCurves[0])); ++i) {
+        if (row.mastery_xp_curve_type == kCurves[i]) {
+            curve_idx = i;
+            break;
+        }
+    }
     if (ImGui::Combo("XP Curve Type", &curve_idx, kCurves,
                      static_cast<int>(sizeof(kCurves) / sizeof(kCurves[0])))) {
         row.mastery_xp_curve_type = kCurves[curve_idx];
@@ -227,6 +242,14 @@ bool DrawAbilityFields(CombatAbilityTemplate& row) {
     }
 
     if (ImGui::InputInt("XP Curve Base", &row.mastery_xp_curve_base)) changed = true;
+    if (ImGui::InputFloat("XP Curve Exponent", &row.mastery_xp_curve_exponent, 0.1f, 0.5f, "%.2f")) changed = true;
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Used by irregular curves. Higher values make later levels scale faster.");
+    }
+    if (ImGui::InputFloat("XP Irregularity", &row.mastery_xp_irregularity, 0.05f, 0.2f, "%.2f")) changed = true;
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("0.0 = smooth curve, 1.0 = strongest deterministic jitter between levels.");
+    }
 
     if (ImGui::SliderFloat("Primary Bonus per Level (%)",
                            &row.mastery_primary_bonus_per_lvl, 0.0f, 0.5f, "%.3f")) {
@@ -281,10 +304,13 @@ bool DrawAbilityFields(CombatAbilityTemplate& row) {
     if (row.mastery_max_level < 1) row.mastery_max_level = 1;
     if (row.mastery_max_level > 100) row.mastery_max_level = 100;
     row.mastery_xp_curve_type = ToLowerCopy(TrimCopy(row.mastery_xp_curve_type));
-    if (row.mastery_xp_curve_type != "linear" && row.mastery_xp_curve_type != "exponential") {
-        row.mastery_xp_curve_type = "linear";
+    if (!IsAllowedCurveType(row.mastery_xp_curve_type)) {
+        row.mastery_xp_curve_type = "irregular";
     }
     if (row.mastery_xp_curve_base < 1) row.mastery_xp_curve_base = 1;
+    if (row.mastery_xp_curve_exponent <= 0.f) row.mastery_xp_curve_exponent = 2.0f;
+    if (row.mastery_xp_irregularity < 0.f) row.mastery_xp_irregularity = 0.f;
+    if (row.mastery_xp_irregularity > 1.f) row.mastery_xp_irregularity = 1.f;
     if (row.mastery_primary_bonus_per_lvl < 0.f) row.mastery_primary_bonus_per_lvl = 0.f;
     if (row.mastery_primary_bonus_per_lvl > 0.5f) row.mastery_primary_bonus_per_lvl = 0.5f;
     if (row.mastery_cooldown_redux_per_lvl < 0.f) row.mastery_cooldown_redux_per_lvl = 0.f;
@@ -409,6 +435,20 @@ void CombatAbilitiesTab::EnsureTables(sqlite3* db) {
         "ON npc_profile_bindings(profile_id)",
         nullptr, nullptr, nullptr);
 
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS skill_progression_config ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  xp_per_use INTEGER NOT NULL DEFAULT 10,"
+        "  max_level INTEGER NOT NULL DEFAULT 10,"
+        "  xp_curve_type TEXT NOT NULL DEFAULT 'irregular',"
+        "  xp_curve_base INTEGER NOT NULL DEFAULT 40,"
+        "  xp_curve_exponent REAL NOT NULL DEFAULT 2.0,"
+        "  xp_irregularity REAL NOT NULL DEFAULT 0.5,"
+        "  damage_bonus_per_level REAL NOT NULL DEFAULT 0.03,"
+        "  cooldown_redux_per_level REAL NOT NULL DEFAULT 0.01"
+        ")",
+        nullptr, nullptr, nullptr);
+
     auto has_column = [&](const char* table, const char* column) -> bool {
         char pragma_sql[256];
         std::snprintf(pragma_sql, sizeof(pragma_sql), "PRAGMA table_info(%s)", table);
@@ -454,13 +494,21 @@ void CombatAbilitiesTab::EnsureTables(sqlite3* db) {
     add_column_if_missing("ability_templates", "mastery_max_level",
         "mastery_max_level INTEGER NOT NULL DEFAULT 10");
     add_column_if_missing("ability_templates", "mastery_xp_curve_type",
-        "mastery_xp_curve_type TEXT NOT NULL DEFAULT 'linear'");
+        "mastery_xp_curve_type TEXT NOT NULL DEFAULT 'irregular'");
     add_column_if_missing("ability_templates", "mastery_xp_curve_base",
-        "mastery_xp_curve_base INTEGER NOT NULL DEFAULT 100");
+        "mastery_xp_curve_base INTEGER NOT NULL DEFAULT 40");
+    add_column_if_missing("ability_templates", "mastery_xp_curve_exponent",
+        "mastery_xp_curve_exponent REAL NOT NULL DEFAULT 2.0");
+    add_column_if_missing("ability_templates", "mastery_xp_irregularity",
+        "mastery_xp_irregularity REAL NOT NULL DEFAULT 0.5");
     add_column_if_missing("ability_templates", "mastery_primary_bonus_per_lvl",
         "mastery_primary_bonus_per_lvl REAL NOT NULL DEFAULT 0.03");
     add_column_if_missing("ability_templates", "mastery_cooldown_redux_per_lvl",
         "mastery_cooldown_redux_per_lvl REAL NOT NULL DEFAULT 0.01");
+    add_column_if_missing("skill_progression_config", "xp_curve_exponent",
+        "xp_curve_exponent REAL NOT NULL DEFAULT 2.0");
+    add_column_if_missing("skill_progression_config", "xp_irregularity",
+        "xp_irregularity REAL NOT NULL DEFAULT 0.5");
 
     tables_ensured_ = true;
 }
@@ -471,6 +519,7 @@ void CombatAbilitiesTab::LoadDefaultsIfNeeded(sqlite3* db) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "SELECT xp_per_use, max_level, xp_curve_type, xp_curve_base, "
+        "       xp_curve_exponent, xp_irregularity, "
         "       damage_bonus_per_level, cooldown_redux_per_level "
         "FROM skill_progression_config "
         "ORDER BY id LIMIT 1";
@@ -487,18 +536,22 @@ void CombatAbilitiesTab::LoadDefaultsIfNeeded(sqlite3* db) {
             defaults_.xp_curve_type = reinterpret_cast<const char*>(text);
         }
         defaults_.xp_curve_base = sqlite3_column_int(stmt, 3);
-        defaults_.damage_bonus_per_level = static_cast<float>(sqlite3_column_double(stmt, 4));
-        defaults_.cooldown_redux_per_level = static_cast<float>(sqlite3_column_double(stmt, 5));
+        defaults_.xp_curve_exponent = static_cast<float>(sqlite3_column_double(stmt, 4));
+        defaults_.xp_irregularity = static_cast<float>(sqlite3_column_double(stmt, 5));
+        defaults_.damage_bonus_per_level = static_cast<float>(sqlite3_column_double(stmt, 6));
+        defaults_.cooldown_redux_per_level = static_cast<float>(sqlite3_column_double(stmt, 7));
     }
     sqlite3_finalize(stmt);
 
     if (defaults_.xp_per_use < 1) defaults_.xp_per_use = 10;
     if (defaults_.max_level < 1) defaults_.max_level = 10;
     defaults_.xp_curve_type = ToLowerCopy(TrimCopy(defaults_.xp_curve_type));
-    if (defaults_.xp_curve_type != "linear" && defaults_.xp_curve_type != "exponential") {
-        defaults_.xp_curve_type = "linear";
+    if (!IsAllowedCurveType(defaults_.xp_curve_type)) {
+        defaults_.xp_curve_type = "irregular";
     }
-    if (defaults_.xp_curve_base < 1) defaults_.xp_curve_base = 100;
+    if (defaults_.xp_curve_base < 1) defaults_.xp_curve_base = 40;
+    if (defaults_.xp_curve_exponent <= 0.f) defaults_.xp_curve_exponent = 2.0f;
+    defaults_.xp_irregularity = std::clamp(defaults_.xp_irregularity, 0.0f, 1.0f);
     if (defaults_.damage_bonus_per_level < 0.f) defaults_.damage_bonus_per_level = 0.03f;
     if (defaults_.cooldown_redux_per_level < 0.f) defaults_.cooldown_redux_per_level = 0.01f;
 
@@ -559,7 +612,8 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
         "       allow_action_override, allowed_action_tags_json, "
         "       vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, "
         "       mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type, "
-        "       mastery_xp_curve_base, mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, "
+        "       mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity, "
+        "       mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, "
         "       enabled "
         "FROM ability_templates ORDER BY id";
 
@@ -606,9 +660,11 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
         row.mastery_max_level = sqlite3_column_int(stmt, 33);
         if (const auto* text = sqlite3_column_text(stmt, 34)) row.mastery_xp_curve_type = reinterpret_cast<const char*>(text);
         row.mastery_xp_curve_base = sqlite3_column_int(stmt, 35);
-        row.mastery_primary_bonus_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 36));
-        row.mastery_cooldown_redux_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 37));
-        row.enabled = sqlite3_column_int(stmt, 38) != 0;
+        row.mastery_xp_curve_exponent = static_cast<float>(sqlite3_column_double(stmt, 36));
+        row.mastery_xp_irregularity = static_cast<float>(sqlite3_column_double(stmt, 37));
+        row.mastery_primary_bonus_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 38));
+        row.mastery_cooldown_redux_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 39));
+        row.enabled = sqlite3_column_int(stmt, 40) != 0;
         abilities_.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
@@ -1002,10 +1058,12 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     if (row.mastery_xp_per_use < 1) row.mastery_xp_per_use = 1;
     if (row.mastery_max_level < 1) row.mastery_max_level = 1;
     if (row.mastery_max_level > 100) row.mastery_max_level = 100;
-    if (row.mastery_xp_curve_type != "linear" && row.mastery_xp_curve_type != "exponential") {
-        row.mastery_xp_curve_type = "linear";
+    if (!IsAllowedCurveType(row.mastery_xp_curve_type)) {
+        row.mastery_xp_curve_type = "irregular";
     }
     if (row.mastery_xp_curve_base < 1) row.mastery_xp_curve_base = 1;
+    if (row.mastery_xp_curve_exponent <= 0.f) row.mastery_xp_curve_exponent = 2.0f;
+    row.mastery_xp_irregularity = std::clamp(row.mastery_xp_irregularity, 0.0f, 1.0f);
     row.mastery_primary_bonus_per_lvl = std::clamp(row.mastery_primary_bonus_per_lvl, 0.0f, 0.5f);
     row.mastery_cooldown_redux_per_lvl = std::clamp(row.mastery_cooldown_redux_per_lvl, 0.0f, 0.1f);
 
@@ -1031,8 +1089,9 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
             "allow_action_override, allowed_action_tags_json, "
             "vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, "
             "mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type, "
-            "mastery_xp_curve_base, mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, enabled"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+            "mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity, "
+            "mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, enabled"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
             SetStatus("Ability create error: %s", sqlite3_errmsg(db));
@@ -1050,7 +1109,8 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
             "allow_action_override=?, allowed_action_tags_json=?, "
             "vfx_id_windup=?, vfx_id_impact=?, sfx_id_windup=?, sfx_id_impact=?, "
             "mastery_xp_per_use=?, mastery_max_level=?, mastery_xp_curve_type=?, "
-            "mastery_xp_curve_base=?, mastery_primary_bonus_per_lvl=?, mastery_cooldown_redux_per_lvl=?, enabled=? "
+            "mastery_xp_curve_base=?, mastery_xp_curve_exponent=?, mastery_xp_irregularity=?, "
+            "mastery_primary_bonus_per_lvl=?, mastery_cooldown_redux_per_lvl=?, enabled=? "
             "WHERE id=?";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1094,11 +1154,13 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     sqlite3_bind_int(stmt, 33, row.mastery_max_level);
     sqlite3_bind_text(stmt, 34, row.mastery_xp_curve_type.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 35, row.mastery_xp_curve_base);
-    sqlite3_bind_double(stmt, 36, row.mastery_primary_bonus_per_lvl);
-    sqlite3_bind_double(stmt, 37, row.mastery_cooldown_redux_per_lvl);
-    sqlite3_bind_int(stmt, 38, row.enabled ? 1 : 0);
+    sqlite3_bind_double(stmt, 36, row.mastery_xp_curve_exponent);
+    sqlite3_bind_double(stmt, 37, row.mastery_xp_irregularity);
+    sqlite3_bind_double(stmt, 38, row.mastery_primary_bonus_per_lvl);
+    sqlite3_bind_double(stmt, 39, row.mastery_cooldown_redux_per_lvl);
+    sqlite3_bind_int(stmt, 40, row.enabled ? 1 : 0);
     if (!is_new) {
-        sqlite3_bind_int(stmt, 39, row.id);
+        sqlite3_bind_int(stmt, 41, row.id);
     }
 
     rc = sqlite3_step(stmt);
@@ -1445,6 +1507,7 @@ const char* CombatAbilitiesTab::ProfileNameByID(int profile_id) const {
 
 void CombatAbilitiesTab::Draw(sqlite3* db) {
     if (!db) return;
+    EnsureTables(db);
     LoadDefaultsIfNeeded(db);
     if (need_fetch_) {
         FetchAll(db);
@@ -1480,6 +1543,8 @@ void CombatAbilitiesTab::Draw(sqlite3* db) {
             new_ability_.mastery_max_level = defaults_.max_level;
             new_ability_.mastery_xp_curve_type = defaults_.xp_curve_type;
             new_ability_.mastery_xp_curve_base = defaults_.xp_curve_base;
+            new_ability_.mastery_xp_curve_exponent = defaults_.xp_curve_exponent;
+            new_ability_.mastery_xp_irregularity = defaults_.xp_irregularity;
             new_ability_.mastery_primary_bonus_per_lvl = defaults_.damage_bonus_per_level;
             new_ability_.mastery_cooldown_redux_per_lvl = defaults_.cooldown_redux_per_level;
             selected_ability_ = -1;

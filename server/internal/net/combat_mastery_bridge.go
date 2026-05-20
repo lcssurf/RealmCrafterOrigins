@@ -58,7 +58,7 @@ func (s *Server) grantPlayerSkillXP(charID string, abilityID int) {
 	if oldLevel < 1 {
 		oldLevel = 1
 	}
-	progress.XP, progress.Level, _ = db.ProcessMasteryXPSinceLevel(
+	progress.XP, progress.Level, _ = db.ProcessMasteryXPCumulative(
 		progress.XP,
 		progress.Level,
 		xpPerUse,

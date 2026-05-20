@@ -98,8 +98,10 @@ type SkillProgressionConfig struct {
 	ID                    int
 	XPPerUse              int
 	MaxLevel              int
-	XPCurveType           string // "linear" or "exponential"
+	XPCurveType           string // "irregular", "linear", "quadratic", or "exponential"
 	XPCurveBase           int
+	XPCurveExponent       float64
+	XPIrregularity        float64
 	DamageBonusPerLevel   float64
 	CooldownReduxPerLevel float64
 }
@@ -107,11 +109,13 @@ type SkillProgressionConfig struct {
 // CharacterProgressionConfig defines global character level progression rules.
 // Singleton: there should only be one row (id=1).
 type CharacterProgressionConfig struct {
-	ID            int
-	MaxLevel      int
-	XPCurveType   string
-	XPCurveBase   int
-	XPCurveFactor float64
+	ID              int
+	MaxLevel        int
+	XPCurveType     string
+	XPCurveBase     int
+	XPCurveFactor   float64
+	XPCurveExponent float64
+	XPIrregularity  float64
 }
 
 // CharacterPrimaryStatsLevel stores the primary stats granted at a given level.
@@ -394,6 +398,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV31(ctx)
 	d.migrateV32(ctx)
 	d.migrateV33(ctx)
+	d.migrateV34(ctx)
 
 	return d, nil
 }
@@ -1223,9 +1228,10 @@ func (d *DB) SeedDefaultSkillProgressionConfig(ctx context.Context) error {
 
 	if _, err := d.db.ExecContext(ctx, d.q(`
 		INSERT INTO skill_progression_config
-		(id, xp_per_use, max_level, xp_curve_type, xp_curve_base, damage_bonus_per_level, cooldown_redux_per_level)
-		VALUES (1, ?, ?, ?, ?, ?, ?)`),
-		10, 10, "linear", 100, 0.03, 0.01); err != nil {
+		(id, xp_per_use, max_level, xp_curve_type, xp_curve_base, xp_curve_exponent, xp_irregularity,
+		 damage_bonus_per_level, cooldown_redux_per_level)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		10, 10, "irregular", 40, 2.0, 0.5, 0.03, 0.01); err != nil {
 		return fmt.Errorf("seed skill_progression_config insert: %w", err)
 	}
 	log.Printf("seed: skill progression config seeded (defaults)")
@@ -1247,9 +1253,9 @@ func (d *DB) SeedDefaultCharacterProgressionConfig(ctx context.Context) error {
 
 	if _, err := d.db.ExecContext(ctx, d.q(`
 		INSERT INTO character_progression_config
-		(id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor)
-		VALUES (1, ?, ?, ?, ?)`),
-		60, "quadratic", 100, 1.3); err != nil {
+		(id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor, xp_curve_exponent, xp_irregularity)
+		VALUES (1, ?, ?, ?, ?, ?, ?)`),
+		60, "irregular", 60, 1.3, 2.5, 0.4); err != nil {
 		return fmt.Errorf("seed character_progression_config insert: %w", err)
 	}
 	log.Printf("seed: character progression config seeded (defaults)")
@@ -1880,6 +1886,8 @@ type AbilityTemplateRow struct {
 	MasteryMaxLevel            int
 	MasteryXPCurveType         string
 	MasteryXPCurveBase         int
+	MasteryXPCurveExponent     float64
+	MasteryXPIrregularity      float64
 	MasteryPrimaryBonusPerLvl  float64
 	MasteryCooldownReduxPerLvl float64
 	Enabled                    bool
@@ -1956,7 +1964,8 @@ func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, er
 		       allow_action_override, allowed_action_tags_json,
 		       vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact,
 		       mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type,
-		       mastery_xp_curve_base, mastery_primary_bonus_per_lvl,
+		       mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity,
+		       mastery_primary_bonus_per_lvl,
 		       mastery_cooldown_redux_per_lvl, enabled
 		  FROM ability_templates
 		 ORDER BY id`)
@@ -1981,7 +1990,8 @@ func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, er
 			&allowOverrideRaw, &r.AllowedActionTagsJSON,
 			&r.VFXIDWindup, &r.VFXIDImpact, &r.SFXIDWindup, &r.SFXIDImpact,
 			&r.MasteryXPPerUse, &r.MasteryMaxLevel, &r.MasteryXPCurveType,
-			&r.MasteryXPCurveBase, &r.MasteryPrimaryBonusPerLvl,
+			&r.MasteryXPCurveBase, &r.MasteryXPCurveExponent, &r.MasteryXPIrregularity,
+			&r.MasteryPrimaryBonusPerLvl,
 			&r.MasteryCooldownReduxPerLvl,
 			&enabledRaw,
 		); err != nil {
@@ -3456,7 +3466,7 @@ func (d *DB) TurnInQuest(ctx context.Context, charID string, questID int) (*Ques
 	newLevel := curLevel
 	leveled := false
 	if totalXP > 0 {
-		newXP, newLevel, leveled = world.ProcessXPSinceLevel(curXP, curLevel, totalXP)
+		newXP, newLevel, leveled = world.ProcessXPCumulative(curXP, curLevel, totalXP)
 	}
 	hpMax, epMax, strength := world.StatsByLevel(newLevel)
 
@@ -4663,11 +4673,13 @@ func (d *DB) GetCharacterProgressionConfig(ctx context.Context) (*CharacterProgr
 	load := func() (*CharacterProgressionConfig, error) {
 		cfg := &CharacterProgressionConfig{}
 		err := d.db.QueryRowContext(ctx, d.q(`
-			SELECT id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor
+			SELECT id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor,
+			       xp_curve_exponent, xp_irregularity
 			  FROM character_progression_config
 			 ORDER BY id
 			 LIMIT 1`)).
-			Scan(&cfg.ID, &cfg.MaxLevel, &cfg.XPCurveType, &cfg.XPCurveBase, &cfg.XPCurveFactor)
+			Scan(&cfg.ID, &cfg.MaxLevel, &cfg.XPCurveType, &cfg.XPCurveBase, &cfg.XPCurveFactor,
+				&cfg.XPCurveExponent, &cfg.XPIrregularity)
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -4713,27 +4725,35 @@ func (d *DB) UpdateCharacterProgressionConfig(ctx context.Context, c *CharacterP
 	if c.XPCurveFactor <= 0 {
 		return fmt.Errorf("db: UpdateCharacterProgressionConfig: xp_curve_factor must be > 0")
 	}
+	if c.XPCurveExponent <= 0 {
+		return fmt.Errorf("db: UpdateCharacterProgressionConfig: xp_curve_exponent must be > 0")
+	}
+	if c.XPIrregularity < 0 || c.XPIrregularity > 1 {
+		return fmt.Errorf("db: UpdateCharacterProgressionConfig: xp_irregularity must be between 0 and 1")
+	}
 
 	curveType := strings.ToLower(strings.TrimSpace(c.XPCurveType))
 	if curveType == "" {
-		curveType = "quadratic"
+		curveType = "irregular"
 	}
 	switch curveType {
-	case "quadratic", "linear", "exponential":
+	case "irregular", "quadratic", "linear", "exponential":
 	default:
 		return fmt.Errorf("db: UpdateCharacterProgressionConfig: unsupported xp_curve_type %q", c.XPCurveType)
 	}
 
 	_, err := d.db.ExecContext(ctx, d.q(`
 		INSERT INTO character_progression_config
-		    (id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor)
-		VALUES (1, ?, ?, ?, ?)
+		    (id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor, xp_curve_exponent, xp_irregularity)
+		VALUES (1, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 		    max_level = excluded.max_level,
 		    xp_curve_type = excluded.xp_curve_type,
 		    xp_curve_base = excluded.xp_curve_base,
-		    xp_curve_factor = excluded.xp_curve_factor`),
-		c.MaxLevel, curveType, c.XPCurveBase, c.XPCurveFactor)
+		    xp_curve_factor = excluded.xp_curve_factor,
+		    xp_curve_exponent = excluded.xp_curve_exponent,
+		    xp_irregularity = excluded.xp_irregularity`),
+		c.MaxLevel, curveType, c.XPCurveBase, c.XPCurveFactor, c.XPCurveExponent, c.XPIrregularity)
 	if err != nil {
 		return fmt.Errorf("db: UpdateCharacterProgressionConfig: %w", err)
 	}
@@ -4900,11 +4920,13 @@ func (d *DB) GetSkillProgressionConfig(ctx context.Context) (*SkillProgressionCo
 		cfg := &SkillProgressionConfig{}
 		err := d.db.QueryRowContext(ctx, d.q(`
 			SELECT id, xp_per_use, max_level, xp_curve_type, xp_curve_base,
+			       xp_curve_exponent, xp_irregularity,
 			       damage_bonus_per_level, cooldown_redux_per_level
 			  FROM skill_progression_config
 			 ORDER BY id
 			 LIMIT 1`)).
 			Scan(&cfg.ID, &cfg.XPPerUse, &cfg.MaxLevel, &cfg.XPCurveType, &cfg.XPCurveBase,
+				&cfg.XPCurveExponent, &cfg.XPIrregularity,
 				&cfg.DamageBonusPerLevel, &cfg.CooldownReduxPerLevel)
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -4950,26 +4972,36 @@ func (d *DB) UpdateSkillProgressionConfig(ctx context.Context, c *SkillProgressi
 	if c.XPCurveBase <= 0 {
 		return fmt.Errorf("db: UpdateSkillProgressionConfig: xp_curve_base must be > 0")
 	}
+	if c.XPCurveExponent <= 0 {
+		return fmt.Errorf("db: UpdateSkillProgressionConfig: xp_curve_exponent must be > 0")
+	}
+	if c.XPIrregularity < 0 || c.XPIrregularity > 1 {
+		return fmt.Errorf("db: UpdateSkillProgressionConfig: xp_irregularity must be between 0 and 1")
+	}
 	curveType := strings.ToLower(strings.TrimSpace(c.XPCurveType))
 	if curveType == "" {
-		curveType = "linear"
+		curveType = "irregular"
 	}
-	if curveType != "linear" && curveType != "exponential" {
+	if curveType != "irregular" && curveType != "linear" && curveType != "quadratic" && curveType != "exponential" {
 		return fmt.Errorf("db: UpdateSkillProgressionConfig: unsupported xp_curve_type %q", c.XPCurveType)
 	}
 
 	_, err := d.db.ExecContext(ctx, d.q(`
 		INSERT INTO skill_progression_config
-		    (id, xp_per_use, max_level, xp_curve_type, xp_curve_base, damage_bonus_per_level, cooldown_redux_per_level)
-		VALUES (1, ?, ?, ?, ?, ?, ?)
+		    (id, xp_per_use, max_level, xp_curve_type, xp_curve_base, xp_curve_exponent, xp_irregularity,
+		     damage_bonus_per_level, cooldown_redux_per_level)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 		    xp_per_use = excluded.xp_per_use,
 		    max_level = excluded.max_level,
 		    xp_curve_type = excluded.xp_curve_type,
 		    xp_curve_base = excluded.xp_curve_base,
+		    xp_curve_exponent = excluded.xp_curve_exponent,
+		    xp_irregularity = excluded.xp_irregularity,
 		    damage_bonus_per_level = excluded.damage_bonus_per_level,
 		    cooldown_redux_per_level = excluded.cooldown_redux_per_level`),
-		c.XPPerUse, c.MaxLevel, curveType, c.XPCurveBase, c.DamageBonusPerLevel, c.CooldownReduxPerLevel)
+		c.XPPerUse, c.MaxLevel, curveType, c.XPCurveBase, c.XPCurveExponent, c.XPIrregularity,
+		c.DamageBonusPerLevel, c.CooldownReduxPerLevel)
 	if err != nil {
 		return fmt.Errorf("db: UpdateSkillProgressionConfig: %w", err)
 	}
@@ -4985,16 +5017,13 @@ func XPRequiredForLevel(level int, cfg *SkillProgressionConfig) int {
 
 	base := cfg.XPCurveBase
 	if base <= 0 {
-		base = 100
+		base = 40
 	}
-
-	curveType := strings.ToLower(strings.TrimSpace(cfg.XPCurveType))
-	switch curveType {
-	case "exponential":
-		return int(math.Round(float64(base) * math.Pow(1.5, float64(level-1))))
-	default: // linear + fallback
-		return base * (level - 1)
+	exponent := cfg.XPCurveExponent
+	if exponent <= 0 {
+		exponent = 2.0
 	}
+	return int(world.ComputeXPThreshold(level, cfg.XPCurveType, base, exponent, cfg.XPIrregularity))
 }
 
 // XPRequiredForLevelFromAbility returns the total XP required to reach a level
@@ -5007,18 +5036,48 @@ func XPRequiredForLevelFromAbility(level int, ability *world.AbilityTemplate) in
 
 	base := ability.MasteryXPCurveBase
 	if base <= 0 {
-		base = 100
+		base = 40
 	}
-
-	curveType := strings.ToLower(strings.TrimSpace(ability.MasteryXPCurveType))
-	switch curveType {
-	case "exponential":
-		return int(math.Round(float64(base) * math.Pow(1.5, float64(level-1))))
-	default: // linear + fallback
-		return base * (level - 1)
+	exponent := ability.MasteryXPCurveExponent
+	if exponent <= 0 {
+		exponent = 2.0
 	}
+	return int(world.ComputeXPThreshold(level, ability.MasteryXPCurveType, base, exponent, ability.MasteryXPIrregularity))
 }
 
+// ProcessMasteryXPCumulative adds gain to cumulative mastery XP and updates
+// level if absolute thresholds are crossed.
+func ProcessMasteryXPCumulative(currentXP int, currentLevel int, gain int, ability *world.AbilityTemplate) (newXP int, newLevel int, leveled bool) {
+	newXP = currentXP + gain
+	if newXP < 0 {
+		newXP = 0
+	}
+	newLevel = currentLevel
+	if newLevel < 1 {
+		newLevel = 1
+	}
+
+	maxLevel := 10
+	if ability != nil && ability.MasteryMaxLevel > 0 {
+		maxLevel = ability.MasteryMaxLevel
+	}
+	if maxLevel < 1 {
+		maxLevel = 1
+	}
+
+	for newLevel < maxLevel {
+		nextThreshold := XPRequiredForLevelFromAbility(newLevel+1, ability)
+		if newXP < nextThreshold {
+			break
+		}
+		newLevel++
+		leveled = true
+	}
+	return
+}
+
+// Deprecated: use ProcessMasteryXPCumulative. Kept for old save-data
+// conversion paths.
 // ProcessMasteryXPSinceLevel applies XP gain when mastery XP is stored as
 // "since last level". Returns (newXP, newLevel, leveled).
 func ProcessMasteryXPSinceLevel(currentXP int, currentLevel int, gain int, ability *world.AbilityTemplate) (newXP int, newLevel int, leveled bool) {
@@ -7037,6 +7096,14 @@ func (d *DB) migrateV32(ctx context.Context) {
 	}
 }
 
+func legacyCharacterXPThreshold(level int) int64 {
+	if level <= 1 {
+		return 0
+	}
+	n := int64(level - 1)
+	return n * n * 100
+}
+
 // migrateV33 converts character and mastery XP storage from cumulative totals
 // to "XP since last level" and marks completion in meta.
 func (d *DB) migrateV33(ctx context.Context) {
@@ -7088,7 +7155,7 @@ func (d *DB) migrateV33(ctx context.Context) {
 		if level < 1 {
 			level = 1
 		}
-		threshold := world.XPToLevel(level)
+		threshold := legacyCharacterXPThreshold(level)
 		xpSinceLevel := xp - threshold
 		if xpSinceLevel < 0 {
 			xpSinceLevel = 0
@@ -7188,6 +7255,279 @@ func (d *DB) migrateV33(ctx context.Context) {
 	}
 
 	log.Printf("migrateV33: converted XP storage to since-level (characters=%d mastery_rows=%d)", charUpdates, masteryUpdates)
+}
+
+// migrateV34 moves XP back to cumulative totals, adds irregular curve knobs,
+// and switches default character/mastery curves to the Diablo-style model.
+func (d *DB) migrateV34(ctx context.Context) {
+	const conversionDoneKey = "migration_v34_xp_cumulative_irregular_done"
+
+	if _, err := d.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		log.Printf("migrateV34: ensure meta table failed: %v", err)
+		return
+	}
+
+	var doneValue string
+	doneErr := d.db.QueryRowContext(ctx, d.q(`SELECT value FROM meta WHERE key = ?`), conversionDoneKey).Scan(&doneValue)
+	if doneErr != nil && doneErr != sql.ErrNoRows {
+		log.Printf("migrateV34: read meta flag failed: %v", doneErr)
+		return
+	}
+	if doneErr == nil && strings.TrimSpace(doneValue) == "1" {
+		return
+	}
+
+	type charUpdate struct {
+		id string
+		xp int64
+	}
+	type masteryUpdate struct {
+		id int
+		xp int64
+	}
+
+	oldCharCurveType := "quadratic"
+	oldCharBase := 100
+	if err := d.db.QueryRowContext(ctx, d.q(`
+		SELECT xp_curve_type, xp_curve_base
+		  FROM character_progression_config
+		 ORDER BY id
+		 LIMIT 1`)).Scan(&oldCharCurveType, &oldCharBase); err != nil && err != sql.ErrNoRows {
+		log.Printf("migrateV34: read old character progression config failed: %v", err)
+		return
+	}
+	if oldCharBase <= 0 {
+		oldCharBase = 100
+	}
+
+	var charUpdates []charUpdate
+	charRows, err := d.db.QueryContext(ctx, d.q(`SELECT id, xp, level FROM characters`))
+	if err != nil {
+		log.Printf("migrateV34: query characters failed: %v", err)
+		return
+	}
+	for charRows.Next() {
+		var (
+			charID string
+			xp     int64
+			level  int
+		)
+		if err := charRows.Scan(&charID, &xp, &level); err != nil {
+			_ = charRows.Close()
+			log.Printf("migrateV34: scan character failed: %v", err)
+			return
+		}
+		if level < 1 {
+			level = 1
+		}
+		oldThreshold := world.ComputeXPThreshold(level, oldCharCurveType, oldCharBase, 2.0, 0)
+		newThreshold := world.ComputeXPThreshold(level, "irregular", 60, 2.5, 0.4)
+		xpCumulative := xp + oldThreshold
+		if xpCumulative < newThreshold {
+			xpCumulative = newThreshold
+		}
+		charUpdates = append(charUpdates, charUpdate{id: charID, xp: xpCumulative})
+	}
+	if err := charRows.Err(); err != nil {
+		_ = charRows.Close()
+		log.Printf("migrateV34: iterate characters failed: %v", err)
+		return
+	}
+	_ = charRows.Close()
+
+	var masteryUpdates []masteryUpdate
+	masteryRows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT csp.id, csp.xp, csp.level,
+		       COALESCE(at.mastery_xp_curve_type, 'linear'),
+		       COALESCE(at.mastery_xp_curve_base, 100)
+		  FROM character_skill_progress csp
+		  LEFT JOIN ability_templates at ON at.id = csp.ability_id`))
+	if err != nil {
+		log.Printf("migrateV34: query character_skill_progress failed: %v", err)
+		return
+	}
+	for masteryRows.Next() {
+		var (
+			rowID     int
+			xp        int64
+			level     int
+			curveType string
+			curveBase int
+		)
+		if err := masteryRows.Scan(&rowID, &xp, &level, &curveType, &curveBase); err != nil {
+			_ = masteryRows.Close()
+			log.Printf("migrateV34: scan mastery failed: %v", err)
+			return
+		}
+		if level < 1 {
+			level = 1
+		}
+		if curveBase <= 0 {
+			curveBase = 100
+		}
+		oldThreshold := world.ComputeXPThreshold(level, curveType, curveBase, 2.0, 0)
+		newThreshold := world.ComputeXPThreshold(level, "irregular", 40, 2.0, 0.5)
+		xpCumulative := xp + oldThreshold
+		if xpCumulative < newThreshold {
+			xpCumulative = newThreshold
+		}
+		masteryUpdates = append(masteryUpdates, masteryUpdate{id: rowID, xp: xpCumulative})
+	}
+	if err := masteryRows.Err(); err != nil {
+		_ = masteryRows.Close()
+		log.Printf("migrateV34: iterate character_skill_progress failed: %v", err)
+		return
+	}
+	_ = masteryRows.Close()
+
+	hasColumn := func(table, column string) bool {
+		if d.driver == "postgres" {
+			var exists bool
+			err := d.db.QueryRowContext(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_name = $1 AND column_name = $2
+				)`, table, column).Scan(&exists)
+			return err == nil && exists
+		}
+
+		rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+		if err != nil {
+			return false
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt sql.NullString
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(name), column) {
+				return true
+			}
+		}
+		return false
+	}
+
+	addColumn := func(table, column, pgSQL, sqliteSQL string) bool {
+		if hasColumn(table, column) {
+			return true
+		}
+		stmt := sqliteSQL
+		if d.driver == "postgres" {
+			stmt = pgSQL
+		}
+		if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+			log.Printf("migrateV34: add column %s.%s failed: %v", table, column, err)
+			return false
+		}
+		return true
+	}
+
+	if !addColumn("character_progression_config", "xp_curve_exponent",
+		`ALTER TABLE character_progression_config ADD COLUMN xp_curve_exponent DOUBLE PRECISION NOT NULL DEFAULT 2.5`,
+		`ALTER TABLE character_progression_config ADD COLUMN xp_curve_exponent REAL NOT NULL DEFAULT 2.5`) {
+		return
+	}
+	if !addColumn("character_progression_config", "xp_irregularity",
+		`ALTER TABLE character_progression_config ADD COLUMN xp_irregularity DOUBLE PRECISION NOT NULL DEFAULT 0.4`,
+		`ALTER TABLE character_progression_config ADD COLUMN xp_irregularity REAL NOT NULL DEFAULT 0.4`) {
+		return
+	}
+	if !addColumn("skill_progression_config", "xp_curve_exponent",
+		`ALTER TABLE skill_progression_config ADD COLUMN xp_curve_exponent DOUBLE PRECISION NOT NULL DEFAULT 2.0`,
+		`ALTER TABLE skill_progression_config ADD COLUMN xp_curve_exponent REAL NOT NULL DEFAULT 2.0`) {
+		return
+	}
+	if !addColumn("skill_progression_config", "xp_irregularity",
+		`ALTER TABLE skill_progression_config ADD COLUMN xp_irregularity DOUBLE PRECISION NOT NULL DEFAULT 0.5`,
+		`ALTER TABLE skill_progression_config ADD COLUMN xp_irregularity REAL NOT NULL DEFAULT 0.5`) {
+		return
+	}
+	if !addColumn("ability_templates", "mastery_xp_curve_exponent",
+		`ALTER TABLE ability_templates ADD COLUMN mastery_xp_curve_exponent DOUBLE PRECISION NOT NULL DEFAULT 2.0`,
+		`ALTER TABLE ability_templates ADD COLUMN mastery_xp_curve_exponent REAL NOT NULL DEFAULT 2.0`) {
+		return
+	}
+	if !addColumn("ability_templates", "mastery_xp_irregularity",
+		`ALTER TABLE ability_templates ADD COLUMN mastery_xp_irregularity DOUBLE PRECISION NOT NULL DEFAULT 0.5`,
+		`ALTER TABLE ability_templates ADD COLUMN mastery_xp_irregularity REAL NOT NULL DEFAULT 0.5`) {
+		return
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("migrateV34: begin tx failed: %v", err)
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, d.q(`
+		UPDATE character_progression_config
+		   SET xp_curve_type = 'irregular',
+		       xp_curve_base = 60,
+		       xp_curve_exponent = 2.5,
+		       xp_irregularity = 0.4
+		 WHERE id = 1`)); err != nil {
+		log.Printf("migrateV34: update character progression config failed: %v", err)
+		return
+	}
+	if _, err := tx.ExecContext(ctx, d.q(`
+		UPDATE skill_progression_config
+		   SET xp_curve_type = 'irregular',
+		       xp_curve_base = 40,
+		       xp_curve_exponent = 2.0,
+		       xp_irregularity = 0.5
+		 WHERE id = 1`)); err != nil {
+		log.Printf("migrateV34: update skill progression config failed: %v", err)
+		return
+	}
+	if _, err := tx.ExecContext(ctx, d.q(`
+		UPDATE ability_templates
+		   SET mastery_xp_curve_type = 'irregular',
+		       mastery_xp_curve_base = 40,
+		       mastery_xp_curve_exponent = 2.0,
+		       mastery_xp_irregularity = 0.5
+		 WHERE LOWER(TRIM(mastery_xp_curve_type)) IN ('linear', 'quadratic', 'exponential')`)); err != nil {
+		log.Printf("migrateV34: update ability mastery curves failed: %v", err)
+		return
+	}
+
+	for _, u := range charUpdates {
+		if _, err := tx.ExecContext(ctx, d.q(`UPDATE characters SET xp = ? WHERE id = ?`), u.xp, u.id); err != nil {
+			log.Printf("migrateV34: update character xp failed (char=%s): %v", u.id, err)
+			return
+		}
+	}
+	for _, u := range masteryUpdates {
+		if _, err := tx.ExecContext(ctx, d.q(`UPDATE character_skill_progress SET xp = ? WHERE id = ?`), u.xp, u.id); err != nil {
+			log.Printf("migrateV34: update mastery xp failed (row=%d): %v", u.id, err)
+			return
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, d.q(`
+		INSERT INTO meta (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
+		conversionDoneKey, "1"); err != nil {
+		log.Printf("migrateV34: write meta flag failed: %v", err)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("migrateV34: commit failed: %v", err)
+		return
+	}
+
+	log.Printf("migrateV34: converted XP back to cumulative irregular curves (characters=%d mastery_rows=%d)",
+		len(charUpdates), len(masteryUpdates))
 }
 
 // LoadWorldObjects returns all placed static world objects from zone_scenery with resolved model paths.

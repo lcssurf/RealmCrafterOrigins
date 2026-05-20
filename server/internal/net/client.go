@@ -1007,18 +1007,27 @@ func (c *ClientConn) sendXPUpdate() error {
 	hpMax := c.actor.HealthMax
 	c.actor.Mu.Unlock()
 
-	xpNext := int64(0)
-	if int(level) < world.MaxLevel {
-		xpNext = world.XPToLevel(int(level)+1) - world.XPToLevel(int(level))
-		if xpNext < 0 {
-			xpNext = 0
+	xpCurrentLevel := world.XPToLevel(int(level))
+	xpNext := uint64(xpCurrentLevel)
+	if int(level) < world.MaxCharacterLevel() {
+		xpNext = uint64(world.XPToLevel(int(level) + 1))
+	}
+	toU32 := func(v uint64) uint32 {
+		if v > math.MaxUint32 {
+			return math.MaxUint32
 		}
+		return uint32(v)
 	}
 
 	var w Writer
+	w.WriteUint8(2)
 	w.WriteUint16(level)
-	w.WriteUint32(uint32(xp))
-	w.WriteUint32(uint32(xpNext))
+	if xp < 0 {
+		xp = 0
+	}
+	w.WriteUint32(toU32(uint64(xp)))
+	w.WriteUint32(toU32(uint64(xpCurrentLevel)))
+	w.WriteUint32(toU32(xpNext))
 	if err := c.sendPacket(protocol.PXPUpdate, w.Bytes()); err != nil {
 		return err
 	}
@@ -1352,7 +1361,7 @@ func (c *ClientConn) sendSkillState(ctx context.Context) {
 	nowMs := time.Now().UnixMilli()
 
 	payload := PSkillStatePayload{
-		Version:        3,
+		Version:        4,
 		HasKit:         resolution.HasKit,
 		KitID:          0,
 		KitKey:         resolution.KitKey,
@@ -1423,16 +1432,23 @@ func (c *ClientConn) sendSkillState(ctx context.Context) {
 		}
 
 		var masteryXPForNext uint32
+		var masteryXPCurrentLevelThreshold uint32
 		if abilityTemplate != nil && level < maxLevel {
-			curXPRequired := db.XPRequiredForLevelFromAbility(level, abilityTemplate)
 			nextXPRequired := db.XPRequiredForLevelFromAbility(level+1, abilityTemplate)
-			deltaXP := nextXPRequired - curXPRequired
-			if deltaXP > 0 {
-				if deltaXP > math.MaxUint32 {
+			if nextXPRequired > 0 {
+				if nextXPRequired > math.MaxUint32 {
 					masteryXPForNext = math.MaxUint32
 				} else {
-					masteryXPForNext = uint32(deltaXP)
+					masteryXPForNext = uint32(nextXPRequired)
 				}
+			}
+		}
+		if abilityTemplate != nil {
+			curXPRequired := db.XPRequiredForLevelFromAbility(level, abilityTemplate)
+			if curXPRequired > math.MaxUint32 {
+				masteryXPCurrentLevelThreshold = math.MaxUint32
+			} else if curXPRequired > 0 {
+				masteryXPCurrentLevelThreshold = uint32(curXPRequired)
 			}
 		}
 
@@ -1459,16 +1475,17 @@ func (c *ClientConn) sendSkillState(ctx context.Context) {
 		}
 
 		payload.Abilities = append(payload.Abilities, PSkillStateAbility{
-			SlotIndex:           uint8(ab.SlotIndex),
-			AbilityID:           uint32(ab.AbilityID),
-			AbilityName:         ab.AbilityName,
-			CooldownMs:          uint32(cdMs),
-			CooldownRemainingMs: cooldownRemainingMs,
-			MasteryLevel:        uint8(level),
-			MasteryXP:           masteryXP,
-			MasteryXPForNext:    masteryXPForNext,
-			MasteryMaxLevel:     uint8(maxLevel),
-			Description:         abilityDescription,
+			SlotIndex:                      uint8(ab.SlotIndex),
+			AbilityID:                      uint32(ab.AbilityID),
+			AbilityName:                    ab.AbilityName,
+			CooldownMs:                     uint32(cdMs),
+			CooldownRemainingMs:            cooldownRemainingMs,
+			MasteryLevel:                   uint8(level),
+			MasteryXP:                      masteryXP,
+			MasteryXPCurrentLevelThreshold: masteryXPCurrentLevelThreshold,
+			MasteryXPForNext:               masteryXPForNext,
+			MasteryMaxLevel:                uint8(maxLevel),
+			Description:                    abilityDescription,
 		})
 	}
 

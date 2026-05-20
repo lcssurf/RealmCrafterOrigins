@@ -504,7 +504,7 @@ func (c *ClientConn) awardXPAmount(ctx context.Context, gain int64) error {
 	curLevel := int(c.actor.Level)
 	c.actor.Mu.Unlock()
 
-	newXP, newLevel, leveled := world.ProcessXPSinceLevel(curXP, curLevel, gain)
+	newXP, newLevel, leveled := world.ProcessXPCumulative(curXP, curLevel, gain)
 	hpMax, epMax, strength := world.StatsByLevel(newLevel)
 
 	if err := c.server.db.SaveXP(ctx, c.actor.CharacterID, newXP, newLevel, hpMax, epMax); err != nil {

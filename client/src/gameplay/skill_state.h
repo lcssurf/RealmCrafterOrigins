@@ -16,6 +16,7 @@ struct SkillStateAbility {
     uint32_t    cooldown_remaining_ms = 0;
     uint8_t     mastery_level = 0;
     uint32_t    mastery_xp = 0;
+    uint32_t    mastery_xp_current_level_thr = 0;
     uint32_t    mastery_xp_for_next = 0;
     uint8_t     mastery_max_level = 0;
     std::string description;

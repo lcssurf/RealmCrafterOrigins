@@ -1,4 +1,5 @@
 #include "skill_hotbar.h"
+#include "util.h"
 
 #include <algorithm>
 #include <cctype>
@@ -299,8 +300,17 @@ void SkillHotbar::DrawSkillTooltip(const gameplay::SkillStateAbility& ability, I
             std::snprintf(mastery_line, sizeof(mastery_line), "MAX LEVEL");
             lines.push_back({mastery_line, IM_COL32(255, 215, 0, 255)});
         } else {
-            std::snprintf(mastery_line, sizeof(mastery_line), "XP: %u / %u",
-                          ability.mastery_xp, ability.mastery_xp_for_next);
+            const float xp_pct = ProgressBetweenThresholds(
+                ability.mastery_xp,
+                ability.mastery_xp_current_level_thr,
+                ability.mastery_xp_for_next);
+            std::snprintf(mastery_line, sizeof(mastery_line), "%.1f%%",
+                          xp_pct * 100.0f);
+            lines.push_back({mastery_line, IM_COL32(150, 200, 150, 255)});
+            const std::string xp_value = AbbreviateNumber(ability.mastery_xp);
+            const std::string xp_next = AbbreviateNumber(ability.mastery_xp_for_next);
+            std::snprintf(mastery_line, sizeof(mastery_line), "%s / %s",
+                          xp_value.c_str(), xp_next.c_str());
             lines.push_back({mastery_line, IM_COL32(150, 200, 150, 255)});
         }
     }

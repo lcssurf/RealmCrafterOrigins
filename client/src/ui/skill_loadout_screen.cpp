@@ -1,4 +1,5 @@
 #include "skill_loadout_screen.h"
+#include "util.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -65,12 +66,14 @@ void SkillLoadoutScreen::Render(int screen_w, int screen_h) {
         static_cast<std::size_t>(slot_count), nullptr);
     std::unordered_map<uint32_t, uint8_t> level_by_ability_id;
     std::unordered_map<uint32_t, std::string> description_by_ability_id;
+    std::unordered_map<uint32_t, const rco::gameplay::SkillStateAbility*> ability_by_id;
     for (const auto& ab : state.abilities()) {
         const int idx = static_cast<int>(ab.slot_index);
         if (idx >= 0 && idx < slot_count) {
             by_slot[static_cast<std::size_t>(idx)] = &ab;
         }
         if (ab.ability_id != 0) {
+            ability_by_id[ab.ability_id] = &ab;
             level_by_ability_id[ab.ability_id] = ab.mastery_level;
             if (!ab.description.empty()) {
                 description_by_ability_id[ab.ability_id] = ab.description;
@@ -166,6 +169,24 @@ void SkillLoadoutScreen::Render(int screen_w, int screen_h) {
                     }
                     ImGui::Separator();
                     ImGui::Text("Cooldown: %u ms", ab.cooldown_ms);
+                    const auto ability_it = ability_by_id.find(ab.ability_id);
+                    if (ability_it != ability_by_id.end()) {
+                        const auto* full_ab = ability_it->second;
+                        if (full_ab->mastery_level > 0 && full_ab->mastery_max_level > 0) {
+                            if (full_ab->mastery_level >= full_ab->mastery_max_level) {
+                                ImGui::TextColored(ImVec4(1.f, 0.84f, 0.f, 1.f), "MAX LEVEL");
+                            } else {
+                                const float pct = ProgressBetweenThresholds(
+                                    full_ab->mastery_xp,
+                                    full_ab->mastery_xp_current_level_thr,
+                                    full_ab->mastery_xp_for_next);
+                                const std::string xp_value = AbbreviateNumber(full_ab->mastery_xp);
+                                const std::string xp_next = AbbreviateNumber(full_ab->mastery_xp_for_next);
+                                ImGui::Text("%.1f%%", pct * 100.0f);
+                                ImGui::Text("%s / %s", xp_value.c_str(), xp_next.c_str());
+                            }
+                        }
+                    }
                     ImGui::EndTooltip();
                 }
             }
@@ -207,7 +228,14 @@ void SkillLoadoutScreen::Render(int screen_w, int screen_h) {
                         if (slot_ab->mastery_level >= slot_ab->mastery_max_level) {
                             ImGui::TextColored(ImVec4(1.f, 0.84f, 0.f, 1.f), "MAX LEVEL");
                         } else {
-                            ImGui::Text("XP: %u / %u", slot_ab->mastery_xp, slot_ab->mastery_xp_for_next);
+                            const float pct = ProgressBetweenThresholds(
+                                slot_ab->mastery_xp,
+                                slot_ab->mastery_xp_current_level_thr,
+                                slot_ab->mastery_xp_for_next);
+                            const std::string xp_value = AbbreviateNumber(slot_ab->mastery_xp);
+                            const std::string xp_next = AbbreviateNumber(slot_ab->mastery_xp_for_next);
+                            ImGui::Text("%.1f%%", pct * 100.0f);
+                            ImGui::Text("%s / %s", xp_value.c_str(), xp_next.c_str());
                         }
                     }
                     ImGui::EndTooltip();

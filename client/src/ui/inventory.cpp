@@ -1,8 +1,10 @@
 #include "inventory.h"
 #include "ui_texture.h"
+#include "util.h"
 #include <imgui.h>
 #include <cstdio>
 #include <algorithm>
+#include <string>
 
 namespace rco::ui {
 
@@ -426,8 +428,12 @@ void Inventory::RenderCharacter(int screenW, int screenH) {
     ImGui::Spacing();
 
     // XP bar (full width)
-    float xpFill = stat_xp_next > 0 ? (float)stat_xp / stat_xp_next : 0.f;
-    char  xpLbl[48]; std::snprintf(xpLbl, sizeof(xpLbl), "XP  %u / %u", stat_xp, stat_xp_next);
+    const float xpFill = ProgressBetweenThresholds(stat_xp, stat_xp_current_level, stat_xp_next);
+    const std::string xpValue = AbbreviateNumber(stat_xp);
+    const std::string xpNextValue = AbbreviateNumber(stat_xp_next);
+    char  xpLbl[64];
+    std::snprintf(xpLbl, sizeof(xpLbl), "%s / %s", xpValue.c_str(), xpNextValue.c_str());
+    ImGui::TextDisabled("XP %.1f%%", xpFill * 100.0f);
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4{0.40f,0.72f,0.40f,1.f});
     ImGui::ProgressBar(xpFill, {cw, 12.f}, xpLbl);
     ImGui::PopStyleColor();

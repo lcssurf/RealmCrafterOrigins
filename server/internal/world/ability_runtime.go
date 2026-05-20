@@ -8,45 +8,47 @@ import (
 // AbilityTemplate is one authoritative combat ability definition loaded from DB.
 // NPC and player intents resolve against this catalog.
 type AbilityTemplate struct {
-	ID                    int
-	Name                  string
-	Description           string
-	Family                string
-	Category              string
-	ResourceType          string
-	ResourceCost          int32
-	CooldownMs            int64
-	RangeMin              float32
-	RangeMax              float32
-	WindupMs              int64
-	ImpactDelayMs         int64
-	RecoverMs             int64
-	ParryWindowMs         int64
-	Interruptible         bool
-	BaseDamageMin         int32
-	BaseDamageMax         int32
-	DamageStatScaleJSON   string
-	ArmorPiercePct        float32
-	CritPolicyJSON        string
-	TelegraphType         string
-	TelegraphRadius       float32
-	TelegraphColorRGBA    string
-	ActionWindup          string
-	ActionImpact          string
-	ActionRecover         string
-	AllowActionOverride   bool
-	AllowedActionTagsJSON string
-	VFXIDWindup           int
-	VFXIDImpact           int
-	SFXIDWindup           int
-	SFXIDImpact           int
-	MasteryXPPerUse       int
-	MasteryMaxLevel       int
-	MasteryXPCurveType    string
-	MasteryXPCurveBase    int
+	ID                         int
+	Name                       string
+	Description                string
+	Family                     string
+	Category                   string
+	ResourceType               string
+	ResourceCost               int32
+	CooldownMs                 int64
+	RangeMin                   float32
+	RangeMax                   float32
+	WindupMs                   int64
+	ImpactDelayMs              int64
+	RecoverMs                  int64
+	ParryWindowMs              int64
+	Interruptible              bool
+	BaseDamageMin              int32
+	BaseDamageMax              int32
+	DamageStatScaleJSON        string
+	ArmorPiercePct             float32
+	CritPolicyJSON             string
+	TelegraphType              string
+	TelegraphRadius            float32
+	TelegraphColorRGBA         string
+	ActionWindup               string
+	ActionImpact               string
+	ActionRecover              string
+	AllowActionOverride        bool
+	AllowedActionTagsJSON      string
+	VFXIDWindup                int
+	VFXIDImpact                int
+	SFXIDWindup                int
+	SFXIDImpact                int
+	MasteryXPPerUse            int
+	MasteryMaxLevel            int
+	MasteryXPCurveType         string
+	MasteryXPCurveBase         int
+	MasteryXPCurveExponent     float64
+	MasteryXPIrregularity      float64
 	MasteryPrimaryBonusPerLvl  float64
 	MasteryCooldownReduxPerLvl float64
-	Enabled               bool
+	Enabled                    bool
 }
 
 // NPCAbilityLoadoutEntry maps NPCs/archetypes to ability templates and simple

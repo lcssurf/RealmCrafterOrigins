@@ -1,33 +1,130 @@
 package world
 
+import (
+	"math"
+	"strings"
+	"sync"
+)
+
 // ---------------------------------------------------------------------------
 // Progression tables — isolate here so they can be ported to Lua/GUE later.
 // ---------------------------------------------------------------------------
 
 const MaxLevel = 60
 
-// xpThresholds[i] = total XP required to reach level i+2 (index 0 = level 2).
-// Formula: level^2 * 100. Easy to swap for a hand-crafted table.
-var xpThresholds [MaxLevel]int64
+// CharacterProgressionRuntimeConfig is the runtime copy of the DB progression
+// config. It is loaded at startup so world code does not import db.
+type CharacterProgressionRuntimeConfig struct {
+	MaxLevel        int
+	XPCurveType     string
+	XPCurveBase     int
+	XPCurveExponent float64
+	XPIrregularity  float64
+}
 
-func init() {
-	for i := 0; i < MaxLevel; i++ {
-		lvl := int64(i + 2)
-		xpThresholds[i] = (lvl - 1) * (lvl - 1) * 100
+var (
+	charProgressionMu     sync.RWMutex
+	charProgressionConfig = defaultCharacterProgressionConfig()
+)
+
+func defaultCharacterProgressionConfig() CharacterProgressionRuntimeConfig {
+	return CharacterProgressionRuntimeConfig{
+		MaxLevel:        MaxLevel,
+		XPCurveType:     "irregular",
+		XPCurveBase:     60,
+		XPCurveExponent: 2.5,
+		XPIrregularity:  0.4,
+	}
+}
+
+// LoadAndCacheCharacterProgressionConfig replaces the runtime character XP
+// curve. Call once on server startup after DB seeding/migrations.
+func LoadAndCacheCharacterProgressionConfig(cfg CharacterProgressionRuntimeConfig) {
+	cfg = normalizeCharacterProgressionConfig(cfg)
+	charProgressionMu.Lock()
+	charProgressionConfig = cfg
+	charProgressionMu.Unlock()
+}
+
+func getCachedCharProgressionConfig() CharacterProgressionRuntimeConfig {
+	charProgressionMu.RLock()
+	defer charProgressionMu.RUnlock()
+	return charProgressionConfig
+}
+
+func normalizeCharacterProgressionConfig(cfg CharacterProgressionRuntimeConfig) CharacterProgressionRuntimeConfig {
+	if cfg.MaxLevel < 1 {
+		cfg.MaxLevel = MaxLevel
+	}
+	if cfg.XPCurveBase <= 0 {
+		cfg.XPCurveBase = 60
+	}
+	if cfg.XPCurveExponent <= 0 {
+		cfg.XPCurveExponent = 2.5
+	}
+	if cfg.XPIrregularity < 0 {
+		cfg.XPIrregularity = 0
+	}
+	if cfg.XPIrregularity > 1 {
+		cfg.XPIrregularity = 1
+	}
+	cfg.XPCurveType = strings.ToLower(strings.TrimSpace(cfg.XPCurveType))
+	switch cfg.XPCurveType {
+	case "irregular", "linear", "quadratic", "exponential":
+	default:
+		cfg.XPCurveType = "irregular"
+	}
+	return cfg
+}
+
+// MaxCharacterLevel returns the configured character level cap.
+func MaxCharacterLevel() int {
+	return getCachedCharProgressionConfig().MaxLevel
+}
+
+// ComputeXPThreshold returns the cumulative XP required to reach level.
+// Level 1 always requires 0 XP.
+func ComputeXPThreshold(level int, curveType string, base int, exponent float64, irregularity float64) int64 {
+	if level <= 1 {
+		return 0
+	}
+	if base <= 0 {
+		base = 1
+	}
+	if exponent <= 0 {
+		exponent = 1
+	}
+	if irregularity < 0 {
+		irregularity = 0
+	}
+	if irregularity > 1 {
+		irregularity = 1
+	}
+
+	curveType = strings.ToLower(strings.TrimSpace(curveType))
+	l := float64(level)
+	switch curveType {
+	case "irregular":
+		baseValue := float64(base) * math.Pow(l, exponent)
+		jitter := (float64((level*73+37)%100) / 100.0) * irregularity
+		return int64(math.Round(baseValue * (1.0 + jitter)))
+	case "exponential":
+		return int64(math.Round(float64(base) * math.Pow(1.5, l-1)))
+	case "quadratic":
+		n := int64(level - 1)
+		return int64(base) * n * n
+	case "linear":
+		return int64(base) * int64(level-1)
+	default:
+		return int64(base) * int64(level-1)
 	}
 }
 
 // XPToLevel returns the total XP required to reach the given level (1-based).
 // Level 1 always requires 0 XP.
 func XPToLevel(level int) int64 {
-	if level <= 1 {
-		return 0
-	}
-	idx := level - 2
-	if idx >= MaxLevel {
-		return xpThresholds[MaxLevel-1] + int64(level)*10000
-	}
-	return xpThresholds[idx]
+	cfg := getCachedCharProgressionConfig()
+	return ComputeXPThreshold(level, cfg.XPCurveType, cfg.XPCurveBase, cfg.XPCurveExponent, cfg.XPIrregularity)
 }
 
 // XPForKill returns the XP reward for killing an NPC of the given level.
@@ -49,13 +146,38 @@ func StatsByLevel(level int) (healthMax, energyMax, strength int32) {
 func ProcessXP(currentXP int64, currentLevel int, gain int64) (newXP int64, newLevel int, leveled bool) {
 	newXP = currentXP + gain
 	newLevel = currentLevel
-	for newLevel < MaxLevel && newXP >= XPToLevel(newLevel+1) {
+	for newLevel < MaxCharacterLevel() && newXP >= XPToLevel(newLevel+1) {
 		newLevel++
 		leveled = true
 	}
 	return
 }
 
+// ProcessXPCumulative adds gain to cumulative XP and updates level if absolute
+// thresholds are crossed. Returns (newXP, newLevel, leveled).
+func ProcessXPCumulative(currentXP int64, currentLevel int, gain int64) (newXP int64, newLevel int, leveled bool) {
+	newXP = currentXP + gain
+	if newXP < 0 {
+		newXP = 0
+	}
+	newLevel = currentLevel
+	if newLevel < 1 {
+		newLevel = 1
+	}
+
+	for newLevel < MaxCharacterLevel() {
+		nextThreshold := XPToLevel(newLevel + 1)
+		if newXP < nextThreshold {
+			break
+		}
+		newLevel++
+		leveled = true
+	}
+	return
+}
+
+// Deprecated: use ProcessXPCumulative. This exists for compatibility with
+// old save-data conversion paths.
 // ProcessXPSinceLevel applies XP gain when XP is stored as "since last level".
 // Returns (newXP, newLevel, leveled).
 func ProcessXPSinceLevel(currentXP int64, currentLevel int, gain int64) (newXP int64, newLevel int, leveled bool) {
@@ -72,7 +194,7 @@ func ProcessXPSinceLevel(currentXP int64, currentLevel int, gain int64) (newXP i
 	newXP = currentXP + gain
 	newLevel = currentLevel
 
-	for newLevel < MaxLevel {
+	for newLevel < MaxCharacterLevel() {
 		curThreshold := XPToLevel(newLevel)
 		nextThreshold := XPToLevel(newLevel + 1)
 		delta := nextThreshold - curThreshold

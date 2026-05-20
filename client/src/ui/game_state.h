@@ -56,6 +56,7 @@ struct PlayerState {
     int32_t     staminaMax = 0;
     uint16_t    level      = 1;
     uint32_t    xp         = 0;
+    uint32_t    xp_current_level = 0;
     uint32_t    xp_next    = 100;
     std::string name;
     std::string race;

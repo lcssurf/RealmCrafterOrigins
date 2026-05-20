@@ -70,6 +70,7 @@ public:
     int32_t     stat_sp      = 0;
     int32_t     stat_sp_max  = 0;
     uint32_t    stat_xp      = 0;
+    uint32_t    stat_xp_current_level = 0;
     uint32_t    stat_xp_next = 100;
 
 private:

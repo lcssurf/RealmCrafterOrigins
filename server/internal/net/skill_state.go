@@ -8,6 +8,7 @@ const (
 	pSkillStateVersion1 uint8 = 1
 	pSkillStateVersion2 uint8 = 2
 	pSkillStateVersion3 uint8 = 3
+	pSkillStateVersion4 uint8 = 4
 )
 
 // PSkillStatePayload is the server->client payload for packet 129.
@@ -22,23 +23,25 @@ type PSkillStatePayload struct {
 
 // PSkillStateAbility is one slot in the kit.
 type PSkillStateAbility struct {
-	SlotIndex           uint8
-	AbilityID           uint32
-	AbilityName         string
-	CooldownMs          uint32
-	CooldownRemainingMs uint32
-	MasteryLevel        uint8
-	MasteryXP           uint32
-	MasteryXPForNext    uint32
-	MasteryMaxLevel     uint8
-	Description         string
+	SlotIndex                      uint8
+	AbilityID                      uint32
+	AbilityName                    string
+	CooldownMs                     uint32
+	CooldownRemainingMs            uint32
+	MasteryLevel                   uint8
+	MasteryXP                      uint32
+	MasteryXPCurrentLevelThreshold uint32
+	MasteryXPForNext               uint32
+	MasteryMaxLevel                uint8
+	Description                    string
 }
 
 // EncodePSkillState serializes the payload to wire format.
 func EncodePSkillState(p PSkillStatePayload) ([]byte, error) {
 	if p.Version != pSkillStateVersion1 &&
 		p.Version != pSkillStateVersion2 &&
-		p.Version != pSkillStateVersion3 {
+		p.Version != pSkillStateVersion3 &&
+		p.Version != pSkillStateVersion4 {
 		return nil, fmt.Errorf("PSkillState: unsupported version %d", p.Version)
 	}
 	if len(p.Abilities) > 255 {
@@ -85,7 +88,13 @@ func EncodePSkillState(p PSkillStatePayload) ([]byte, error) {
 		w.WriteString(a.AbilityName)
 		w.WriteUint32(a.CooldownMs)
 		w.WriteUint32(a.CooldownRemainingMs)
-		if p.Version >= pSkillStateVersion2 {
+		if p.Version >= pSkillStateVersion4 {
+			w.WriteUint8(a.MasteryLevel)
+			w.WriteUint32(a.MasteryXP)
+			w.WriteUint32(a.MasteryXPCurrentLevelThreshold)
+			w.WriteUint32(a.MasteryXPForNext)
+			w.WriteUint8(a.MasteryMaxLevel)
+		} else if p.Version >= pSkillStateVersion2 {
 			w.WriteUint8(a.MasteryLevel)
 			w.WriteUint32(a.MasteryXP)
 			w.WriteUint32(a.MasteryXPForNext)
@@ -109,7 +118,8 @@ func DecodePSkillState(buf []byte) (PSkillStatePayload, error) {
 	}
 	if version != pSkillStateVersion1 &&
 		version != pSkillStateVersion2 &&
-		version != pSkillStateVersion3 {
+		version != pSkillStateVersion3 &&
+		version != pSkillStateVersion4 {
 		return out, fmt.Errorf("PSkillState: unsupported version %d", version)
 	}
 	out.Version = version
@@ -163,7 +173,28 @@ func DecodePSkillState(buf []byte) (PSkillStatePayload, error) {
 		if err != nil {
 			return out, fmt.Errorf("PSkillState: read abilities[%d].cooldown_remaining_ms: %w", i, err)
 		}
-		if version >= pSkillStateVersion2 {
+		if version >= pSkillStateVersion4 {
+			a.MasteryLevel, err = r.ReadUint8()
+			if err != nil {
+				return out, fmt.Errorf("PSkillState: read abilities[%d].mastery_level: %w", i, err)
+			}
+			a.MasteryXP, err = r.ReadUint32()
+			if err != nil {
+				return out, fmt.Errorf("PSkillState: read abilities[%d].mastery_xp: %w", i, err)
+			}
+			a.MasteryXPCurrentLevelThreshold, err = r.ReadUint32()
+			if err != nil {
+				return out, fmt.Errorf("PSkillState: read abilities[%d].mastery_xp_current_level_thr: %w", i, err)
+			}
+			a.MasteryXPForNext, err = r.ReadUint32()
+			if err != nil {
+				return out, fmt.Errorf("PSkillState: read abilities[%d].mastery_xp_next_level_thr: %w", i, err)
+			}
+			a.MasteryMaxLevel, err = r.ReadUint8()
+			if err != nil {
+				return out, fmt.Errorf("PSkillState: read abilities[%d].mastery_max_level: %w", i, err)
+			}
+		} else if version >= pSkillStateVersion2 {
 			a.MasteryLevel, err = r.ReadUint8()
 			if err != nil {
 				return out, fmt.Errorf("PSkillState: read abilities[%d].mastery_level: %w", i, err)

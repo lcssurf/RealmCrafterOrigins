@@ -169,6 +169,17 @@ func main() {
 	if err := database.SeedDefaultKillXPScalingConfig(ctx); err != nil {
 		log.Fatalf("main: seed kill xp scaling config: %v", err)
 	}
+	charProgression, err := database.GetCharacterProgressionConfig(ctx)
+	if err != nil {
+		log.Fatalf("main: load char progression config: %v", err)
+	}
+	world.LoadAndCacheCharacterProgressionConfig(world.CharacterProgressionRuntimeConfig{
+		MaxLevel:        charProgression.MaxLevel,
+		XPCurveType:     charProgression.XPCurveType,
+		XPCurveBase:     charProgression.XPCurveBase,
+		XPCurveExponent: charProgression.XPCurveExponent,
+		XPIrregularity:  charProgression.XPIrregularity,
+	})
 
 	// Create Lua scripting registry and load scripts.
 	// Canonical path: dist/server/scripts/ (relative to exe, after anchor).
@@ -217,45 +228,47 @@ func main() {
 			abilities := make([]world.AbilityTemplate, 0, len(abilityRows))
 			for _, row := range abilityRows {
 				abilities = append(abilities, world.AbilityTemplate{
-					ID:                    row.ID,
-					Name:                  row.Name,
-					Description:           row.Description,
-					Family:                row.Family,
-					Category:              row.Category,
-					ResourceType:          row.ResourceType,
-					ResourceCost:          row.ResourceCost,
-					CooldownMs:            row.CooldownMs,
-					RangeMin:              row.RangeMin,
-					RangeMax:              row.RangeMax,
-					WindupMs:              row.WindupMs,
-					ImpactDelayMs:         row.ImpactDelayMs,
-					RecoverMs:             row.RecoverMs,
-					ParryWindowMs:         row.ParryWindowMs,
-					Interruptible:         row.Interruptible,
-					BaseDamageMin:         row.BaseDamageMin,
-					BaseDamageMax:         row.BaseDamageMax,
-					DamageStatScaleJSON:   row.DamageStatScaleJSON,
-					ArmorPiercePct:        row.ArmorPiercePct,
-					CritPolicyJSON:        row.CritPolicyJSON,
-					TelegraphType:         row.TelegraphType,
-					TelegraphRadius:       row.TelegraphRadius,
-					TelegraphColorRGBA:    row.TelegraphColorRGBA,
-					ActionWindup:          row.ActionWindup,
-					ActionImpact:          row.ActionImpact,
-					ActionRecover:         row.ActionRecover,
-					AllowActionOverride:   row.AllowActionOverride,
-					AllowedActionTagsJSON: row.AllowedActionTagsJSON,
-					VFXIDWindup:           row.VFXIDWindup,
-					VFXIDImpact:           row.VFXIDImpact,
-					SFXIDWindup:           row.SFXIDWindup,
-					SFXIDImpact:           row.SFXIDImpact,
-					MasteryXPPerUse:       row.MasteryXPPerUse,
-					MasteryMaxLevel:       row.MasteryMaxLevel,
-					MasteryXPCurveType:    row.MasteryXPCurveType,
-					MasteryXPCurveBase:    row.MasteryXPCurveBase,
+					ID:                         row.ID,
+					Name:                       row.Name,
+					Description:                row.Description,
+					Family:                     row.Family,
+					Category:                   row.Category,
+					ResourceType:               row.ResourceType,
+					ResourceCost:               row.ResourceCost,
+					CooldownMs:                 row.CooldownMs,
+					RangeMin:                   row.RangeMin,
+					RangeMax:                   row.RangeMax,
+					WindupMs:                   row.WindupMs,
+					ImpactDelayMs:              row.ImpactDelayMs,
+					RecoverMs:                  row.RecoverMs,
+					ParryWindowMs:              row.ParryWindowMs,
+					Interruptible:              row.Interruptible,
+					BaseDamageMin:              row.BaseDamageMin,
+					BaseDamageMax:              row.BaseDamageMax,
+					DamageStatScaleJSON:        row.DamageStatScaleJSON,
+					ArmorPiercePct:             row.ArmorPiercePct,
+					CritPolicyJSON:             row.CritPolicyJSON,
+					TelegraphType:              row.TelegraphType,
+					TelegraphRadius:            row.TelegraphRadius,
+					TelegraphColorRGBA:         row.TelegraphColorRGBA,
+					ActionWindup:               row.ActionWindup,
+					ActionImpact:               row.ActionImpact,
+					ActionRecover:              row.ActionRecover,
+					AllowActionOverride:        row.AllowActionOverride,
+					AllowedActionTagsJSON:      row.AllowedActionTagsJSON,
+					VFXIDWindup:                row.VFXIDWindup,
+					VFXIDImpact:                row.VFXIDImpact,
+					SFXIDWindup:                row.SFXIDWindup,
+					SFXIDImpact:                row.SFXIDImpact,
+					MasteryXPPerUse:            row.MasteryXPPerUse,
+					MasteryMaxLevel:            row.MasteryMaxLevel,
+					MasteryXPCurveType:         row.MasteryXPCurveType,
+					MasteryXPCurveBase:         row.MasteryXPCurveBase,
+					MasteryXPCurveExponent:     row.MasteryXPCurveExponent,
+					MasteryXPIrregularity:      row.MasteryXPIrregularity,
 					MasteryPrimaryBonusPerLvl:  row.MasteryPrimaryBonusPerLvl,
 					MasteryCooldownReduxPerLvl: row.MasteryCooldownReduxPerLvl,
-					Enabled:               row.Enabled,
+					Enabled:                    row.Enabled,
 				})
 			}
 			world.SetAbilityCatalog(abilities)
