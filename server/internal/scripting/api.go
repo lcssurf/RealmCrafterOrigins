@@ -244,7 +244,7 @@ func (r *Registry) registerCombatAPI() {
 
 		now := nowMs()
 		target.Mu.Lock()
-		interrupted := (target.Guarding && target.GuardUntil > now) ||
+		interrupted := target.Guarding ||
 			target.ParryUntil > now || target.DodgeUntil > now
 		if interrupted {
 			target.Guarding = false

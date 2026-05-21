@@ -1227,6 +1227,9 @@ int main() {
     double    dodge_roll_pending_until = 0.0;
     constexpr float kDodgeRollSpeedStart = 12.0f;
     constexpr float kDodgeRollSpeedEnd = 4.5f;
+    constexpr double kRMBHoldThresholdSec = 0.20;
+    bool rmb_press_handled = false;
+    bool local_guarding = false;
     struct SpecialParryTelegraph {
         uint32_t target_rid = 0;
         double   start_time = 0.0;
@@ -2229,12 +2232,14 @@ int main() {
                     tg.inner_color = DefaultInnerTelegraphColorForReason(tg.reason_tag);
                     special_parry_telegraphs[source_rid] = tg;
                 } else if ((event_code == rco::net::kCombatEventSpecialParry ||
-                            event_code == rco::net::kCombatEventSpecialHit) &&
+                            event_code == rco::net::kCombatEventSpecialHit ||
+                            event_code == rco::net::kCombatEventSpecialCritHit) &&
                            source_rid != 0) {
                     special_parry_telegraphs.erase(source_rid);
                 }
                 if ((event_code == rco::net::kCombatEventSpecialParry ||
-                     event_code == rco::net::kCombatEventSpecialHit) &&
+                     event_code == rco::net::kCombatEventSpecialHit ||
+                     event_code == rco::net::kCombatEventSpecialCritHit) &&
                     target_rid == player.runtimeId) {
                     ParryJudgementFx fx;
                     fx.source_rid = source_rid;
@@ -2244,6 +2249,9 @@ int main() {
                     fx.end_time = event_now + (fx.success ? 0.85 : 0.78);
                     parry_judgements.push_back(fx);
                 }
+                // TECH_DEBT: idle_action_id should come from appearance
+                // bindings ("Idle") rather than a fixed index.
+                constexpr uint8_t idle_action_id = 0;
 
                 // Authoritative dodge-roll trigger:
                 // only start local roll when the server accepts dodge.
@@ -2265,11 +2273,20 @@ int main() {
                     dodge_roll_end = event_now + static_cast<double>(roll_s);
                     dodge_roll_active = true;
                     dodge_roll_pending = false;
+                    player_anim_ctrl.ForceState(idle_action_id);
                 } else if (event_code == rco::net::kCombatEventActionRejected &&
                            source_rid == player.runtimeId &&
                            static_cast<uint8_t>(value) == rco::net::kCombatActionDodge) {
                     dodge_roll_active = false;
                     dodge_roll_pending = false;
+                }
+                if (source_rid == player.runtimeId) {
+                    if (event_code == rco::net::kCombatEventGuardStarted) {
+                        local_guarding = true;
+                        player_anim_ctrl.ForceState(idle_action_id);
+                    } else if (event_code == rco::net::kCombatEventParryStarted) {
+                        player_anim_ctrl.ForceState(idle_action_id);
+                    }
                 }
 
                 auto actor_name = [&](uint32_t rid) -> std::string {
@@ -2278,6 +2295,25 @@ int main() {
                     auto it = world_actors.find(rid);
                     if (it != world_actors.end() && !it->second.name.empty()) return it->second.name;
                     return std::string("Actor#") + std::to_string(rid);
+                };
+                auto resolve_actor_position = [&](uint32_t rid, float& wx, float& wy, float& wz) -> bool {
+                    wx = 0.f;
+                    wy = 0.f;
+                    wz = 0.f;
+                    if (rid == player.runtimeId) {
+                        wx = player.x;
+                        wy = player.y;
+                        wz = player.z;
+                        return true;
+                    }
+                    auto it = world_actors.find(rid);
+                    if (it != world_actors.end()) {
+                        wx = it->second.x;
+                        wy = it->second.y;
+                        wz = it->second.z;
+                        return true;
+                    }
+                    return false;
                 };
 
                 if (!text.empty() && !telegraph_meta_consumed) {
@@ -2297,6 +2333,9 @@ int main() {
                         msg = actor_name(source_rid) + " raised Guard.";
                         break;
                     case rco::net::kCombatEventGuardEnded:
+                        if (source_rid == player.runtimeId) {
+                            local_guarding = false;
+                        }
                         msg = actor_name(source_rid) + " lowered Guard.";
                         break;
                     case rco::net::kCombatEventParryStarted:
@@ -2309,13 +2348,35 @@ int main() {
                         msg = actor_name(source_rid) + " interrupted " + actor_name(target_rid) + ".";
                         break;
                     case rco::net::kCombatEventHitDodged:
+                    {
+                        float wx = 0.f, wy = 0.f, wz = 0.f;
+                        if (resolve_actor_position(source_rid, wx, wy, wz)) {
+                            float_nums.AddText(wx, wy + 1.8f, wz, "Dodge", rco::ui::FloatType::Dodge);
+                        }
                         msg = actor_name(source_rid) + " dodged an incoming hit.";
                         break;
+                    }
                     case rco::net::kCombatEventHitGuarded:
+                    {
+                        float wx = 0.f, wy = 0.f, wz = 0.f;
+                        if (resolve_actor_position(source_rid, wx, wy, wz)) {
+                            float_nums.AddText(wx, wy + 1.6f, wz, "Guarded", rco::ui::FloatType::DamageGuarded);
+                        }
                         msg = actor_name(source_rid) + " guarded and took " + std::to_string(value) + " damage.";
                         break;
+                    }
                     case rco::net::kCombatEventHitParried:
+                    {
+                        float wx = 0.f, wy = 0.f, wz = 0.f;
+                        if (resolve_actor_position(source_rid, wx, wy, wz)) {
+                            float_nums.AddText(wx, wy + 1.8f, wz, "Parry", rco::ui::FloatType::Parry);
+                        }
                         msg = actor_name(source_rid) + " parried an incoming hit.";
+                        break;
+                    }
+                    case rco::net::kCombatEventCritHit:
+                        msg = actor_name(source_rid) + " landed a critical hit on " +
+                              actor_name(target_rid) + " for " + std::to_string(value) + " damage.";
                         break;
                     case rco::net::kCombatEventSpecialWindup:
                         msg = actor_name(source_rid) + " is charging a special attack. Parry at the last moment.";
@@ -2336,6 +2397,10 @@ int main() {
                         break;
                     case rco::net::kCombatEventSpecialHit:
                         msg = actor_name(source_rid) + " landed a special hit on " +
+                              actor_name(target_rid) + " for " + std::to_string(value) + " damage.";
+                        break;
+                    case rco::net::kCombatEventSpecialCritHit:
+                        msg = actor_name(source_rid) + " landed a critical special hit on " +
                               actor_name(target_rid) + " for " + std::to_string(value) + " damage.";
                         break;
                     default:
@@ -2534,9 +2599,11 @@ int main() {
                         wz = it->second.z;
                     }
                 }
-                float_nums.Add(wx, wy + 1.8f, wz,
-                               dmg == -1 ? -1 : static_cast<int32_t>(dmg),
-                               is_crit);
+                if (dmg == -1) {
+                    float_nums.AddText(wx, wy + 1.8f, wz, "Miss", rco::ui::FloatType::Miss);
+                } else {
+                    float_nums.AddDamage(wx, wy + 1.8f, wz, static_cast<int32_t>(dmg), is_crit, false);
+                }
                 break;
             }
 
@@ -3064,6 +3131,8 @@ int main() {
             skill_loadout_screen.SetOpen(false);
             dodge_roll_active = false;
             dodge_roll_pending = false;
+            rmb_press_handled = false;
+            local_guarding = false;
             special_parry_telegraphs.clear();
             parry_judgements.clear();
             login_error.clear();
@@ -3085,9 +3154,7 @@ int main() {
     bool   ms_lmb_prev    = false;  // LMB state last frame
     bool   ms_lmb_click   = false;  // true for exactly one frame: LMB press
     double ms_prev_x      = 0.0, ms_prev_y = 0.0;
-    bool   ms_rmb_defense_candidate = false; // tap RMB => defense skill (T&L-like)
     double ms_rmb_down_time = 0.0;
-    double ms_rmb_down_x = 0.0, ms_rmb_down_y = 0.0;
     int    cursor_mode_last = GLFW_CURSOR_NORMAL;
     bool   cursor_toggle_state = false;
     bool   cursor_key_was_pressed = false;
@@ -3717,74 +3784,85 @@ int main() {
                     bool cur_lmb = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
                     const ImGuiIO& io_state = ImGui::GetIO();
 
-                    // T&L-like defense skill flow:
-                    // quick RMB tap -> defense skill.
-                    // if moving while tapping, treat as dodge; otherwise guard window.
+                    // Souls-like defense flow:
+                    // tap RMB => Parry, hold RMB (stationary) => Guard, hold RMB + movement => Dodge.
                     if (cur_rmb && !ms_rmb_prev) {
-                        glfwGetCursorPos(w, &ms_rmb_down_x, &ms_rmb_down_y);
                         ms_rmb_down_time = now;
-                        ms_rmb_defense_candidate = conn.IsConnected() && !player_dead &&
-                                                   !skill_loadout_open &&
-                                                   !io_state.WantCaptureMouse &&
-                                                   !io_state.WantTextInput;
-                    } else if (!cur_rmb && ms_rmb_prev) {
-                        if (ms_rmb_defense_candidate && !skill_loadout_open && !io_state.WantCaptureMouse) {
-                            double rx, ry;
-                            glfwGetCursorPos(w, &rx, &ry);
-                            const float moved = std::hypot(
-                                static_cast<float>(rx - ms_rmb_down_x),
-                                static_cast<float>(ry - ms_rmb_down_y));
-                            const double held_s = now - ms_rmb_down_time;
-                            if (held_s <= 0.22 && moved <= 6.f) {
-                                auto resolve_dodge_dir = [&]() -> glm::vec2 {
-                                    const float yr = glm::radians(player.yaw);
-                                    const glm::vec2 fdir{-std::sin(yr), -std::cos(yr)};
-                                    const glm::vec2 rdir{std::cos(yr), -std::sin(yr)};
+                        rmb_press_handled = false;
+                    }
 
-                                    glm::vec2 dir(0.f);
-                                    if (glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS) dir += fdir;
-                                    if (glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS) dir -= fdir;
-                                    if (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS ||
-                                        glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS) dir -= rdir;
-                                    if (glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS ||
-                                        glfwGetKey(w, GLFW_KEY_E) == GLFW_PRESS) dir += rdir;
+                    if (cur_rmb && !rmb_press_handled) {
+                        const bool can_send =
+                            conn.IsConnected() && !player_dead &&
+                            !skill_loadout_open &&
+                            !io_state.WantCaptureMouse &&
+                            !io_state.WantTextInput;
+                        const double held_s = now - ms_rmb_down_time;
+                        if (can_send && held_s >= kRMBHoldThresholdSec) {
+                            auto resolve_dodge_dir = [&]() -> glm::vec2 {
+                                const float yr = glm::radians(player.yaw);
+                                const glm::vec2 fdir{-std::sin(yr), -std::cos(yr)};
+                                const glm::vec2 rdir{std::cos(yr), -std::sin(yr)};
 
-                                    if (glm::dot(dir, dir) > 0.0001f) {
-                                        return glm::normalize(dir);
-                                    }
-                                    if (player_ctrl.HasMoveTarget()) {
-                                        glm::vec3 mt = player_ctrl.MoveTarget();
-                                        glm::vec2 to_target{mt.x - player.x, mt.z - player.z};
-                                        if (glm::dot(to_target, to_target) > 0.0001f) {
-                                            return glm::normalize(to_target);
-                                        }
-                                    }
-                                    if (player_ctrl.IsAutoRunning()) {
-                                        return glm::normalize(fdir);
-                                    }
-                                    return glm::normalize(fdir);
-                                };
+                                glm::vec2 dir(0.f);
+                                if (glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS) dir += fdir;
+                                if (glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS) dir -= fdir;
+                                if (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS ||
+                                    glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS) dir -= rdir;
+                                if (glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS ||
+                                    glfwGetKey(w, GLFW_KEY_E) == GLFW_PRESS) dir += rdir;
 
-                                bool moving_input =
-                                    glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS ||
-                                    glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS ||
-                                    glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS ||
-                                    glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS ||
-                                    glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS ||
-                                    glfwGetKey(w, GLFW_KEY_E) == GLFW_PRESS ||
-                                    player_ctrl.IsAutoRunning() ||
-                                    player_ctrl.HasMoveTarget();
-                                if (moving_input) {
-                                    dodge_roll_pending = true;
-                                    dodge_roll_pending_dir = resolve_dodge_dir();
-                                    dodge_roll_pending_until = now + 0.45;
-                                    send_combat_action(rco::net::kCombatActionDodge, 0);
-                                } else {
-                                    send_combat_action(rco::net::kCombatActionGuardStart, 0);
+                                if (glm::dot(dir, dir) > 0.0001f) {
+                                    return glm::normalize(dir);
                                 }
+                                if (player_ctrl.HasMoveTarget()) {
+                                    glm::vec3 mt = player_ctrl.MoveTarget();
+                                    glm::vec2 to_target{mt.x - player.x, mt.z - player.z};
+                                    if (glm::dot(to_target, to_target) > 0.0001f) {
+                                        return glm::normalize(to_target);
+                                    }
+                                }
+                                if (player_ctrl.IsAutoRunning()) {
+                                    return glm::normalize(fdir);
+                                }
+                                return glm::normalize(fdir);
+                            };
+
+                            bool moving_input =
+                                glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS ||
+                                glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS ||
+                                glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS ||
+                                glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS ||
+                                glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS ||
+                                glfwGetKey(w, GLFW_KEY_E) == GLFW_PRESS ||
+                                player_ctrl.IsAutoRunning() ||
+                                player_ctrl.HasMoveTarget();
+                            if (moving_input) {
+                                dodge_roll_pending = true;
+                                dodge_roll_pending_dir = resolve_dodge_dir();
+                                dodge_roll_pending_until = now + 0.45;
+                                send_combat_action(rco::net::kCombatActionDodge, 0);
+                            } else {
+                                send_combat_action(rco::net::kCombatActionGuardStart, 0);
+                                local_guarding = true;
+                            }
+                            rmb_press_handled = true;
+                        }
+                    } else if (!cur_rmb && ms_rmb_prev) {
+                        const bool can_send =
+                            conn.IsConnected() && !player_dead &&
+                            !skill_loadout_open &&
+                            !io_state.WantCaptureMouse &&
+                            !io_state.WantTextInput;
+                        if (can_send) {
+                            if (!rmb_press_handled) {
+                                send_combat_action(rco::net::kCombatActionParryStart, 0);
+                            } else if (local_guarding) {
+                                send_combat_action(rco::net::kCombatActionGuardEnd, 0);
+                                local_guarding = false;
                             }
                         }
-                        ms_rmb_defense_candidate = false;
+                        rmb_press_handled = false;
                     }
 
                     // Always rotate camera while cursor is captured; pause look when UI cursor is unlocked.
@@ -3844,6 +3922,8 @@ int main() {
                     pending_interact = 0;
                     dodge_roll_active = false;
                     dodge_roll_pending = false;
+                    rmb_press_handled = false;
+                    local_guarding = false;
                 }
 
                 // Auto-interact: fire kPRightClick once close enough.
@@ -4686,6 +4766,8 @@ int main() {
                 static constexpr double kAutoAttackInterval = 0.85;
                 if (combat_target && !player_dead && conn.IsConnected()
                     && !skill_loadout_open
+                    && !local_guarding
+                    && !dodge_roll_active
                     && now - last_attack_sent >= kAutoAttackInterval) {
                     rco::net::Writer aw;
                     aw.WriteU32(combat_target);

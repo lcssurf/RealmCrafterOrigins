@@ -94,7 +94,7 @@ func (c *ClientConn) handleCombatAction(_ context.Context, payload []byte) error
 		return nil
 	}
 	c.processCombatAction(action, targetRID)
-	log.Printf("ingame-action: combat user=%s rid=%d action=%d target_rid=%d processed",
+	log.Printf("ingame-action: combat user=%s rid=%d action=%d target_rid=%d received",
 		c.account.Username, c.actor.RuntimeID, action, targetRID)
 	return nil
 }

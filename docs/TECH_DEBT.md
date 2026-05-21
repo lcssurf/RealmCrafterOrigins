@@ -144,3 +144,15 @@ necessario.
 
 Trigger: quando aparecer outro caso de "dado perdido por BUSY", migrar mais
 funcoes para o helper.
+
+## 15. Anim bindings faltando em combat
+
+Configurar anim bindings `Hit`, `AttackBasic` e `AttackHeavyWindup` nos
+Appearance dos NPCs e player. Hoje isso ainda gera warnings
+`missing_action_binding` durante o combate.
+
+## 16. Anim bindings Dodge/Guard/Parry ausentes (fallback Idle)
+
+Adicionar bindings de animacao `Dodge`, `Guard` e `Parry` nos appearances de
+personagens e NPCs. Hoje o runtime usa fallback `Idle`, o que evita travamento
+de estado, mas nao reproduz anim visual especifica para a acao defensiva.

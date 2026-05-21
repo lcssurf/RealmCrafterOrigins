@@ -191,6 +191,8 @@ const (
 	CombatEventSpecialWindup    uint8 = 11
 	CombatEventSpecialParry     uint8 = 12
 	CombatEventSpecialHit       uint8 = 13
+	CombatEventCritHit          uint8 = 14
+	CombatEventSpecialCritHit   uint8 = 15
 )
 
 // Skill loadout action opcodes for PSkillLoadoutAction.

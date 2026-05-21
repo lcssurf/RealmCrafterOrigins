@@ -147,6 +147,8 @@ constexpr uint8_t kCombatEventHitParried       = 10;
 constexpr uint8_t kCombatEventSpecialWindup    = 11;
 constexpr uint8_t kCombatEventSpecialParry     = 12;
 constexpr uint8_t kCombatEventSpecialHit       = 13;
+constexpr uint8_t kCombatEventCritHit          = 14;
+constexpr uint8_t kCombatEventSpecialCritHit   = 15;
 
 constexpr uint8_t kSkillLoadoutActionSetSlot   = 1;
 constexpr uint8_t kSkillLoadoutActionClearSlot = 2;

@@ -1,19 +1,36 @@
 #pragma once
 #include <vector>
 #include <cstdint>
+#include <string>
 #include <glm/glm.hpp>
 
 namespace rco::ui {
 
-struct FloatNum {
-    float    wx, wy, wz;
-    int32_t  value;    // -1 = miss
-    bool     is_crit;
-    float    born;     // ImGui time
+enum class FloatType {
+    Damage,
+    DamageCrit,
+    DamageSpecial,
+    DamageSpecialCrit,
+    DamageGuarded,
+    Miss,
+    Dodge,
+    Parry,
+};
+
+struct Item {
+    float wx, wy, wz;
+    std::string text;
+    FloatType type;
+    float spawn_time;
 };
 
 class FloatingNumbers {
 public:
+    void AddDamage(float wx, float wy, float wz, int32_t value, bool is_crit, bool is_special);
+    void AddText(float wx, float wy, float wz, const char* text, FloatType type);
+    void AddGuarded(float wx, float wy, float wz, int32_t reduced_value);
+
+    // Backward-compatible wrapper.
     void Add(float wx, float wy, float wz, int32_t value, bool is_crit);
 
     // Project world positions to screen and draw all live numbers.
@@ -24,7 +41,7 @@ public:
 
 private:
     static constexpr float kLifetime = 2.5f;
-    std::vector<FloatNum> nums_;
+    std::vector<Item> nums_;
 };
 
 } // namespace rco::ui
