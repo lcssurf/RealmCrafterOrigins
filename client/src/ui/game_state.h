@@ -58,6 +58,13 @@ struct PlayerState {
     uint32_t    xp         = 0;
     uint32_t    xp_current_level = 0;
     uint32_t    xp_next    = 100;
+    int32_t     primary_strength = 5;
+    int32_t     primary_dexterity = 5;
+    int32_t     primary_intelligence = 5;
+    int32_t     primary_wisdom = 5;
+    int32_t     primary_perception = 5;
+    int32_t     unspent_stat_points = 0;
+    int32_t     free_respecs_used = 0;
     std::string name;
     std::string race;
     std::string charClass;

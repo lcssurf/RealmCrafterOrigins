@@ -181,3 +181,28 @@ carregados no startup do server.
 
 Edicoes feitas via GUE/SQL em runtime nao refletem imediatamente sem restart.
 Se isso virar gargalo, planejar mecanismo de reload controlado.
+
+## 20. Formulas de derived stats duplicadas no cliente
+
+Para suportar preview reativo de distribuicao de atributos, as formulas de
+`server/internal/world/derived_stats.go` foram replicadas em
+`client/src/core/derived_stats.h`.
+
+Sempre que qualquer coeficiente ou formula mudar no server, o cliente precisa
+ser atualizado de forma identica para nao mostrar preview divergente.
+
+## 21. Config de respec hardcoded no cliente
+
+`kRespecFreeUntilLevel`, `kRespecCostGold` e `kInitialStatValue` estao
+hardcoded na UI do cliente.
+
+Ideal: server enviar esses valores no login (ou pacote de config) para evitar
+drift entre balance runtime e UX.
+
+## 22. Parse defensivo de PStartGame sem Remaining()
+
+`Reader` do cliente nao expoe `Remaining()`. O parse dos campos extras de stats
+em `PStartGame` usa `Done()` + `ReadU16()` + `OK()`.
+
+Funciona para compat retroativa, mas manteria o parser mais claro se existisse
+helper explicito de bytes restantes.

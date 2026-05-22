@@ -1,9 +1,12 @@
 #include "inventory.h"
 #include "ui_texture.h"
 #include "util.h"
+#include "core/derived_stats.h"
 #include <imgui.h>
+#include <cstdarg>
 #include <cstdio>
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 namespace rco::ui {
@@ -54,9 +57,34 @@ void Inventory::SetSlot(uint8_t slot, uint16_t item_id, uint8_t qty, uint8_t dur
 
 void Inventory::Clear() { slots_ = {}; }
 
-void Inventory::Render(int screenW, int screenH) {
+void Inventory::ResetPreview() {
+    preview_str_delta = 0;
+    preview_dex_delta = 0;
+    preview_int_delta = 0;
+    preview_wis_delta = 0;
+    preview_per_delta = 0;
+}
+
+int32_t Inventory::TotalAllocated() const {
+    return preview_str_delta + preview_dex_delta + preview_int_delta +
+           preview_wis_delta + preview_per_delta;
+}
+
+int32_t Inventory::UnspentRemaining(const rco::PlayerState& player) const {
+    return player.unspent_stat_points - TotalAllocated();
+}
+
+bool Inventory::HasPreviewChanges() const {
+    return TotalAllocated() > 0;
+}
+
+void Inventory::Render(int screenW, int screenH, const rco::PlayerState& player) {
     RenderBag(screenW, screenH);
-    RenderCharacter(screenW, screenH);
+    RenderCharacter(screenW, screenH, player);
+    if (previous_char_visible && !char_visible) {
+        ResetPreview();
+    }
+    previous_char_visible = char_visible;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +192,33 @@ void Inventory::drawEquipSlot(int si, float sz) {
         }
     }
     ImGui::PopID();
+}
+
+void Inventory::DrawStatRow(const char* name, int32_t confirmed, int32_t* delta_ptr,
+                            const rco::PlayerState& player) {
+    const int32_t new_val = confirmed + *delta_ptr;
+    if (*delta_ptr > 0) {
+        ImGui::Text("%s: %d -> %d", name, confirmed, new_val);
+    } else {
+        ImGui::Text("%s: %d", name, confirmed);
+    }
+    ImGui::SameLine();
+
+    ImGui::BeginDisabled(*delta_ptr <= 0);
+    std::string minus_id = std::string("-##") + name;
+    if (ImGui::Button(minus_id.c_str())) {
+        (*delta_ptr)--;
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+
+    ImGui::BeginDisabled(UnspentRemaining(player) <= 0);
+    std::string plus_id = std::string("+##") + name;
+    if (ImGui::Button(plus_id.c_str())) {
+        (*delta_ptr)++;
+    }
+    ImGui::EndDisabled();
 }
 
 // ===========================================================================
@@ -298,7 +353,7 @@ static void drawSilhouette(ImDrawList* dl, ImVec2 c, float s) {
     dl->AddRectFilled({c.x+s*4.f, c.y+s*22.f},{c.x+s*20.f,c.y+s*62.f}, IM_COL32(155,148,132,68));
 }
 
-void Inventory::RenderCharacter(int screenW, int screenH) {
+void Inventory::RenderCharacter(int screenW, int screenH, const rco::PlayerState& player) {
     if (!char_visible) return;
 
     constexpr float kWinW    = 400.f;
@@ -334,8 +389,10 @@ void Inventory::RenderCharacter(int screenW, int screenH) {
     }
     {
         char sub[96];
+        const int display_level = (player.level > 0) ? static_cast<int>(player.level)
+                                                     : static_cast<int>(stat_level);
         std::snprintf(sub, sizeof(sub), "Level %d  %s %s",
-                      (int)stat_level, stat_race.c_str(), stat_class.c_str());
+                      display_level, stat_race.c_str(), stat_class.c_str());
         float tw = ImGui::CalcTextSize(sub).x;
         ImGui::SetCursorPosX((cw - tw) * 0.5f);
         ImGui::TextDisabled("%s", sub);
@@ -343,100 +400,250 @@ void Inventory::RenderCharacter(int screenW, int screenH) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // ---- Equipment + Silhouette ----
-    const ImVec2 equipOrigin  = ImGui::GetCursorPos();
-    const ImVec2 equipOriginS = ImGui::GetCursorScreenPos(); // screen-space
+    if (ImGui::BeginTabBar("##CharacterTabs")) {
+        if (ImGui::BeginTabItem("Stats")) {
+            const float barW = (cw - 8.f) * 0.5f;
 
-    // Silhouette center (screen coords, horizontally centered)
-    ImVec2 silC = {
-        equipOriginS.x + cw * 0.5f,
-        equipOriginS.y + kColH * 0.40f
-    };
-    drawSilhouette(ImGui::GetWindowDrawList(), silC, 1.0f);
+            float hpFill = stat_hp_max > 0 ? static_cast<float>(stat_hp) / static_cast<float>(stat_hp_max) : 0.f;
+            char hpLbl[32];
+            std::snprintf(hpLbl, sizeof(hpLbl), "%d / %d", stat_hp, stat_hp_max);
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4{0.75f,0.18f,0.18f,1.f});
+            ImGui::ProgressBar(hpFill, {barW, 16.f}, hpLbl);
+            ImGui::PopStyleColor();
 
-    // Left column
-    for (int i = 0; i < kRows; ++i) {
-        ImGui::SetCursorPos({equipOrigin.x, equipOrigin.y + i*(kSlotSz+kSlotGap)});
-        drawEquipSlot(kLeftSlots[i], kSlotSz);
+            ImGui::SameLine(0.f, 8.f);
+
+            float mpFill = stat_mp_max > 0 ? static_cast<float>(stat_mp) / static_cast<float>(stat_mp_max) : 0.f;
+            char mpLbl[32];
+            std::snprintf(mpLbl, sizeof(mpLbl), "%d / %d", stat_mp, stat_mp_max);
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4{0.18f,0.38f,0.80f,1.f});
+            ImGui::ProgressBar(mpFill, {barW, 16.f}, mpLbl);
+            ImGui::PopStyleColor();
+
+            ImGui::Spacing();
+
+            float spFill = stat_sp_max > 0 ? static_cast<float>(stat_sp) / static_cast<float>(stat_sp_max) : 0.f;
+            char spLbl[32];
+            std::snprintf(spLbl, sizeof(spLbl), "SP %d / %d", stat_sp, stat_sp_max);
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4{0.22f,0.78f,0.50f,1.f});
+            ImGui::ProgressBar(spFill, {cw, 14.f}, spLbl);
+            ImGui::PopStyleColor();
+
+            ImGui::Spacing();
+
+            int16_t totalAtk = 0;
+            int16_t totalArmor = 0;
+            for (int i = 0; i < kEquipSlots; ++i) {
+                totalAtk += slots_[i].weapon_damage;
+                totalArmor += slots_[i].armor_level;
+            }
+
+            ImGui::Columns(2, "##attrCols", false);
+            ImGui::SetColumnWidth(0, cw * 0.55f);
+
+            auto attrRow = [](const char* label, ImVec4 col, const char* fmt, ...) {
+                ImGui::TextColored(col, "%s", label);
+                ImGui::NextColumn();
+                char buf[32];
+                va_list ap;
+                va_start(ap, fmt);
+                std::vsnprintf(buf, sizeof(buf), fmt, ap);
+                va_end(ap);
+                ImGui::TextUnformatted(buf);
+                ImGui::NextColumn();
+            };
+
+            attrRow("  Attack", {1.00f,0.85f,0.30f,1.f}, "%d", static_cast<int>(totalAtk));
+            attrRow("  Armor", {0.60f,0.80f,1.00f,1.f}, "%d", static_cast<int>(totalArmor));
+            attrRow("  Gold", {1.00f,0.90f,0.40f,1.f}, "%lld", static_cast<long long>(gold));
+
+            ImGui::Columns(1);
+            ImGui::Spacing();
+
+            const float xpFill = ProgressBetweenThresholds(stat_xp, stat_xp_current_level, stat_xp_next);
+            const std::string xpValue = AbbreviateNumber(stat_xp);
+            const std::string xpNextValue = AbbreviateNumber(stat_xp_next);
+            char xpLbl[64];
+            std::snprintf(xpLbl, sizeof(xpLbl), "%s / %s", xpValue.c_str(), xpNextValue.c_str());
+            ImGui::TextDisabled("XP %.1f%%", xpFill * 100.0f);
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4{0.40f,0.72f,0.40f,1.f});
+            ImGui::ProgressBar(xpFill, {cw, 12.f}, xpLbl);
+            ImGui::PopStyleColor();
+
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            ImGui::Text("PRIMARY STATS - Unspent: %d", UnspentRemaining(player));
+            DrawStatRow("Strength", player.primary_strength, &preview_str_delta, player);
+            DrawStatRow("Dexterity", player.primary_dexterity, &preview_dex_delta, player);
+            DrawStatRow("Intelligence", player.primary_intelligence, &preview_int_delta, player);
+            DrawStatRow("Wisdom", player.primary_wisdom, &preview_wis_delta, player);
+            DrawStatRow("Perception", player.primary_perception, &preview_per_delta, player);
+
+            ImGui::Spacing();
+            ImGui::BeginDisabled(!HasPreviewChanges());
+            if (ImGui::Button("APPLY")) {
+                auto send_delta = [&](uint8_t stat_id, int32_t delta) {
+                    if (!on_distribute || delta <= 0) return;
+                    int32_t remaining = delta;
+                    while (remaining > 0) {
+                        const int32_t chunk = std::min<int32_t>(remaining, 200);
+                        on_distribute(stat_id, static_cast<uint8_t>(chunk));
+                        remaining -= chunk;
+                    }
+                };
+                send_delta(0, preview_str_delta);
+                send_delta(1, preview_dex_delta);
+                send_delta(2, preview_int_delta);
+                send_delta(3, preview_wis_delta);
+                send_delta(4, preview_per_delta);
+                ResetPreview();
+            }
+            ImGui::EndDisabled();
+
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!HasPreviewChanges());
+            if (ImGui::Button("RESET PREVIEW")) {
+                ResetPreview();
+            }
+            ImGui::EndDisabled();
+
+            constexpr int32_t kRespecFreeUntilLevel = 10;
+            constexpr int32_t kRespecCostGold = 1000;
+            constexpr int32_t kInitialStatValue = 5;
+            const bool respec_is_free = static_cast<int32_t>(player.level) <= kRespecFreeUntilLevel;
+            const char* respec_label = respec_is_free ? "RESET BUILD (Free)" : "RESET BUILD (1000 gold)";
+            ImGui::SameLine();
+            if (ImGui::Button(respec_label)) {
+                ImGui::OpenPopup("ConfirmRespec");
+            }
+            if (ImGui::BeginPopupModal("ConfirmRespec", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::Text("Are you sure you want to respec?");
+                ImGui::Text("All primary stats will reset to %d.", kInitialStatValue);
+                if (respec_is_free) {
+                    ImGui::Text("This is FREE (you are level %d, free until level %d).",
+                                static_cast<int>(player.level), kRespecFreeUntilLevel);
+                } else {
+                    ImGui::Text("This will cost %d gold.", kRespecCostGold);
+                }
+                ImGui::Separator();
+                if (ImGui::Button("Confirm")) {
+                    if (on_respec) on_respec();
+                    ResetPreview();
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel")) {
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Text("--- DERIVED STATS ---");
+
+            rco::stats::PrimaryStats confirmed{
+                player.primary_strength,
+                player.primary_dexterity,
+                player.primary_intelligence,
+                player.primary_wisdom,
+                player.primary_perception,
+            };
+            const auto confirmed_derived = rco::stats::ComputeDerivedStats(
+                confirmed, static_cast<int32_t>(player.level), 0, 0);
+
+            rco::stats::PrimaryStats preview{
+                confirmed.STR + preview_str_delta,
+                confirmed.DEX + preview_dex_delta,
+                confirmed.INT + preview_int_delta,
+                confirmed.WIS + preview_wis_delta,
+                confirmed.PER + preview_per_delta,
+            };
+            const auto preview_derived = rco::stats::ComputeDerivedStats(
+                preview, static_cast<int32_t>(player.level), 0, 0);
+
+            auto draw_derived_int = [](const char* name, int32_t conf, int32_t prev) {
+                if (conf != prev) {
+                    ImGui::Text("%s: %d -> %d", name, conf, prev);
+                } else {
+                    ImGui::Text("%s: %d", name, conf);
+                }
+            };
+            auto draw_derived_float = [](const char* name, float conf, float prev) {
+                if (std::fabs(conf - prev) > 0.001f) {
+                    ImGui::Text("%s: %.2f -> %.2f", name, conf, prev);
+                } else {
+                    ImGui::Text("%s: %.2f", name, conf);
+                }
+            };
+
+            draw_derived_int("HealthMax", confirmed_derived.HealthMax, preview_derived.HealthMax);
+            draw_derived_float("HealthRegen", confirmed_derived.HealthRegen, preview_derived.HealthRegen);
+            draw_derived_int("EnergyMax", confirmed_derived.EnergyMax, preview_derived.EnergyMax);
+            draw_derived_float("EnergyRegen", confirmed_derived.EnergyRegen, preview_derived.EnergyRegen);
+            draw_derived_int("MeleeDefenseValue", confirmed_derived.MeleeDefenseValue, preview_derived.MeleeDefenseValue);
+            draw_derived_int("RangedDefenseValue", confirmed_derived.RangedDefenseValue, preview_derived.RangedDefenseValue);
+            draw_derived_int("MagicDefenseValue", confirmed_derived.MagicDefenseValue, preview_derived.MagicDefenseValue);
+            draw_derived_int("MeleeEvasionValue", confirmed_derived.MeleeEvasionValue, preview_derived.MeleeEvasionValue);
+            draw_derived_int("RangedEvasionValue", confirmed_derived.RangedEvasionValue, preview_derived.RangedEvasionValue);
+            draw_derived_int("MagicEvasionValue", confirmed_derived.MagicEvasionValue, preview_derived.MagicEvasionValue);
+            draw_derived_int("MeleeHitValue", confirmed_derived.MeleeHitValue, preview_derived.MeleeHitValue);
+            draw_derived_int("RangedHitValue", confirmed_derived.RangedHitValue, preview_derived.RangedHitValue);
+            draw_derived_int("MagicHitValue", confirmed_derived.MagicHitValue, preview_derived.MagicHitValue);
+            draw_derived_int("MeleeCritValue", confirmed_derived.MeleeCritValue, preview_derived.MeleeCritValue);
+            draw_derived_int("RangedCritValue", confirmed_derived.RangedCritValue, preview_derived.RangedCritValue);
+            draw_derived_int("MagicCritValue", confirmed_derived.MagicCritValue, preview_derived.MagicCritValue);
+            draw_derived_int("MeleeDmgMin", confirmed_derived.MeleeDmgMin, preview_derived.MeleeDmgMin);
+            draw_derived_int("MeleeDmgMax", confirmed_derived.MeleeDmgMax, preview_derived.MeleeDmgMax);
+            draw_derived_int("MagicDmgMin", confirmed_derived.MagicDmgMin, preview_derived.MagicDmgMin);
+            draw_derived_int("MagicDmgMax", confirmed_derived.MagicDmgMax, preview_derived.MagicDmgMax);
+            draw_derived_float("CritDamageMult", confirmed_derived.CritDamageMult, preview_derived.CritDamageMult);
+            draw_derived_int("HeavyAttackValue", confirmed_derived.HeavyAttackValue, preview_derived.HeavyAttackValue);
+            draw_derived_float("HeavyAttackDamage", confirmed_derived.HeavyAttackDamage, preview_derived.HeavyAttackDamage);
+            draw_derived_float("AttackSpeedMult", confirmed_derived.AttackSpeedMult, preview_derived.AttackSpeedMult);
+            draw_derived_float("MovementSpeedMult", confirmed_derived.MovementSpeedMult, preview_derived.MovementSpeedMult);
+            draw_derived_float("CooldownSpeedPct", confirmed_derived.CooldownSpeedPct, preview_derived.CooldownSpeedPct);
+            draw_derived_float("SkillDamageBoostPct", confirmed_derived.SkillDamageBoostPct, preview_derived.SkillDamageBoostPct);
+            draw_derived_float("BuffDurationPct", confirmed_derived.BuffDurationPct, preview_derived.BuffDurationPct);
+            draw_derived_float("DebuffDurationPct", confirmed_derived.DebuffDurationPct, preview_derived.DebuffDurationPct);
+            draw_derived_float("RangeBonusPct", confirmed_derived.RangeBonusPct, preview_derived.RangeBonusPct);
+            draw_derived_int("BonusDamageFlat", confirmed_derived.BonusDamageFlat, preview_derived.BonusDamageFlat);
+            draw_derived_int("CCChanceValue", confirmed_derived.CCChanceValue, preview_derived.CCChanceValue);
+            draw_derived_int("CCResistanceValue", confirmed_derived.CCResistanceValue, preview_derived.CCResistanceValue);
+            draw_derived_int("DamageReductionFlat", confirmed_derived.DamageReductionFlat, preview_derived.DamageReductionFlat);
+
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Equipment")) {
+            const ImVec2 equipOrigin = ImGui::GetCursorPos();
+            const ImVec2 equipOriginS = ImGui::GetCursorScreenPos();
+
+            ImVec2 silC = {
+                equipOriginS.x + cw * 0.5f,
+                equipOriginS.y + kColH * 0.40f
+            };
+            drawSilhouette(ImGui::GetWindowDrawList(), silC, 1.0f);
+
+            for (int i = 0; i < kRows; ++i) {
+                ImGui::SetCursorPos({equipOrigin.x, equipOrigin.y + i * (kSlotSz + kSlotGap)});
+                drawEquipSlot(kLeftSlots[i], kSlotSz);
+            }
+
+            for (int i = 0; i < kRows; ++i) {
+                ImGui::SetCursorPos({
+                    equipOrigin.x + cw - kSlotSz,
+                    equipOrigin.y + i * (kSlotSz + kSlotGap)
+                });
+                drawEquipSlot(kRightSlots[i], kSlotSz);
+            }
+
+            ImGui::SetCursorPos({equipOrigin.x, equipOrigin.y + kColH + 8.f});
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
     }
-
-    // Right column (flush to right edge of content)
-    for (int i = 0; i < kRows; ++i) {
-        ImGui::SetCursorPos({equipOrigin.x + cw - kSlotSz,
-                             equipOrigin.y + i*(kSlotSz+kSlotGap)});
-        drawEquipSlot(kRightSlots[i], kSlotSz);
-    }
-
-    // Advance cursor past the equipment block
-    ImGui::SetCursorPos({equipOrigin.x, equipOrigin.y + kColH + 8.f});
-
-    // ---- Stats ----
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    // HP / MP bars side-by-side
-    const float barW = (cw - 8.f) * 0.5f;
-
-    float hpFill = stat_hp_max > 0 ? (float)stat_hp / stat_hp_max : 0.f;
-    char  hpLbl[32]; std::snprintf(hpLbl, sizeof(hpLbl), "%d / %d", stat_hp, stat_hp_max);
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4{0.75f,0.18f,0.18f,1.f});
-    ImGui::ProgressBar(hpFill, {barW, 16.f}, hpLbl);
-    ImGui::PopStyleColor();
-
-    ImGui::SameLine(0.f, 8.f);
-
-    float mpFill = stat_mp_max > 0 ? (float)stat_mp / stat_mp_max : 0.f;
-    char  mpLbl[32]; std::snprintf(mpLbl, sizeof(mpLbl), "%d / %d", stat_mp, stat_mp_max);
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4{0.18f,0.38f,0.80f,1.f});
-    ImGui::ProgressBar(mpFill, {barW, 16.f}, mpLbl);
-    ImGui::PopStyleColor();
-
-    ImGui::Spacing();
-
-    float spFill = stat_sp_max > 0 ? (float)stat_sp / stat_sp_max : 0.f;
-    char  spLbl[32]; std::snprintf(spLbl, sizeof(spLbl), "SP %d / %d", stat_sp, stat_sp_max);
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4{0.22f,0.78f,0.50f,1.f});
-    ImGui::ProgressBar(spFill, {cw, 14.f}, spLbl);
-    ImGui::PopStyleColor();
-
-    ImGui::Spacing();
-
-    // Two-column attribute table
-    int16_t totalAtk = 0, totalArmor = 0;
-    for (int i = 0; i < kEquipSlots; ++i) {
-        totalAtk   += slots_[i].weapon_damage;
-        totalArmor += slots_[i].armor_level;
-    }
-
-    ImGui::Columns(2, "##attrCols", false);
-    ImGui::SetColumnWidth(0, cw * 0.55f);
-
-    auto attrRow = [](const char* label, ImVec4 col, const char* fmt, ...) {
-        ImGui::TextColored(col, "%s", label);
-        ImGui::NextColumn();
-        char buf[32];
-        va_list ap; va_start(ap, fmt); std::vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
-        ImGui::TextUnformatted(buf);
-        ImGui::NextColumn();
-    };
-
-    attrRow("  Attack",  {1.00f,0.85f,0.30f,1.f}, "%d", (int)totalAtk);
-    attrRow("  Armor",   {0.60f,0.80f,1.00f,1.f}, "%d", (int)totalArmor);
-    attrRow("  Gold",    {1.00f,0.90f,0.40f,1.f}, "%lld", (long long)gold);
-
-    ImGui::Columns(1);
-    ImGui::Spacing();
-
-    // XP bar (full width)
-    const float xpFill = ProgressBetweenThresholds(stat_xp, stat_xp_current_level, stat_xp_next);
-    const std::string xpValue = AbbreviateNumber(stat_xp);
-    const std::string xpNextValue = AbbreviateNumber(stat_xp_next);
-    char  xpLbl[64];
-    std::snprintf(xpLbl, sizeof(xpLbl), "%s / %s", xpValue.c_str(), xpNextValue.c_str());
-    ImGui::TextDisabled("XP %.1f%%", xpFill * 100.0f);
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4{0.40f,0.72f,0.40f,1.f});
-    ImGui::ProgressBar(xpFill, {cw, 12.f}, xpLbl);
-    ImGui::PopStyleColor();
 
     ImGui::End();
 }

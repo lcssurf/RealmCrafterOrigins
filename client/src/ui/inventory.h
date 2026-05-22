@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include "game_state.h"
 
 namespace rco::ui {
 
@@ -41,7 +42,7 @@ public:
     void Clear();
 
     // Renders both sub-windows (each checks its own visibility flag).
-    void Render(int screenW, int screenH);
+    void Render(int screenW, int screenH, const rco::PlayerState& player);
 
     const InventoryItem& GetSlot(int idx) const { return slots_[idx]; }
 
@@ -50,6 +51,12 @@ public:
 
     // Called when the user right-clicks a bag slot (use/equip).
     std::function<void(int slot)> on_use;
+
+    // Called when user applies pending primary stat points.
+    std::function<void(uint8_t stat_id, uint8_t amount)> on_distribute;
+
+    // Called when user confirms build reset.
+    std::function<void()> on_respec;
 
     // Visibility flags — 'I' toggles bag_visible, 'C' toggles char_visible.
     bool    bag_visible  = false;
@@ -73,6 +80,11 @@ public:
     uint32_t    stat_xp_current_level = 0;
     uint32_t    stat_xp_next = 100;
 
+    void ResetPreview();
+    int32_t TotalAllocated() const;
+    int32_t UnspentRemaining(const rco::PlayerState& player) const;
+    bool HasPreviewChanges() const;
+
 private:
     std::array<InventoryItem, kTotalSlots> slots_ = {};
 
@@ -81,7 +93,16 @@ private:
     void drawEquipSlot(int slot_index, float sz);
 
     void RenderBag(int screenW, int screenH);
-    void RenderCharacter(int screenW, int screenH);
+    void RenderCharacter(int screenW, int screenH, const rco::PlayerState& player);
+    void DrawStatRow(const char* name, int32_t confirmed, int32_t* delta_ptr,
+                     const rco::PlayerState& player);
+
+    int32_t preview_str_delta = 0;
+    int32_t preview_dex_delta = 0;
+    int32_t preview_int_delta = 0;
+    int32_t preview_wis_delta = 0;
+    int32_t preview_per_delta = 0;
+    bool previous_char_visible = false;
 };
 
 } // namespace rco::ui

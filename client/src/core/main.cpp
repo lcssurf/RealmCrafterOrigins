@@ -1323,6 +1323,28 @@ int main() {
         conn.SendPacket(rco::net::kPCombatAction, w);
     };
 
+    auto send_distribute_stat = [&](uint8_t stat_id, uint8_t amount) {
+        if (!conn.IsConnected()) return;
+        rco::net::Writer w;
+        w.WriteU8(stat_id);
+        w.WriteU8(amount);
+        conn.SendPacket(rco::net::kPDistributeStatPoint, w);
+    };
+
+    auto send_respec = [&]() {
+        if (!conn.IsConnected()) return;
+        rco::net::Writer w;
+        w.WriteU8(1);
+        conn.SendPacket(rco::net::kPRespec, w);
+    };
+
+    inventory.on_distribute = [&](uint8_t stat_id, uint8_t amount) {
+        send_distribute_stat(stat_id, amount);
+    };
+    inventory.on_respec = [&]() {
+        send_respec();
+    };
+
     auto send_cast_skill_slot = [&](uint8_t slot_index, uint32_t target_rid) {
         if (!conn.IsConnected()) return;
         rco::net::Writer w;
@@ -1589,6 +1611,18 @@ int main() {
                     player_yaw_offset = r.ReadF32();
                     player_y_offset   = r.ReadF32();
                 }
+                // Read primary stats (added in server Commit 38a, appended after appearance).
+                if (!r.Done()) {
+                    uint16_t maybe_str = r.ReadU16();
+                    if (!r.OK()) break;
+                    player.primary_strength = static_cast<int32_t>(maybe_str);
+                    player.primary_dexterity = static_cast<int32_t>(r.ReadU16());
+                    player.primary_intelligence = static_cast<int32_t>(r.ReadU16());
+                    player.primary_wisdom = static_cast<int32_t>(r.ReadU16());
+                    player.primary_perception = static_cast<int32_t>(r.ReadU16());
+                    player.unspent_stat_points = static_cast<int32_t>(r.ReadU16());
+                    if (!r.OK()) break;
+                }
                 // Bind player AnimController from PStartGame appearance data
                 {
                     std::vector<rco::anim::AnimBinding> bindings;
@@ -1684,6 +1718,8 @@ int main() {
                 inventory.stat_mp_max = player.manaMax;
                 inventory.stat_sp     = player.stamina;
                 inventory.stat_sp_max = player.staminaMax;
+                inventory.stat_level  = player.level;
+                inventory.ResetPreview();
                 break;
             }
 
@@ -2582,6 +2618,24 @@ int main() {
                 break;
             }
 
+            case rco::net::kPStatPointsUpdate: {
+                player.unspent_stat_points = static_cast<int32_t>(r.ReadU16());
+                if (!r.OK()) break;
+                break;
+            }
+
+            case rco::net::kPPrimaryStatsUpdate: {
+                player.primary_strength = static_cast<int32_t>(r.ReadU16());
+                player.primary_dexterity = static_cast<int32_t>(r.ReadU16());
+                player.primary_intelligence = static_cast<int32_t>(r.ReadU16());
+                player.primary_wisdom = static_cast<int32_t>(r.ReadU16());
+                player.primary_perception = static_cast<int32_t>(r.ReadU16());
+                player.unspent_stat_points = static_cast<int32_t>(r.ReadU16());
+                if (!r.OK()) break;
+                inventory.ResetPreview();
+                break;
+            }
+
             case rco::net::kPFloatingNumber: {
                 uint32_t target_rid = r.ReadU32();
                 int16_t  dmg        = static_cast<int16_t>(r.ReadU16());
@@ -3080,6 +3134,7 @@ int main() {
                     player.name      = ch.name;
                     player.race      = ch.race;
                     player.charClass = ch.charClass;
+                    player.level     = ch.level;
                     break;
                 }
             }
@@ -3113,6 +3168,7 @@ int main() {
             conn.Disconnect();
             state          = rco::GameState::Login;
             renderer_ready = false;
+            inventory.ResetPreview();
             characters.clear();
             world_actors.clear();
             world_corpses.clear();
@@ -5071,7 +5127,7 @@ int main() {
                     }
                 }
 
-                inventory.Render(window.Width(), window.Height());
+                inventory.Render(window.Width(), window.Height(), player);
                 controls_ui.Draw(player.name);
                 quest_log.Render(window.Width(), window.Height());
                 party_panel.Render(window.Width(), window.Height());
