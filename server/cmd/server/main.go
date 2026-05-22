@@ -174,12 +174,36 @@ func main() {
 		log.Fatalf("main: load char progression config: %v", err)
 	}
 	world.LoadAndCacheCharacterProgressionConfig(world.CharacterProgressionRuntimeConfig{
-		MaxLevel:        charProgression.MaxLevel,
-		XPCurveType:     charProgression.XPCurveType,
-		XPCurveBase:     charProgression.XPCurveBase,
-		XPCurveExponent: charProgression.XPCurveExponent,
-		XPIrregularity:  charProgression.XPIrregularity,
+		MaxLevel:             charProgression.MaxLevel,
+		XPCurveType:          charProgression.XPCurveType,
+		XPCurveBase:          charProgression.XPCurveBase,
+		XPCurveExponent:      charProgression.XPCurveExponent,
+		XPIrregularity:       charProgression.XPIrregularity,
+		StatPointsPerLevel:   charProgression.StatPointsPerLevel,
+		InitialStatValue:     charProgression.InitialStatValue,
+		RespecFreeUntilLevel: charProgression.RespecFreeUntilLevel,
+		RespecCostGold:       charProgression.RespecCostGold,
 	})
+	rows, err := database.ListCharacterPrimaryStatsPerLevel(ctx)
+	if err != nil {
+		log.Fatalf("main: list primary stats per level: %v", err)
+	}
+	worldRows := make([]world.PrimaryStatsRow, 0, len(rows))
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		worldRows = append(worldRows, world.PrimaryStatsRow{
+			Level: row.Level,
+			STR:   row.Strength,
+			DEX:   row.Dexterity,
+			INT:   row.Intelligence,
+			WIS:   row.Wisdom,
+			PER:   row.Perception,
+		})
+	}
+	world.LoadAndCachePrimaryStatsPerLevel(worldRows)
+	log.Printf("main: cached primary stats for %d levels", len(worldRows))
 
 	// Create Lua scripting registry and load scripts.
 	// Canonical path: dist/server/scripts/ (relative to exe, after anchor).

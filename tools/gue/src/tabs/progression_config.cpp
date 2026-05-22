@@ -95,7 +95,11 @@ void ProgressionConfigTab::EnsureTables(sqlite3* db) {
         "xp_curve_base INTEGER NOT NULL DEFAULT 60,"
         "xp_curve_factor REAL NOT NULL DEFAULT 1.3,"
         "xp_curve_exponent REAL NOT NULL DEFAULT 2.5,"
-        "xp_irregularity REAL NOT NULL DEFAULT 0.4"
+        "xp_irregularity REAL NOT NULL DEFAULT 0.4,"
+        "stat_points_per_level INTEGER NOT NULL DEFAULT 5,"
+        "initial_stat_value INTEGER NOT NULL DEFAULT 5,"
+        "respec_free_until_level INTEGER NOT NULL DEFAULT 10,"
+        "respec_cost_gold INTEGER NOT NULL DEFAULT 1000"
         ")",
         nullptr, nullptr, nullptr);
     sqlite3_exec(db,
@@ -118,6 +122,14 @@ void ProgressionConfigTab::EnsureTables(sqlite3* db) {
                        "xp_irregularity REAL NOT NULL DEFAULT 0.4");
     AddColumnIfMissing(db, "character_progression_config", "xp_curve_factor",
                        "xp_curve_factor REAL NOT NULL DEFAULT 1.3");
+    AddColumnIfMissing(db, "character_progression_config", "stat_points_per_level",
+                       "stat_points_per_level INTEGER NOT NULL DEFAULT 5");
+    AddColumnIfMissing(db, "character_progression_config", "initial_stat_value",
+                       "initial_stat_value INTEGER NOT NULL DEFAULT 5");
+    AddColumnIfMissing(db, "character_progression_config", "respec_free_until_level",
+                       "respec_free_until_level INTEGER NOT NULL DEFAULT 10");
+    AddColumnIfMissing(db, "character_progression_config", "respec_cost_gold",
+                       "respec_cost_gold INTEGER NOT NULL DEFAULT 1000");
     AddColumnIfMissing(db, "skill_progression_config", "xp_curve_exponent",
                        "xp_curve_exponent REAL NOT NULL DEFAULT 2.0");
     AddColumnIfMissing(db, "skill_progression_config", "xp_irregularity",
@@ -125,8 +137,9 @@ void ProgressionConfigTab::EnsureTables(sqlite3* db) {
 
     sqlite3_exec(db,
         "INSERT OR IGNORE INTO character_progression_config "
-        "(id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor, xp_curve_exponent, xp_irregularity) "
-        "VALUES (1, 60, 'irregular', 60, 1.3, 2.5, 0.4)",
+        "(id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor, xp_curve_exponent, xp_irregularity,"
+        " stat_points_per_level, initial_stat_value, respec_free_until_level, respec_cost_gold) "
+        "VALUES (1, 60, 'irregular', 60, 1.3, 2.5, 0.4, 5, 5, 10, 1000)",
         nullptr, nullptr, nullptr);
     sqlite3_exec(db,
         "INSERT OR IGNORE INTO skill_progression_config "
@@ -143,7 +156,8 @@ void ProgressionConfigTab::Load(sqlite3* db) {
 
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db,
-        "SELECT max_level, xp_curve_type, xp_curve_base, xp_curve_factor, xp_curve_exponent, xp_irregularity "
+        "SELECT max_level, xp_curve_type, xp_curve_base, xp_curve_factor, xp_curve_exponent, xp_irregularity,"
+        "       stat_points_per_level, initial_stat_value, respec_free_until_level, respec_cost_gold "
         "FROM character_progression_config WHERE id=1",
         -1, &stmt, nullptr) == SQLITE_OK) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -155,6 +169,10 @@ void ProgressionConfigTab::Load(sqlite3* db) {
             character_.xp_curve_factor = static_cast<float>(sqlite3_column_double(stmt, 3));
             character_.xp_curve_exponent = static_cast<float>(sqlite3_column_double(stmt, 4));
             character_.xp_irregularity = static_cast<float>(sqlite3_column_double(stmt, 5));
+            character_.stat_points_per_level = sqlite3_column_int(stmt, 6);
+            character_.initial_stat_value = sqlite3_column_int(stmt, 7);
+            character_.respec_free_until_level = sqlite3_column_int(stmt, 8);
+            character_.respec_cost_gold = sqlite3_column_int(stmt, 9);
         }
     }
     sqlite3_finalize(stmt);
@@ -247,7 +265,8 @@ void ProgressionConfigTab::SaveSettings(sqlite3* db) {
     if (sqlite3_prepare_v2(db,
         "UPDATE character_progression_config "
         "SET max_level=?, xp_curve_type=?, xp_curve_base=?, xp_curve_factor=?, "
-        "    xp_curve_exponent=?, xp_irregularity=? "
+        "    xp_curve_exponent=?, xp_irregularity=?, "
+        "    stat_points_per_level=?, initial_stat_value=?, respec_free_until_level=?, respec_cost_gold=? "
         "WHERE id=1",
         -1, &stmt, nullptr) != SQLITE_OK) {
         SetStatus("Character config save error: %s", sqlite3_errmsg(db));
@@ -259,6 +278,10 @@ void ProgressionConfigTab::SaveSettings(sqlite3* db) {
     sqlite3_bind_double(stmt, 4, character_.xp_curve_factor);
     sqlite3_bind_double(stmt, 5, character_.xp_curve_exponent);
     sqlite3_bind_double(stmt, 6, character_.xp_irregularity);
+    sqlite3_bind_int(stmt, 7, character_.stat_points_per_level);
+    sqlite3_bind_int(stmt, 8, character_.initial_stat_value);
+    sqlite3_bind_int(stmt, 9, character_.respec_free_until_level);
+    sqlite3_bind_int(stmt, 10, character_.respec_cost_gold);
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
@@ -314,6 +337,14 @@ void ProgressionConfigTab::Draw(sqlite3* db) {
                             character_.max_level)) {
             dirty_ = true;
         }
+        if (ImGui::InputInt("Stat Points per Level", &character_.stat_points_per_level)) dirty_ = true;
+        if (ImGui::InputInt("Initial Stat Value", &character_.initial_stat_value)) dirty_ = true;
+        if (ImGui::InputInt("Respec Free Until Level", &character_.respec_free_until_level)) dirty_ = true;
+        if (ImGui::InputInt("Respec Cost Gold", &character_.respec_cost_gold)) dirty_ = true;
+        if (character_.stat_points_per_level < 0) character_.stat_points_per_level = 0;
+        if (character_.initial_stat_value < 1) character_.initial_stat_value = 1;
+        if (character_.respec_free_until_level < 0) character_.respec_free_until_level = 0;
+        if (character_.respec_cost_gold < 0) character_.respec_cost_gold = 0;
         ImGui::Spacing();
         DrawPreview("Character Threshold Preview", character_.xp_curve_type, character_.xp_curve_base,
                     character_.xp_curve_exponent, character_.xp_irregularity);

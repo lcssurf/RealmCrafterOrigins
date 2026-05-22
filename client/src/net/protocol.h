@@ -75,6 +75,10 @@ constexpr uint16_t kPWeaponMasteryUpdate = 130; // S->C: weapon mastery progress
 constexpr uint16_t kPStatusEffectDelta = 131; // S->C: status effect add/update/remove
 constexpr uint16_t kPKitPool           = 132; // S->C: active kit full ability pool snapshot
 constexpr uint16_t kPCastSkillSlot     = 133; // C->S: cast active loadout skill by hotbar slot
+constexpr uint16_t kPStatPointsUpdate  = 134; // S->C: unspent stat point pool update
+constexpr uint16_t kPPrimaryStatsUpdate = 135; // S->C: primary stats + unspent snapshot
+constexpr uint16_t kPDistributeStatPoint = 136; // C->S: allocate primary stat points
+constexpr uint16_t kPRespec            = 137; // C->S: reset primary stats to base
 
 // ---------------------------------------------------------------------------
 // Result codes

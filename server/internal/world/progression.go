@@ -15,11 +15,15 @@ const MaxLevel = 60
 // CharacterProgressionRuntimeConfig is the runtime copy of the DB progression
 // config. It is loaded at startup so world code does not import db.
 type CharacterProgressionRuntimeConfig struct {
-	MaxLevel        int
-	XPCurveType     string
-	XPCurveBase     int
-	XPCurveExponent float64
-	XPIrregularity  float64
+	MaxLevel             int
+	XPCurveType          string
+	XPCurveBase          int
+	XPCurveExponent      float64
+	XPIrregularity       float64
+	StatPointsPerLevel   int
+	InitialStatValue     int
+	RespecFreeUntilLevel int
+	RespecCostGold       int
 }
 
 var (
@@ -29,11 +33,15 @@ var (
 
 func defaultCharacterProgressionConfig() CharacterProgressionRuntimeConfig {
 	return CharacterProgressionRuntimeConfig{
-		MaxLevel:        MaxLevel,
-		XPCurveType:     "irregular",
-		XPCurveBase:     60,
-		XPCurveExponent: 2.5,
-		XPIrregularity:  0.4,
+		MaxLevel:             MaxLevel,
+		XPCurveType:          "irregular",
+		XPCurveBase:          60,
+		XPCurveExponent:      2.5,
+		XPIrregularity:       0.4,
+		StatPointsPerLevel:   5,
+		InitialStatValue:     5,
+		RespecFreeUntilLevel: 10,
+		RespecCostGold:       1000,
 	}
 }
 
@@ -52,6 +60,12 @@ func getCachedCharProgressionConfig() CharacterProgressionRuntimeConfig {
 	return charProgressionConfig
 }
 
+// GetCachedCharProgressionConfig returns the normalized runtime copy of the
+// character progression configuration loaded at startup.
+func GetCachedCharProgressionConfig() CharacterProgressionRuntimeConfig {
+	return getCachedCharProgressionConfig()
+}
+
 func normalizeCharacterProgressionConfig(cfg CharacterProgressionRuntimeConfig) CharacterProgressionRuntimeConfig {
 	if cfg.MaxLevel < 1 {
 		cfg.MaxLevel = MaxLevel
@@ -67,6 +81,18 @@ func normalizeCharacterProgressionConfig(cfg CharacterProgressionRuntimeConfig) 
 	}
 	if cfg.XPIrregularity > 1 {
 		cfg.XPIrregularity = 1
+	}
+	if cfg.StatPointsPerLevel < 0 {
+		cfg.StatPointsPerLevel = 0
+	}
+	if cfg.InitialStatValue < 1 {
+		cfg.InitialStatValue = 1
+	}
+	if cfg.RespecFreeUntilLevel < 0 {
+		cfg.RespecFreeUntilLevel = 0
+	}
+	if cfg.RespecCostGold < 0 {
+		cfg.RespecCostGold = 0
 	}
 	cfg.XPCurveType = strings.ToLower(strings.TrimSpace(cfg.XPCurveType))
 	switch cfg.XPCurveType {
@@ -130,15 +156,6 @@ func XPToLevel(level int) int64 {
 // XPForKill returns the XP reward for killing an NPC of the given level.
 func XPForKill(npcLevel int) int64 {
 	return int64(npcLevel) * 25
-}
-
-// StatsByLevel returns (healthMax, energyMax, strength) for a player at the given level.
-func StatsByLevel(level int) (healthMax, energyMax, strength int32) {
-	l := int32(level)
-	healthMax = 100 + l*15
-	energyMax = 50 + l*5
-	strength = l * 3
-	return
 }
 
 // ProcessXP applies an XP gain to a character and returns the updated values.

@@ -18,6 +18,10 @@ private:
         float xp_curve_factor = 1.3f;
         float xp_curve_exponent = 2.5f;
         float xp_irregularity = 0.4f;
+        int stat_points_per_level = 5;
+        int initial_stat_value = 5;
+        int respec_free_until_level = 10;
+        int respec_cost_gold = 1000;
     };
 
     struct MasteryConfig {

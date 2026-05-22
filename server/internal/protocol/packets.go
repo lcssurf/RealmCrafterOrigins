@@ -74,6 +74,10 @@ const (
 	PStatusEffectDelta   uint16 = 131 // S->C: status effect add/update/remove
 	PKitPool             uint16 = 132 // S->C: active kit full ability pool snapshot
 	PCastSkillSlot       uint16 = 133 // C->S: cast active loadout skill by hotbar slot
+	PStatPointsUpdate    uint16 = 134 // S->C: unspent stat point pool update
+	PPrimaryStatsUpdate  uint16 = 135 // S->C: primary stats + unspent snapshot
+	PDistributeStatPoint uint16 = 136 // C->S: allocate primary stat points
+	PRespec              uint16 = 137 // C->S: reset primary stats to base
 )
 
 // EmitterType values for PCreateEmitter.

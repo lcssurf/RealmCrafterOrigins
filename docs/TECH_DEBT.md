@@ -156,3 +156,28 @@ Appearance dos NPCs e player. Hoje isso ainda gera warnings
 Adicionar bindings de animacao `Dodge`, `Guard` e `Parry` nos appearances de
 personagens e NPCs. Hoje o runtime usa fallback `Idle`, o que evita travamento
 de estado, mas nao reproduz anim visual especifica para a acao defensiva.
+
+## 17. `character_primary_stats_per_level` hoje e referencia de NPC/fallback
+
+Com primary stats persistidos por personagem, a tabela
+`character_primary_stats_per_level` deixa de ser fonte principal para player e
+fica como referencia de defaults por level (NPC/fallback).
+
+Se isso virar confuso no fluxo de dados, considerar separar explicitamente em
+uma tabela dedicada para NPCs ou renomear para refletir o novo papel.
+
+## 18. UI de distribuicao de stats/respec pendente no cliente
+
+Backend de distribuicao de pontos e respec foi preparado, mas a interface de
+cliente (sheet/botoes/feedback) fica para o commit 38b.
+
+Enquanto isso, os pacotes existem e o estado e persistido, mas o jogador final
+nao tem fluxo visual para consumir a feature.
+
+## 19. Cache de progression/primary stats exige restart
+
+`CharacterProgressionRuntimeConfig` e cache de primary stats por level sao
+carregados no startup do server.
+
+Edicoes feitas via GUE/SQL em runtime nao refletem imediatamente sem restart.
+Se isso virar gargalo, planejar mecanismo de reload controlado.

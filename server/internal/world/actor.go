@@ -31,15 +31,17 @@ type Actor struct {
 	AreaName    string
 
 	// HP / EP / XP / Gold — read/write under Mu.
-	Mu         sync.Mutex
-	Health     int32
-	HealthMax  int32
-	Energy     int32 // MP
-	EnergyMax  int32 // MP max
-	Stamina    int32 // SP
-	StaminaMax int32 // SP max
-	XP         int64
-	Gold       int64
+	Mu                sync.Mutex
+	Health            int32
+	HealthMax         int32
+	Energy            int32 // MP
+	EnergyMax         int32 // MP max
+	Stamina           int32 // SP
+	StaminaMax        int32 // SP max
+	XP                int64
+	Gold              int64
+	UnspentStatPoints int32
+	FreeRespecsUsed   int32
 
 	// Combat — read/write under Mu.
 	LastPortal            int64         // unix ms of last portal use (cooldown)

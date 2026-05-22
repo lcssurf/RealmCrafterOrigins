@@ -362,30 +362,41 @@ func (c *ClientConn) applyQuestTurnInResult(ctx context.Context, turnIn *db.Ques
 	}
 
 	leveled := false
+	var (
+		newUnspent   int32
+		primaryAfter world.PrimaryStats
+	)
 	c.actor.Mu.Lock()
 	if turnIn.GoldChanged {
 		c.actor.Gold = turnIn.NewGold
 	}
 	if turnIn.XPChanged {
+		prevLevel := int(c.actor.Level)
 		c.actor.XP = turnIn.NewXP
 		c.actor.Level = uint16(turnIn.NewLevel)
 		if turnIn.Leveled {
 			leveled = true
-			c.actor.HealthMax = turnIn.NewHPMax
-			c.actor.EnergyMax = turnIn.NewEPMax
-			c.actor.Health = turnIn.NewHPMax
-			c.actor.Energy = turnIn.NewEPMax
-			c.actor.Strength = turnIn.NewStrength
+			cfg := world.GetCachedCharProgressionConfig()
+			levelsGained := turnIn.NewLevel - prevLevel
+			if levelsGained > 0 {
+				c.actor.UnspentStatPoints += int32(cfg.StatPointsPerLevel) * int32(levelsGained)
+			}
+			newUnspent = c.actor.UnspentStatPoints
+			primaryAfter = c.actor.Primary
 		}
 	}
 	c.actor.Mu.Unlock()
 	if leveled {
-		c.actor.SetPrimaryStats(c.primaryStatsForLevel(ctx, turnIn.NewLevel))
+		c.actor.SetPrimaryStats(primaryAfter)
 		world.RecomputeDerivedStats(c.actor)
 		c.actor.Mu.Lock()
 		c.actor.Health = c.actor.HealthMax
 		c.actor.Energy = c.actor.EnergyMax
 		c.actor.Mu.Unlock()
+		if err := c.server.db.UpdateCharacterUnspentStatPoints(ctx, c.actor.CharacterID, newUnspent); err != nil {
+			log.Printf("quest-runtime: persist unspent points failed char=%q err=%v", c.actor.Name, err)
+		}
+		c.sendStatPointsUpdate(newUnspent)
 	}
 
 	if turnIn.ItemsChanged {
@@ -505,30 +516,38 @@ func (c *ClientConn) awardXPAmount(ctx context.Context, gain int64) error {
 	c.actor.Mu.Unlock()
 
 	newXP, newLevel, leveled := world.ProcessXPCumulative(curXP, curLevel, gain)
-	hpMax, epMax, strength := world.StatsByLevel(newLevel)
-
-	if err := c.server.db.SaveXP(ctx, c.actor.CharacterID, newXP, newLevel, hpMax, epMax); err != nil {
+	if err := c.server.db.SaveXP(ctx, c.actor.CharacterID, newXP, newLevel); err != nil {
 		return err
 	}
 
+	var (
+		newUnspent   int32
+		primaryAfter world.PrimaryStats
+	)
 	c.actor.Mu.Lock()
 	c.actor.XP = newXP
 	c.actor.Level = uint16(newLevel)
 	if leveled {
-		c.actor.HealthMax = hpMax
-		c.actor.EnergyMax = epMax
-		c.actor.Health = hpMax
-		c.actor.Energy = epMax
-		c.actor.Strength = strength
+		cfg := world.GetCachedCharProgressionConfig()
+		levelsGained := newLevel - curLevel
+		if levelsGained > 0 {
+			c.actor.UnspentStatPoints += int32(cfg.StatPointsPerLevel) * int32(levelsGained)
+		}
+		newUnspent = c.actor.UnspentStatPoints
+		primaryAfter = c.actor.Primary
 	}
 	c.actor.Mu.Unlock()
 	if leveled {
-		c.actor.SetPrimaryStats(c.primaryStatsForLevel(ctx, newLevel))
+		c.actor.SetPrimaryStats(primaryAfter)
 		world.RecomputeDerivedStats(c.actor)
 		c.actor.Mu.Lock()
 		c.actor.Health = c.actor.HealthMax
 		c.actor.Energy = c.actor.EnergyMax
 		c.actor.Mu.Unlock()
+		if err := c.server.db.UpdateCharacterUnspentStatPoints(ctx, c.actor.CharacterID, newUnspent); err != nil {
+			log.Printf("quest-runtime: persist unspent points failed char=%q err=%v", c.actor.Name, err)
+		}
+		c.sendStatPointsUpdate(newUnspent)
 	}
 	return c.sendXPUpdate()
 }

@@ -109,13 +109,17 @@ type SkillProgressionConfig struct {
 // CharacterProgressionConfig defines global character level progression rules.
 // Singleton: there should only be one row (id=1).
 type CharacterProgressionConfig struct {
-	ID              int
-	MaxLevel        int
-	XPCurveType     string
-	XPCurveBase     int
-	XPCurveFactor   float64
-	XPCurveExponent float64
-	XPIrregularity  float64
+	ID                   int
+	MaxLevel             int
+	XPCurveType          string
+	XPCurveBase          int
+	XPCurveFactor        float64
+	XPCurveExponent      float64
+	XPIrregularity       float64
+	StatPointsPerLevel   int
+	InitialStatValue     int
+	RespecFreeUntilLevel int
+	RespecCostGold       int
 }
 
 // CharacterPrimaryStatsLevel stores the primary stats granted at a given level.
@@ -179,28 +183,35 @@ type CharacterItem struct {
 
 // Character mirrors the characters table.
 type Character struct {
-	ID         string
-	AccountID  string
-	Slot       int
-	Name       string
-	Race       string
-	Class      string
-	Gender     int
-	Level      int
-	XP         int64
-	Gold       int64
-	AreaName   string
-	X, Y, Z    float32
-	Yaw        float32
-	FaceTex    int
-	Hair       int
-	Beard      int
-	BodyTex    int
-	Health     int32
-	HealthMax  int32
-	Energy     int32
-	EnergyMax  int32
-	ActorDefID int
+	ID                  string
+	AccountID           string
+	Slot                int
+	Name                string
+	Race                string
+	Class               string
+	Gender              int
+	Level               int
+	XP                  int64
+	Gold                int64
+	AreaName            string
+	X, Y, Z             float32
+	Yaw                 float32
+	FaceTex             int
+	Hair                int
+	Beard               int
+	BodyTex             int
+	Health              int32
+	HealthMax           int32
+	Energy              int32
+	EnergyMax           int32
+	PrimaryStrength     int32
+	PrimaryDexterity    int32
+	PrimaryIntelligence int32
+	PrimaryWisdom       int32
+	PrimaryPerception   int32
+	UnspentStatPoints   int32
+	FreeRespecsUsed     int32
+	ActorDefID          int
 }
 
 // PlayableDef is a minimal view of media_actor_defs used for the character-
@@ -285,9 +296,6 @@ type QuestTurnInResult struct {
 	NewGold      int64
 	NewXP        int64
 	NewLevel     int
-	NewHPMax     int32
-	NewEPMax     int32
-	NewStrength  int32
 	Leveled      bool
 	GoldChanged  bool
 	XPChanged    bool
@@ -399,6 +407,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV32(ctx)
 	d.migrateV33(ctx)
 	d.migrateV34(ctx)
+	d.migrateV35(ctx)
 
 	return d, nil
 }
@@ -756,8 +765,11 @@ func (d *DB) GetAccountByUsername(ctx context.Context, username string) (*Accoun
 func (d *DB) ListCharacters(ctx context.Context, accountID string) ([]*Character, error) {
 	rows, err := d.db.QueryContext(ctx,
 		d.q(`SELECT id, account_id, slot, name, race, class, gender, level, xp, gold,
-		          area_name, x, y, z, yaw, face_tex, hair, beard, body_tex,
-		          health, health_max, energy, energy_max, actor_def_id
+		            area_name, x, y, z, yaw, face_tex, hair, beard, body_tex,
+		            health, health_max, energy, energy_max,
+		            primary_strength, primary_dexterity, primary_intelligence, primary_wisdom, primary_perception,
+		            unspent_stat_points, free_respecs_used,
+		            actor_def_id
 		     FROM characters WHERE account_id = ? ORDER BY slot`),
 		accountID,
 	)
@@ -773,7 +785,10 @@ func (d *DB) ListCharacters(ctx context.Context, accountID string) ([]*Character
 			&c.ID, &c.AccountID, &c.Slot, &c.Name, &c.Race, &c.Class, &c.Gender,
 			&c.Level, &c.XP, &c.Gold, &c.AreaName, &c.X, &c.Y, &c.Z, &c.Yaw,
 			&c.FaceTex, &c.Hair, &c.Beard, &c.BodyTex,
-			&c.Health, &c.HealthMax, &c.Energy, &c.EnergyMax, &c.ActorDefID,
+			&c.Health, &c.HealthMax, &c.Energy, &c.EnergyMax,
+			&c.PrimaryStrength, &c.PrimaryDexterity, &c.PrimaryIntelligence, &c.PrimaryWisdom, &c.PrimaryPerception,
+			&c.UnspentStatPoints, &c.FreeRespecsUsed,
+			&c.ActorDefID,
 		); err != nil {
 			return nil, fmt.Errorf("db: ListCharacters scan: %w", err)
 		}
@@ -788,12 +803,20 @@ func (d *DB) ListCharacters(ctx context.Context, accountID string) ([]*Character
 // on across SQLite/Postgres for this Ã¢â‚¬â€ so we set them explicitly.
 func (d *DB) CreateCharacter(ctx context.Context, accountID string, slot int, name, race, className string, gender, faceTex, hair, beard, bodyTex, actorDefID int) (*Character, error) {
 	id := uuid.New().String()
+	cfg := world.GetCachedCharProgressionConfig()
+	initialStatValue := cfg.InitialStatValue
+	if initialStatValue < 1 {
+		initialStatValue = 1
+	}
 	_, err := d.db.ExecContext(ctx,
 		d.q(`INSERT INTO characters
 		       (id, account_id, slot, name, race, class, gender, face_tex, hair, beard, body_tex, actor_def_id, created_at,
+		        primary_strength, primary_dexterity, primary_intelligence, primary_wisdom, primary_perception,
+		        unspent_stat_points, free_respecs_used,
 		        x, z)
-		     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 512, 512)`),
+		     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 512, 512)`),
 		id, accountID, slot, name, race, className, gender, faceTex, hair, beard, bodyTex, actorDefID, now(),
+		initialStatValue, initialStatValue, initialStatValue, initialStatValue, initialStatValue,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("db: CreateCharacter: %w", err)
@@ -823,14 +846,20 @@ func (d *DB) GetCharacterBySlot(ctx context.Context, accountID string, slot int)
 	err := d.db.QueryRowContext(ctx,
 		d.q(`SELECT id, account_id, slot, name, race, class, gender, level, xp, gold,
 		          area_name, x, y, z, yaw, face_tex, hair, beard, body_tex,
-		          health, health_max, energy, energy_max, actor_def_id
+		          health, health_max, energy, energy_max,
+		          primary_strength, primary_dexterity, primary_intelligence, primary_wisdom, primary_perception,
+		          unspent_stat_points, free_respecs_used,
+		          actor_def_id
 		     FROM characters WHERE account_id = ? AND slot = ?`),
 		accountID, slot,
 	).Scan(
 		&c.ID, &c.AccountID, &c.Slot, &c.Name, &c.Race, &c.Class, &c.Gender,
 		&c.Level, &c.XP, &c.Gold, &c.AreaName, &c.X, &c.Y, &c.Z, &c.Yaw,
 		&c.FaceTex, &c.Hair, &c.Beard, &c.BodyTex,
-		&c.Health, &c.HealthMax, &c.Energy, &c.EnergyMax, &c.ActorDefID,
+		&c.Health, &c.HealthMax, &c.Energy, &c.EnergyMax,
+		&c.PrimaryStrength, &c.PrimaryDexterity, &c.PrimaryIntelligence, &c.PrimaryWisdom, &c.PrimaryPerception,
+		&c.UnspentStatPoints, &c.FreeRespecsUsed,
+		&c.ActorDefID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("db: GetCharacterBySlot: %w", err)
@@ -1253,9 +1282,10 @@ func (d *DB) SeedDefaultCharacterProgressionConfig(ctx context.Context) error {
 
 	if _, err := d.db.ExecContext(ctx, d.q(`
 		INSERT INTO character_progression_config
-		(id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor, xp_curve_exponent, xp_irregularity)
-		VALUES (1, ?, ?, ?, ?, ?, ?)`),
-		60, "irregular", 60, 1.3, 2.5, 0.4); err != nil {
+		(id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor, xp_curve_exponent, xp_irregularity,
+		 stat_points_per_level, initial_stat_value, respec_free_until_level, respec_cost_gold)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		60, "irregular", 60, 1.3, 2.5, 0.4, 5, 5, 10, 1000); err != nil {
 		return fmt.Errorf("seed character_progression_config insert: %w", err)
 	}
 	log.Printf("seed: character progression config seeded (defaults)")
@@ -1761,11 +1791,11 @@ func (d *DB) SwapInventorySlots(ctx context.Context, charID string, slotA, slotB
 	return tx.Commit()
 }
 
-// SaveXP persists updated XP, level, and (on level-up) new stat maxima.
-func (d *DB) SaveXP(ctx context.Context, charID string, xp int64, level int, hpMax, epMax int32) error {
+// SaveXP persists updated XP and level.
+func (d *DB) SaveXP(ctx context.Context, charID string, xp int64, level int) error {
 	_, err := d.db.ExecContext(ctx,
-		d.q(`UPDATE characters SET xp = ?, level = ?, health_max = ?, energy_max = ? WHERE id = ?`),
-		xp, level, hpMax, epMax, charID)
+		d.q(`UPDATE characters SET xp = ?, level = ? WHERE id = ?`),
+		xp, level, charID)
 	return err
 }
 
@@ -3468,7 +3498,6 @@ func (d *DB) TurnInQuest(ctx context.Context, charID string, questID int) (*Ques
 	if totalXP > 0 {
 		newXP, newLevel, leveled = world.ProcessXPCumulative(curXP, curLevel, totalXP)
 	}
-	hpMax, epMax, strength := world.StatsByLevel(newLevel)
 
 	for _, reward := range rewards {
 		if reward.ItemID == 0 || reward.ItemQty == 0 {
@@ -3497,9 +3526,9 @@ func (d *DB) TurnInQuest(ctx context.Context, charID string, questID int) (*Ques
 	if totalXP > 0 {
 		if _, err := tx.ExecContext(ctx, d.q(`
 			UPDATE characters
-			   SET xp = ?, level = ?, health_max = ?, energy_max = ?
+			   SET xp = ?, level = ?
 			 WHERE id = ?`),
-			newXP, newLevel, hpMax, epMax, charID); err != nil {
+			newXP, newLevel, charID); err != nil {
 			return nil, false, fmt.Errorf("db: TurnInQuest update xp: %w", err)
 		}
 	}
@@ -3522,9 +3551,6 @@ func (d *DB) TurnInQuest(ctx context.Context, charID string, questID int) (*Ques
 		NewGold:      newGold,
 		NewXP:        newXP,
 		NewLevel:     newLevel,
-		NewHPMax:     hpMax,
-		NewEPMax:     epMax,
-		NewStrength:  strength,
 		Leveled:      leveled,
 		GoldChanged:  totalGold != 0,
 		XPChanged:    totalXP > 0,
@@ -3794,6 +3820,57 @@ func (d *DB) UpdateGold(ctx context.Context, charID string, delta int64) (int64,
 		d.q(`SELECT gold FROM characters WHERE id = ?`), charID,
 	).Scan(&gold)
 	return gold, err
+}
+
+// UpdateCharacterGold sets an absolute gold value for the character.
+func (d *DB) UpdateCharacterGold(ctx context.Context, charID string, gold int64) error {
+	_, err := d.db.ExecContext(ctx,
+		d.q(`UPDATE characters SET gold = ? WHERE id = ?`),
+		gold, charID)
+	if err != nil {
+		return fmt.Errorf("db: UpdateCharacterGold: %w", err)
+	}
+	return nil
+}
+
+// UpdateCharacterPrimaryStats persists per-character primary stats and unspent points.
+func (d *DB) UpdateCharacterPrimaryStats(ctx context.Context, charID string, primary world.PrimaryStats, unspent int32) error {
+	_, err := d.db.ExecContext(ctx, d.q(`
+		UPDATE characters
+		   SET primary_strength = ?,
+		       primary_dexterity = ?,
+		       primary_intelligence = ?,
+		       primary_wisdom = ?,
+		       primary_perception = ?,
+		       unspent_stat_points = ?
+		 WHERE id = ?`),
+		primary.STR, primary.DEX, primary.INT, primary.WIS, primary.PER, unspent, charID)
+	if err != nil {
+		return fmt.Errorf("db: UpdateCharacterPrimaryStats: %w", err)
+	}
+	return nil
+}
+
+// UpdateCharacterUnspentStatPoints persists the current unspent stat point pool.
+func (d *DB) UpdateCharacterUnspentStatPoints(ctx context.Context, charID string, unspent int32) error {
+	_, err := d.db.ExecContext(ctx,
+		d.q(`UPDATE characters SET unspent_stat_points = ? WHERE id = ?`),
+		unspent, charID)
+	if err != nil {
+		return fmt.Errorf("db: UpdateCharacterUnspentStatPoints: %w", err)
+	}
+	return nil
+}
+
+// UpdateCharacterFreeRespecsUsed persists the number of free respecs consumed.
+func (d *DB) UpdateCharacterFreeRespecsUsed(ctx context.Context, charID string, count int32) error {
+	_, err := d.db.ExecContext(ctx,
+		d.q(`UPDATE characters SET free_respecs_used = ? WHERE id = ?`),
+		count, charID)
+	if err != nil {
+		return fmt.Errorf("db: UpdateCharacterFreeRespecsUsed: %w", err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -4674,12 +4751,14 @@ func (d *DB) GetCharacterProgressionConfig(ctx context.Context) (*CharacterProgr
 		cfg := &CharacterProgressionConfig{}
 		err := d.db.QueryRowContext(ctx, d.q(`
 			SELECT id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor,
-			       xp_curve_exponent, xp_irregularity
+			       xp_curve_exponent, xp_irregularity,
+			       stat_points_per_level, initial_stat_value, respec_free_until_level, respec_cost_gold
 			  FROM character_progression_config
 			 ORDER BY id
 			 LIMIT 1`)).
 			Scan(&cfg.ID, &cfg.MaxLevel, &cfg.XPCurveType, &cfg.XPCurveBase, &cfg.XPCurveFactor,
-				&cfg.XPCurveExponent, &cfg.XPIrregularity)
+				&cfg.XPCurveExponent, &cfg.XPIrregularity,
+				&cfg.StatPointsPerLevel, &cfg.InitialStatValue, &cfg.RespecFreeUntilLevel, &cfg.RespecCostGold)
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -4731,6 +4810,18 @@ func (d *DB) UpdateCharacterProgressionConfig(ctx context.Context, c *CharacterP
 	if c.XPIrregularity < 0 || c.XPIrregularity > 1 {
 		return fmt.Errorf("db: UpdateCharacterProgressionConfig: xp_irregularity must be between 0 and 1")
 	}
+	if c.StatPointsPerLevel < 0 {
+		return fmt.Errorf("db: UpdateCharacterProgressionConfig: stat_points_per_level must be >= 0")
+	}
+	if c.InitialStatValue < 1 {
+		return fmt.Errorf("db: UpdateCharacterProgressionConfig: initial_stat_value must be >= 1")
+	}
+	if c.RespecFreeUntilLevel < 0 {
+		return fmt.Errorf("db: UpdateCharacterProgressionConfig: respec_free_until_level must be >= 0")
+	}
+	if c.RespecCostGold < 0 {
+		return fmt.Errorf("db: UpdateCharacterProgressionConfig: respec_cost_gold must be >= 0")
+	}
 
 	curveType := strings.ToLower(strings.TrimSpace(c.XPCurveType))
 	if curveType == "" {
@@ -4744,16 +4835,22 @@ func (d *DB) UpdateCharacterProgressionConfig(ctx context.Context, c *CharacterP
 
 	_, err := d.db.ExecContext(ctx, d.q(`
 		INSERT INTO character_progression_config
-		    (id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor, xp_curve_exponent, xp_irregularity)
-		VALUES (1, ?, ?, ?, ?, ?, ?)
+		    (id, max_level, xp_curve_type, xp_curve_base, xp_curve_factor, xp_curve_exponent, xp_irregularity,
+		     stat_points_per_level, initial_stat_value, respec_free_until_level, respec_cost_gold)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 		    max_level = excluded.max_level,
 		    xp_curve_type = excluded.xp_curve_type,
 		    xp_curve_base = excluded.xp_curve_base,
 		    xp_curve_factor = excluded.xp_curve_factor,
 		    xp_curve_exponent = excluded.xp_curve_exponent,
-		    xp_irregularity = excluded.xp_irregularity`),
-		c.MaxLevel, curveType, c.XPCurveBase, c.XPCurveFactor, c.XPCurveExponent, c.XPIrregularity)
+		    xp_irregularity = excluded.xp_irregularity,
+		    stat_points_per_level = excluded.stat_points_per_level,
+		    initial_stat_value = excluded.initial_stat_value,
+		    respec_free_until_level = excluded.respec_free_until_level,
+		    respec_cost_gold = excluded.respec_cost_gold`),
+		c.MaxLevel, curveType, c.XPCurveBase, c.XPCurveFactor, c.XPCurveExponent, c.XPIrregularity,
+		c.StatPointsPerLevel, c.InitialStatValue, c.RespecFreeUntilLevel, c.RespecCostGold)
 	if err != nil {
 		return fmt.Errorf("db: UpdateCharacterProgressionConfig: %w", err)
 	}
@@ -7528,6 +7625,54 @@ func (d *DB) migrateV34(ctx context.Context) {
 
 	log.Printf("migrateV34: converted XP back to cumulative irregular curves (characters=%d mastery_rows=%d)",
 		len(charUpdates), len(masteryUpdates))
+}
+
+func (d *DB) migrateV35(ctx context.Context) {
+	const conversionDoneKey = "migration_v35_stat_distribution_done"
+
+	if _, err := d.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		log.Printf("migrateV35: ensure meta table failed: %v", err)
+		return
+	}
+
+	var doneValue string
+	doneErr := d.db.QueryRowContext(ctx, d.q(`SELECT value FROM meta WHERE key = ?`), conversionDoneKey).Scan(&doneValue)
+	if doneErr == nil && strings.TrimSpace(doneValue) == "1" {
+		return
+	}
+
+	addCol := func(table, col, def string) {
+		sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, col, def)
+		_, _ = d.db.ExecContext(ctx, sql)
+	}
+
+	addCol("characters", "primary_strength", "INTEGER NOT NULL DEFAULT 5")
+	addCol("characters", "primary_dexterity", "INTEGER NOT NULL DEFAULT 5")
+	addCol("characters", "primary_intelligence", "INTEGER NOT NULL DEFAULT 5")
+	addCol("characters", "primary_wisdom", "INTEGER NOT NULL DEFAULT 5")
+	addCol("characters", "primary_perception", "INTEGER NOT NULL DEFAULT 5")
+	addCol("characters", "unspent_stat_points", "INTEGER NOT NULL DEFAULT 0")
+	addCol("characters", "free_respecs_used", "INTEGER NOT NULL DEFAULT 0")
+
+	addCol("character_progression_config", "stat_points_per_level", "INTEGER NOT NULL DEFAULT 5")
+	addCol("character_progression_config", "initial_stat_value", "INTEGER NOT NULL DEFAULT 5")
+	addCol("character_progression_config", "respec_free_until_level", "INTEGER NOT NULL DEFAULT 10")
+	addCol("character_progression_config", "respec_cost_gold", "INTEGER NOT NULL DEFAULT 1000")
+
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		UPDATE characters SET unspent_stat_points = (level - 1) * 5
+		WHERE unspent_stat_points = 0 AND level > 1
+	`))
+
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO meta (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
+		conversionDoneKey, "1")
 }
 
 // LoadWorldObjects returns all placed static world objects from zone_scenery with resolved model paths.

@@ -301,6 +301,139 @@ func (c *ClientConn) handleCastSkillSlot(ctx context.Context, payload []byte) er
 	return nil
 }
 
+func (c *ClientConn) handleDistributeStatPoint(_ context.Context, payload []byte) error {
+	if c == nil || c.actor == nil || c.server == nil || c.server.db == nil || c.account == nil {
+		return nil
+	}
+	r := NewReader(payload)
+	statID, err := r.ReadUint8()
+	if err != nil {
+		return nil
+	}
+	amount, err := r.ReadUint8()
+	if err != nil || amount == 0 || amount > 200 {
+		return nil
+	}
+
+	c.actor.Mu.Lock()
+	available := c.actor.UnspentStatPoints
+	if available < int32(amount) {
+		c.actor.Mu.Unlock()
+		log.Printf("distribute-stat REJECTED: not enough points user=%s requested=%d available=%d",
+			c.account.Username, amount, available)
+		return nil
+	}
+
+	newPrimary := c.actor.Primary
+	switch statID {
+	case 0:
+		newPrimary.STR += int32(amount)
+	case 1:
+		newPrimary.DEX += int32(amount)
+	case 2:
+		newPrimary.INT += int32(amount)
+	case 3:
+		newPrimary.WIS += int32(amount)
+	case 4:
+		newPrimary.PER += int32(amount)
+	default:
+		c.actor.Mu.Unlock()
+		log.Printf("distribute-stat REJECTED: invalid stat_id=%d user=%s", statID, c.account.Username)
+		return nil
+	}
+	c.actor.UnspentStatPoints -= int32(amount)
+	newUnspent := c.actor.UnspentStatPoints
+	c.actor.Mu.Unlock()
+
+	c.actor.SetPrimaryStats(newPrimary)
+	world.RecomputeDerivedStats(c.actor)
+
+	bg := context.Background()
+	if err := c.server.db.UpdateCharacterPrimaryStats(bg, c.actor.CharacterID, newPrimary, newUnspent); err != nil {
+		log.Printf("distribute-stat: db error user=%s: %v", c.account.Username, err)
+	}
+
+	c.sendPrimaryStatsUpdate(newPrimary, newUnspent)
+	log.Printf("distribute-stat: user=%s stat=%d amount=%d new STR=%d DEX=%d INT=%d WIS=%d PER=%d unspent=%d",
+		c.account.Username, statID, amount,
+		newPrimary.STR, newPrimary.DEX, newPrimary.INT, newPrimary.WIS, newPrimary.PER, newUnspent)
+	return nil
+}
+
+func (c *ClientConn) handleRespec(_ context.Context, payload []byte) error {
+	if c == nil || c.actor == nil || c.server == nil || c.server.db == nil || c.account == nil {
+		return nil
+	}
+	r := NewReader(payload)
+	confirm, err := r.ReadUint8()
+	if err != nil || confirm != 1 {
+		return nil
+	}
+
+	cfg := world.GetCachedCharProgressionConfig()
+
+	c.actor.Mu.Lock()
+	level := int(c.actor.Level)
+	isFree := level <= cfg.RespecFreeUntilLevel
+
+	if !isFree {
+		if c.actor.Gold < int64(cfg.RespecCostGold) {
+			gold := c.actor.Gold
+			c.actor.Mu.Unlock()
+			log.Printf("respec REJECTED: not enough gold user=%s gold=%d need=%d",
+				c.account.Username, gold, cfg.RespecCostGold)
+			return nil
+		}
+		c.actor.Gold -= int64(cfg.RespecCostGold)
+	}
+
+	initial := int32(cfg.InitialStatValue)
+	if initial < 1 {
+		initial = 1
+	}
+	pointsBack := (c.actor.Primary.STR - initial) +
+		(c.actor.Primary.DEX - initial) +
+		(c.actor.Primary.INT - initial) +
+		(c.actor.Primary.WIS - initial) +
+		(c.actor.Primary.PER - initial)
+	if pointsBack < 0 {
+		pointsBack = 0
+	}
+
+	newPrimary := world.PrimaryStats{STR: initial, DEX: initial, INT: initial, WIS: initial, PER: initial}
+	c.actor.UnspentStatPoints += pointsBack
+	if isFree {
+		c.actor.FreeRespecsUsed += 1
+	}
+	newUnspent := c.actor.UnspentStatPoints
+	newFreeUsed := c.actor.FreeRespecsUsed
+	goldRemaining := c.actor.Gold
+	c.actor.Mu.Unlock()
+
+	c.actor.SetPrimaryStats(newPrimary)
+	world.RecomputeDerivedStats(c.actor)
+
+	bg := context.Background()
+	if err := c.server.db.UpdateCharacterPrimaryStats(bg, c.actor.CharacterID, newPrimary, newUnspent); err != nil {
+		log.Printf("respec: db error user=%s: %v", c.account.Username, err)
+	}
+	if !isFree {
+		if err := c.server.db.UpdateCharacterGold(bg, c.actor.CharacterID, goldRemaining); err != nil {
+			log.Printf("respec: persist gold error user=%s: %v", c.account.Username, err)
+		}
+		c.sendGoldUpdate()
+	} else {
+		if err := c.server.db.UpdateCharacterFreeRespecsUsed(bg, c.actor.CharacterID, newFreeUsed); err != nil {
+			log.Printf("respec: persist free_respecs_used error user=%s: %v", c.account.Username, err)
+		}
+	}
+
+	c.sendPrimaryStatsUpdate(newPrimary, newUnspent)
+	log.Printf("respec: user=%s free=%t points_returned=%d new_unspent=%d gold_left=%d",
+		c.account.Username, isFree, pointsBack, newUnspent, goldRemaining)
+	return nil
+}
+
 func (c *ClientConn) validateLoadoutKit(ctx context.Context, kitID int) error {
 	if kitID <= 0 {
 		return fmt.Errorf("kit_id must be > 0")

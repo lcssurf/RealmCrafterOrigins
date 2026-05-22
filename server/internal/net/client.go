@@ -39,43 +39,10 @@ const (
 	weaponSwapCombatLockWindowMs = int64(5_000)
 )
 
-func fallbackPrimaryStatsForLevel(level int) world.PrimaryStats {
-	if level < 1 {
-		level = 1
-	}
-	base := int32(level) * 3
-	return world.PrimaryStats{
-		STR: base,
-		DEX: base,
-		INT: base,
-		WIS: base,
-		PER: base,
-	}
-}
-
 func (c *ClientConn) primaryStatsForLevel(ctx context.Context, level int) world.PrimaryStats {
-	fallback := fallbackPrimaryStatsForLevel(level)
-	if c == nil || c.server == nil || c.server.db == nil {
-		return fallback
-	}
-
-	row, err := c.server.db.GetCharacterPrimaryStatsForLevel(ctx, level)
-	if err != nil {
-		log.Printf("stats: load primary stats failed level=%d: %v (using fallback)", level, err)
-		return fallback
-	}
-	if row == nil {
-		log.Printf("stats: missing primary stats row level=%d (using fallback)", level)
-		return fallback
-	}
-
-	return world.PrimaryStats{
-		STR: row.Strength,
-		DEX: row.Dexterity,
-		INT: row.Intelligence,
-		WIS: row.Wisdom,
-		PER: row.Perception,
-	}
+	_ = c
+	_ = ctx
+	return world.PrimaryStatsForLevel(level)
 }
 
 // ClientConn manages a single player's QUIC connection through a state machine:
@@ -231,6 +198,10 @@ func (c *ClientConn) dispatchInGamePacket(ctx context.Context, pktType uint16, p
 		return c.handleSkillLoadoutAction(ctx, payload)
 	case protocol.PCastSkillSlot:
 		return c.handleCastSkillSlot(ctx, payload)
+	case protocol.PDistributeStatPoint:
+		return c.handleDistributeStatPoint(ctx, payload)
+	case protocol.PRespec:
+		return c.handleRespec(ctx, payload)
 	case protocol.PClientWorldReady:
 		return c.handleClientWorldReady(payload)
 	case protocol.PPing:
@@ -445,14 +416,26 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	actor.Stamina = actor.StaminaMax
 	actor.XP = char.XP
 	actor.Gold = char.Gold
-	actor.Strength = int32(char.Level) * 3
+	actor.UnspentStatPoints = char.UnspentStatPoints
+	actor.FreeRespecsUsed = char.FreeRespecsUsed
 	actor.Radius = 0.4
 	if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, char.ID); err == nil {
 		actor.WeaponDamage = wdmg
 		actor.CachedArmor = armor
 	}
-	actor.SetPrimaryStats(c.primaryStatsForLevel(ctx, int(actor.Level)))
+	actor.SetPrimaryStats(world.PrimaryStats{
+		STR: char.PrimaryStrength,
+		DEX: char.PrimaryDexterity,
+		INT: char.PrimaryIntelligence,
+		WIS: char.PrimaryWisdom,
+		PER: char.PrimaryPerception,
+	})
 	world.RecomputeDerivedStats(actor)
+	actor.Mu.Lock()
+	actor.Health = actor.HealthMax
+	actor.Energy = actor.EnergyMax
+	actor.Stamina = actor.StaminaMax
+	actor.Mu.Unlock()
 	actor.SpellCooldowns = make(map[uint16]int64)
 	if progressRows, err := c.server.db.ListCharacterSkillProgress(ctx, char.ID); err == nil {
 		actor.Mu.Lock()
@@ -519,7 +502,20 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 		w.WriteInt32(actor.EnergyMax) // MP max
 		w.WriteInt32(actor.Stamina)
 		w.WriteInt32(actor.StaminaMax)
+		actor.Mu.Lock()
+		primary := actor.Primary
+		unspent := actor.UnspentStatPoints
+		actor.Mu.Unlock()
+		var extras Writer
+		extras.WriteUint16(uint16(primary.STR))
+		extras.WriteUint16(uint16(primary.DEX))
+		extras.WriteUint16(uint16(primary.INT))
+		extras.WriteUint16(uint16(primary.WIS))
+		extras.WriteUint16(uint16(primary.PER))
+		extras.WriteUint16(uint16(unspent))
+
 		payload := append(w.Bytes(), world.AppearanceBytes(actor.Appearance)...)
+		payload = append(payload, extras.Bytes()...)
 		if err := c.sendPacket(protocol.PStartGame, payload); err != nil {
 			return err
 		}
@@ -527,6 +523,12 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 
 	// Send initial XP/level state.
 	_ = c.sendXPUpdate()
+	actor.Mu.Lock()
+	primarySnapshot := actor.Primary
+	unspentSnapshot := actor.UnspentStatPoints
+	actor.Mu.Unlock()
+	c.sendPrimaryStatsUpdate(primarySnapshot, unspentSnapshot)
+	c.sendStatPointsUpdate(unspentSnapshot)
 
 	// Give starter items if this is a new character, then send inventory.
 	_ = c.server.db.GiveStarterItems(ctx, char.ID)
@@ -1061,6 +1063,29 @@ func (c *ClientConn) sendXPUpdate() error {
 	}
 
 	return nil
+}
+
+func (c *ClientConn) sendStatPointsUpdate(unspent int32) {
+	if c == nil {
+		return
+	}
+	var w Writer
+	w.WriteUint16(uint16(unspent))
+	_ = c.sendPacket(protocol.PStatPointsUpdate, w.Bytes())
+}
+
+func (c *ClientConn) sendPrimaryStatsUpdate(primary world.PrimaryStats, unspent int32) {
+	if c == nil {
+		return
+	}
+	var w Writer
+	w.WriteUint16(uint16(primary.STR))
+	w.WriteUint16(uint16(primary.DEX))
+	w.WriteUint16(uint16(primary.INT))
+	w.WriteUint16(uint16(primary.WIS))
+	w.WriteUint16(uint16(primary.PER))
+	w.WriteUint16(uint16(unspent))
+	_ = c.sendPacket(protocol.PPrimaryStatsUpdate, w.Bytes())
 }
 
 // sendInventory fetches all items for charID and sends PInventoryUpdate.
