@@ -8,13 +8,208 @@
 #include <cmath>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
+#include <cstdint>
 
 #include "rco/renderer/engine.h"
 #include "rco/renderer/pipeline.h"
 #include "rco/renderer/shader.h"
 #include "rco/renderer/model_cache.h"
+#include "rco/renderer/col_bake.h"
 
 namespace gue {
+
+namespace {
+
+struct QuantVtxKey {
+    int32_t x = 0;
+    int32_t y = 0;
+    int32_t z = 0;
+};
+
+inline bool operator==(const QuantVtxKey& a, const QuantVtxKey& b) {
+    return a.x == b.x && a.y == b.y && a.z == b.z;
+}
+
+struct QuantVtxKeyLess {
+    bool operator()(const QuantVtxKey& a, const QuantVtxKey& b) const {
+        if (a.x != b.x) return a.x < b.x;
+        if (a.y != b.y) return a.y < b.y;
+        return a.z < b.z;
+    }
+};
+
+struct QuantVtxKeyHash {
+    size_t operator()(const QuantVtxKey& v) const {
+        size_t h = std::hash<int32_t>{}(v.x);
+        h ^= std::hash<int32_t>{}(v.y) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        h ^= std::hash<int32_t>{}(v.z) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+struct QuantTriKey {
+    QuantVtxKey a;
+    QuantVtxKey b;
+    QuantVtxKey c;
+};
+
+inline bool operator==(const QuantTriKey& lhs, const QuantTriKey& rhs) {
+    return lhs.a == rhs.a && lhs.b == rhs.b && lhs.c == rhs.c;
+}
+
+struct QuantTriKeyHash {
+    size_t operator()(const QuantTriKey& t) const {
+        QuantVtxKeyHash hv;
+        size_t h = hv(t.a);
+        h ^= hv(t.b) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        h ^= hv(t.c) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+size_t BuildQuantizedTriangles(
+    const std::vector<std::array<glm::vec3, 3>>& src,
+    int                                           gridDiv,
+    float                                         areaCullFactor,
+    std::vector<std::array<glm::vec3, 3>>*       out) {
+    if (src.empty()) {
+        if (out) out->clear();
+        return 0;
+    }
+
+    gridDiv = std::max(1, gridDiv);
+
+    glm::vec3 bmin = src[0][0];
+    glm::vec3 bmax = src[0][0];
+    for (const auto& tri : src) {
+        for (const auto& p : tri) {
+            bmin = glm::min(bmin, p);
+            bmax = glm::max(bmax, p);
+        }
+    }
+    glm::vec3 extent = bmax - bmin;
+    float maxExtent = std::max(extent.x, std::max(extent.y, extent.z));
+    if (maxExtent <= 1e-5f) {
+        if (out) *out = src;
+        return src.size();
+    }
+
+    float cell = maxExtent / (float)gridDiv;
+    if (cell < 1e-6f) cell = 1e-6f;
+    const float invCell = 1.f / cell;
+    if (areaCullFactor < 1e-7f) areaCullFactor = 1e-7f;
+    const float minArea2 = cell * cell * areaCullFactor;
+
+    std::unordered_set<QuantTriKey, QuantTriKeyHash> unique;
+    unique.reserve(src.size() * 2 + 1);
+
+    std::vector<std::array<glm::vec3, 3>> tmp;
+    if (out) tmp.reserve(src.size());
+
+    auto quantize = [&](const glm::vec3& p, QuantVtxKey& q, glm::vec3& snapped) {
+        q.x = (int32_t)std::lround((p.x - bmin.x) * invCell);
+        q.y = (int32_t)std::lround((p.y - bmin.y) * invCell);
+        q.z = (int32_t)std::lround((p.z - bmin.z) * invCell);
+        snapped.x = bmin.x + (float)q.x * cell;
+        snapped.y = bmin.y + (float)q.y * cell;
+        snapped.z = bmin.z + (float)q.z * cell;
+    };
+
+    QuantVtxKeyLess lessKey;
+    for (const auto& tri : src) {
+        QuantVtxKey q[3];
+        glm::vec3 s[3];
+        quantize(tri[0], q[0], s[0]);
+        quantize(tri[1], q[1], s[1]);
+        quantize(tri[2], q[2], s[2]);
+
+        if (q[0] == q[1] || q[1] == q[2] || q[2] == q[0]) continue;
+
+        glm::vec3 cross = glm::cross(s[1] - s[0], s[2] - s[0]);
+        if (glm::dot(cross, cross) <= minArea2) continue;
+
+        std::array<QuantVtxKey, 3> sorted = {q[0], q[1], q[2]};
+        std::sort(sorted.begin(), sorted.end(), lessKey);
+        QuantTriKey key{sorted[0], sorted[1], sorted[2]};
+        if (!unique.insert(key).second) continue;
+
+        if (out) tmp.push_back({s[0], s[1], s[2]});
+    }
+
+    if (out) *out = std::move(tmp);
+    return out ? out->size() : unique.size();
+}
+
+std::vector<std::array<glm::vec3, 3>> SimplifyTrianglesForBudget(
+    const std::vector<std::array<glm::vec3, 3>>& src,
+    float                                         budgetPct) {
+    if (src.empty()) return {};
+
+    budgetPct = std::clamp(budgetPct, 0.1f, 100.f);
+    if (budgetPct >= 99.95f) return src;
+
+    const float t = budgetPct / 100.f;
+    const float curved = std::pow(t, 1.35f);
+    const size_t target = std::max<size_t>(
+        1, (size_t)std::lround(curved * (float)src.size()));
+    if (target >= src.size()) return src;
+
+    const float areaCullFactor = 1e-6f + (1.f - t) * 0.01f;
+
+    auto absDiff = [](size_t a, size_t b) -> size_t { return a > b ? (a - b) : (b - a); };
+
+    int lowDiv = 1;
+    size_t lowCount = BuildQuantizedTriangles(src, lowDiv, areaCullFactor, nullptr);
+
+    int highDiv = 2;
+    size_t highCount = BuildQuantizedTriangles(src, highDiv, areaCullFactor, nullptr);
+    while (highDiv < 1024 && highCount < target) {
+        lowDiv = highDiv;
+        lowCount = highCount;
+        highDiv *= 2;
+        highCount = BuildQuantizedTriangles(src, highDiv, areaCullFactor, nullptr);
+    }
+
+    int bestDiv = lowDiv;
+    size_t bestCount = lowCount;
+    auto consider = [&](int div, size_t count) {
+        if (count == 0) return;
+        size_t d = absDiff(count, target);
+        size_t db = absDiff(bestCount, target);
+        if (d < db || (d == db && count > bestCount)) {
+            bestDiv = div;
+            bestCount = count;
+        }
+    };
+
+    consider(highDiv, highCount);
+    int lo = lowDiv;
+    int hi = highDiv;
+    size_t loCount = lowCount;
+    size_t hiCount = highCount;
+    while (lo + 1 < hi) {
+        const int mid = lo + (hi - lo) / 2;
+        size_t midCount = BuildQuantizedTriangles(src, mid, areaCullFactor, nullptr);
+        consider(mid, midCount);
+        if (midCount < target) {
+            lo = mid;
+            loCount = midCount;
+        } else {
+            hi = mid;
+            hiCount = midCount;
+        }
+    }
+    consider(lo, loCount);
+    consider(hi, hiCount);
+
+    std::vector<std::array<glm::vec3, 3>> out;
+    BuildQuantizedTriangles(src, bestDiv, areaCullFactor, &out);
+    if (out.empty() && !src.empty()) out.push_back(src.front());
+    return out;
+}
+
+} // namespace
 
 PreviewViewport::~PreviewViewport() {
     actor_.Destroy();
@@ -59,6 +254,11 @@ void PreviewViewport::Clear() {
     actor_.Destroy();
     current_path_.clear();
     anim_t_ = 0.f;
+    collision_mesh_tris_.clear();
+    collision_mesh_cache_path_.clear();
+    collision_mesh_simplified_tris_.clear();
+    collision_mesh_simplified_path_.clear();
+    collision_mesh_simplified_budget_ = -1.f;
 }
 
 void PreviewViewport::FitCameraToModel() {
@@ -110,6 +310,11 @@ bool PreviewViewport::LoadModel(const std::string& path) {
     actor_.Destroy();
     current_path_ = path;
     anim_t_ = 0.f;
+    collision_mesh_tris_.clear();
+    collision_mesh_cache_path_.clear();
+    collision_mesh_simplified_tris_.clear();
+    collision_mesh_simplified_path_.clear();
+    collision_mesh_simplified_budget_ = -1.f;
 
     if (path.empty()) return true;
 
@@ -265,6 +470,220 @@ void PreviewViewport::RenderToEngineFrame_(int w, int h, float dt) {
     pipeline_->End(cfg);
 }
 
+void PreviewViewport::DrawCollisionOverlay_(const ImVec2& image_pos, const ImVec2& image_size) const {
+    if (!show_collision_preview_ || collision_shapes_.empty()) return;
+    if (image_size.x <= 1.f || image_size.y <= 1.f) return;
+
+    float yaw   = glm::radians(cam_yaw_);
+    float pitch = glm::radians(cam_pitch_);
+    glm::vec3 offset = {
+        cam_dist_ * std::cos(pitch) * std::sin(yaw),
+        cam_dist_ * std::sin(pitch),
+        cam_dist_ * std::cos(pitch) * std::cos(yaw),
+    };
+    glm::vec3 eye  = cam_target_ + offset;
+    glm::mat4 view = glm::lookAt(eye, cam_target_, glm::vec3(0, 1, 0));
+    glm::mat4 proj = glm::perspective(glm::radians(55.0f),
+                                      image_size.x / image_size.y, cam_near_, cam_far_);
+
+    auto project = [&](const glm::vec3& p, ImVec2& out) -> bool {
+        glm::vec4 clip = proj * view * glm::vec4(p, 1.f);
+        if (clip.w <= 0.0001f) return false;
+        glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        if (!std::isfinite(ndc.x) || !std::isfinite(ndc.y) || !std::isfinite(ndc.z))
+            return false;
+        out.x = image_pos.x + (ndc.x * 0.5f + 0.5f) * image_size.x;
+        out.y = image_pos.y + (-ndc.y * 0.5f + 0.5f) * image_size.y;
+        return true;
+    };
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (!dl) return;
+
+    auto addLine3D = [&](const glm::vec3& a, const glm::vec3& b, ImU32 col, float thick) {
+        ImVec2 sa, sb;
+        if (project(a, sa) && project(b, sb))
+            dl->AddLine(sa, sb, col, thick);
+    };
+    auto addSubdivTriEdges = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
+                                 int subdiv, ImU32 col, float thick) {
+        int n = subdiv;
+        if (n < 1) n = 1;
+        for (int i = 0; i < n; ++i) {
+            for (int j = 0; j < n - i; ++j) {
+                float fi0 = (float)i / (float)n;
+                float fj0 = (float)j / (float)n;
+                float fi1 = (float)(i + 1) / (float)n;
+                float fj1 = (float)(j + 1) / (float)n;
+                glm::vec3 p0 = a + (b - a) * fi0 + (c - a) * fj0;
+                glm::vec3 p1 = a + (b - a) * fi1 + (c - a) * fj0;
+                glm::vec3 p2 = a + (b - a) * fi0 + (c - a) * fj1;
+                addLine3D(p0, p1, col, thick);
+                addLine3D(p1, p2, col, thick);
+                addLine3D(p2, p0, col, thick);
+
+                if (i + j < n - 1) {
+                    glm::vec3 p3 = a + (b - a) * fi1 + (c - a) * fj1;
+                    addLine3D(p1, p3, col, thick);
+                    addLine3D(p3, p2, col, thick);
+                    addLine3D(p2, p1, col, thick);
+                }
+            }
+        }
+    };
+
+    const bool hasMeshShape = std::any_of(
+        collision_shapes_.begin(), collision_shapes_.end(),
+        [](const CollisionShape& s) { return s.type == 2; });
+    if (hasMeshShape) {
+        EnsureCollisionMeshCache_();
+    }
+    float meshBudgetPct = 100.f;
+    for (const auto& sh : collision_shapes_) {
+        if (sh.type != 2) continue;
+        float b = sh.detail_a > 0.f ? sh.detail_a : 100.f;
+        if (b < 0.1f) b = 0.1f;
+        if (b > 100.f) b = 100.f;
+        meshBudgetPct = std::min(meshBudgetPct, b);
+    }
+
+    const float globalScale = actor_scale_ > 0.f ? actor_scale_ : 1.f;
+    bool meshDrawn = false;
+    for (const auto& sh : collision_shapes_) {
+        if (sh.type == 0) { // Box
+            glm::vec3 c = {sh.offset_x * globalScale, sh.offset_y * globalScale, sh.offset_z * globalScale};
+            glm::vec3 h = {std::abs(sh.size_x) * 0.5f * globalScale,
+                           std::abs(sh.size_y) * 0.5f * globalScale,
+                           std::abs(sh.size_z) * 0.5f * globalScale};
+            glm::vec3 v[8] = {
+                {c.x-h.x, c.y-h.y, c.z-h.z}, {c.x+h.x, c.y-h.y, c.z-h.z},
+                {c.x+h.x, c.y+h.y, c.z-h.z}, {c.x-h.x, c.y+h.y, c.z-h.z},
+                {c.x-h.x, c.y-h.y, c.z+h.z}, {c.x+h.x, c.y-h.y, c.z+h.z},
+                {c.x+h.x, c.y+h.y, c.z+h.z}, {c.x-h.x, c.y+h.y, c.z+h.z},
+            };
+            static const int e[12][2] = {
+                {0,1},{1,2},{2,3},{3,0},
+                {4,5},{5,6},{6,7},{7,4},
+                {0,4},{1,5},{2,6},{3,7},
+            };
+            for (auto& edge : e)
+                addLine3D(v[edge[0]], v[edge[1]], IM_COL32(255, 90, 90, 230), 1.6f);
+        } else if (sh.type == 1) { // Sphere
+            glm::vec3 c = {sh.offset_x * globalScale, sh.offset_y * globalScale, sh.offset_z * globalScale};
+            const float r = std::abs(sh.size_x) * globalScale;
+            if (r <= 0.f) continue;
+            const int segs = 32;
+            for (int ring = 0; ring < 3; ++ring) {
+                glm::vec3 prev{};
+                for (int i = 0; i <= segs; ++i) {
+                    float t = (float)i / (float)segs * 6.28318530718f;
+                    glm::vec3 cur{};
+                    if (ring == 0) cur = {c.x + std::cos(t) * r, c.y + std::sin(t) * r, c.z};
+                    if (ring == 1) cur = {c.x, c.y + std::cos(t) * r, c.z + std::sin(t) * r};
+                    if (ring == 2) cur = {c.x + std::cos(t) * r, c.y, c.z + std::sin(t) * r};
+                    if (i > 0)
+                        addLine3D(prev, cur, IM_COL32(255, 160, 40, 230), 1.4f);
+                    prev = cur;
+                }
+            }
+        } else if (sh.type == 3) { // Wedge / ramp
+            glm::vec3 c = {sh.offset_x * globalScale, sh.offset_y * globalScale, sh.offset_z * globalScale};
+            glm::vec3 h = {std::abs(sh.size_x) * 0.5f * globalScale,
+                           std::abs(sh.size_y) * 0.5f * globalScale,
+                           std::abs(sh.size_z) * 0.5f * globalScale};
+            const bool risePositiveX = sh.size_x >= 0.f;
+            const float xLow  = risePositiveX ? (c.x - h.x) : (c.x + h.x);
+            const float xHigh = risePositiveX ? (c.x + h.x) : (c.x - h.x);
+            glm::vec3 v[6] = {
+                {xLow,  c.y - h.y, c.z - h.z}, // 0 low-back  bottom
+                {xLow,  c.y - h.y, c.z + h.z}, // 1 low-front bottom
+                {xHigh, c.y - h.y, c.z - h.z}, // 2 high-back bottom
+                {xHigh, c.y + h.y, c.z - h.z}, // 3 high-back top
+                {xHigh, c.y + h.y, c.z + h.z}, // 4 high-front top
+                {xHigh, c.y - h.y, c.z + h.z}, // 5 high-front bottom
+            };
+            static const int e[9][2] = {
+                {0,1}, {0,2}, {1,5}, {2,5},
+                {2,3}, {5,4}, {3,4}, {0,3}, {1,4},
+            };
+            for (auto& edge : e)
+                addLine3D(v[edge[0]], v[edge[1]], IM_COL32(170, 255, 110, 235), 1.7f);
+            int subdiv = (int)std::lround(sh.detail_a > 0.f ? sh.detail_a : 1.f);
+            if (subdiv < 1) subdiv = 1;
+            if (subdiv > 16) subdiv = 16;
+            if (subdiv > 1) {
+                static const int kTri[8][3] = {
+                    {0,1,5}, {0,5,2},
+                    {0,1,4}, {0,4,3},
+                    {2,5,4}, {2,4,3},
+                    {0,2,3}, {1,5,4},
+                };
+                for (auto& t : kTri)
+                    addSubdivTriEdges(v[t[0]], v[t[1]], v[t[2]], subdiv, IM_COL32(170, 255, 110, 110), 1.0f);
+            }
+        } else { // Mesh (full geometry): draw triangle edges from cached model mesh.
+            if (meshDrawn) continue;
+            const std::vector<std::array<glm::vec3, 3>>* drawTris = &collision_mesh_tris_;
+            float effectiveBudget = meshBudgetPct;
+            if (!collision_mesh_tris_.empty()) {
+                const float maxPreviewTris = 12000.f;
+                const float maxBudgetPct = (maxPreviewTris * 100.f) / (float)collision_mesh_tris_.size();
+                if (effectiveBudget > maxBudgetPct)
+                    effectiveBudget = maxBudgetPct;
+                if (effectiveBudget < 0.1f)
+                    effectiveBudget = 0.1f;
+            }
+            if (!collision_mesh_tris_.empty() &&
+                (effectiveBudget < 99.95f || collision_mesh_tris_.size() > 12000)) {
+                const bool cacheMiss =
+                    collision_mesh_simplified_path_ != collision_mesh_cache_path_ ||
+                    std::fabs(collision_mesh_simplified_budget_ - effectiveBudget) > 0.01f ||
+                    collision_mesh_simplified_tris_.empty();
+                if (cacheMiss) {
+                    collision_mesh_simplified_tris_ = SimplifyTrianglesForBudget(collision_mesh_tris_, effectiveBudget);
+                    collision_mesh_simplified_path_ = collision_mesh_cache_path_;
+                    collision_mesh_simplified_budget_ = effectiveBudget;
+                }
+                drawTris = &collision_mesh_simplified_tris_;
+            }
+            if (drawTris->empty()) {
+                glm::vec3 c = {sh.offset_x * globalScale, sh.offset_y * globalScale, sh.offset_z * globalScale};
+                const float d = 0.08f * globalScale;
+                addLine3D({c.x-d, c.y, c.z}, {c.x+d, c.y, c.z}, IM_COL32(255, 220, 70, 220), 1.3f);
+                addLine3D({c.x, c.y-d, c.z}, {c.x, c.y+d, c.z}, IM_COL32(255, 220, 70, 220), 1.3f);
+                addLine3D({c.x, c.y, c.z-d}, {c.x, c.y, c.z+d}, IM_COL32(255, 220, 70, 220), 1.3f);
+                meshDrawn = true;
+                continue;
+            }
+            for (const auto& tri : *drawTris) {
+                glm::vec3 a = tri[0] * globalScale;
+                glm::vec3 b = tri[1] * globalScale;
+                glm::vec3 c = tri[2] * globalScale;
+                addLine3D(a, b, IM_COL32(255, 220, 70, 220), 1.0f);
+                addLine3D(b, c, IM_COL32(255, 220, 70, 220), 1.0f);
+                addLine3D(c, a, IM_COL32(255, 220, 70, 220), 1.0f);
+            }
+            meshDrawn = true;
+        }
+    }
+}
+
+void PreviewViewport::EnsureCollisionMeshCache_() const {
+    std::string resolved = ResolveClientAsset(current_path_);
+    if (resolved == collision_mesh_cache_path_ && !collision_mesh_tris_.empty())
+        return;
+
+    collision_mesh_tris_.clear();
+    collision_mesh_cache_path_.clear();
+    collision_mesh_simplified_tris_.clear();
+    collision_mesh_simplified_path_.clear();
+    collision_mesh_simplified_budget_ = -1.f;
+    if (resolved.empty()) return;
+
+    rco::renderer::ExtractMeshTriangles(resolved, collision_mesh_tris_);
+    collision_mesh_cache_path_ = resolved;
+}
+
 void PreviewViewport::DrawImGui() {
     if (!engine_ || !pipeline_) {
         ImGui::TextDisabled("Preview unavailable (engine/pipeline not initialized).");
@@ -324,6 +743,7 @@ void PreviewViewport::DrawImGui() {
     ImVec2 uv0 = ImVec2(0.f, 1.f);
     ImVec2 uv1 = ImVec2(1.f, 0.f);
     ImGui::Image(img_id, view_size, uv0, uv1);
+    DrawCollisionOverlay_(cursor_before, view_size);
 
     const auto& mdl = actor_.model();
     if (mdl.HasAnimations() && mdl.ClipCount() > 0) {

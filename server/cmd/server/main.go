@@ -169,6 +169,34 @@ func main() {
 	if err := database.SeedDefaultKillXPScalingConfig(ctx); err != nil {
 		log.Fatalf("main: seed kill xp scaling config: %v", err)
 	}
+	xpScalingCfg, err := database.GetKillXPScalingConfig(ctx)
+	if err != nil {
+		log.Printf("main: kill xp scaling: using defaults (db error: %v)", err)
+	} else if xpScalingCfg != nil {
+		world.LoadAndCacheKillXPScalingConfig(world.KillXPScalingConfig{
+			BaseXPPerNPCLevel:    int32(xpScalingCfg.BaseXPPerNPCLevel),
+			LevelDiffCoefficient: float32(xpScalingCfg.LevelDiffCoefficient),
+			MultiplierMin:        float32(xpScalingCfg.MultiplierMin),
+			MultiplierMax:        float32(xpScalingCfg.MultiplierMax),
+		})
+		world.LoadAndCacheMasteryKillScalingConfig(world.MasteryKillScalingConfig{
+			XPPerMobLevel:   int32(xpScalingCfg.MasteryXPPerMobLevel),
+			KillingBlowMult: float32(xpScalingCfg.MasteryKillingBlow),
+			WindowTimeoutMs: int64(xpScalingCfg.MasteryWindowTimeout),
+		})
+	}
+	cachedKillXPScaling := world.GetKillXPScalingConfig()
+	log.Printf("main: kill xp scaling: base=%d coef=%.2f min=%.2f max=%.2f",
+		cachedKillXPScaling.BaseXPPerNPCLevel,
+		cachedKillXPScaling.LevelDiffCoefficient,
+		cachedKillXPScaling.MultiplierMin,
+		cachedKillXPScaling.MultiplierMax)
+	cachedMasteryScaling := world.GetMasteryKillScalingConfig()
+	log.Printf("main: mastery scaling: xp_per_level=%d kill_bonus=%.2f timeout=%dms",
+		cachedMasteryScaling.XPPerMobLevel,
+		cachedMasteryScaling.KillingBlowMult,
+		cachedMasteryScaling.WindowTimeoutMs)
+
 	charProgression, err := database.GetCharacterProgressionConfig(ctx)
 	if err != nil {
 		log.Fatalf("main: load char progression config: %v", err)

@@ -17,6 +17,8 @@ namespace gue {
 void ZonesTab::DrawFloatingToolbar() {
     // Keyboard shortcuts (Q/W/E/R and F1-F4)
     if (vpHovered_) {
+        const bool ctrlDown = ImGui::IsKeyDown(ImGuiKey_LeftCtrl)
+                           || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
         if (ImGui::IsKeyPressed(ImGuiKey_Q, false)) xformMode_ = kXFormSelect;
         if (ImGui::IsKeyPressed(ImGuiKey_W, false)) xformMode_ = kXFormMove;
         if (ImGui::IsKeyPressed(ImGuiKey_E, false)) xformMode_ = kXFormRotate;
@@ -25,6 +27,10 @@ void ZonesTab::DrawFloatingToolbar() {
         if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) xformMode_ = kXFormMove;
         if (ImGui::IsKeyPressed(ImGuiKey_F3, false)) xformMode_ = kXFormRotate;
         if (ImGui::IsKeyPressed(ImGuiKey_F4, false)) xformMode_ = kXFormScale;
+        if (ImGui::IsKeyPressed(ImGuiKey_T, false))
+            gizmoSpace_ = (gizmoSpace_ == kGizmoSpaceWorld) ? kGizmoSpaceLocal : kGizmoSpaceWorld;
+        if (!ctrlDown && ImGui::IsKeyPressed(ImGuiKey_Y, false))
+            gizmoPivot_ = (gizmoPivot_ == kGizmoPivotOrigin) ? kGizmoPivotBase : kGizmoPivotOrigin;
     }
 
     // Overlay buttons at top-left of viewport
@@ -54,6 +60,30 @@ void ZonesTab::DrawFloatingToolbar() {
         if (active) ImGui::PopStyleColor(2);
         ImGui::SameLine(0, 3.f);
     }
+
+    ImGui::SameLine(0, 8.f);
+    const bool localSpace = (gizmoSpace_ == kGizmoSpaceLocal);
+    if (localSpace) {
+        ImGui::PushStyleColor(ImGuiCol_Button,        {0.22f, 0.52f, 0.88f, 1.f});
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.30f, 0.62f, 1.00f, 1.f});
+    }
+    if (ImGui::Button(localSpace ? "Local" : "World", {58.f, 22.f})) {
+        gizmoSpace_ = localSpace ? kGizmoSpaceWorld : kGizmoSpaceLocal;
+    }
+    if (localSpace) ImGui::PopStyleColor(2);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Gizmo space [T]");
+
+    ImGui::SameLine(0, 3.f);
+    const bool basePivot = (gizmoPivot_ == kGizmoPivotBase);
+    if (basePivot) {
+        ImGui::PushStyleColor(ImGuiCol_Button,        {0.22f, 0.52f, 0.88f, 1.f});
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.30f, 0.62f, 1.00f, 1.f});
+    }
+    if (ImGui::Button(basePivot ? "Pivot:Base" : "Pivot:Origin", {88.f, 22.f})) {
+        gizmoPivot_ = basePivot ? kGizmoPivotOrigin : kGizmoPivotBase;
+    }
+    if (basePivot) ImGui::PopStyleColor(2);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Gizmo pivot [Y]");
 
     // ── Render-mode toggle (Simple / Lit) ─────────────────────────────────
     ImGui::SameLine(0, 16.f);
@@ -249,6 +279,8 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                          || ImGui::IsKeyDown(ImGuiKey_RightAlt);
     const bool shiftDown  = ImGui::IsKeyDown(ImGuiKey_LeftShift)
                          || ImGui::IsKeyDown(ImGuiKey_RightShift);
+    const bool ctrlSelect = ImGui::IsKeyDown(ImGuiKey_LeftCtrl)
+                         || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
 
     // Right-click has dual use:
     // 1) placement/context in zone editing
@@ -526,8 +558,11 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                 }
                 wpLinkMode_ = false;
             } else {
-                selectedID_   = bestID;
-                selectedType_ = bestType;
+                if (ctrlSelect) {
+                    ToggleSelection(bestType, bestID);
+                } else {
+                    SelectSingle(bestType, bestID);
+                }
                 // Switch to mode matching selected object type
                 switch (bestType) {
                 case kSelPortal:    zoneMode_ = kModePortal;    break;
@@ -543,8 +578,9 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                 }
             }
         } else {
-            selectedID_   = -1;
-            selectedType_ = kSelNone;
+            if (!ctrlSelect) {
+                ClearSelection();
+            }
         }
     }
 
@@ -639,8 +675,12 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
     }
 
     // Ctrl+D — duplicate
-    if (vpHovered_ && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false))
-        DuplicateSelected(db);
+    if (vpHovered_ && io.KeyCtrl && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_D, false))
+        DuplicateSelected(db, media);
+    if (vpHovered_ && io.KeyCtrl && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_C, false))
+        CopySelected();
+    if (vpHovered_ && io.KeyCtrl && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_V, false))
+        PasteSelected(db, media);
 
     // Tab — cycle to next object of same type
     if (vpHovered_ && ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
@@ -650,8 +690,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             for (int i = 0; i < (int)vec.size(); ++i)
                 if (vec[i].id == selectedID_) { idx = i; break; }
             idx = (idx + 1) % (int)vec.size();
-            selectedID_   = vec[idx].id;
-            selectedType_ = selType;
+            SelectSingle(selType, vec[idx].id);
         };
         switch (selectedType_) {
         case kSelPortal:    cycle(scene_.portals,    kSelPortal);    break;
@@ -667,6 +706,47 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         }
     }
 
+    // Keyboard nudge (arrow keys on XZ, PageUp/PageDown on Y).
+    // Active only when a transform mode is selected and no gizmo drag is active.
+    if (vpHovered_ && !mouseLook_ && gizmoAxis_ < 0 && selectedID_ >= 0 &&
+        selectedType_ != kSelNone && xformMode_ != kXFormSelect) {
+        glm::vec3 pos;
+        if (SelectedPos(pos)) {
+            const bool ctrlNudge  = ImGui::IsKeyDown(ImGuiKey_LeftCtrl)
+                                 || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
+            const bool shiftNudge = ImGui::IsKeyDown(ImGuiKey_LeftShift)
+                                 || ImGui::IsKeyDown(ImGuiKey_RightShift);
+            glm::vec3 pre = pos;
+            float step = (scnSnapGrid_ && scnGridSize_ > 0.f) ? scnGridSize_ : 0.25f;
+            if (shiftNudge) step *= 4.f;
+            if (ctrlNudge)  step *= 0.25f;
+            bool moved = false;
+            bool movedXZ = false;
+
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))  { pos.x -= step; moved = true; movedXZ = true; }
+            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) { pos.x += step; moved = true; movedXZ = true; }
+            if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))    { pos.z -= step; moved = true; movedXZ = true; }
+            if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  { pos.z += step; moved = true; movedXZ = true; }
+            if (ImGui::IsKeyPressed(ImGuiKey_PageUp, true))     { pos.y += step; moved = true; }
+            if (ImGui::IsKeyPressed(ImGuiKey_PageDown, true))   { pos.y -= step; moved = true; }
+
+            if (moved) {
+                if (scnSnapGrid_ && scnGridSize_ > 0.f) {
+                    pos.x = std::round(pos.x / scnGridSize_) * scnGridSize_;
+                    pos.y = std::round(pos.y / scnGridSize_) * scnGridSize_;
+                    pos.z = std::round(pos.z / scnGridSize_) * scnGridSize_;
+                }
+                if (selectedType_ == kSelScenery && scnAlignGround_ &&
+                    movedXZ && renderer_.terrain().Loaded()) {
+                    pos.y = renderer_.terrain().heightmap().SampleWorld(pos.x, pos.z);
+                }
+                SetSelectedPos(pos);
+                PushUndo(kUndoMove, selectedType_, selectedID_, pre);
+                PersistSelectedPos(db);
+            }
+        }
+    }
+
     // ── Gizmos: Move / Rotate / Scale ────────────────────────────────────
     // All three share hit-testing against the object's origin; only the
     // meaning of "drag along axis X" differs: translate / rotate / scale.
@@ -677,9 +757,39 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
     if (haveSel) {
         const glm::mat4 viewProj =
             cam_.Proj(vpSize_.x / std::max(vpSize_.y, 1.f)) * cam_.View();
-        const glm::vec3 kAxes[3] = {{1,0,0}, {0,1,0}, {0,0,1}};
-        const float axisLen    = ZoneRenderer::GizmoAxisLength(selPos, cam_.pos);
-        const float pickRadius = axisLen * 0.18f;
+        glm::vec3 kAxes[3] = {{1,0,0}, {0,1,0}, {0,0,1}};
+        bool useLocalAxes = false;
+        if (gizmoSpace_ == kGizmoSpaceLocal) {
+            glm::vec3 rotDeg;
+            if (SelectedRot(rotDeg)) {
+                glm::mat4 r(1.f);
+                r = glm::rotate(r, glm::radians(rotDeg.y), glm::vec3(0, 1, 0));
+                r = glm::rotate(r, glm::radians(rotDeg.x), glm::vec3(1, 0, 0));
+                r = glm::rotate(r, glm::radians(rotDeg.z), glm::vec3(0, 0, 1));
+                kAxes[0] = glm::normalize(glm::vec3(r * glm::vec4(1,0,0,0)));
+                kAxes[1] = glm::normalize(glm::vec3(r * glm::vec4(0,1,0,0)));
+                kAxes[2] = glm::normalize(glm::vec3(r * glm::vec4(0,0,1,0)));
+                useLocalAxes = true;
+            }
+        }
+
+        glm::vec3 gizmoPos = selPos;
+        if (gizmoPivot_ == kGizmoPivotBase) {
+            float pivotDown = 0.f;
+            if (selectedType_ == kSelScenery || selectedType_ == kSelColBox) {
+                glm::vec3 scl;
+                if (SelectedScale(scl)) pivotDown = std::max(0.f, scl.y * 0.5f);
+            } else if (selectedType_ == kSelColSphere) {
+                glm::vec3 scl;
+                if (SelectedScale(scl)) pivotDown = std::max(0.f, scl.x);
+            }
+            if (pivotDown > 0.f) gizmoPos -= kAxes[1] * pivotDown;
+        }
+
+        const float axisLen    = ZoneRenderer::GizmoAxisLength(gizmoPos, cam_.pos);
+        const float pickRadius = axisLen * 0.28f;
+        const bool  ctrlDown   = ImGui::IsKeyDown(ImGuiKey_LeftCtrl)
+                              || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
 
         // Which axes does this object support for rotate / scale?
         unsigned allowRot   = 0, allowScale = 0;
@@ -692,8 +802,12 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         // Tell the renderer to draw the active gizmo inside its forward pass
         // (so it lands on the same FBO as the rest of the scene).
         ZoneRenderer::GizmoState gz;
-        gz.pos        = selPos;
+        gz.pos        = gizmoPos;
         gz.axis       = gizmoAxis_;
+        gz.use_local_axes = useLocalAxes;
+        gz.local_axes[0] = kAxes[0];
+        gz.local_axes[1] = kAxes[1];
+        gz.local_axes[2] = kAxes[2];
         if (xformMode_ == kXFormMove) {
             gz.mode = ZoneRenderer::kGizmoMove;
             gz.allow_axes = 0b111;
@@ -718,7 +832,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
 
         // Closest-approach `s` on axis line through selPos, plus ray↔axis dist.
         auto rayAxis = [&](const glm::vec3& ad, float& s, float& dist) {
-            glm::vec3 w = ro - selPos;
+            glm::vec3 w = ro - gizmoPos;
             float b = glm::dot(rd, ad);
             float d = glm::dot(rd, w);
             float e = glm::dot(ad, w);
@@ -726,35 +840,294 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             if (denom < 1e-6f) { s = 0; dist = 1e9f; return; }
             s = (e - b * d) / denom;
             float t = (b * e - d) / denom;
-            dist = glm::length((ro + rd * t) - (selPos + ad * s));
+            dist = glm::length((ro + rd * t) - (gizmoPos + ad * s));
         };
 
         // Ray-plane intersection: returns hit point. plane passes through
         // selPos with normal `n`. Falls back to selPos if ray is parallel.
         auto rayPlane = [&](const glm::vec3& n) -> glm::vec3 {
             float denom = glm::dot(rd, n);
-            if (std::abs(denom) < 1e-6f) return selPos;
-            float t = glm::dot(selPos - ro, n) / denom;
+            if (std::abs(denom) < 1e-6f) return gizmoPos;
+            float t = glm::dot(gizmoPos - ro, n) / denom;
             return ro + rd * t;
+        };
+
+        auto rayPlaneAt = [&](const glm::vec3& planePoint, const glm::vec3& n,
+                              glm::vec3& outHit, float& outT) -> bool {
+            float denom = glm::dot(rd, n);
+            if (std::abs(denom) < 1e-6f) return false;
+            float t = glm::dot(planePoint - ro, n) / denom;
+            if (t < 0.f) return false;
+            outT = t;
+            outHit = ro + rd * t;
+            return true;
         };
 
         // Signed angle of a point on the plane perpendicular to axis `a`.
         auto angleOnRing = [&](int a, const glm::vec3& pt) {
-            glm::vec3 v = pt - selPos;
+            glm::vec3 v = pt - gizmoPos;
             // Pick the same basis used when drawing the ring.
-            glm::vec3 u = (a == 1) ? glm::vec3(1,0,0) : glm::vec3(0,1,0);
+            glm::vec3 u = (std::abs(kAxes[a].y) > 0.8f) ? glm::vec3(1,0,0)
+                                                        : glm::vec3(0,1,0);
             glm::vec3 t = glm::normalize(glm::cross(kAxes[a], u));
             glm::vec3 b = glm::normalize(glm::cross(kAxes[a], t));
             return std::atan2(glm::dot(v, b), glm::dot(v, t));
         };
 
+        auto snapToGrid = [&](float v) -> float {
+            if (!scnSnapGrid_ || scnGridSize_ <= 0.f) return v;
+            return std::round(v / scnGridSize_) * scnGridSize_;
+        };
+
+        auto snapToObjectAxis = [&](float v, int axis) -> float {
+            if (useLocalAxes) return v;
+            if (!scnObjSnap_ || scnObjSnapDist_ <= 0.f) return v;
+            float bestVal   = v;
+            float bestDelta = scnObjSnapDist_;
+            auto consider = [&](const glm::vec3& p) {
+                float d = std::abs(p[axis] - v);
+                if (d < bestDelta) {
+                    bestDelta = d;
+                    bestVal   = p[axis];
+                }
+            };
+            auto pushVec = [&](const auto& vec, int selType) {
+                for (const auto& o : vec) {
+                    if (selType == selectedType_ && o.id == selectedID_) continue;
+                    consider(o.pos);
+                }
+            };
+
+            pushVec(scene_.portals,     kSelPortal);
+            pushVec(scene_.colBoxes,    kSelColBox);
+            pushVec(scene_.colSpheres,  kSelColSphere);
+            pushVec(scene_.waypoints,   kSelWaypoint);
+            pushVec(scene_.npcs,        kSelNpc);
+            pushVec(scene_.emitters,    kSelEmitter);
+            pushVec(scene_.water,       kSelWater);
+            pushVec(scene_.scenery,     kSelScenery);
+            pushVec(scene_.spawnPoints, kSelSpawnPoint);
+            for (const auto& t : scene_.triggers) {
+                if (selectedType_ == kSelTrigger && t.id == selectedID_) continue;
+                consider(glm::vec3(t.x, 0.f, t.z));
+            }
+            for (const auto& s : scene_.soundZones) {
+                if (selectedType_ == kSelSoundZone && s.id == selectedID_) continue;
+                consider(glm::vec3(s.x, 0.f, s.z));
+            }
+
+            return bestVal;
+        };
+
+        auto tryGetBounds = [&](int st, int id, glm::vec3& outPos, glm::vec3& outHalf) -> bool {
+            if (st == kSelPortal) {
+                for (const auto& p : scene_.portals) if (p.id == id) {
+                    outPos = p.pos;
+                    outHalf = glm::vec3(std::max(0.05f, p.radius));
+                    return true;
+                }
+            } else if (st == kSelTrigger) {
+                for (const auto& t : scene_.triggers) if (t.id == id) {
+                    outPos = glm::vec3(t.x, 0.f, t.z);
+                    outHalf = glm::vec3(std::max(0.05f, t.radius), 0.6f, std::max(0.05f, t.radius));
+                    return true;
+                }
+            } else if (st == kSelSoundZone) {
+                for (const auto& s : scene_.soundZones) if (s.id == id) {
+                    outPos = glm::vec3(s.x, 0.f, s.z);
+                    outHalf = glm::vec3(std::max(0.05f, s.radius), 0.6f, std::max(0.05f, s.radius));
+                    return true;
+                }
+            } else if (st == kSelColBox) {
+                for (const auto& c : scene_.colBoxes) if (c.id == id) {
+                    outPos = c.pos;
+                    outHalf = glm::max(glm::abs(c.scale) * 0.5f, glm::vec3(0.05f));
+                    return true;
+                }
+            } else if (st == kSelColSphere) {
+                for (const auto& s : scene_.colSpheres) if (s.id == id) {
+                    outPos = s.pos;
+                    outHalf = glm::vec3(std::max(0.05f, s.radius));
+                    return true;
+                }
+            } else if (st == kSelWaypoint) {
+                for (const auto& w : scene_.waypoints) if (w.id == id) {
+                    outPos = w.pos;
+                    outHalf = glm::vec3(0.5f);
+                    return true;
+                }
+            } else if (st == kSelNpc) {
+                for (const auto& n : scene_.npcs) if (n.id == id) {
+                    outPos = n.pos;
+                    outHalf = glm::vec3(0.35f, 0.5f, 0.35f);
+                    return true;
+                }
+            } else if (st == kSelEmitter) {
+                for (const auto& e : scene_.emitters) if (e.id == id) {
+                    outPos = e.pos;
+                    outHalf = glm::vec3(0.4f, 0.75f, 0.4f);
+                    return true;
+                }
+            } else if (st == kSelWater) {
+                for (const auto& w : scene_.water) if (w.id == id) {
+                    outPos = w.pos;
+                    outHalf = glm::vec3(std::max(0.05f, w.scale.x * 0.5f), 0.15f, std::max(0.05f, w.scale.y * 0.5f));
+                    return true;
+                }
+            } else if (st == kSelScenery) {
+                for (const auto& s : scene_.scenery) if (s.id == id) {
+                    outPos = s.pos;
+                    outHalf = glm::max(glm::abs(s.scale) * 0.5f, glm::vec3(0.05f));
+                    return true;
+                }
+            } else if (st == kSelSpawnPoint) {
+                for (const auto& sp : scene_.spawnPoints) if (sp.id == id) {
+                    outPos = sp.pos;
+                    outHalf = glm::vec3(std::max(0.05f, sp.radius), 0.75f, std::max(0.05f, sp.radius));
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        auto tryFaceSnap = [&](glm::vec3& objPos, glm::vec3& outNormal,
+                               unsigned axisMask) -> bool {
+            if (!scnFaceSnap_ || scnFaceSnapDist_ <= 0.f || useLocalAxes) return false;
+
+            glm::vec3 selPosCur, selHalf;
+            if (!tryGetBounds(selectedType_, selectedID_, selPosCur, selHalf)) return false;
+
+            bool found = false;
+            float bestGap = scnFaceSnapDist_ + 1.f;
+            int bestAxis = -1;
+            float bestSign = 0.f;
+            float bestCoord = 0.f;
+
+            auto testCandidate = [&](int cType, int cId, const glm::vec3& cPos, const glm::vec3& cHalf) {
+                if (cType == selectedType_ && cId == selectedID_) return;
+                glm::vec3 d = objPos - cPos;
+                for (int a = 0; a < 3; ++a) {
+                    if ((axisMask & (1u << a)) == 0) continue;
+                    int b = (a + 1) % 3;
+                    int c = (a + 2) % 3;
+                    if (std::abs(d[b]) > (selHalf[b] + cHalf[b] + 0.05f)) continue;
+                    if (std::abs(d[c]) > (selHalf[c] + cHalf[c] + 0.05f)) continue;
+                    float gap = std::abs(d[a]) - (selHalf[a] + cHalf[a]);
+                    if (gap < 0.f || gap > scnFaceSnapDist_) continue;
+                    if (gap < bestGap) {
+                        found = true;
+                        bestGap = gap;
+                        bestAxis = a;
+                        bestSign = (d[a] >= 0.f) ? 1.f : -1.f;
+                        bestCoord = cPos[a] + bestSign * (selHalf[a] + cHalf[a]);
+                    }
+                }
+            };
+
+            for (const auto& p : scene_.portals)      testCandidate(kSelPortal, p.id, p.pos, glm::vec3(std::max(0.05f, p.radius)));
+            for (const auto& t : scene_.triggers)     testCandidate(kSelTrigger, t.id, glm::vec3(t.x, 0.f, t.z), glm::vec3(std::max(0.05f, t.radius), 0.6f, std::max(0.05f, t.radius)));
+            for (const auto& s : scene_.soundZones)   testCandidate(kSelSoundZone, s.id, glm::vec3(s.x, 0.f, s.z), glm::vec3(std::max(0.05f, s.radius), 0.6f, std::max(0.05f, s.radius)));
+            for (const auto& c : scene_.colBoxes)     testCandidate(kSelColBox, c.id, c.pos, glm::max(glm::abs(c.scale) * 0.5f, glm::vec3(0.05f)));
+            for (const auto& s : scene_.colSpheres)   testCandidate(kSelColSphere, s.id, s.pos, glm::vec3(std::max(0.05f, s.radius)));
+            for (const auto& w : scene_.waypoints)    testCandidate(kSelWaypoint, w.id, w.pos, glm::vec3(0.5f));
+            for (const auto& n : scene_.npcs)         testCandidate(kSelNpc, n.id, n.pos, glm::vec3(0.35f, 0.5f, 0.35f));
+            for (const auto& e : scene_.emitters)     testCandidate(kSelEmitter, e.id, e.pos, glm::vec3(0.4f, 0.75f, 0.4f));
+            for (const auto& w : scene_.water)        testCandidate(kSelWater, w.id, w.pos, glm::vec3(std::max(0.05f, w.scale.x * 0.5f), 0.15f, std::max(0.05f, w.scale.y * 0.5f)));
+            for (const auto& s : scene_.scenery)      testCandidate(kSelScenery, s.id, s.pos, glm::max(glm::abs(s.scale) * 0.5f, glm::vec3(0.05f)));
+            for (const auto& sp : scene_.spawnPoints) testCandidate(kSelSpawnPoint, sp.id, sp.pos, glm::vec3(std::max(0.05f, sp.radius), 0.75f, std::max(0.05f, sp.radius)));
+
+            if (!found || bestAxis < 0) return false;
+            objPos[bestAxis] = bestCoord;
+            outNormal = glm::vec3(0.f);
+            outNormal[bestAxis] = bestSign;
+            return true;
+        };
+
+        auto captureGizmoSelectionStart = [&]() {
+            gizmoSelectionStart_.clear();
+            const auto refs = ActiveSelection();
+            if (refs.size() <= 1) return;
+            const int primaryType = selectedType_;
+            const int primaryID = selectedID_;
+            for (const auto& ref : refs) {
+                if (ref.type == kSelNone || ref.id < 0) continue;
+                selectedType_ = ref.type;
+                selectedID_ = ref.id;
+                GizmoSelectionStart st;
+                st.type = ref.type;
+                st.id = ref.id;
+                st.hasPos = SelectedPos(st.pos);
+                st.hasRot = SelectedRot(st.rot);
+                st.hasScale = SelectedScale(st.scale);
+                gizmoSelectionStart_.push_back(st);
+            }
+            selectedType_ = primaryType;
+            selectedID_ = primaryID;
+        };
+
         // ── Press: hit-test and latch onto an axis ────────────────────────
         if (vpHovered_ && ImGui::IsMouseClicked(0) && gizmoAxis_ < 0 && !mouseLook_) {
-            if (xformMode_ == kXFormMove || xformMode_ == kXFormScale) {
+            if (xformMode_ == kXFormMove) {
                 int   best = -1;
                 float bestDist = pickRadius;
                 float bestS    = 0.f;
-                unsigned allow = (xformMode_ == kXFormMove) ? 0b111u : allowScale;
+                unsigned allow = 0b111u;
+                for (int a = 0; a < 3; ++a) {
+                    if ((allow & (1u << a)) == 0) continue;
+                    float s, d;
+                    rayAxis(kAxes[a], s, d);
+                    if (s >= -axisLen * 0.2f && s <= axisLen * 1.2f && d < bestDist) {
+                        bestDist = d; best = a; bestS = s;
+                    }
+                }
+
+                // Plane handles: XY/XZ/YZ.
+                // ids: 4=XY, 5=XZ, 6=YZ.
+                const float planeOff  = axisLen * 0.28f;
+                const float planeSize = axisLen * 0.28f;
+                struct PlanePick { int id, a, b; glm::vec3 n; };
+                const PlanePick planes[] = {
+                    {4, 0, 1, glm::normalize(glm::cross(kAxes[0], kAxes[1]))},
+                    {5, 0, 2, glm::normalize(glm::cross(kAxes[0], kAxes[2]))},
+                    {6, 1, 2, glm::normalize(glm::cross(kAxes[1], kAxes[2]))},
+                };
+                float bestPlaneT = 1e9f;
+                glm::vec3 bestPlaneHit = gizmoPos;
+                for (const auto& pl : planes) {
+                    glm::vec3 planeCenter = gizmoPos + kAxes[pl.a] * planeOff + kAxes[pl.b] * planeOff;
+                    glm::vec3 hit;
+                    float t = 0.f;
+                    if (!rayPlaneAt(planeCenter, pl.n, hit, t)) continue;
+                    glm::vec3 local = hit - gizmoPos;
+                    float ua = glm::dot(local, kAxes[pl.a]);
+                    float ub = glm::dot(local, kAxes[pl.b]);
+                    float mn = planeOff - planeSize * 0.5f;
+                    float mx = planeOff + planeSize * 0.5f;
+                    if (ua < mn || ua > mx || ub < mn || ub > mx) continue;
+                    if (t < bestPlaneT) {
+                        bestPlaneT = t;
+                        best = pl.id;
+                        bestPlaneHit = hit;
+                    }
+                }
+
+                if (best >= 0) {
+                    gizmoAxis_       = best;
+                    gizmoStartPos_   = gizmoPos;
+                    gizmoStartObjPos_= selPos;
+                    gizmoStartS_     = bestS;
+                    gizmoStartHit_   = bestPlaneHit;
+                    gizmoMoveRotChanged_ = false;
+                    gizmoPrePos_     = selPos;
+                    glm::vec3 rot;   SelectedRot(rot);     gizmoStartRot_   = rot;   gizmoPreRot_ = rot;
+                    glm::vec3 scl;   SelectedScale(scl);   gizmoStartScale_ = scl;   gizmoPreScale_ = scl;
+                    captureGizmoSelectionStart();
+                }
+            } else if (xformMode_ == kXFormScale) {
+                int   best = -1;
+                float bestDist = pickRadius;
+                float bestS    = 0.f;
+                unsigned allow = allowScale;
                 for (int a = 0; a < 3; ++a) {
                     if ((allow & (1u << a)) == 0) continue;
                     float s, d;
@@ -765,22 +1138,24 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                 }
                 // Centre handle for uniform scale — hit if the ray passes near
                 // the origin itself.
-                if (xformMode_ == kXFormScale) {
+                {
                     float s0, d0; rayAxis(glm::vec3(0, 1, 0), s0, d0);
                     // Cheaper: distance ray ↔ point
-                    glm::vec3 w = selPos - ro;
+                    glm::vec3 w = gizmoPos - ro;
                     float t = glm::dot(w, rd);
                     glm::vec3 closest = ro + rd * t;
-                    float d = glm::length(closest - selPos);
+                    float d = glm::length(closest - gizmoPos);
                     if (d < pickRadius * 0.65f) { best = 3; bestS = 0.f; }
                 }
                 if (best >= 0) {
                     gizmoAxis_       = best;
-                    gizmoStartPos_   = selPos;
+                    gizmoStartPos_   = gizmoPos;
+                    gizmoStartObjPos_= selPos;
                     gizmoStartS_     = bestS;
                     gizmoPrePos_     = selPos;
                     glm::vec3 rot;   SelectedRot(rot);     gizmoStartRot_   = rot;   gizmoPreRot_ = rot;
                     glm::vec3 scl;   SelectedScale(scl);   gizmoStartScale_ = scl;   gizmoPreScale_ = scl;
+                    captureGizmoSelectionStart();
                 }
             } else if (xformMode_ == kXFormRotate && allowRot) {
                 int   best = -1;
@@ -788,13 +1163,17 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                 for (int a = 0; a < 3; ++a) {
                     if ((allowRot & (1u << a)) == 0) continue;
                     glm::vec3 hit = rayPlane(kAxes[a]);
-                    float dist = std::abs(glm::length(hit - selPos) - axisLen);
+                    float dist = std::abs(glm::length(hit - gizmoPos) - axisLen);
                     if (dist < bestDist) { bestDist = dist; best = a; }
                 }
                 if (best >= 0) {
                     gizmoAxis_     = best;
+                    gizmoStartObjPos_ = selPos;
                     gizmoStartS_   = angleOnRing(best, rayPlane(kAxes[best]));
+                    gizmoLastAngle_ = gizmoStartS_;
+                    gizmoRotAccumDeg_ = 0.f;
                     glm::vec3 rot; SelectedRot(rot); gizmoStartRot_ = rot; gizmoPreRot_ = rot;
+                    captureGizmoSelectionStart();
                 }
             }
         }
@@ -803,55 +1182,364 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         if (gizmoAxis_ >= 0) {
             if (ImGui::IsMouseDown(0)) {
                 if (xformMode_ == kXFormMove) {
-                    float s, d;
-                    rayAxis(kAxes[gizmoAxis_], s, d);
-                    glm::vec3 np = gizmoStartPos_ + kAxes[gizmoAxis_] * (s - gizmoStartS_);
-                    SetSelectedPos(np);
+                    glm::vec3 np = gizmoStartPos_;
+                    if (gizmoAxis_ >= 0 && gizmoAxis_ <= 2) {
+                        float s, d;
+                        rayAxis(kAxes[gizmoAxis_], s, d);
+                        float delta = (s - gizmoStartS_);
+                        if (ctrlDown)       delta *= 0.25f;
+                        else if (shiftDown) delta *= 2.0f;
+                        if (useLocalAxes && scnSnapGrid_ && scnGridSize_ > 0.f) {
+                            delta = std::round(delta / scnGridSize_) * scnGridSize_;
+                        }
+                        np = gizmoStartPos_ + kAxes[gizmoAxis_] * delta;
+                        if (!useLocalAxes) {
+                            np[gizmoAxis_] = snapToGrid(np[gizmoAxis_]);
+                            np[gizmoAxis_] = snapToObjectAxis(np[gizmoAxis_], gizmoAxis_);
+                        }
+                    } else if (gizmoAxis_ >= 4 && gizmoAxis_ <= 6) {
+                        int a = 0, b = 1;
+                        glm::vec3 n = glm::normalize(glm::cross(kAxes[0], kAxes[1]));
+                        if (gizmoAxis_ == 4) { a = 0; b = 1; n = glm::normalize(glm::cross(kAxes[0], kAxes[1])); }
+                        if (gizmoAxis_ == 5) { a = 0; b = 2; n = glm::normalize(glm::cross(kAxes[0], kAxes[2])); }
+                        if (gizmoAxis_ == 6) { a = 1; b = 2; n = glm::normalize(glm::cross(kAxes[1], kAxes[2])); }
+                        glm::vec3 hit;
+                        float t = 0.f;
+                        if (rayPlaneAt(gizmoStartPos_, n, hit, t)) {
+                            glm::vec3 delta = hit - gizmoStartHit_;
+                            if (ctrlDown)       delta *= 0.25f;
+                            else if (shiftDown) delta *= 2.0f;
+                            np = gizmoStartPos_ + delta;
+                            if (useLocalAxes) {
+                                glm::vec3 dv = np - gizmoStartPos_;
+                                float da = glm::dot(dv, kAxes[a]);
+                                float db = glm::dot(dv, kAxes[b]);
+                                if (scnSnapGrid_ && scnGridSize_ > 0.f) {
+                                    da = std::round(da / scnGridSize_) * scnGridSize_;
+                                    db = std::round(db / scnGridSize_) * scnGridSize_;
+                                }
+                                np = gizmoStartPos_ + kAxes[a] * da + kAxes[b] * db;
+                            } else {
+                                np[a] = snapToGrid(np[a]);
+                                np[b] = snapToGrid(np[b]);
+                                np[a] = snapToObjectAxis(np[a], a);
+                                np[b] = snapToObjectAxis(np[b], b);
+                            }
+                        }
+                    }
+                    glm::vec3 newObjPos = gizmoStartObjPos_ + (np - gizmoStartPos_);
+                    if (selectedType_ == kSelScenery && scnAlignGround_ &&
+                        gizmoAxis_ != 1 && gizmoAxis_ != 4 && gizmoAxis_ != 6 &&
+                        renderer_.terrain().Loaded()) {
+                        newObjPos.y = renderer_.terrain().heightmap().SampleWorld(newObjPos.x, newObjPos.z);
+                    }
+                    glm::vec3 snapNormal(0.f);
+                    unsigned faceSnapAxisMask = 0b111u;
+                    if (gizmoAxis_ >= 0 && gizmoAxis_ <= 2) {
+                        faceSnapAxisMask = (1u << gizmoAxis_);
+                    } else if (gizmoAxis_ == 4) {        // XY
+                        faceSnapAxisMask = (1u << 0) | (1u << 1);
+                    } else if (gizmoAxis_ == 5) {        // XZ
+                        faceSnapAxisMask = (1u << 0) | (1u << 2);
+                    } else if (gizmoAxis_ == 6) {        // YZ
+                        faceSnapAxisMask = (1u << 1) | (1u << 2);
+                    }
+                    if (tryFaceSnap(newObjPos, snapNormal, faceSnapAxisMask)) {
+                        const bool wantAutoRotate = (scnAlignNormal_ || scnAutoRotate_);
+                        if (wantAutoRotate && selectedType_ == kSelScenery &&
+                            std::abs(snapNormal.y) < 0.5f) {
+                            glm::vec3 rot;
+                            if (SelectedRot(rot)) {
+                                auto wrapDeg = [](float a) -> float {
+                                    while (a >= 180.f) a -= 360.f;
+                                    while (a < -180.f) a += 360.f;
+                                    return a;
+                                };
+                                auto absDeltaDeg = [&](float a, float b) -> float {
+                                    return std::abs(wrapDeg(a - b));
+                                };
+
+                                float baseYaw = rot.y;
+                                if (std::abs(snapNormal.x) > std::abs(snapNormal.z)) {
+                                    baseYaw = (snapNormal.x > 0.f) ? -90.f : 90.f;
+                                } else {
+                                    baseYaw = (snapNormal.z > 0.f) ? 180.f : 0.f;
+                                }
+
+                                float newYaw = baseYaw;
+                                if (scnAutoRotate_) {
+                                    float step = (scnRotSnap_ > 0.001f) ? scnRotSnap_ : 90.f;
+                                    if (step < 0.25f) step = 0.25f;
+                                    int maxK = std::max(1, (int)std::ceil(180.f / step));
+                                    float bestErr = 1e9f;
+                                    for (int k = -maxK; k <= maxK; ++k) {
+                                        float cand = baseYaw + step * (float)k;
+                                        float err = absDeltaDeg(cand, rot.y);
+                                        if (err < bestErr) {
+                                            bestErr = err;
+                                            newYaw = cand;
+                                        }
+                                    }
+                                }
+
+                                if (absDeltaDeg(newYaw, rot.y) > 0.001f) {
+                                    rot.y = newYaw;
+                                    SetSelectedRot(rot);
+                                    gizmoMoveRotChanged_ = true;
+                                }
+                            }
+                        }
+                    }
+                    SetSelectedPos(newObjPos);
+                    if (!gizmoSelectionStart_.empty()) {
+                        const int primaryType = selectedType_;
+                        const int primaryID = selectedID_;
+                        const glm::vec3 deltaObj = newObjPos - gizmoStartObjPos_;
+                        for (const auto& st : gizmoSelectionStart_) {
+                            if (!st.hasPos) continue;
+                            if (st.type == primaryType && st.id == primaryID) continue;
+                            selectedType_ = st.type;
+                            selectedID_ = st.id;
+                            glm::vec3 peerPos = st.pos + deltaObj;
+                            if (st.type == kSelScenery && scnAlignGround_ &&
+                                gizmoAxis_ != 1 && gizmoAxis_ != 4 && gizmoAxis_ != 6 &&
+                                renderer_.terrain().Loaded()) {
+                                peerPos.y = renderer_.terrain().heightmap().SampleWorld(peerPos.x, peerPos.z);
+                            }
+                            SetSelectedPos(peerPos);
+                        }
+                        selectedType_ = primaryType;
+                        selectedID_ = primaryID;
+                    }
                 } else if (xformMode_ == kXFormScale) {
                     if (gizmoAxis_ == 3) {
                         // Uniform: drag vertically on screen. Use mouse ΔY.
-                        float dy = -ImGui::GetIO().MouseDelta.y * 0.01f;
+                        float speed = ctrlDown ? 0.25f : (shiftDown ? 2.0f : 1.0f);
+                        float dy = -ImGui::GetIO().MouseDelta.y * 0.01f * speed;
                         glm::vec3 s = gizmoStartScale_ * (1.f + dy);
+                        if (scnSnapGrid_ && scnGridSize_ > 0.f) {
+                            s.x = std::round(s.x / scnGridSize_) * scnGridSize_;
+                            s.y = std::round(s.y / scnGridSize_) * scnGridSize_;
+                            s.z = std::round(s.z / scnGridSize_) * scnGridSize_;
+                        }
                         s = glm::max(s, glm::vec3(0.01f));
                         SetSelectedScale(s);
+                        if (!gizmoSelectionStart_.empty()) {
+                            const int primaryType = selectedType_;
+                            const int primaryID = selectedID_;
+                            glm::vec3 factor(1.f);
+                            factor.x = (std::abs(gizmoStartScale_.x) > 1e-5f) ? (s.x / gizmoStartScale_.x) : 1.f;
+                            factor.y = (std::abs(gizmoStartScale_.y) > 1e-5f) ? (s.y / gizmoStartScale_.y) : 1.f;
+                            factor.z = (std::abs(gizmoStartScale_.z) > 1e-5f) ? (s.z / gizmoStartScale_.z) : 1.f;
+                            for (const auto& st : gizmoSelectionStart_) {
+                                if (st.type == primaryType && st.id == primaryID) continue;
+                                selectedType_ = st.type;
+                                selectedID_ = st.id;
+                                if (st.hasScale) {
+                                    glm::vec3 ns = glm::max(st.scale * factor, glm::vec3(0.01f));
+                                    SetSelectedScale(ns);
+                                }
+                                if (st.hasPos) {
+                                    glm::vec3 rel = st.pos - gizmoStartObjPos_;
+                                    glm::vec3 newPos = gizmoStartObjPos_ + rel * factor;
+                                    SetSelectedPos(newPos);
+                                }
+                            }
+                            selectedType_ = primaryType;
+                            selectedID_ = primaryID;
+                        }
                         gizmoStartScale_ = s;   // accumulate on next frame
                     } else {
                         float s, d;
                         rayAxis(kAxes[gizmoAxis_], s, d);
                         float factor = (axisLen > 0.f) ? (s / axisLen) : 1.f;
                         factor = glm::clamp(factor, 0.01f, 100.f);
+                        if (ctrlDown)       factor = 1.f + (factor - 1.f) * 0.25f;
+                        else if (shiftDown) factor = 1.f + (factor - 1.f) * 2.0f;
                         glm::vec3 ns = gizmoStartScale_;
                         ns[gizmoAxis_] = gizmoStartScale_[gizmoAxis_] * factor;
+                        if (scnSnapGrid_ && scnGridSize_ > 0.f) {
+                            ns[gizmoAxis_] = std::round(ns[gizmoAxis_] / scnGridSize_) * scnGridSize_;
+                        }
+                        ns = glm::max(ns, glm::vec3(0.01f));
                         SetSelectedScale(ns);
+                        if (!gizmoSelectionStart_.empty()) {
+                            const int primaryType = selectedType_;
+                            const int primaryID = selectedID_;
+                            glm::vec3 factor(1.f);
+                            factor[gizmoAxis_] =
+                                (std::abs(gizmoStartScale_[gizmoAxis_]) > 1e-5f)
+                                    ? (ns[gizmoAxis_] / gizmoStartScale_[gizmoAxis_])
+                                    : 1.f;
+                            for (const auto& st : gizmoSelectionStart_) {
+                                if (st.type == primaryType && st.id == primaryID) continue;
+                                selectedType_ = st.type;
+                                selectedID_ = st.id;
+                                if (st.hasScale) {
+                                    glm::vec3 peerScale = st.scale;
+                                    peerScale[gizmoAxis_] = std::max(0.01f, st.scale[gizmoAxis_] * factor[gizmoAxis_]);
+                                    SetSelectedScale(peerScale);
+                                }
+                                if (st.hasPos) {
+                                    glm::vec3 rel = st.pos - gizmoStartObjPos_;
+                                    rel[gizmoAxis_] *= factor[gizmoAxis_];
+                                    SetSelectedPos(gizmoStartObjPos_ + rel);
+                                }
+                            }
+                            selectedType_ = primaryType;
+                            selectedID_ = primaryID;
+                        }
                     }
                 } else if (xformMode_ == kXFormRotate) {
                     glm::vec3 hit = rayPlane(kAxes[gizmoAxis_]);
                     float a = angleOnRing(gizmoAxis_, hit);
-                    float delta_deg = glm::degrees(a - gizmoStartS_);
+                    float delta = a - gizmoLastAngle_;
+                    static constexpr float kPi = 3.14159265359f;
+                    static constexpr float kTau = 6.28318530718f;
+                    while (delta >  kPi) delta -= kTau;
+                    while (delta < -kPi) delta += kTau;
+                    float speed = ctrlDown ? 0.25f : (shiftDown ? 2.0f : 1.0f);
+                    gizmoRotAccumDeg_ += glm::degrees(delta) * speed;
+                    gizmoLastAngle_ = a;
+                    float delta_deg = gizmoRotAccumDeg_;
+                    if (scnRotSnap_ > 0.f && !ctrlDown) {
+                        delta_deg = std::round(delta_deg / scnRotSnap_) * scnRotSnap_;
+                    }
                     glm::vec3 rot = gizmoStartRot_;
                     rot[gizmoAxis_] += delta_deg;
                     SetSelectedRot(rot);
+                    if (!gizmoSelectionStart_.empty()) {
+                        const int primaryType = selectedType_;
+                        const int primaryID = selectedID_;
+                        const glm::mat4 rotMat = glm::rotate(
+                            glm::mat4(1.f), glm::radians(delta_deg), kAxes[gizmoAxis_]);
+                        for (const auto& st : gizmoSelectionStart_) {
+                            if (st.type == primaryType && st.id == primaryID) continue;
+                            selectedType_ = st.type;
+                            selectedID_ = st.id;
+                            if (st.hasRot) {
+                                glm::vec3 peerRot = st.rot;
+                                peerRot[gizmoAxis_] += delta_deg;
+                                SetSelectedRot(peerRot);
+                            }
+                            if (st.hasPos) {
+                                glm::vec3 rel = st.pos - gizmoStartObjPos_;
+                                glm::vec3 newRel = glm::vec3(rotMat * glm::vec4(rel, 0.f));
+                                SetSelectedPos(gizmoStartObjPos_ + newRel);
+                            }
+                        }
+                        selectedType_ = primaryType;
+                        selectedID_ = primaryID;
+                    }
                 }
             } else {
                 // Release: persist + undo entry for the modified transform.
                 if (xformMode_ == kXFormMove) {
-                    PushUndo(kUndoMove,   selectedType_, selectedID_, gizmoPrePos_);
-                    PersistSelectedPos(db);
-                    std::snprintf(statusMsg_, sizeof(statusMsg_), "Moved id=%d.", selectedID_);
+                    if (gizmoSelectionStart_.empty()) {
+                        PushUndo(kUndoMove,   selectedType_, selectedID_, gizmoPrePos_);
+                        PersistSelectedPos(db);
+                        glm::vec3 curRot;
+                        if (gizmoMoveRotChanged_ && SelectedRot(curRot) &&
+                            glm::length(curRot - gizmoPreRot_) > 0.001f) {
+                            PushUndo(kUndoRotate, selectedType_, selectedID_, gizmoPreRot_);
+                            PersistSelectedRot(db);
+                        }
+                        std::snprintf(statusMsg_, sizeof(statusMsg_), "Moved id=%d.", selectedID_);
+                    } else {
+                        const int primaryType = selectedType_;
+                        const int primaryID = selectedID_;
+                        int movedCount = 0;
+                        for (const auto& st : gizmoSelectionStart_) {
+                            selectedType_ = st.type;
+                            selectedID_ = st.id;
+                            glm::vec3 curPos;
+                            if (st.hasPos && SelectedPos(curPos) &&
+                                glm::length(curPos - st.pos) > 0.0005f) {
+                                PushUndo(kUndoMove, st.type, st.id, st.pos);
+                                PersistSelectedPos(db);
+                                movedCount++;
+                            }
+                            glm::vec3 curRot;
+                            if (gizmoMoveRotChanged_ && st.hasRot && SelectedRot(curRot) &&
+                                glm::length(curRot - st.rot) > 0.001f) {
+                                PushUndo(kUndoRotate, st.type, st.id, st.rot);
+                                PersistSelectedRot(db);
+                            }
+                        }
+                        selectedType_ = primaryType;
+                        selectedID_ = primaryID;
+                        std::snprintf(statusMsg_, sizeof(statusMsg_), "Moved %d object(s).", std::max(movedCount, 1));
+                    }
+                    gizmoMoveRotChanged_ = false;
                 } else if (xformMode_ == kXFormRotate) {
-                    PushUndo(kUndoRotate, selectedType_, selectedID_, gizmoPreRot_);
-                    PersistSelectedRot(db);
-                    std::snprintf(statusMsg_, sizeof(statusMsg_), "Rotated id=%d.", selectedID_);
+                    if (gizmoSelectionStart_.empty()) {
+                        PushUndo(kUndoRotate, selectedType_, selectedID_, gizmoPreRot_);
+                        PersistSelectedRot(db);
+                        std::snprintf(statusMsg_, sizeof(statusMsg_), "Rotated id=%d.", selectedID_);
+                    } else {
+                        const int primaryType = selectedType_;
+                        const int primaryID = selectedID_;
+                        int changedCount = 0;
+                        for (const auto& st : gizmoSelectionStart_) {
+                            selectedType_ = st.type;
+                            selectedID_ = st.id;
+                            glm::vec3 curRot;
+                            if (st.hasRot && SelectedRot(curRot) &&
+                                glm::length(curRot - st.rot) > 0.001f) {
+                                PushUndo(kUndoRotate, st.type, st.id, st.rot);
+                                PersistSelectedRot(db);
+                                changedCount++;
+                            }
+                            glm::vec3 curPos;
+                            if (st.hasPos && SelectedPos(curPos) &&
+                                glm::length(curPos - st.pos) > 0.0005f) {
+                                PushUndo(kUndoMove, st.type, st.id, st.pos);
+                                PersistSelectedPos(db);
+                            }
+                        }
+                        selectedType_ = primaryType;
+                        selectedID_ = primaryID;
+                        std::snprintf(statusMsg_, sizeof(statusMsg_), "Rotated %d object(s).", std::max(changedCount, 1));
+                    }
                 } else if (xformMode_ == kXFormScale) {
-                    PushUndo(kUndoScale,  selectedType_, selectedID_, gizmoPreScale_);
-                    PersistSelectedScale(db);
-                    std::snprintf(statusMsg_, sizeof(statusMsg_), "Scaled id=%d.", selectedID_);
+                    if (gizmoSelectionStart_.empty()) {
+                        PushUndo(kUndoScale,  selectedType_, selectedID_, gizmoPreScale_);
+                        PersistSelectedScale(db);
+                        std::snprintf(statusMsg_, sizeof(statusMsg_), "Scaled id=%d.", selectedID_);
+                    } else {
+                        const int primaryType = selectedType_;
+                        const int primaryID = selectedID_;
+                        int changedCount = 0;
+                        for (const auto& st : gizmoSelectionStart_) {
+                            selectedType_ = st.type;
+                            selectedID_ = st.id;
+                            glm::vec3 curScale;
+                            if (st.hasScale && SelectedScale(curScale) &&
+                                glm::length(curScale - st.scale) > 0.0005f) {
+                                PushUndo(kUndoScale, st.type, st.id, st.scale);
+                                PersistSelectedScale(db);
+                                changedCount++;
+                            }
+                            glm::vec3 curPos;
+                            if (st.hasPos && SelectedPos(curPos) &&
+                                glm::length(curPos - st.pos) > 0.0005f) {
+                                PushUndo(kUndoMove, st.type, st.id, st.pos);
+                                PersistSelectedPos(db);
+                            }
+                        }
+                        selectedType_ = primaryType;
+                        selectedID_ = primaryID;
+                        std::snprintf(statusMsg_, sizeof(statusMsg_), "Scaled %d object(s).", std::max(changedCount, 1));
+                    }
                 }
                 gizmoAxis_ = -1;
+                gizmoSelectionStart_.clear();
             }
         }
     } else {
         gizmoAxis_ = -1;
+        gizmoMoveRotChanged_ = false;
+        gizmoSelectionStart_.clear();
         renderer_.SetGizmo({});   // clear — nothing to draw this frame
     }
 
@@ -1020,6 +1708,17 @@ void ZonesTab::PersistSelectedPos(sqlite3* db) {
     sqlite3_bind_int(s, idx, selectedID_);
     sqlite3_step(s);
     sqlite3_finalize(s);
+
+    // Rebuild collision preview when transforms can affect baked collision.
+    switch (selectedType_) {
+    case kSelScenery:
+    case kSelColBox:
+    case kSelColSphere:
+        scene_.colVisDirty = true;
+        break;
+    default:
+        break;
+    }
 }
 
 // ─── Rotation helpers ───────────────────────────────────────────────────────
@@ -1060,6 +1759,7 @@ void ZonesTab::PersistSelectedRot(sqlite3* db) {
                 sqlite3_bind_int   (st, 4, s.id);
                 sqlite3_step(st); sqlite3_finalize(st);
             }
+            scene_.colVisDirty = true;
             return;
         }
     } else if (selectedType_ == kSelNpc) {
@@ -1126,6 +1826,7 @@ void ZonesTab::PersistSelectedScale(sqlite3* db) {
                 sqlite3_bind_int   (st, 4, s.id);
                 sqlite3_step(st); sqlite3_finalize(st);
             }
+            scene_.colVisDirty = true;
             return;
         }
     } else if (selectedType_ == kSelColBox) {
@@ -1140,6 +1841,7 @@ void ZonesTab::PersistSelectedScale(sqlite3* db) {
                 sqlite3_bind_int   (st, 4, c.id);
                 sqlite3_step(st); sqlite3_finalize(st);
             }
+            scene_.colVisDirty = true;
             return;
         }
     } else if (selectedType_ == kSelColSphere) {
@@ -1152,6 +1854,7 @@ void ZonesTab::PersistSelectedScale(sqlite3* db) {
                 sqlite3_bind_int   (st, 2, cs.id);
                 sqlite3_step(st); sqlite3_finalize(st);
             }
+            scene_.colVisDirty = true;
             return;
         }
     } else if (selectedType_ == kSelWater) {

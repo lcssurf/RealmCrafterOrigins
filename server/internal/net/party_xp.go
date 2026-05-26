@@ -40,7 +40,7 @@ func (c *ClientConn) awardXP(ctx context.Context, npcLevel int, killX, killZ flo
 		if gain <= 0 {
 			continue
 		}
-		if err := recipient.awardXPGain(ctx, gain); err != nil {
+		if err := recipient.awardXPGain(ctx, gain, npcLevel); err != nil {
 			targetName := ""
 			if recipient.actor != nil {
 				targetName = recipient.actor.Name
@@ -154,7 +154,7 @@ func distributePartyXPGain(total int64, recipients []*ClientConn, killerCharacte
 	return out
 }
 
-func (c *ClientConn) awardXPGain(ctx context.Context, gain int64) error {
+func (c *ClientConn) awardXPGain(ctx context.Context, gain int64, scalingMobLevel int) error {
 	if gain <= 0 || c == nil || c.server == nil || c.server.db == nil || c.actor == nil || strings.TrimSpace(c.actor.CharacterID) == "" {
 		return nil
 	}
@@ -164,7 +164,22 @@ func (c *ClientConn) awardXPGain(ctx context.Context, gain int64) error {
 	curLevel := int(c.actor.Level)
 	c.actor.Mu.Unlock()
 
-	newXP, newLevel, leveled := world.ProcessXPCumulative(curXP, curLevel, gain)
+	scaledGain := gain
+	if scalingMobLevel > 0 {
+		multiplier := world.ComputeKillXPMultiplier(curLevel, scalingMobLevel)
+		scaledGain = int64(float32(gain) * multiplier)
+		if scaledGain < 1 && gain > 0 {
+			scaledGain = 1
+		}
+		username := ""
+		if c.account != nil {
+			username = c.account.Username
+		}
+		log.Printf("xp-gain: user=%s mob_lvl=%d player_lvl=%d base=%d mult=%.2f scaled=%d",
+			username, scalingMobLevel, curLevel, gain, multiplier, scaledGain)
+	}
+
+	newXP, newLevel, leveled := world.ProcessXPCumulative(curXP, curLevel, scaledGain)
 	if err := c.server.db.SaveXP(ctx, c.actor.CharacterID, newXP, newLevel); err != nil {
 		log.Printf("client: save xp: %v", err)
 	}

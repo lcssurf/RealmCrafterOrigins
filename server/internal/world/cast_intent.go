@@ -2,6 +2,7 @@ package world
 
 import (
 	"encoding/json"
+	"log"
 	"strings"
 	"time"
 )
@@ -79,7 +80,7 @@ func tryStartCastByRIDAt(w *World, intent CastIntent, now int64, expectedCasterK
 		return finish(false, "start_failed")
 	}
 	if !caster.IsNPC {
-		broadcastCastResourceUpdate(caster, ability)
+		broadcastCastResourceUpdate(area, caster, ability)
 	}
 	return finish(true, "ok")
 }
@@ -190,6 +191,8 @@ func hasCastResource(npc *Actor, ability AbilityTemplate) bool {
 		return npc.Energy >= cost
 	case "sp", "stamina":
 		return npc.Stamina >= cost
+	case "hp":
+		return npc.Health >= cost
 	default:
 		return true
 	}
@@ -216,17 +219,31 @@ func consumeCastResource(npc *Actor, ability AbilityTemplate) (bool, string) {
 		}
 		npc.Stamina -= cost
 		return true, "ok"
+	case "hp":
+		if npc.Health < cost {
+			return false, "resource_insufficient"
+		}
+		before := npc.Health
+		npc.Health -= cost
+		if npc.Health < 1 {
+			npc.Health = 1
+		}
+		after := npc.Health
+		log.Printf("cast-resource-hp: user=%s ability=%d cost=%d hp_before=%d hp_after=%d",
+			npc.CharacterID, ability.ID, cost, before, after)
+		return true, "ok"
 	default:
 		return true, "ok"
 	}
 }
 
-func broadcastCastResourceUpdate(caster *Actor, ability AbilityTemplate) {
+func broadcastCastResourceUpdate(area *Area, caster *Actor, ability AbilityTemplate) {
 	if caster == nil || caster.IsNPC {
 		return
 	}
 	resourceType := strings.ToLower(strings.TrimSpace(ability.ResourceType))
 	caster.Mu.Lock()
+	hp := caster.Health
 	mp := caster.Energy
 	sp := caster.Stamina
 	caster.Mu.Unlock()
@@ -235,6 +252,8 @@ func broadcastCastResourceUpdate(caster *Actor, ability AbilityTemplate) {
 		BroadcastMPUpdate(caster, mp)
 	case "sp", "stamina":
 		BroadcastSPUpdate(caster, sp)
+	case "hp":
+		BroadcastHPUpdate(area, caster, hp)
 	}
 }
 

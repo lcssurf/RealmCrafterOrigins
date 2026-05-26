@@ -54,6 +54,16 @@ enum XFormMode {
     kXFormScale  = 3,
 };
 
+enum GizmoSpaceMode {
+    kGizmoSpaceWorld = 0,
+    kGizmoSpaceLocal = 1,
+};
+
+enum GizmoPivotMode {
+    kGizmoPivotOrigin = 0,
+    kGizmoPivotBase   = 1,
+};
+
 class ZonesTab {
 public:
     void SetRenderer(::rco::renderer::Engine* engine,
@@ -68,7 +78,7 @@ public:
 
 private:
     // ── Layout sections (new design) ─────────────────────────────────────────
-    void DrawTopBar      (sqlite3* db);
+    void DrawTopBar      (sqlite3* db, MediaTab* media);
     void DrawSceneSidebar(sqlite3* db, MediaTab* media);
     void DrawViewport    (sqlite3* db, MediaTab* media);  // fills parent child
     void DrawFloatingToolbar();                            // overlaid inside viewport
@@ -107,10 +117,24 @@ private:
     // ── Actions ───────────────────────────────────────────────────────────────
     void PlaceObject      (const glm::vec3& worldPos, sqlite3*, MediaTab*);
     void DeleteSelected   (sqlite3*);
-    void DuplicateSelected(sqlite3*);
+    void DuplicateSelected(sqlite3*, MediaTab*);
+    void CopySelected     ();
+    void PasteSelected    (sqlite3*, MediaTab*);
     void FocusOnSelected  ();
     glm::vec3 RaycastScene(float vpX, float vpY);
     void SyncSceneryCache (MediaTab*);
+
+    struct SelectionRef {
+        int type = kSelNone;
+        int id   = -1;
+    };
+    bool IsInSelection   (int type, int id) const;
+    void ClearSelection  ();
+    void SelectSingle    (int type, int id);
+    void AddSelection    (int type, int id, bool makePrimary);
+    void RemoveSelection (int type, int id);
+    void ToggleSelection (int type, int id);
+    std::vector<SelectionRef> ActiveSelection() const;
 
     // ── Selection transform helpers (used by gizmo) ──────────────────────────
     bool SelectedPos       (glm::vec3& out) const;
@@ -153,6 +177,8 @@ private:
 
     int  selectedID_   = -1;
     int  selectedType_ = kSelNone;
+    std::vector<SelectionRef> selectedRefs_;
+    std::vector<SelectionRef> selectionClipboard_;
 
     // Viewport interaction
     bool      vpHovered_   = false;
@@ -177,12 +203,27 @@ private:
     // inferred from `xformMode_` so we don't track that twice.
     int       gizmoAxis_       = -1;   // -1 none, 0=X, 1=Y, 2=Z, 3=center (scale)
     glm::vec3 gizmoStartPos_   = {};   // object pos at drag start
+    glm::vec3 gizmoStartObjPos_= {};   // object origin at drag start
+    glm::vec3 gizmoStartHit_   = {};   // plane-drag anchor hit point
     glm::vec3 gizmoStartRot_   = {};   // object rot at drag start (Euler deg)
     glm::vec3 gizmoStartScale_ = {1,1,1};
     float     gizmoStartS_     = 0.f;  // cursor param at drag start (axis-local)
+    float     gizmoRotAccumDeg_= 0.f;  // incremental rotate accumulator (avoids wrap jumps)
+    float     gizmoLastAngle_  = 0.f;  // last ring angle sample (radians)
     glm::vec3 gizmoPrePos_     = {};   // pre-drag snapshot for undo
     glm::vec3 gizmoPreRot_     = {};
     glm::vec3 gizmoPreScale_   = {1,1,1};
+    struct GizmoSelectionStart {
+        int       type = kSelNone;
+        int       id   = -1;
+        bool      hasPos   = false;
+        bool      hasRot   = false;
+        bool      hasScale = false;
+        glm::vec3 pos      = {};
+        glm::vec3 rot      = {};
+        glm::vec3 scale    = {1, 1, 1};
+    };
+    std::vector<GizmoSelectionStart> gizmoSelectionStart_;
 
     // Zone list
     std::vector<std::string> areaList_;
@@ -245,6 +286,15 @@ private:
     bool  scnSnapGrid_    = false;  // G key toggles grid snap
     float scnGridSize_    = 1.0f;   // grid step in world units
     float scnRotSnap_     = 45.f;   // rotation snap in degrees (0 = free)
+    GizmoSpaceMode gizmoSpace_ = kGizmoSpaceWorld;
+    GizmoPivotMode gizmoPivot_ = kGizmoPivotOrigin;
+    bool  scnObjSnap_     = false;  // pivot-to-pivot alignment while moving gizmo
+    float scnObjSnapDist_ = 1.0f;   // max axis distance to snap
+    bool  scnFaceSnap_    = false;  // face-to-face surface snap while moving gizmo
+    float scnFaceSnapDist_= 0.75f;  // max gap distance for face snap
+    bool  scnAlignNormal_ = false;  // align yaw to snapped surface normal (XZ only)
+    bool  scnAutoRotate_  = false;  // auto-rotate yaw on face snap to nearest snapped angle
+    bool  gizmoMoveRotChanged_ = false;
     // Terrain brush state
     int   brushMode_      = 0;     // 0=Raise 1=Lower 2=Smooth 3=Flatten 4=Paint
     int   brushFalloff_   = 0;     // 0=Smooth 1=Gaussian 2=Linear 3=Spherical

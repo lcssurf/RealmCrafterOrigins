@@ -10,6 +10,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <cstdint>
 
 struct GLFWwindow;
 
@@ -44,8 +45,8 @@ public:
     void Destroy();
 
 private:
-    struct Job   { int id; std::string rel; std::string abs; };
-    struct Ready { int id; GLuint tex; };
+    struct Job   { int id; uint64_t gen; std::string rel; std::string abs; };
+    struct Ready { int id; uint64_t gen; GLuint tex; };
 
     // Worker thread entry point — owns the shared GL context.
     void WorkerLoop_();
@@ -63,9 +64,14 @@ private:
     std::atomic<bool>       shutdown_{ false };
 
     // ── Main-thread state ───────────────────────────────────────────────
-    std::unordered_map<int, GLuint> cache_;   // model_id → tex (0 = pending)
-    std::filesystem::path           cacheDir_;
-    GLFWwindow*                     mainWin_ = nullptr;
+    std::unordered_map<int, GLuint>      cache_;   // model_id -> tex (0 = pending)
+    std::unordered_map<int, std::string> cacheRelPath_;
+    std::unordered_map<int, long long>   cacheMtimeNs_;
+    std::unordered_map<int, bool>        cacheHasMtime_;
+    std::unordered_map<int, uint64_t>    cacheGen_;
+    uint64_t                              nextGen_ = 1;
+    std::filesystem::path                 cacheDir_;
+    GLFWwindow*                           mainWin_ = nullptr;
 
     // ── Background thread ───────────────────────────────────────────────
     std::thread  worker_;

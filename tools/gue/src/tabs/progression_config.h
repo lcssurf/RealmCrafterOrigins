@@ -22,6 +22,13 @@ private:
         int initial_stat_value = 5;
         int respec_free_until_level = 10;
         int respec_cost_gold = 1000;
+        int kill_xp_base = 25;
+        float kill_xp_diff_coef = 0.1f;
+        float kill_xp_mult_min = 0.1f;
+        float kill_xp_mult_max = 1.5f;
+        int mastery_xp_per_mob_level = 10;
+        float mastery_killing_blow_mult = 1.5f;
+        int mastery_window_timeout_ms = 10000;
     };
 
     struct MasteryConfig {

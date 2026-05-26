@@ -155,7 +155,8 @@ func XPToLevel(level int) int64 {
 
 // XPForKill returns the XP reward for killing an NPC of the given level.
 func XPForKill(npcLevel int) int64 {
-	return int64(npcLevel) * 25
+	cfg := GetKillXPScalingConfig()
+	return int64(npcLevel) * int64(cfg.BaseXPPerNPCLevel)
 }
 
 // ProcessXP applies an XP gain to a character and returns the updated values.

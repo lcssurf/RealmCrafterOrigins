@@ -987,6 +987,7 @@ func (c *ClientConn) handleAttackActor(ctx context.Context, payload []byte) erro
 	died := world.BroadcastAttack(area, c.actor, target, dmg, isCrit, result)
 	if died && target.IsNPC {
 		x, y, z := target.X, target.Y, target.Z
+		world.OnNPCKilled(area, target, c.actor.RuntimeID)
 		area.KillNPC(target)
 		area.SpawnDropsForNPC(target)
 		c.applyQuestProgressEvent(ctx, db.QuestProgressEvent{
@@ -1063,6 +1064,40 @@ func (c *ClientConn) sendXPUpdate() error {
 	}
 
 	return nil
+}
+
+func (c *ClientConn) sendVitalsUpdate() {
+	if c == nil || c.actor == nil {
+		return
+	}
+	c.actor.Mu.Lock()
+	rid := c.actor.RuntimeID
+	hp := c.actor.Health
+	hpMax := c.actor.HealthMax
+	mp := c.actor.Energy
+	mpMax := c.actor.EnergyMax
+	sp := c.actor.Stamina
+	spMax := c.actor.StaminaMax
+	c.actor.Mu.Unlock()
+
+	for _, attr := range []struct {
+		id  uint8
+		val int32
+	}{
+		{1, hpMax},
+		{0, hp},
+		{3, mpMax},
+		{2, mp},
+		{5, spMax},
+		{4, sp},
+	} {
+		var sp Writer
+		sp.WriteUint8('A')
+		sp.WriteUint32(rid)
+		sp.WriteUint8(attr.id)
+		sp.WriteUint16(uint16(int16(attr.val)))
+		c.actor.Send(buildFramedPacket(protocol.PStatUpdate, sp.Bytes()))
+	}
 }
 
 func (c *ClientConn) sendStatPointsUpdate(unspent int32) {
@@ -1746,6 +1781,7 @@ func (c *ClientConn) handleCastSpell(ctx context.Context, payload []byte) error 
 	if killedRID != 0 {
 		if killed, _ := area.GetActor(killedRID); killed != nil && killed.IsNPC {
 			x, y, z := killed.X, killed.Y, killed.Z
+			world.OnNPCKilled(area, killed, c.actor.RuntimeID)
 			area.KillNPC(killed)
 			area.SpawnDropsForNPC(killed)
 			c.applyQuestProgressEvent(ctx, db.QuestProgressEvent{
@@ -1771,6 +1807,7 @@ func (c *ClientConn) cleanup(ctx context.Context) {
 
 		if c.state == StateInGame {
 			c.handlePartyDisconnect()
+			world.GetCombatWindowManager().CloseAllForPlayer(c.actor.RuntimeID)
 			c.server.unregisterInGameClient(c)
 
 			area, ok := c.server.world.GetArea(c.actor.AreaName)

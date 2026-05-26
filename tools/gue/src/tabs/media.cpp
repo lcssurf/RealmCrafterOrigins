@@ -1,5 +1,6 @@
 #include "media.h"
 #include "../file_import.h"
+#include "../asset_path.h"
 
 #include <imgui.h>
 #include <cstring>
@@ -8,6 +9,11 @@
 #include <algorithm>
 #include <functional>
 #include <filesystem>
+#include <array>
+#include <cfloat>
+#include <cmath>
+
+#include "rco/renderer/col_bake.h"
 
 namespace gue {
 
@@ -27,6 +33,98 @@ static std::vector<std::string> SplitPath(const std::string& s) {
         start = slash + 1;
     }
     return out;
+}
+
+static bool ComputeModelApproxCollision(const std::string& relPath,
+                                        ModelShape& outBox,
+                                        ModelShape& outSphere) {
+    if (relPath.empty()) return false;
+
+    std::vector<std::array<glm::vec3, 3>> tris;
+    rco::renderer::ExtractMeshTriangles(ResolveClientAsset(relPath), tris);
+    if (tris.empty()) return false;
+
+    glm::vec3 bmin(FLT_MAX, FLT_MAX, FLT_MAX);
+    glm::vec3 bmax(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+    for (const auto& tri : tris) {
+        for (const auto& v : tri) {
+            bmin = glm::min(bmin, v);
+            bmax = glm::max(bmax, v);
+        }
+    }
+
+    glm::vec3 size = bmax - bmin;
+    if (size.x < 0.001f) size.x = 1.f;
+    if (size.y < 0.001f) size.y = 1.f;
+    if (size.z < 0.001f) size.z = 1.f;
+    glm::vec3 center = (bmin + bmax) * 0.5f;
+
+    outBox = {};
+    outBox.type = 0;
+    outBox.offset_x = center.x;
+    outBox.offset_y = center.y;
+    outBox.offset_z = center.z;
+    outBox.size_x = size.x;
+    outBox.size_y = size.y;
+    outBox.size_z = size.z;
+
+    std::vector<glm::vec2> pointsXZ;
+    pointsXZ.reserve(tris.size() * 3);
+    for (const auto& tri : tris) {
+        pointsXZ.push_back({tri[0].x, tri[0].z});
+        pointsXZ.push_back({tri[1].x, tri[1].z});
+        pointsXZ.push_back({tri[2].x, tri[2].z});
+    }
+
+    glm::vec2 centerXZ = {(bmin.x + bmax.x) * 0.5f, (bmin.z + bmax.z) * 0.5f};
+    std::vector<float> dists;
+    dists.reserve(pointsXZ.size());
+    for (const auto& p : pointsXZ)
+        dists.push_back(glm::length(p - centerXZ));
+    std::sort(dists.begin(), dists.end());
+
+    float radiusMax = dists.empty() ? 0.f : dists.back();
+    float radiusP97 = radiusMax;
+    if (!dists.empty()) {
+        size_t idx = (size_t)(0.97f * (float)(dists.size() - 1));
+        if (idx >= dists.size()) idx = dists.size() - 1;
+        radiusP97 = dists[idx];
+    }
+
+    // If there is a strong outlier spike, prefer a robust percentile radius.
+    float radius = radiusMax;
+    if (radiusP97 > 0.001f && radiusMax > radiusP97 * 1.15f)
+        radius = radiusP97;
+
+    if (radius < 0.001f)
+        radius = std::max(size.x, size.z) * 0.5f;
+    if (radius < 0.001f)
+        radius = 0.5f;
+
+    float sphereY = center.y;
+    float height = bmax.y - bmin.y;
+    if (height >= radius * 2.f)
+        sphereY = bmin.y + radius;
+
+    outSphere = {};
+    outSphere.type = 1;
+    outSphere.offset_x = centerXZ.x;
+    outSphere.offset_y = sphereY;
+    outSphere.offset_z = centerXZ.y;
+    outSphere.size_x = radius;
+    outSphere.size_y = 0.f;
+    outSphere.size_z = 0.f;
+    return true;
+}
+
+static const char* ModelShapeTypeName(int type) {
+    switch (type) {
+    case 0: return "Box";
+    case 1: return "Sphere";
+    case 2: return "Mesh";
+    case 3: return "Wedge";
+    default: return "Unknown";
+    }
 }
 
 template<typename T>
@@ -339,11 +437,19 @@ void MediaTab::EnsureTables(sqlite3* db) {
         "  offset_z REAL NOT NULL DEFAULT 0,"
         "  size_x   REAL NOT NULL DEFAULT 1,"
         "  size_y   REAL NOT NULL DEFAULT 1,"
-        "  size_z   REAL NOT NULL DEFAULT 1"
+        "  size_z   REAL NOT NULL DEFAULT 1,"
+        "  detail_a REAL NOT NULL DEFAULT 0,"
+        "  detail_b REAL NOT NULL DEFAULT 0"
         ")",
         nullptr, nullptr, nullptr);
     sqlite3_exec(db,
         "CREATE INDEX IF NOT EXISTS idx_model_shapes ON media_model_shapes(model_id)",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "ALTER TABLE media_model_shapes ADD COLUMN detail_a REAL NOT NULL DEFAULT 0",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "ALTER TABLE media_model_shapes ADD COLUMN detail_b REAL NOT NULL DEFAULT 0",
         nullptr, nullptr, nullptr);
 
     // Normal map intensity per terrain material (no-op when column already exists).
@@ -629,7 +735,7 @@ void MediaTab::LoadShapesForModel(sqlite3* db, int model_id) {
 
     sqlite3_stmt* stmt = nullptr;
     sqlite3_prepare_v2(db,
-        "SELECT id, model_id, type, offset_x, offset_y, offset_z, size_x, size_y, size_z"
+        "SELECT id, model_id, type, offset_x, offset_y, offset_z, size_x, size_y, size_z, detail_a, detail_b"
         " FROM media_model_shapes WHERE model_id=? ORDER BY id",
         -1, &stmt, nullptr);
     sqlite3_bind_int(stmt, 1, model_id);
@@ -644,24 +750,39 @@ void MediaTab::LoadShapesForModel(sqlite3* db, int model_id) {
         s.size_x   = (float)sqlite3_column_double(stmt, 6);
         s.size_y   = (float)sqlite3_column_double(stmt, 7);
         s.size_z   = (float)sqlite3_column_double(stmt, 8);
+        s.detail_a = (float)sqlite3_column_double(stmt, 9);
+        s.detail_b = (float)sqlite3_column_double(stmt, 10);
         model_shapes_.push_back(s);
     }
     sqlite3_finalize(stmt);
 }
 
 void MediaTab::SaveModelShape(sqlite3* db, ModelShape& s) {
+    if (s.type == 2) {
+        if (s.detail_a <= 0.f) s.detail_a = 100.f;
+        if (s.detail_a < 0.1f) s.detail_a = 0.1f;
+        if (s.detail_a > 100.f) s.detail_a = 100.f;
+    } else if (s.type == 3) {
+        if (s.detail_a <= 0.f) s.detail_a = 1.f;
+        if (s.detail_a < 1.f) s.detail_a = 1.f;
+        if (s.detail_a > 16.f) s.detail_a = 16.f;
+    } else {
+        s.detail_a = 0.f;
+        s.detail_b = 0.f;
+    }
+
     sqlite3_stmt* stmt = nullptr;
     int rc;
     if (s.id == 0) {
         rc = sqlite3_prepare_v2(db,
             "INSERT INTO media_model_shapes"
-            " (model_id, type, offset_x, offset_y, offset_z, size_x, size_y, size_z)"
-            " VALUES (?,?,?,?,?,?,?,?)",
+            " (model_id, type, offset_x, offset_y, offset_z, size_x, size_y, size_z, detail_a, detail_b)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
             -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
             "UPDATE media_model_shapes SET"
-            " model_id=?, type=?, offset_x=?, offset_y=?, offset_z=?, size_x=?, size_y=?, size_z=?"
+            " model_id=?, type=?, offset_x=?, offset_y=?, offset_z=?, size_x=?, size_y=?, size_z=?, detail_a=?, detail_b=?"
             " WHERE id=?",
             -1, &stmt, nullptr);
     }
@@ -677,7 +798,9 @@ void MediaTab::SaveModelShape(sqlite3* db, ModelShape& s) {
     sqlite3_bind_double(stmt, 6, s.size_x);
     sqlite3_bind_double(stmt, 7, s.size_y);
     sqlite3_bind_double(stmt, 8, s.size_z);
-    if (s.id != 0) sqlite3_bind_int(stmt, 9, s.id);
+    sqlite3_bind_double(stmt, 9, s.detail_a);
+    sqlite3_bind_double(stmt, 10, s.detail_b);
+    if (s.id != 0) sqlite3_bind_int(stmt, 11, s.id);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         std::snprintf(statusMsg_, sizeof(statusMsg_), "Save shape error: %s", sqlite3_errmsg(db));
@@ -1438,17 +1561,31 @@ void MediaTab::DrawModels(sqlite3* db) {
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::TextColored({1.f, 0.85f, 0.4f, 1.f}, "Collision Shapes");
-        ImGui::TextDisabled("Box: W/H/D = full extents. Sphere: Radius = size_x.");
+        ImGui::TextDisabled("Box/Wedge: W/H/D = full extents. Sphere: Radius = size_x. Mesh: Face Budget%%.");
 
         if (shapes_model_id_ != editModel_.id)
             LoadShapesForModel(db, editModel_.id);
+
+        ModelShape autoFitBox{};
+        ModelShape autoFitSphere{};
+        bool hasAutoFit = ComputeModelApproxCollision(editModel_.file_path, autoFitBox, autoFitSphere);
+        auto sanitizeShapeDetails = [](ModelShape& s) {
+            if (s.type == 2) {
+                if (s.detail_a <= 0.f) s.detail_a = 100.f;
+                if (s.detail_a < 0.1f) s.detail_a = 0.1f;
+                if (s.detail_a > 100.f) s.detail_a = 100.f;
+            } else if (s.type == 3) {
+                if (s.detail_a <= 0.f) s.detail_a = 1.f;
+                if (s.detail_a < 1.f) s.detail_a = 1.f;
+                if (s.detail_a > 16.f) s.detail_a = 16.f;
+            }
+        };
 
         for (int i = 0; i < (int)model_shapes_.size(); ++i) {
             const auto& s = model_shapes_[i];
             char label[64];
             std::snprintf(label, sizeof(label), "[%d] %s##sh%d",
-                          s.id,
-                          s.type == 0 ? "Box" : s.type == 1 ? "Sphere" : "Mesh", i);
+                          s.id, ModelShapeTypeName(s.type), i);
             if (ImGui::Selectable(label, sel_shape_ == i)) {
                 sel_shape_   = i;
                 edit_shape_  = model_shapes_[i];
@@ -1462,20 +1599,63 @@ void MediaTab::DrawModels(sqlite3* db) {
             sel_shape_          = -1;
             pending_shape_      = {};
             pending_shape_.model_id = editModel_.id;
+            if (hasAutoFit) {
+                pending_shape_.type = 0;
+                pending_shape_.offset_x = autoFitBox.offset_x;
+                pending_shape_.offset_y = autoFitBox.offset_y;
+                pending_shape_.offset_z = autoFitBox.offset_z;
+                pending_shape_.size_x   = autoFitBox.size_x;
+                pending_shape_.size_y   = autoFitBox.size_y;
+                pending_shape_.size_z   = autoFitBox.size_z;
+            }
+            sanitizeShapeDetails(pending_shape_);
             dirty_shape_        = false;
         }
 
         if (new_shape_) {
             ImGui::Separator();
             ImGui::TextColored({0.4f, 1.f, 0.4f, 1.f}, "New Shape");
-            static const char* kTypes[] = { "Box", "Sphere", "Mesh" };
-            ImGui::Combo("Type##ns", &pending_shape_.type, kTypes, 3);
+            static const char* kTypes[] = { "Box", "Sphere", "Mesh", "Wedge" };
+            ImGui::Combo("Type##ns", &pending_shape_.type, kTypes, 4);
+            sanitizeShapeDetails(pending_shape_);
+            if (hasAutoFit && pending_shape_.type != 2) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Fit to Model##ns")) {
+                    const ModelShape& src = (pending_shape_.type == 1) ? autoFitSphere : autoFitBox;
+                    pending_shape_.offset_x = src.offset_x;
+                    pending_shape_.offset_y = src.offset_y;
+                    pending_shape_.offset_z = src.offset_z;
+                    pending_shape_.size_x   = src.size_x;
+                    pending_shape_.size_y   = src.size_y;
+                    pending_shape_.size_z   = src.size_z;
+                }
+            }
             if (pending_shape_.type == 0) {
-                ImGui::InputFloat3("Offset XYZ##ns", &pending_shape_.offset_x);
-                ImGui::InputFloat3("Size W/H/D##ns", &pending_shape_.size_x);
+                ImGui::DragFloat3("Offset XYZ##ns", &pending_shape_.offset_x, 0.02f);
+                ImGui::DragFloat3("Size W/H/D##ns", &pending_shape_.size_x, 0.02f);
             } else if (pending_shape_.type == 1) {
-                ImGui::InputFloat3("Offset XYZ##ns", &pending_shape_.offset_x);
-                ImGui::InputFloat("Radius##ns", &pending_shape_.size_x, 0.05f, 0.5f, "%.3f");
+                ImGui::DragFloat3("Offset XYZ##ns", &pending_shape_.offset_x, 0.02f);
+                ImGui::DragFloat("Radius##ns", &pending_shape_.size_x, 0.02f, 0.01f, 10000.f, "%.3f");
+                if (pending_shape_.size_x < 0.01f) pending_shape_.size_x = 0.01f;
+            } else if (pending_shape_.type == 3) {
+                ImGui::DragFloat3("Offset XYZ##ns", &pending_shape_.offset_x, 0.02f);
+                ImGui::DragFloat3("Size W/H/D##ns", &pending_shape_.size_x, 0.02f);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Flip Slope##ns")) {
+                    float sx = std::abs(pending_shape_.size_x);
+                    if (sx < 0.01f) sx = 1.f;
+                    pending_shape_.size_x = pending_shape_.size_x >= 0.f ? -sx : sx;
+                }
+                int subdiv = (int)std::lround(pending_shape_.detail_a);
+                if (subdiv < 1) subdiv = 1;
+                if (subdiv > 16) subdiv = 16;
+                if (ImGui::SliderInt("Subdivisions##ns", &subdiv, 1, 16))
+                    pending_shape_.detail_a = (float)subdiv;
+                ImGui::TextDisabled("Wedge direction follows Size X sign (+/-).");
+            } else if (pending_shape_.type == 2) {
+                if (pending_shape_.detail_a < 0.1f) pending_shape_.detail_a = 100.f;
+                ImGui::SliderFloat("Face Budget %%##ns", &pending_shape_.detail_a, 0.1f, 100.f, "%.1f%%");
+                ImGui::TextDisabled("Lower values simplify collision mesh for this shape.");
             } else {
                 ImGui::TextDisabled("Uses the full model geometry.");
             }
@@ -1488,19 +1668,62 @@ void MediaTab::DrawModels(sqlite3* db) {
             if (ImGui::Button("Cancel##ns")) new_shape_ = false;
         } else if (sel_shape_ >= 0 && sel_shape_ < (int)model_shapes_.size()) {
             ImGui::Separator();
-            static const char* kTypes[] = { "Box", "Sphere", "Mesh" };
-            if (ImGui::Combo("Type##es", &edit_shape_.type, kTypes, 3))
+            static const char* kTypes[] = { "Box", "Sphere", "Mesh", "Wedge" };
+            if (ImGui::Combo("Type##es", &edit_shape_.type, kTypes, 4))
                 dirty_shape_ = true;
-            if (edit_shape_.type == 0) {
-                if (ImGui::InputFloat3("Offset XYZ##es", &edit_shape_.offset_x))
+            sanitizeShapeDetails(edit_shape_);
+            if (hasAutoFit && edit_shape_.type != 2) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Fit to Model##es")) {
+                    const ModelShape& src = (edit_shape_.type == 1) ? autoFitSphere : autoFitBox;
+                    edit_shape_.offset_x = src.offset_x;
+                    edit_shape_.offset_y = src.offset_y;
+                    edit_shape_.offset_z = src.offset_z;
+                    edit_shape_.size_x   = src.size_x;
+                    edit_shape_.size_y   = src.size_y;
+                    edit_shape_.size_z   = src.size_z;
                     dirty_shape_ = true;
-                if (ImGui::InputFloat3("Size W/H/D##es", &edit_shape_.size_x))
+                }
+            }
+            if (edit_shape_.type == 0) {
+                if (ImGui::DragFloat3("Offset XYZ##es", &edit_shape_.offset_x, 0.02f))
+                    dirty_shape_ = true;
+                if (ImGui::DragFloat3("Size W/H/D##es", &edit_shape_.size_x, 0.02f))
                     dirty_shape_ = true;
             } else if (edit_shape_.type == 1) {
-                if (ImGui::InputFloat3("Offset XYZ##es", &edit_shape_.offset_x))
+                if (ImGui::DragFloat3("Offset XYZ##es", &edit_shape_.offset_x, 0.02f))
                     dirty_shape_ = true;
-                if (ImGui::InputFloat("Radius##es", &edit_shape_.size_x, 0.05f, 0.5f, "%.3f"))
+                if (ImGui::DragFloat("Radius##es", &edit_shape_.size_x, 0.02f, 0.01f, 10000.f, "%.3f"))
                     dirty_shape_ = true;
+                if (edit_shape_.size_x < 0.01f) {
+                    edit_shape_.size_x = 0.01f;
+                    dirty_shape_ = true;
+                }
+            } else if (edit_shape_.type == 3) {
+                if (ImGui::DragFloat3("Offset XYZ##es", &edit_shape_.offset_x, 0.02f))
+                    dirty_shape_ = true;
+                if (ImGui::DragFloat3("Size W/H/D##es", &edit_shape_.size_x, 0.02f))
+                    dirty_shape_ = true;
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Flip Slope##es")) {
+                    float sx = std::abs(edit_shape_.size_x);
+                    if (sx < 0.01f) sx = 1.f;
+                    edit_shape_.size_x = edit_shape_.size_x >= 0.f ? -sx : sx;
+                    dirty_shape_ = true;
+                }
+                int subdiv = (int)std::lround(edit_shape_.detail_a);
+                if (subdiv < 1) subdiv = 1;
+                if (subdiv > 16) subdiv = 16;
+                if (ImGui::SliderInt("Subdivisions##es", &subdiv, 1, 16)) {
+                    edit_shape_.detail_a = (float)subdiv;
+                    dirty_shape_ = true;
+                }
+                ImGui::TextDisabled("Wedge direction follows Size X sign (+/-).");
+            } else if (edit_shape_.type == 2) {
+                if (edit_shape_.detail_a < 0.1f) edit_shape_.detail_a = 100.f;
+                if (ImGui::SliderFloat("Face Budget %%##es", &edit_shape_.detail_a, 0.1f, 100.f, "%.1f%%"))
+                    dirty_shape_ = true;
+                ImGui::TextDisabled("Lower values simplify collision mesh for this shape.");
             } else {
                 ImGui::TextDisabled("Uses the full model geometry.");
             }
@@ -1540,6 +1763,8 @@ void MediaTab::DrawModels(sqlite3* db) {
         else if (selModel_ >= 0 && selModel_ < (int)models_.size()) show = &editModel_;
 
         if (show) {
+            ImGui::Checkbox("Show Collision Overlay", &show_collision_preview_);
+            preview_->SetActorScale(1.f);
             bool path_changed = preview_->CurrentPath() != show->file_path;
             if (path_changed) {
                 preview_->LoadModel(show->file_path);
@@ -1594,6 +1819,32 @@ void MediaTab::DrawModels(sqlite3* db) {
             if (path_changed || materialsDirtyForPreview_) {
                 preview_->ApplyMaterialsFromMedia(buildLookups());
                 materialsDirtyForPreview_ = false;
+            }
+            {
+                std::vector<ModelShape> previewShapes = model_shapes_;
+                if (new_shape_) {
+                    previewShapes.push_back(pending_shape_);
+                } else if (sel_shape_ >= 0 && sel_shape_ < (int)previewShapes.size()) {
+                    previewShapes[(size_t)sel_shape_] = edit_shape_;
+                }
+
+                std::vector<PreviewViewport::CollisionShape> visShapes;
+                visShapes.reserve(previewShapes.size());
+                for (const auto& s : previewShapes) {
+                    PreviewViewport::CollisionShape cs;
+                    cs.type     = s.type;
+                    cs.offset_x = s.offset_x;
+                    cs.offset_y = s.offset_y;
+                    cs.offset_z = s.offset_z;
+                    cs.size_x   = s.size_x;
+                    cs.size_y   = s.size_y;
+                    cs.size_z   = s.size_z;
+                    cs.detail_a = s.detail_a;
+                    cs.detail_b = s.detail_b;
+                    visShapes.push_back(cs);
+                }
+                preview_->SetCollisionShapes(visShapes);
+                preview_->SetCollisionPreviewVisible(show_collision_preview_);
             }
             preview_->DrawImGui();
 
@@ -1669,6 +1920,8 @@ void MediaTab::DrawModels(sqlite3* db) {
                 }
             }
         } else {
+            preview_->SetCollisionShapes({});
+            preview_->SetCollisionPreviewVisible(false);
             preview_->Clear();
             ImGui::TextDisabled("No model selected.");
         }
@@ -2539,6 +2792,8 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                 // Live scale preview — cheap to set every frame; lets the
                 // user drag the Scale slider and see the result immediately.
                 preview_->SetActorScale(editActorDef_.scale);
+                preview_->SetCollisionShapes({});
+                preview_->SetCollisionPreviewVisible(false);
                 preview_->DrawImGui();
             }
         }

@@ -347,12 +347,24 @@ func (c *ClientConn) handleDistributeStatPoint(_ context.Context, payload []byte
 
 	c.actor.SetPrimaryStats(newPrimary)
 	world.RecomputeDerivedStats(c.actor)
+	c.actor.Mu.Lock()
+	if c.actor.Health > c.actor.HealthMax {
+		c.actor.Health = c.actor.HealthMax
+	}
+	if c.actor.Energy > c.actor.EnergyMax {
+		c.actor.Energy = c.actor.EnergyMax
+	}
+	if c.actor.Stamina > c.actor.StaminaMax {
+		c.actor.Stamina = c.actor.StaminaMax
+	}
+	c.actor.Mu.Unlock()
 
 	bg := context.Background()
 	if err := c.server.db.UpdateCharacterPrimaryStats(bg, c.actor.CharacterID, newPrimary, newUnspent); err != nil {
 		log.Printf("distribute-stat: db error user=%s: %v", c.account.Username, err)
 	}
 
+	c.sendVitalsUpdate()
 	c.sendPrimaryStatsUpdate(newPrimary, newUnspent)
 	log.Printf("distribute-stat: user=%s stat=%d amount=%d new STR=%d DEX=%d INT=%d WIS=%d PER=%d unspent=%d",
 		c.account.Username, statID, amount,
@@ -412,6 +424,17 @@ func (c *ClientConn) handleRespec(_ context.Context, payload []byte) error {
 
 	c.actor.SetPrimaryStats(newPrimary)
 	world.RecomputeDerivedStats(c.actor)
+	c.actor.Mu.Lock()
+	if c.actor.Health > c.actor.HealthMax {
+		c.actor.Health = c.actor.HealthMax
+	}
+	if c.actor.Energy > c.actor.EnergyMax {
+		c.actor.Energy = c.actor.EnergyMax
+	}
+	if c.actor.Stamina > c.actor.StaminaMax {
+		c.actor.Stamina = c.actor.StaminaMax
+	}
+	c.actor.Mu.Unlock()
 
 	bg := context.Background()
 	if err := c.server.db.UpdateCharacterPrimaryStats(bg, c.actor.CharacterID, newPrimary, newUnspent); err != nil {
@@ -428,6 +451,7 @@ func (c *ClientConn) handleRespec(_ context.Context, payload []byte) error {
 		}
 	}
 
+	c.sendVitalsUpdate()
 	c.sendPrimaryStatsUpdate(newPrimary, newUnspent)
 	log.Printf("respec: user=%s free=%t points_returned=%d new_unspent=%d gold_left=%d",
 		c.account.Username, isFree, pointsBack, newUnspent, goldRemaining)

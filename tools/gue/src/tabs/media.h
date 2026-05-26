@@ -16,13 +16,19 @@ namespace gue {
 // ---------------------------------------------------------------------------
 
 // Collision primitive attached to a model. Type 0 = box (size_x/y/z = W/H/D),
-// type 1 = sphere (size_x = radius, size_y/z ignored).
+// type 1 = sphere (size_x = radius, size_y/z ignored), type 2 = mesh
+// (full geometry), type 3 = wedge/ramp (size_x/y/z = W/H/D).
 struct ModelShape {
     int   id       = 0;
     int   model_id = 0;
     int   type     = 0;
     float offset_x = 0.f, offset_y = 0.f, offset_z = 0.f;
     float size_x   = 1.f, size_y   = 1.f, size_z   = 1.f;
+    // Generic extra params:
+    // - Mesh (type 2): detail_a = face budget percent [0.1..100]
+    // - Wedge (type 3): detail_a = subdivisions [1..16]
+    float detail_a = 0.f;
+    float detail_b = 0.f;
 };
 
 struct MediaModel {
@@ -264,6 +270,7 @@ private:
 
     // Collision shapes for the selected model.
     std::vector<ModelShape> model_shapes_;
+    bool       show_collision_preview_ = true;
     int        sel_shape_            = -1;
     int        shapes_model_id_      = -1; // model_id whose shapes are loaded
     ModelShape edit_shape_;

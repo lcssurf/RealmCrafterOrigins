@@ -112,12 +112,19 @@ func resolveActorWindup(area *Area, actor, target *Actor, now int64) (handled bo
 		BroadcastCombatEvent(area, combatEventSpecialHit, actor.RuntimeID, target.RuntimeID, int16(damage), "")
 	}
 	BroadcastHPUpdate(area, target, hp)
-	if !actor.IsNPC && actor.CharacterID != "" {
-		runSpecialHitHook(area, actor, target, windupAbilityID)
+	if !actor.IsNPC && actor.CharacterID != "" && target.IsNPC {
+		GetCombatWindowManager().TrackSkill(
+			actor.RuntimeID,
+			target.RuntimeID,
+			uint32(windupAbilityID),
+			int32(target.Level),
+			actor.CharacterID,
+		)
 	}
 	if justDied {
 		BroadcastAnimate(area, target, "Death")
 		BroadcastActorDead(area, target.RuntimeID, actor.RuntimeID)
+		OnNPCKilled(area, target, actor.RuntimeID)
 		runSpecialKillHook(area, actor, target)
 	}
 	return true, justDied
@@ -349,6 +356,13 @@ func specialAttackDamage(npc, target *Actor, ability AbilityTemplate) (int32, bo
 	if baseMax > baseMin {
 		base += rand.Int31n(baseMax - baseMin + 1)
 	}
+	// Apply optional per-skill additive scaling configured via JSON.
+	if ability.DamageStatScale != nil {
+		for _, entry := range ability.DamageStatScale.Scaling {
+			statValue := getStatValueForScaling(npc, entry.Stat)
+			base += int32(float32(statValue) * entry.Coef)
+		}
+	}
 
 	pierce := ability.ArmorPiercePct
 	if pierce < 0 {
@@ -371,13 +385,26 @@ func specialAttackDamage(npc, target *Actor, ability AbilityTemplate) (int32, bo
 		dmg = 1
 	}
 
-	critPct := ValueToPercent(npcDerived.MeleeCritValue, critValueCap, critValueSoftcap)
-	isCrit := rand.Float32() < critPct
-	if isCrit {
-		critMult := npcDerived.CritDamageMult
+	var critPct float32
+	var critMult float32
+	if ability.CritPolicy != nil {
+		cp := ability.CritPolicy
+		statValue := getStatValueForScaling(npc, cp.ScalingStat)
+		scaledPct := ValueToPercent(statValue, cp.ScalingSoftcapPct, cp.ScalingSoftcapValue)
+		critPct = (cp.BaseChancePct / 100.0) + scaledPct
+		critMult = cp.DamageMultiplier
 		if critMult < 1 {
 			critMult = 1
 		}
+	} else {
+		critPct = ValueToPercent(npcDerived.MeleeCritValue, critValueCap, critValueSoftcap)
+		critMult = npcDerived.CritDamageMult
+		if critMult < 1 {
+			critMult = 1
+		}
+	}
+	isCrit := rand.Float32() < critPct
+	if isCrit {
 		dmg = int32(float32(dmg) * critMult)
 		if dmg < 1 {
 			dmg = 1
@@ -416,6 +443,29 @@ func specialAttackDamage(npc, target *Actor, ability AbilityTemplate) (int32, bo
 		}
 	}
 	return dmg, isCrit
+}
+
+func getStatValueForScaling(actor *Actor, statName string) int32 {
+	if actor == nil {
+		return 0
+	}
+	actor.Mu.Lock()
+	defer actor.Mu.Unlock()
+	switch strings.ToUpper(strings.TrimSpace(statName)) {
+	case "STR":
+		return actor.Primary.STR
+	case "DEX":
+		return actor.Primary.DEX
+	case "INT":
+		return actor.Primary.INT
+	case "WIS":
+		return actor.Primary.WIS
+	case "PER":
+		return actor.Primary.PER
+	case "LEVEL":
+		return int32(actor.Level)
+	}
+	return 0
 }
 
 func buildSpecialWindupMetaText(ability AbilityTemplate, reasonTag, clientTraceID string) string {

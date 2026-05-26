@@ -2,6 +2,9 @@
 #include <rco/renderer/col_bake.h>
 #include <cstdio>
 #include <algorithm>
+#include <cmath>
+#include <unordered_set>
+#include <cstdint>
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace gue {
@@ -10,6 +13,198 @@ namespace gue {
 static void Exec(sqlite3* db, const char* sql) {
     sqlite3_exec(db, sql, nullptr, nullptr, nullptr);
 }
+
+namespace {
+
+struct QuantVtxKey {
+    int32_t x = 0;
+    int32_t y = 0;
+    int32_t z = 0;
+};
+
+inline bool operator==(const QuantVtxKey& a, const QuantVtxKey& b) {
+    return a.x == b.x && a.y == b.y && a.z == b.z;
+}
+
+struct QuantVtxKeyLess {
+    bool operator()(const QuantVtxKey& a, const QuantVtxKey& b) const {
+        if (a.x != b.x) return a.x < b.x;
+        if (a.y != b.y) return a.y < b.y;
+        return a.z < b.z;
+    }
+};
+
+struct QuantVtxKeyHash {
+    size_t operator()(const QuantVtxKey& v) const {
+        size_t h = std::hash<int32_t>{}(v.x);
+        h ^= std::hash<int32_t>{}(v.y) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        h ^= std::hash<int32_t>{}(v.z) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+struct QuantTriKey {
+    QuantVtxKey a;
+    QuantVtxKey b;
+    QuantVtxKey c;
+};
+
+inline bool operator==(const QuantTriKey& lhs, const QuantTriKey& rhs) {
+    return lhs.a == rhs.a && lhs.b == rhs.b && lhs.c == rhs.c;
+}
+
+struct QuantTriKeyHash {
+    size_t operator()(const QuantTriKey& t) const {
+        QuantVtxKeyHash hv;
+        size_t h = hv(t.a);
+        h ^= hv(t.b) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        h ^= hv(t.c) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+size_t BuildQuantizedTriangles(
+    const std::vector<std::array<glm::vec3, 3>>& src,
+    int                                           gridDiv,
+    float                                         areaCullFactor,
+    std::vector<std::array<glm::vec3, 3>>*       out) {
+    if (src.empty()) {
+        if (out) out->clear();
+        return 0;
+    }
+
+    gridDiv = std::max(1, gridDiv);
+
+    glm::vec3 bmin = src[0][0];
+    glm::vec3 bmax = src[0][0];
+    for (const auto& tri : src) {
+        for (const auto& p : tri) {
+            bmin = glm::min(bmin, p);
+            bmax = glm::max(bmax, p);
+        }
+    }
+    glm::vec3 extent = bmax - bmin;
+    float maxExtent = std::max(extent.x, std::max(extent.y, extent.z));
+    if (maxExtent <= 1e-5f) {
+        if (out) *out = src;
+        return src.size();
+    }
+
+    float cell = maxExtent / (float)gridDiv;
+    if (cell < 1e-6f) cell = 1e-6f;
+    const float invCell = 1.f / cell;
+    if (areaCullFactor < 1e-7f) areaCullFactor = 1e-7f;
+    const float minArea2 = cell * cell * areaCullFactor;
+
+    std::unordered_set<QuantTriKey, QuantTriKeyHash> unique;
+    unique.reserve(src.size() * 2 + 1);
+
+    std::vector<std::array<glm::vec3, 3>> tmp;
+    if (out) tmp.reserve(src.size());
+
+    auto quantize = [&](const glm::vec3& p, QuantVtxKey& q, glm::vec3& snapped) {
+        q.x = (int32_t)std::lround((p.x - bmin.x) * invCell);
+        q.y = (int32_t)std::lround((p.y - bmin.y) * invCell);
+        q.z = (int32_t)std::lround((p.z - bmin.z) * invCell);
+        snapped.x = bmin.x + (float)q.x * cell;
+        snapped.y = bmin.y + (float)q.y * cell;
+        snapped.z = bmin.z + (float)q.z * cell;
+    };
+
+    QuantVtxKeyLess lessKey;
+    for (const auto& tri : src) {
+        QuantVtxKey q[3];
+        glm::vec3 s[3];
+        quantize(tri[0], q[0], s[0]);
+        quantize(tri[1], q[1], s[1]);
+        quantize(tri[2], q[2], s[2]);
+
+        if (q[0] == q[1] || q[1] == q[2] || q[2] == q[0]) continue;
+
+        glm::vec3 cross = glm::cross(s[1] - s[0], s[2] - s[0]);
+        if (glm::dot(cross, cross) <= minArea2) continue;
+
+        std::array<QuantVtxKey, 3> sorted = {q[0], q[1], q[2]};
+        std::sort(sorted.begin(), sorted.end(), lessKey);
+        QuantTriKey key{sorted[0], sorted[1], sorted[2]};
+        if (!unique.insert(key).second) continue;
+
+        if (out) tmp.push_back({s[0], s[1], s[2]});
+    }
+
+    if (out) *out = std::move(tmp);
+    return out ? out->size() : unique.size();
+}
+
+std::vector<std::array<glm::vec3, 3>> SimplifyTrianglesForBudget(
+    const std::vector<std::array<glm::vec3, 3>>& src,
+    float                                         budgetPct) {
+    if (src.empty()) return {};
+
+    budgetPct = std::clamp(budgetPct, 0.1f, 100.f);
+    if (budgetPct >= 99.95f) return src;
+
+    const float t = budgetPct / 100.f;
+    const float curved = std::pow(t, 1.35f);
+    const size_t target = std::max<size_t>(
+        1, (size_t)std::lround(curved * (float)src.size()));
+    if (target >= src.size()) return src;
+
+    const float areaCullFactor = 1e-6f + (1.f - t) * 0.01f;
+
+    auto absDiff = [](size_t a, size_t b) -> size_t { return a > b ? (a - b) : (b - a); };
+
+    int lowDiv = 1;
+    size_t lowCount = BuildQuantizedTriangles(src, lowDiv, areaCullFactor, nullptr);
+
+    int highDiv = 2;
+    size_t highCount = BuildQuantizedTriangles(src, highDiv, areaCullFactor, nullptr);
+    while (highDiv < 1024 && highCount < target) {
+        lowDiv = highDiv;
+        lowCount = highCount;
+        highDiv *= 2;
+        highCount = BuildQuantizedTriangles(src, highDiv, areaCullFactor, nullptr);
+    }
+
+    int bestDiv = lowDiv;
+    size_t bestCount = lowCount;
+    auto consider = [&](int div, size_t count) {
+        if (count == 0) return;
+        size_t d = absDiff(count, target);
+        size_t db = absDiff(bestCount, target);
+        if (d < db || (d == db && count > bestCount)) {
+            bestDiv = div;
+            bestCount = count;
+        }
+    };
+
+    consider(highDiv, highCount);
+    int lo = lowDiv;
+    int hi = highDiv;
+    size_t loCount = lowCount;
+    size_t hiCount = highCount;
+    while (lo + 1 < hi) {
+        const int mid = lo + (hi - lo) / 2;
+        size_t midCount = BuildQuantizedTriangles(src, mid, areaCullFactor, nullptr);
+        consider(mid, midCount);
+        if (midCount < target) {
+            lo = mid;
+            loCount = midCount;
+        } else {
+            hi = mid;
+            hiCount = midCount;
+        }
+    }
+    consider(lo, loCount);
+    consider(hi, hiCount);
+
+    std::vector<std::array<glm::vec3, 3>> out;
+    BuildQuantizedTriangles(src, bestDiv, areaCullFactor, &out);
+    if (out.empty() && !src.empty()) out.push_back(src.front());
+    return out;
+}
+
+} // namespace
 
 void ZoneScene::EnsureTables(sqlite3* db) {
     // ── area_config expansions ────────────────────────────────────────────
@@ -193,6 +388,10 @@ void ZoneScene::EnsureTables(sqlite3* db) {
         "  ownable      INTEGER NOT NULL DEFAULT 0,"
         "  locked       INTEGER NOT NULL DEFAULT 0"
         ")");
+
+    // media_model_shapes extra LOD params (safe no-op if missing/already exists).
+    Exec(db, "ALTER TABLE media_model_shapes ADD COLUMN detail_a REAL NOT NULL DEFAULT 0");
+    Exec(db, "ALTER TABLE media_model_shapes ADD COLUMN detail_b REAL NOT NULL DEFAULT 0");
 }
 
 // ─── LoadFromDB ──────────────────────────────────────────────────────────────
@@ -580,7 +779,7 @@ void ZoneScene::SaveColData(sqlite3* db, const std::string& area) const {
     // look up their media_model_shapes, transform by instance TRS.
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db,
-        "SELECT type, offset_x, offset_y, offset_z, size_x, size_y, size_z"
+        "SELECT type, offset_x, offset_y, offset_z, size_x, size_y, size_z, detail_a, detail_b"
         " FROM media_model_shapes WHERE model_id=? ORDER BY id",
         -1, &stmt, nullptr) == SQLITE_OK) {
 
@@ -588,6 +787,60 @@ void ZoneScene::SaveColData(sqlite3* db, const std::string& area) const {
         sqlite3_prepare_v2(db,
             "SELECT file_path FROM media_models WHERE id=?",
             -1, &pathStmt, nullptr);
+
+        auto appendWedgeTris = [&](float ox, float oy, float oz,
+                                   float sx, float sy, float sz, int subdiv,
+                                   const glm::mat4& trsMat) {
+            const float hx = std::abs(sx) * 0.5f;
+            const float hy = std::abs(sy) * 0.5f;
+            const float hz = std::abs(sz) * 0.5f;
+            const bool risePositiveX = sx >= 0.f;
+            const float xLow  = risePositiveX ? (ox - hx) : (ox + hx);
+            const float xHigh = risePositiveX ? (ox + hx) : (ox - hx);
+            glm::vec3 v[6] = {
+                {xLow,  oy - hy, oz - hz}, // low-back  bottom
+                {xLow,  oy - hy, oz + hz}, // low-front bottom
+                {xHigh, oy - hy, oz - hz}, // high-back bottom
+                {xHigh, oy + hy, oz - hz}, // high-back top
+                {xHigh, oy + hy, oz + hz}, // high-front top
+                {xHigh, oy - hy, oz + hz}, // high-front bottom
+            };
+            auto pushTri = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c, int n) {
+                if (n < 1) n = 1;
+                for (int i = 0; i < n; ++i) {
+                    for (int j = 0; j < n - i; ++j) {
+                        float fi0 = (float)i / (float)n;
+                        float fj0 = (float)j / (float)n;
+                        float fi1 = (float)(i + 1) / (float)n;
+                        float fj1 = (float)(j + 1) / (float)n;
+                        glm::vec3 p0 = a + (b - a) * fi0 + (c - a) * fj0;
+                        glm::vec3 p1 = a + (b - a) * fi1 + (c - a) * fj0;
+                        glm::vec3 p2 = a + (b - a) * fi0 + (c - a) * fj1;
+                        glm::vec3 wp0 = glm::vec3(trsMat * glm::vec4(p0, 1.f));
+                        glm::vec3 wp1 = glm::vec3(trsMat * glm::vec4(p1, 1.f));
+                        glm::vec3 wp2 = glm::vec3(trsMat * glm::vec4(p2, 1.f));
+                        tris.push_back({wp0.x, wp0.y, wp0.z, wp1.x, wp1.y, wp1.z, wp2.x, wp2.y, wp2.z});
+                        if (i + j < n - 1) {
+                            glm::vec3 p3 = a + (b - a) * fi1 + (c - a) * fj1;
+                            glm::vec3 wp3 = glm::vec3(trsMat * glm::vec4(p3, 1.f));
+                            tris.push_back({wp1.x, wp1.y, wp1.z, wp3.x, wp3.y, wp3.z, wp2.x, wp2.y, wp2.z});
+                        }
+                    }
+                }
+            };
+            // Bottom
+            pushTri(v[0], v[1], v[5], subdiv);
+            pushTri(v[0], v[5], v[2], subdiv);
+            // Slope
+            pushTri(v[0], v[1], v[4], subdiv);
+            pushTri(v[0], v[4], v[3], subdiv);
+            // Right face
+            pushTri(v[2], v[5], v[4], subdiv);
+            pushTri(v[2], v[4], v[3], subdiv);
+            // Triangular caps
+            pushTri(v[0], v[2], v[3], subdiv);
+            pushTri(v[1], v[5], v[4], subdiv);
+        };
 
         for (auto& sc : scenery) {
             if (sc.collision == 0) continue;
@@ -603,12 +856,21 @@ void ZoneScene::SaveColData(sqlite3* db, const std::string& area) const {
 
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 int   type = sqlite3_column_int(stmt, 0);
+                bool allow = false;
+                switch (sc.collision) {
+                case 1: allow = (type == 1); break; // sphere
+                case 2: allow = (type == 0 || type == 3); break; // box / wedge
+                case 3: allow = (type == 2); break; // polygon / mesh
+                default: allow = true; break;       // legacy / unknown
+                }
+                if (!allow) continue;
                 float ox   = (float)sqlite3_column_double(stmt, 1);
                 float oy   = (float)sqlite3_column_double(stmt, 2);
                 float oz   = (float)sqlite3_column_double(stmt, 3);
                 float sx   = (float)sqlite3_column_double(stmt, 4);
                 float sy   = (float)sqlite3_column_double(stmt, 5);
                 float sz   = (float)sqlite3_column_double(stmt, 6);
+                float detailA = (float)sqlite3_column_double(stmt, 7);
 
                 if (type == 0) { // Box — scale only (AABB stays axis-aligned)
                     float cx = sc.pos.x + ox * sc.scale.x;
@@ -624,6 +886,11 @@ void ZoneScene::SaveColData(sqlite3* db, const std::string& area) const {
                     float cz = sc.pos.z + oz * sc.scale.z;
                     float maxScale = std::max({sc.scale.x, sc.scale.y, sc.scale.z});
                     spheres.push_back({cx, cy, cz, sx * maxScale});
+                } else if (type == 3) { // Wedge / ramp
+                    int subdiv = (int)std::lround(detailA);
+                    if (subdiv < 1) subdiv = 1;
+                    if (subdiv > 16) subdiv = 16;
+                    appendWedgeTris(ox, oy, oz, sx, sy, sz, subdiv, trs);
                 } else { // Mesh — extract triangles and apply full TRS
                     if (pathStmt) {
                         sqlite3_bind_int(pathStmt, 1, sc.modelId);
@@ -634,7 +901,12 @@ void ZoneScene::SaveColData(sqlite3* db, const std::string& area) const {
                                 std::snprintf(fullPath, sizeof(fullPath), "../client/%s", rel);
                                 std::vector<std::array<glm::vec3, 3>> meshTris;
                                 rco::renderer::ExtractMeshTriangles(fullPath, meshTris);
-                                for (auto& tri : meshTris) {
+                                float budgetPct = detailA > 0.f ? detailA : 100.f;
+                                if (budgetPct < 0.1f) budgetPct = 0.1f;
+                                if (budgetPct > 100.f) budgetPct = 100.f;
+                                std::vector<std::array<glm::vec3, 3>> reduced =
+                                    SimplifyTrianglesForBudget(meshTris, budgetPct);
+                                for (auto& tri : reduced) {
                                     glm::vec3 a = glm::vec3(trs * glm::vec4(tri[0], 1.f));
                                     glm::vec3 b = glm::vec3(trs * glm::vec4(tri[1], 1.f));
                                     glm::vec3 c = glm::vec3(trs * glm::vec4(tri[2], 1.f));
@@ -740,6 +1012,79 @@ void AppendTris(ColVisData& vis,
     }
 }
 
+void BuildWedgeVerts(const glm::vec3& center, const glm::vec3& size, glm::vec3 out[6]) {
+    const glm::vec3 h = glm::abs(size) * 0.5f;
+    const bool risePositiveX = size.x >= 0.f;
+    const float xLow  = risePositiveX ? (center.x - h.x) : (center.x + h.x);
+    const float xHigh = risePositiveX ? (center.x + h.x) : (center.x - h.x);
+    out[0] = {xLow,  center.y - h.y, center.z - h.z}; // low-back  bottom
+    out[1] = {xLow,  center.y - h.y, center.z + h.z}; // low-front bottom
+    out[2] = {xHigh, center.y - h.y, center.z - h.z}; // high-back bottom
+    out[3] = {xHigh, center.y + h.y, center.z - h.z}; // high-back top
+    out[4] = {xHigh, center.y + h.y, center.z + h.z}; // high-front top
+    out[5] = {xHigh, center.y - h.y, center.z + h.z}; // high-front bottom
+}
+
+void AppendWedgeWire(ColVisData& vis, const glm::vec3& center, const glm::vec3& size,
+                     const glm::mat4& trs, int subdiv, float r, float g, float b, float a)
+{
+    glm::vec3 local[6];
+    BuildWedgeVerts(center, size, local);
+    glm::vec3 w[6];
+    for (int i = 0; i < 6; ++i)
+        w[i] = glm::vec3(trs * glm::vec4(local[i], 1.f));
+
+    static const int kEdges[9][2] = {
+        {0,1}, {0,2}, {1,5}, {2,5},
+        {2,3}, {5,4}, {3,4}, {0,3}, {1,4},
+    };
+    for (auto& e : kEdges) {
+        vis.verts.push_back({w[e[0]].x, w[e[0]].y, w[e[0]].z, r,g,b,a});
+        vis.verts.push_back({w[e[1]].x, w[e[1]].y, w[e[1]].z, r,g,b,a});
+    }
+
+    int n = subdiv;
+    if (n < 1) n = 1;
+    if (n == 1) return;
+    auto addSubdivTriEdges = [&](const glm::vec3& a0, const glm::vec3& b0, const glm::vec3& c0) {
+        for (int i = 0; i < n; ++i) {
+            for (int j = 0; j < n - i; ++j) {
+                float fi0 = (float)i / (float)n;
+                float fj0 = (float)j / (float)n;
+                float fi1 = (float)(i + 1) / (float)n;
+                float fj1 = (float)(j + 1) / (float)n;
+                glm::vec3 p0 = a0 + (b0 - a0) * fi0 + (c0 - a0) * fj0;
+                glm::vec3 p1 = a0 + (b0 - a0) * fi1 + (c0 - a0) * fj0;
+                glm::vec3 p2 = a0 + (b0 - a0) * fi0 + (c0 - a0) * fj1;
+                vis.verts.push_back({p0.x, p0.y, p0.z, r,g,b,a * 0.55f});
+                vis.verts.push_back({p1.x, p1.y, p1.z, r,g,b,a * 0.55f});
+                vis.verts.push_back({p1.x, p1.y, p1.z, r,g,b,a * 0.55f});
+                vis.verts.push_back({p2.x, p2.y, p2.z, r,g,b,a * 0.55f});
+                vis.verts.push_back({p2.x, p2.y, p2.z, r,g,b,a * 0.55f});
+                vis.verts.push_back({p0.x, p0.y, p0.z, r,g,b,a * 0.55f});
+                if (i + j < n - 1) {
+                    glm::vec3 p3 = a0 + (b0 - a0) * fi1 + (c0 - a0) * fj1;
+                    vis.verts.push_back({p1.x, p1.y, p1.z, r,g,b,a * 0.55f});
+                    vis.verts.push_back({p3.x, p3.y, p3.z, r,g,b,a * 0.55f});
+                    vis.verts.push_back({p3.x, p3.y, p3.z, r,g,b,a * 0.55f});
+                    vis.verts.push_back({p2.x, p2.y, p2.z, r,g,b,a * 0.55f});
+                    vis.verts.push_back({p2.x, p2.y, p2.z, r,g,b,a * 0.55f});
+                    vis.verts.push_back({p1.x, p1.y, p1.z, r,g,b,a * 0.55f});
+                }
+            }
+        }
+    };
+    static const int kTri[8][3] = {
+        {0,1,5}, {0,5,2},
+        {0,1,4}, {0,4,3},
+        {2,5,4}, {2,4,3},
+        {0,2,3}, {1,5,4},
+    };
+    for (auto& t : kTri) {
+        addSubdivTriEdges(w[t[0]], w[t[1]], w[t[2]]);
+    }
+}
+
 } // anonymous namespace
 
 void ZoneScene::RebuildColVis(sqlite3* db, MeshTriCache& meshCache) {
@@ -748,7 +1093,7 @@ void ZoneScene::RebuildColVis(sqlite3* db, MeshTriCache& meshCache) {
 
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db,
-        "SELECT type, offset_x, offset_y, offset_z, size_x, size_y, size_z"
+        "SELECT type, offset_x, offset_y, offset_z, size_x, size_y, size_z, detail_a, detail_b"
         " FROM media_model_shapes WHERE model_id=? ORDER BY id",
         -1, &stmt, nullptr) != SQLITE_OK) return;
 
@@ -770,12 +1115,21 @@ void ZoneScene::RebuildColVis(sqlite3* db, MeshTriCache& meshCache) {
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             int   type = sqlite3_column_int(stmt, 0);
+            bool allow = false;
+            switch (sc.collision) {
+            case 1: allow = (type == 1); break; // sphere
+            case 2: allow = (type == 0 || type == 3); break; // box / wedge
+            case 3: allow = (type == 2); break; // polygon / mesh
+            default: allow = true; break;       // legacy / unknown
+            }
+            if (!allow) continue;
             float ox   = (float)sqlite3_column_double(stmt, 1);
             float oy   = (float)sqlite3_column_double(stmt, 2);
             float oz   = (float)sqlite3_column_double(stmt, 3);
             float sx   = (float)sqlite3_column_double(stmt, 4);
             float sy   = (float)sqlite3_column_double(stmt, 5);
             float sz   = (float)sqlite3_column_double(stmt, 6);
+            float detailA = (float)sqlite3_column_double(stmt, 7);
 
             if (type == 0) { // Box
                 glm::vec3 center = {sc.pos.x + ox * sc.scale.x,
@@ -791,6 +1145,16 @@ void ZoneScene::RebuildColVis(sqlite3* db, MeshTriCache& meshCache) {
                 float maxScale = std::max({sc.scale.x, sc.scale.y, sc.scale.z});
                 AppendSphere(colVis, center, sx * maxScale,
                              1.f, 0.55f, 0.1f, 0.8f);
+            } else if (type == 3) { // Wedge / ramp
+                int subdiv = (int)std::lround(detailA);
+                if (subdiv < 1) subdiv = 1;
+                if (subdiv > 16) subdiv = 16;
+                AppendWedgeWire(colVis,
+                                {ox, oy, oz},
+                                {sx, sy, sz},
+                                trs,
+                                subdiv,
+                                0.67f, 1.f, 0.43f, 0.9f);
             } else { // Mesh
                 auto it = meshCache.find(sc.modelId);
                 if (it == meshCache.end()) {
@@ -810,8 +1174,14 @@ void ZoneScene::RebuildColVis(sqlite3* db, MeshTriCache& meshCache) {
                         it = meshCache.find(sc.modelId);
                     }
                 }
-                if (it != meshCache.end())
-                    AppendTris(colVis, it->second, trs, 1.f, 0.45f, 0.f, 0.8f);
+                if (it != meshCache.end()) {
+                    float budgetPct = detailA > 0.f ? detailA : 100.f;
+                    if (budgetPct < 0.1f) budgetPct = 0.1f;
+                    if (budgetPct > 100.f) budgetPct = 100.f;
+                    std::vector<std::array<glm::vec3, 3>> reduced =
+                        SimplifyTrianglesForBudget(it->second, budgetPct);
+                    AppendTris(colVis, reduced, trs, 1.f, 0.45f, 0.f, 0.8f);
+                }
             }
         }
         sqlite3_reset(stmt);

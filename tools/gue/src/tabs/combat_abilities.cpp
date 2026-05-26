@@ -1,4 +1,5 @@
 #include "combat_abilities.h"
+#include "util/ability_json_validator.h"
 
 #include <imgui.h>
 
@@ -11,6 +12,120 @@
 namespace gue {
 
 namespace {
+
+struct JsonTemplate {
+    const char* name;
+    const char* description;
+    const char* json_content;
+};
+
+const JsonTemplate kDamageScaleTemplates[] = {
+    {
+        "Pure STR (warrior melee)",
+        "Damage scales heavily with Strength",
+        R"({
+  "scaling": [
+    {"stat": "STR", "coef": 1.5}
+  ]
+})",
+    },
+    {
+        "Pure DEX (rogue/ranger)",
+        "Damage scales with Dexterity",
+        R"({
+  "scaling": [
+    {"stat": "DEX", "coef": 1.5}
+  ]
+})",
+    },
+    {
+        "Pure INT (mage)",
+        "Magic damage scales with Intelligence",
+        R"({
+  "scaling": [
+    {"stat": "INT", "coef": 1.8}
+  ]
+})",
+    },
+    {
+        "STR+DEX hybrid (hunter)",
+        "Mixed physical scaling",
+        R"({
+  "scaling": [
+    {"stat": "STR", "coef": 1.0},
+    {"stat": "DEX", "coef": 0.7}
+  ]
+})",
+    },
+    {
+        "STR+Level (progression scaling)",
+        "Scales with stats and character level",
+        R"({
+  "scaling": [
+    {"stat": "STR", "coef": 1.2},
+    {"stat": "LEVEL", "coef": 0.5}
+  ]
+})",
+    },
+};
+
+const JsonTemplate kCritPolicyTemplates[] = {
+    {
+        "Standard (5% base, DEX scaling)",
+        "Vanilla MMO crit chance",
+        R"({
+  "base_chance_pct": 5.0,
+  "scaling_stat": "DEX",
+  "scaling_softcap_value": 1500,
+  "scaling_softcap_pct": 0.70,
+  "damage_multiplier": 1.5
+})",
+    },
+    {
+        "High crit (rogue-style)",
+        "20% base, DEX scaling, 2.5x damage",
+        R"({
+  "base_chance_pct": 20.0,
+  "scaling_stat": "DEX",
+  "scaling_softcap_value": 1500,
+  "scaling_softcap_pct": 0.80,
+  "damage_multiplier": 2.5
+})",
+    },
+    {
+        "Heavy hitter (low chance, high mult)",
+        "5% chance, 3x damage",
+        R"({
+  "base_chance_pct": 5.0,
+  "scaling_stat": "STR",
+  "scaling_softcap_value": 1500,
+  "scaling_softcap_pct": 0.50,
+  "damage_multiplier": 3.0
+})",
+    },
+    {
+        "Spell crit (INT-based)",
+        "Magic crit scaling with Intelligence",
+        R"({
+  "base_chance_pct": 10.0,
+  "scaling_stat": "INT",
+  "scaling_softcap_value": 1500,
+  "scaling_softcap_pct": 0.70,
+  "damage_multiplier": 1.8
+})",
+    },
+    {
+        "Guaranteed crit (test/debug)",
+        "100% crit chance, 2x damage",
+        R"({
+  "base_chance_pct": 100.0,
+  "scaling_stat": "DEX",
+  "scaling_softcap_value": 1500,
+  "scaling_softcap_pct": 0.0,
+  "damage_multiplier": 2.0
+})",
+    },
+};
 
 std::string TrimCopy(const std::string& value) {
     std::size_t begin = 0;
@@ -122,19 +237,69 @@ bool DrawAbilityFields(CombatAbilityTemplate& row) {
     if (ImGui::InputFloat("Armor Pierce %", &row.armor_pierce_pct, 1.f, 5.f, "%.2f")) changed = true;
 
     ImGui::TextUnformatted("Damage Scale JSON");
+    ImGui::SameLine();
+    if (ImGui::Button("Insert Template##damage_template")) {
+        ImGui::OpenPopup("DamageTemplatePicker");
+    }
+    if (ImGui::BeginPopup("DamageTemplatePicker")) {
+        for (const auto& tmpl : kDamageScaleTemplates) {
+            if (ImGui::MenuItem(tmpl.name)) {
+                row.damage_stat_scale_json = tmpl.json_content;
+                changed = true;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", tmpl.description);
+            }
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::TextDisabled("Example: {\"scaling\":[{\"stat\":\"STR\",\"coef\":1.5}]}");
     char scale_buf[1024] = {};
     std::strncpy(scale_buf, row.damage_stat_scale_json.c_str(), sizeof(scale_buf) - 1);
     if (ImGui::InputTextMultiline("##damage_scale_json", scale_buf, sizeof(scale_buf), {-1.0f, 58.0f})) {
         row.damage_stat_scale_json = scale_buf;
         changed = true;
     }
+    const auto dmg_validation = rco::gue::ValidateDamageStatScaleJSON(row.damage_stat_scale_json);
+    if (!dmg_validation.syntactically_valid) {
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "[X] Syntax: %s", dmg_validation.error_message.c_str());
+    } else if (!dmg_validation.semantically_valid) {
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.0f, 1.0f), "[!] %s", dmg_validation.error_message.c_str());
+    } else {
+        ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "[OK] Valid");
+    }
 
     ImGui::TextUnformatted("Crit Policy JSON");
+    ImGui::SameLine();
+    if (ImGui::Button("Insert Template##crit_template")) {
+        ImGui::OpenPopup("CritTemplatePicker");
+    }
+    if (ImGui::BeginPopup("CritTemplatePicker")) {
+        for (const auto& tmpl : kCritPolicyTemplates) {
+            if (ImGui::MenuItem(tmpl.name)) {
+                row.crit_policy_json = tmpl.json_content;
+                changed = true;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", tmpl.description);
+            }
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::TextDisabled("Example: {\"base_chance_pct\":5.0,\"scaling_stat\":\"DEX\",\"scaling_softcap_value\":1500,\"scaling_softcap_pct\":0.70,\"damage_multiplier\":1.5}");
     char crit_buf[1024] = {};
     std::strncpy(crit_buf, row.crit_policy_json.c_str(), sizeof(crit_buf) - 1);
     if (ImGui::InputTextMultiline("##crit_policy_json", crit_buf, sizeof(crit_buf), {-1.0f, 58.0f})) {
         row.crit_policy_json = crit_buf;
         changed = true;
+    }
+    const auto crit_validation = rco::gue::ValidateCritPolicyJSON(row.crit_policy_json);
+    if (!crit_validation.syntactically_valid) {
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "[X] Syntax: %s", crit_validation.error_message.c_str());
+    } else if (!crit_validation.semantically_valid) {
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.0f, 1.0f), "[!] %s", crit_validation.error_message.c_str());
+    } else {
+        ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "[OK] Valid");
     }
 
     ImGui::Separator();
@@ -1066,6 +1231,21 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     row.mastery_xp_irregularity = std::clamp(row.mastery_xp_irregularity, 0.0f, 1.0f);
     row.mastery_primary_bonus_per_lvl = std::clamp(row.mastery_primary_bonus_per_lvl, 0.0f, 0.5f);
     row.mastery_cooldown_redux_per_lvl = std::clamp(row.mastery_cooldown_redux_per_lvl, 0.0f, 0.1f);
+
+    const auto dmg_check = rco::gue::ValidateDamageStatScaleJSON(row.damage_stat_scale_json);
+    if (!dmg_check.syntactically_valid || !dmg_check.semantically_valid) {
+        std::printf(
+            "WARN: ability '%s' saved with INVALID damage_scale_json: %s\n",
+            row.name.c_str(),
+            dmg_check.error_message.c_str());
+    }
+    const auto crit_check = rco::gue::ValidateCritPolicyJSON(row.crit_policy_json);
+    if (!crit_check.syntactically_valid || !crit_check.semantically_valid) {
+        std::printf(
+            "WARN: ability '%s' saved with INVALID crit_policy_json: %s\n",
+            row.name.c_str(),
+            crit_check.error_message.c_str());
+    }
 
     std::string validation_error;
     const bool is_new = (row.id == 0);

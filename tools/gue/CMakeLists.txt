@@ -26,6 +26,7 @@ find_package(Stb                  REQUIRED)
 
 target_include_directories(rco_gue PRIVATE
     "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
     ${Stb_INCLUDE_DIR}
 )
 

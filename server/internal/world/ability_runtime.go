@@ -1,9 +1,55 @@
 package world
 
 import (
+	"encoding/json"
+	"log"
 	"sort"
+	"strings"
 	"sync"
 )
+
+type StatScalingEntry struct {
+	Stat string  `json:"stat"` // "STR", "DEX", "INT", "WIS", "PER", "level"
+	Coef float32 `json:"coef"`
+}
+
+type DamageStatScale struct {
+	Scaling []StatScalingEntry `json:"scaling"`
+}
+
+type CritPolicy struct {
+	BaseChancePct       float32 `json:"base_chance_pct"`
+	ScalingStat         string  `json:"scaling_stat"`
+	ScalingSoftcapValue int32   `json:"scaling_softcap_value"`
+	ScalingSoftcapPct   float32 `json:"scaling_softcap_pct"`
+	DamageMultiplier    float32 `json:"damage_multiplier"`
+}
+
+func ParseDamageStatScale(jsonStr string) *DamageStatScale {
+	s := strings.TrimSpace(jsonStr)
+	if s == "" || s == "{}" {
+		return nil
+	}
+	var d DamageStatScale
+	if err := json.Unmarshal([]byte(s), &d); err != nil {
+		log.Printf("WARN: ability damage_stat_scale_json invalid: %v", err)
+		return nil
+	}
+	return &d
+}
+
+func ParseCritPolicy(jsonStr string) *CritPolicy {
+	s := strings.TrimSpace(jsonStr)
+	if s == "" || s == "{}" {
+		return nil
+	}
+	var c CritPolicy
+	if err := json.Unmarshal([]byte(s), &c); err != nil {
+		log.Printf("WARN: ability crit_policy_json invalid: %v", err)
+		return nil
+	}
+	return &c
+}
 
 // AbilityTemplate is one authoritative combat ability definition loaded from DB.
 // NPC and player intents resolve against this catalog.
@@ -26,8 +72,10 @@ type AbilityTemplate struct {
 	BaseDamageMin              int32
 	BaseDamageMax              int32
 	DamageStatScaleJSON        string
+	DamageStatScale            *DamageStatScale
 	ArmorPiercePct             float32
 	CritPolicyJSON             string
+	CritPolicy                 *CritPolicy
 	TelegraphType              string
 	TelegraphRadius            float32
 	TelegraphColorRGBA         string
@@ -151,6 +199,8 @@ func SetAbilityCatalog(templates []AbilityTemplate) {
 		if t.ID <= 0 {
 			continue
 		}
+		t.DamageStatScale = ParseDamageStatScale(t.DamageStatScaleJSON)
+		t.CritPolicy = ParseCritPolicy(t.CritPolicyJSON)
 		next[t.ID] = t
 	}
 	abilityRuntimeMu.Lock()

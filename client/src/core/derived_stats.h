@@ -45,8 +45,6 @@ struct DerivedStats {
     int32_t MagicDmgMax = 0;
 
     float   CritDamageMult = 0.0f;
-    int32_t HeavyAttackValue = 0;
-    float   HeavyAttackDamage = 0.0f;
 
     float   AttackSpeedMult = 0.0f;
     float   MovementSpeedMult = 0.0f;
@@ -113,12 +111,6 @@ constexpr float critDmgBase = 1.5f;
 constexpr float critDmgPerDEX = 0.01f;
 constexpr float critDmgCap = 3.0f;
 
-constexpr int32_t heavyAttackSTR = 5;
-constexpr int32_t heavyAttackPerLevel = 1;
-constexpr float heavyDmgBase = 0.25f;
-constexpr float heavyDmgPerSTR = 0.001f;
-constexpr float heavyDmgCap = 0.75f;
-
 constexpr float attackSpeedBase = 1.0f;
 constexpr float attackSpeedPerDEX = 0.005f;
 constexpr float attackSpeedCap = 1.5f;
@@ -159,9 +151,6 @@ constexpr float evasionCap = 0.60f;
 
 constexpr int32_t defenseSoftcap = 3000;
 constexpr float defenseCap = 0.80f;
-
-constexpr int32_t heavyAttackSoftcap = 1500;
-constexpr float heavyAttackCap = 0.30f;
 
 constexpr int32_t ccValueSoftcap = 1500;
 constexpr float ccValueCap = 0.60f;
@@ -235,12 +224,6 @@ inline DerivedStats ComputeDerivedStats(PrimaryStats primary, int32_t level, int
         critDmgBase + static_cast<float>(primary.DEX) * critDmgPerDEX,
         critDmgBase,
         critDmgCap);
-
-    d.HeavyAttackValue = primary.STR * heavyAttackSTR + level * heavyAttackPerLevel;
-    d.HeavyAttackDamage = clampFloat(
-        heavyDmgBase + static_cast<float>(primary.STR) * heavyDmgPerSTR,
-        heavyDmgBase,
-        heavyDmgCap);
 
     d.AttackSpeedMult = clampFloat(
         attackSpeedBase + static_cast<float>(primary.DEX) * attackSpeedPerDEX,

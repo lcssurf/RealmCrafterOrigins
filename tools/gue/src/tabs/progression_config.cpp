@@ -115,6 +115,18 @@ void ProgressionConfigTab::EnsureTables(sqlite3* db) {
         "cooldown_redux_per_level REAL NOT NULL DEFAULT 0.01"
         ")",
         nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS kill_xp_scaling_config ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "base_xp_per_npc_level INTEGER NOT NULL DEFAULT 25,"
+        "level_diff_coefficient REAL NOT NULL DEFAULT 0.1,"
+        "multiplier_min REAL NOT NULL DEFAULT 0.1,"
+        "multiplier_max REAL NOT NULL DEFAULT 1.5,"
+        "mastery_xp_per_mob_level INTEGER NOT NULL DEFAULT 10,"
+        "mastery_killing_blow_mult REAL NOT NULL DEFAULT 1.5,"
+        "mastery_window_timeout_ms INTEGER NOT NULL DEFAULT 10000"
+        ")",
+        nullptr, nullptr, nullptr);
 
     AddColumnIfMissing(db, "character_progression_config", "xp_curve_exponent",
                        "xp_curve_exponent REAL NOT NULL DEFAULT 2.5");
@@ -134,6 +146,20 @@ void ProgressionConfigTab::EnsureTables(sqlite3* db) {
                        "xp_curve_exponent REAL NOT NULL DEFAULT 2.0");
     AddColumnIfMissing(db, "skill_progression_config", "xp_irregularity",
                        "xp_irregularity REAL NOT NULL DEFAULT 0.5");
+    AddColumnIfMissing(db, "kill_xp_scaling_config", "base_xp_per_npc_level",
+                       "base_xp_per_npc_level INTEGER NOT NULL DEFAULT 25");
+    AddColumnIfMissing(db, "kill_xp_scaling_config", "level_diff_coefficient",
+                       "level_diff_coefficient REAL NOT NULL DEFAULT 0.1");
+    AddColumnIfMissing(db, "kill_xp_scaling_config", "multiplier_min",
+                       "multiplier_min REAL NOT NULL DEFAULT 0.1");
+    AddColumnIfMissing(db, "kill_xp_scaling_config", "multiplier_max",
+                       "multiplier_max REAL NOT NULL DEFAULT 1.5");
+    AddColumnIfMissing(db, "kill_xp_scaling_config", "mastery_xp_per_mob_level",
+                       "mastery_xp_per_mob_level INTEGER NOT NULL DEFAULT 10");
+    AddColumnIfMissing(db, "kill_xp_scaling_config", "mastery_killing_blow_mult",
+                       "mastery_killing_blow_mult REAL NOT NULL DEFAULT 1.5");
+    AddColumnIfMissing(db, "kill_xp_scaling_config", "mastery_window_timeout_ms",
+                       "mastery_window_timeout_ms INTEGER NOT NULL DEFAULT 10000");
 
     sqlite3_exec(db,
         "INSERT OR IGNORE INTO character_progression_config "
@@ -146,6 +172,12 @@ void ProgressionConfigTab::EnsureTables(sqlite3* db) {
         "(id, xp_per_use, max_level, xp_curve_type, xp_curve_base, xp_curve_exponent, xp_irregularity, "
         " damage_bonus_per_level, cooldown_redux_per_level) "
         "VALUES (1, 10, 10, 'irregular', 40, 2.0, 0.5, 0.03, 0.01)",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "INSERT OR IGNORE INTO kill_xp_scaling_config "
+        "(id, base_xp_per_npc_level, level_diff_coefficient, multiplier_min, multiplier_max, "
+        " mastery_xp_per_mob_level, mastery_killing_blow_mult, mastery_window_timeout_ms) "
+        "VALUES (1, 25, 0.1, 0.1, 1.5, 10, 1.5, 10000)",
         nullptr, nullptr, nullptr);
 
     tables_ensured_ = true;
@@ -194,6 +226,24 @@ void ProgressionConfigTab::Load(sqlite3* db) {
             mastery_.xp_irregularity = static_cast<float>(sqlite3_column_double(stmt, 5));
             mastery_.damage_bonus_per_level = static_cast<float>(sqlite3_column_double(stmt, 6));
             mastery_.cooldown_redux_per_level = static_cast<float>(sqlite3_column_double(stmt, 7));
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT base_xp_per_npc_level, level_diff_coefficient, multiplier_min, multiplier_max, "
+        "       mastery_xp_per_mob_level, mastery_killing_blow_mult, mastery_window_timeout_ms "
+        "FROM kill_xp_scaling_config WHERE id=1",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            character_.kill_xp_base = sqlite3_column_int(stmt, 0);
+            character_.kill_xp_diff_coef = static_cast<float>(sqlite3_column_double(stmt, 1));
+            character_.kill_xp_mult_min = static_cast<float>(sqlite3_column_double(stmt, 2));
+            character_.kill_xp_mult_max = static_cast<float>(sqlite3_column_double(stmt, 3));
+            character_.mastery_xp_per_mob_level = sqlite3_column_int(stmt, 4);
+            character_.mastery_killing_blow_mult = static_cast<float>(sqlite3_column_double(stmt, 5));
+            character_.mastery_window_timeout_ms = sqlite3_column_int(stmt, 6);
         }
     }
     sqlite3_finalize(stmt);
@@ -314,6 +364,30 @@ void ProgressionConfigTab::SaveSettings(sqlite3* db) {
         return;
     }
 
+    stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "UPDATE kill_xp_scaling_config "
+        "SET base_xp_per_npc_level=?, level_diff_coefficient=?, multiplier_min=?, multiplier_max=?, "
+        "    mastery_xp_per_mob_level=?, mastery_killing_blow_mult=?, mastery_window_timeout_ms=? "
+        "WHERE id=1",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        SetStatus("Kill XP scaling save error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    sqlite3_bind_int(stmt, 1, character_.kill_xp_base);
+    sqlite3_bind_double(stmt, 2, character_.kill_xp_diff_coef);
+    sqlite3_bind_double(stmt, 3, character_.kill_xp_mult_min);
+    sqlite3_bind_double(stmt, 4, character_.kill_xp_mult_max);
+    sqlite3_bind_int(stmt, 5, character_.mastery_xp_per_mob_level);
+    sqlite3_bind_double(stmt, 6, character_.mastery_killing_blow_mult);
+    sqlite3_bind_int(stmt, 7, character_.mastery_window_timeout_ms);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        SetStatus("Kill XP scaling save error: %s", sqlite3_errmsg(db));
+        return;
+    }
+
     dirty_ = false;
     SetStatus("Progression settings saved. Restart server to reload runtime caches.");
 }
@@ -345,6 +419,25 @@ void ProgressionConfigTab::Draw(sqlite3* db) {
         if (character_.initial_stat_value < 1) character_.initial_stat_value = 1;
         if (character_.respec_free_until_level < 0) character_.respec_free_until_level = 0;
         if (character_.respec_cost_gold < 0) character_.respec_cost_gold = 0;
+        ImGui::Separator();
+        ImGui::TextUnformatted("Kill XP Scaling");
+        if (ImGui::InputInt("Base XP per NPC Level", &character_.kill_xp_base)) dirty_ = true;
+        if (ImGui::InputFloat("Level Diff Coefficient", &character_.kill_xp_diff_coef, 0.01f, 0.05f, "%.2f")) dirty_ = true;
+        if (ImGui::InputFloat("Multiplier Min", &character_.kill_xp_mult_min, 0.05f, 0.1f, "%.2f")) dirty_ = true;
+        if (ImGui::InputFloat("Multiplier Max", &character_.kill_xp_mult_max, 0.05f, 0.1f, "%.2f")) dirty_ = true;
+        if (character_.kill_xp_base < 1) character_.kill_xp_base = 1;
+        if (character_.kill_xp_mult_min < 0.0f) character_.kill_xp_mult_min = 0.0f;
+        if (character_.kill_xp_mult_max < character_.kill_xp_mult_min) {
+            character_.kill_xp_mult_max = character_.kill_xp_mult_min;
+        }
+        ImGui::Separator();
+        ImGui::TextUnformatted("Mastery XP Scaling");
+        if (ImGui::InputInt("Mastery XP per Mob Level", &character_.mastery_xp_per_mob_level)) dirty_ = true;
+        if (ImGui::InputFloat("Mastery Killing Blow Multiplier", &character_.mastery_killing_blow_mult, 0.05f, 0.1f, "%.2f")) dirty_ = true;
+        if (ImGui::InputInt("Mastery Window Timeout (ms)", &character_.mastery_window_timeout_ms)) dirty_ = true;
+        if (character_.mastery_xp_per_mob_level < 1) character_.mastery_xp_per_mob_level = 1;
+        if (character_.mastery_killing_blow_mult < 1.0f) character_.mastery_killing_blow_mult = 1.0f;
+        if (character_.mastery_window_timeout_ms < 1000) character_.mastery_window_timeout_ms = 1000;
         ImGui::Spacing();
         DrawPreview("Character Threshold Preview", character_.xp_curve_type, character_.xp_curve_base,
                     character_.xp_curve_exponent, character_.xp_irregularity);

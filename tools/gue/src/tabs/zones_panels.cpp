@@ -798,7 +798,7 @@ void ZonesTab::DrawPanelScenery(sqlite3* db, MediaTab* media, bool placement) {
     ImGui::Separator();
 
     static const char* kAnimModes[] = {"None","Loop","Ping-pong","On select"};
-    static const char* kColModes[]  = {"None","Sphere","Box","Polygon"};
+    static const char* kColModes[]  = {"None","Sphere","Box/Wedge","Polygon"};
     if (ImGui::Combo("Anim mode##scno",  &s.animMode,  kAnimModes, 4)) changed=true;
     if (ImGui::Combo("Collision##scno",  &s.collision, kColModes,  4)) changed=true;
     if (ImGui::InputInt("Inventory slots##scno", &s.invSize)) { if(s.invSize<0)s.invSize=0; changed=true; }
@@ -818,9 +818,10 @@ void ZonesTab::DrawPanelScenery(sqlite3* db, MediaTab* media, bool placement) {
         sqlite3_bind_int(stmt,12,s.invSize);   sqlite3_bind_int(stmt,13,s.ownable?1:0);
         sqlite3_bind_int(stmt,14,s.locked?1:0); sqlite3_bind_int(stmt,15,s.id);
         sqlite3_step(stmt); sqlite3_finalize(stmt);
+        scene_.colVisDirty = true;
     }
     ImGui::Spacing();
-    if (ImGui::Button("Duplicate##scno")) DuplicateSelected(db);
+    if (ImGui::Button("Duplicate##scno")) DuplicateSelected(db, media);
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Button,{0.65f,0.1f,0.1f,1.f});
     if (ImGui::Button("Delete##scno")) DeleteSelected(db);

@@ -42,6 +42,175 @@ static void InputScript(const char* label, char* scriptBuf, int sbLen,
 
 // ─── Script list ──────────────────────────────────────────────────────────────
 
+bool ZonesTab::IsInSelection(int type, int id) const {
+    if (type == kSelNone || id < 0) return false;
+    if (!selectedRefs_.empty()) {
+        bool hasPrimary = false;
+        for (const auto& ref : selectedRefs_) {
+            if (ref.type == type && ref.id == id) return true;
+            if (ref.type == selectedType_ && ref.id == selectedID_) hasPrimary = true;
+        }
+        if (!hasPrimary) {
+            return (selectedType_ == type && selectedID_ == id);
+        }
+        return false;
+    }
+    return (selectedType_ == type && selectedID_ == id);
+}
+
+void ZonesTab::ClearSelection() {
+    selectedID_ = -1;
+    selectedType_ = kSelNone;
+    selectedRefs_.clear();
+}
+
+void ZonesTab::SelectSingle(int type, int id) {
+    if (type == kSelNone || id < 0) {
+        ClearSelection();
+        return;
+    }
+    selectedType_ = type;
+    selectedID_ = id;
+    selectedRefs_.clear();
+    selectedRefs_.push_back({type, id});
+}
+
+void ZonesTab::AddSelection(int type, int id, bool makePrimary) {
+    if (type == kSelNone || id < 0) return;
+    if (!selectedRefs_.empty()) {
+        bool hasPrimary = false;
+        for (const auto& ref : selectedRefs_) {
+            if (ref.type == selectedType_ && ref.id == selectedID_) {
+                hasPrimary = true;
+                break;
+            }
+        }
+        if (!hasPrimary) selectedRefs_.clear();
+    }
+    if (selectedRefs_.empty() &&
+        selectedID_ >= 0 && selectedType_ != kSelNone &&
+        !(selectedType_ == type && selectedID_ == id)) {
+        selectedRefs_.push_back({selectedType_, selectedID_});
+    }
+    if (!IsInSelection(type, id)) {
+        selectedRefs_.push_back({type, id});
+    }
+    if (makePrimary) {
+        selectedType_ = type;
+        selectedID_ = id;
+    } else if (selectedID_ < 0 || selectedType_ == kSelNone) {
+        selectedType_ = type;
+        selectedID_ = id;
+    }
+}
+
+void ZonesTab::RemoveSelection(int type, int id) {
+    if (type == kSelNone || id < 0) return;
+    if (!selectedRefs_.empty()) {
+        bool hasPrimary = false;
+        for (const auto& ref : selectedRefs_) {
+            if (ref.type == selectedType_ && ref.id == selectedID_) {
+                hasPrimary = true;
+                break;
+            }
+        }
+        if (!hasPrimary) selectedRefs_.clear();
+    }
+    selectedRefs_.erase(
+        std::remove_if(selectedRefs_.begin(), selectedRefs_.end(),
+            [&](const SelectionRef& ref) { return ref.type == type && ref.id == id; }),
+        selectedRefs_.end());
+
+    if (selectedRefs_.empty()) {
+        if (selectedType_ == type && selectedID_ == id) {
+            selectedType_ = kSelNone;
+            selectedID_ = -1;
+        }
+        return;
+    }
+
+    if (selectedType_ == type && selectedID_ == id) {
+        selectedType_ = selectedRefs_.back().type;
+        selectedID_ = selectedRefs_.back().id;
+    }
+}
+
+void ZonesTab::ToggleSelection(int type, int id) {
+    if (IsInSelection(type, id)) {
+        RemoveSelection(type, id);
+    } else {
+        AddSelection(type, id, true);
+    }
+}
+
+std::vector<ZonesTab::SelectionRef> ZonesTab::ActiveSelection() const {
+    if (!selectedRefs_.empty()) {
+        bool hasPrimary = false;
+        for (const auto& ref : selectedRefs_) {
+            if (ref.type == selectedType_ && ref.id == selectedID_) {
+                hasPrimary = true;
+                break;
+            }
+        }
+        if (hasPrimary) return selectedRefs_;
+    }
+    if (selectedID_ >= 0 && selectedType_ != kSelNone)
+        return {SelectionRef{selectedType_, selectedID_}};
+    return {};
+}
+
+void ZonesTab::CopySelected() {
+    selectionClipboard_ = ActiveSelection();
+    if (selectionClipboard_.empty()) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Copy skipped: nothing selected.");
+        return;
+    }
+    std::snprintf(statusMsg_, sizeof(statusMsg_),
+                  "Copied %d object(s).", (int)selectionClipboard_.size());
+}
+
+void ZonesTab::PasteSelected(sqlite3* db, MediaTab* media) {
+    if (selectionClipboard_.empty()) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Paste skipped: clipboard is empty.");
+        return;
+    }
+
+    const int prevSelectedID = selectedID_;
+    const int prevSelectedType = selectedType_;
+    const auto prevRefs = selectedRefs_;
+    selectedRefs_.clear();
+
+    std::vector<SelectionRef> pastedRefs;
+    const auto refs = selectionClipboard_;
+    for (const auto& ref : refs) {
+        if (ref.id < 0 || ref.type == kSelNone) continue;
+        selectedID_ = ref.id;
+        selectedType_ = ref.type;
+        const int beforeID = selectedID_;
+        const int beforeType = selectedType_;
+        DuplicateSelected(db, media);
+        if (selectedID_ >= 0 && selectedType_ != kSelNone &&
+            !(selectedID_ == beforeID && selectedType_ == beforeType)) {
+            pastedRefs.push_back({selectedType_, selectedID_});
+        }
+    }
+
+    if (pastedRefs.empty()) {
+        selectedID_ = prevSelectedID;
+        selectedType_ = prevSelectedType;
+        selectedRefs_ = prevRefs;
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Paste skipped: no object could be duplicated.");
+        return;
+    }
+
+    selectedRefs_ = std::move(pastedRefs);
+    selectedType_ = selectedRefs_.back().type;
+    selectedID_ = selectedRefs_.back().id;
+    std::snprintf(statusMsg_, sizeof(statusMsg_),
+                  "Pasted %d object(s).", (int)selectedRefs_.size());
+}
+
 void ZonesTab::EnsureScriptList() {
     if (scriptListLoaded_) return;
     scriptListLoaded_ = true;
@@ -130,8 +299,7 @@ void ZonesTab::LoadZone(sqlite3* db, MediaTab* media, const std::string& name) {
     cam_.pos   = {512.f, 120.f, 300.f};
     cam_.yaw   = 0.f;
     cam_.pitch = 30.f;
-    selectedID_   = -1;
-    selectedType_ = kSelNone;
+    ClearSelection();
     if (media) {
         media->EnsureTables(db);
         if (media->ActorDefs().empty()) media->FetchAll(db);
@@ -549,7 +717,7 @@ void ZonesTab::Undo(sqlite3* db) {
     case kUndoCreate: {
         // Undo a creation = delete the object
         if (selectedID_ == e.objectId && selectedType_ == e.objectType) {
-            selectedID_ = -1; selectedType_ = kSelNone;
+            ClearSelection();
         }
         const char* table = nullptr;
         switch (e.objectType) {
@@ -723,7 +891,33 @@ void ZonesTab::Undo(sqlite3* db) {
 
 // ─── DuplicateSelected ────────────────────────────────────────────────────────
 
-void ZonesTab::DuplicateSelected(sqlite3* db) {
+void ZonesTab::DuplicateSelected(sqlite3* db, MediaTab* media) {
+    const auto refs = ActiveSelection();
+    if (refs.size() > 1) {
+        std::vector<SelectionRef> duplicatedRefs;
+        ClearSelection();
+        for (const auto& ref : refs) {
+            if (ref.id < 0 || ref.type == kSelNone) continue;
+            selectedID_ = ref.id;
+            selectedType_ = ref.type;
+            const int beforeID = selectedID_;
+            const int beforeType = selectedType_;
+            DuplicateSelected(db, media);
+            if (selectedID_ >= 0 && selectedType_ != kSelNone &&
+                !(selectedID_ == beforeID && selectedType_ == beforeType)) {
+                duplicatedRefs.push_back({selectedType_, selectedID_});
+            }
+        }
+        if (!duplicatedRefs.empty()) {
+            selectedRefs_ = std::move(duplicatedRefs);
+            selectedType_ = selectedRefs_.back().type;
+            selectedID_ = selectedRefs_.back().id;
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                          "Duplicated %d object(s).", (int)selectedRefs_.size());
+        }
+        return;
+    }
+
     if (selectedID_ < 0) return;
     // Re-place the current object at pos + small offset
     // For scenery, portal, trigger etc. — just re-call PlaceObject with same settings
@@ -731,6 +925,324 @@ void ZonesTab::DuplicateSelected(sqlite3* db) {
     glm::vec3 offset = {2.f, 0.f, 0.f};
 
     switch (selectedType_) {
+    case kSelPortal: {
+        auto it = std::find_if(scene_.portals.begin(), scene_.portals.end(),
+                               [&](auto& p){ return p.id == selectedID_; });
+        if (it == scene_.portals.end()) return;
+        ZPortal p = *it; p.id = 0; p.pos += offset;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO area_portals (area_name,x,z,radius,target_area,dest_x,dest_y,dest_z,dest_yaw)"
+            " VALUES (?,?,?,?,?,0,0,0,0)", -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt,1,scene_.areaName.c_str(),-1,SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt,2,p.pos.x); sqlite3_bind_double(stmt,3,p.pos.z);
+            sqlite3_bind_double(stmt,4,p.radius); sqlite3_bind_text(stmt,5,p.linkArea.c_str(),-1,SQLITE_TRANSIENT);
+            sqlite3_step(stmt);
+            p.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.portals.push_back(p);
+            selectedID_ = p.id;
+            PushUndo(kUndoCreate, kSelPortal, p.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated portal id=%d.", p.id);
+        }
+        break;
+    }
+    case kSelTrigger: {
+        auto it = std::find_if(scene_.triggers.begin(), scene_.triggers.end(),
+                               [&](auto& t){ return t.id == selectedID_; });
+        if (it == scene_.triggers.end()) return;
+        ZTrigger t = *it;
+        t.id = 0;
+        t.x += offset.x;
+        t.z += offset.z;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO area_triggers (area_name, x, z, radius, script, func, trigger_once)"
+            " VALUES (?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 2, t.x); sqlite3_bind_double(stmt, 3, t.z);
+            sqlite3_bind_double(stmt, 4, t.radius);
+            sqlite3_bind_text(stmt, 5, t.script.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 6, t.func.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, 7, t.once ? 1 : 0);
+            sqlite3_step(stmt);
+            t.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.triggers.push_back(t);
+            selectedID_ = t.id;
+            PushUndo(kUndoCreate, kSelTrigger, t.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated trigger id=%d.", t.id);
+        }
+        break;
+    }
+    case kSelSoundZone: {
+        auto it = std::find_if(scene_.soundZones.begin(), scene_.soundZones.end(),
+                               [&](auto& s){ return s.id == selectedID_; });
+        if (it == scene_.soundZones.end()) return;
+        ZSoundZone s = *it;
+        s.id = 0;
+        s.x += offset.x;
+        s.z += offset.z;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO area_sound_zones (area_name, x, z, radius, sound_name, volume, loop_interval_ms)"
+            " VALUES (?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 2, s.x); sqlite3_bind_double(stmt, 3, s.z);
+            sqlite3_bind_double(stmt, 4, s.radius);
+            sqlite3_bind_text(stmt, 5, s.soundName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, 6, s.volume); sqlite3_bind_int(stmt, 7, s.loopMs);
+            sqlite3_step(stmt);
+            s.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.soundZones.push_back(s);
+            selectedID_ = s.id;
+            PushUndo(kUndoCreate, kSelSoundZone, s.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated sound zone id=%d.", s.id);
+        }
+        break;
+    }
+    case kSelColBox: {
+        auto it = std::find_if(scene_.colBoxes.begin(), scene_.colBoxes.end(),
+                               [&](auto& c){ return c.id == selectedID_; });
+        if (it == scene_.colBoxes.end()) return;
+        ZColBox c = *it;
+        c.id = 0;
+        c.pos += offset;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO zone_colboxes (area_name, x, y, z, scale_x, scale_y, scale_z)"
+            " VALUES (?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 2, c.pos.x); sqlite3_bind_double(stmt, 3, c.pos.y); sqlite3_bind_double(stmt, 4, c.pos.z);
+            sqlite3_bind_double(stmt, 5, c.scale.x); sqlite3_bind_double(stmt, 6, c.scale.y); sqlite3_bind_double(stmt, 7, c.scale.z);
+            sqlite3_step(stmt);
+            c.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.colBoxes.push_back(c);
+            selectedID_ = c.id;
+            PushUndo(kUndoCreate, kSelColBox, c.id);
+            scene_.colVisDirty = true;
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated collision box id=%d.", c.id);
+        }
+        break;
+    }
+    case kSelColSphere: {
+        auto it = std::find_if(scene_.colSpheres.begin(), scene_.colSpheres.end(),
+                               [&](auto& s){ return s.id == selectedID_; });
+        if (it == scene_.colSpheres.end()) return;
+        ZColSphere s = *it;
+        s.id = 0;
+        s.pos += offset;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO zone_colspheres (area_name, x, y, z, radius)"
+            " VALUES (?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 2, s.pos.x); sqlite3_bind_double(stmt, 3, s.pos.y); sqlite3_bind_double(stmt, 4, s.pos.z);
+            sqlite3_bind_double(stmt, 5, s.radius);
+            sqlite3_step(stmt);
+            s.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.colSpheres.push_back(s);
+            selectedID_ = s.id;
+            PushUndo(kUndoCreate, kSelColSphere, s.id);
+            scene_.colVisDirty = true;
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated collision sphere id=%d.", s.id);
+        }
+        break;
+    }
+    case kSelWaypoint: {
+        auto it = std::find_if(scene_.waypoints.begin(), scene_.waypoints.end(),
+                               [&](auto& w){ return w.id == selectedID_; });
+        if (it == scene_.waypoints.end()) return;
+        ZWaypoint w = *it;
+        w.id = 0;
+        w.pos += offset;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO zone_waypoints (area_name, x, y, z, next_a, next_b, pause_sec, spawn_actor_id,"
+            " spawn_script, spawn_func, click_script, click_func, death_script, death_func,"
+            " spawn_delay_sec, spawn_max, spawn_range)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 2, w.pos.x); sqlite3_bind_double(stmt, 3, w.pos.y); sqlite3_bind_double(stmt, 4, w.pos.z);
+            sqlite3_bind_int(stmt, 5, w.nextA); sqlite3_bind_int(stmt, 6, w.nextB);
+            sqlite3_bind_int(stmt, 7, w.pauseSec); sqlite3_bind_int(stmt, 8, w.spawnActorId);
+            sqlite3_bind_text(stmt, 9, w.spawnScript.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt,10, w.spawnFunc.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt,11, w.clickScript.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt,12, w.clickFunc.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt,13, w.deathScript.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt,14, w.deathFunc.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt,15, w.spawnDelaySec); sqlite3_bind_int(stmt,16, w.spawnMax);
+            sqlite3_bind_double(stmt,17, w.spawnRange);
+            sqlite3_step(stmt);
+            w.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.waypoints.push_back(w);
+            selectedID_ = w.id;
+            PushUndo(kUndoCreate, kSelWaypoint, w.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated waypoint id=%d.", w.id);
+        }
+        break;
+    }
+    case kSelNpc: {
+        auto it = std::find_if(scene_.npcs.begin(), scene_.npcs.end(),
+                               [&](auto& n){ return n.id == selectedID_; });
+        if (it == scene_.npcs.end()) return;
+        ZNpcSpawn n = *it;
+        n.id = 0;
+        n.pos += offset;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO npc_spawns"
+            " (name, race, class, level, area_name, x, y, z, yaw,"
+            "  aggressiveness, aggressive_range, attack_range, respawn_delay_ms, actor_def_id,"
+            "  spawn_script, spawn_func, click_script, click_func, death_script, death_func)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt,  1, n.name.c_str(),    -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt,  2, n.race.c_str(),    -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt,  3, n.class_.c_str(),  -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt,   4, n.level);
+            sqlite3_bind_text(stmt,  5, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 6, n.pos.x); sqlite3_bind_double(stmt, 7, n.pos.y); sqlite3_bind_double(stmt, 8, n.pos.z);
+            sqlite3_bind_double(stmt, 9, n.yaw);
+            sqlite3_bind_int(stmt,  10, n.aggressiveness);
+            sqlite3_bind_double(stmt,11, n.aggroRange); sqlite3_bind_double(stmt,12, n.attackRange);
+            sqlite3_bind_int(stmt,  13, n.respawnDelayMs); sqlite3_bind_int(stmt,14, n.actorDefId);
+            sqlite3_bind_text(stmt, 15, n.spawnScript.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 16, n.spawnFunc.c_str(),   -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 17, n.clickScript.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 18, n.clickFunc.c_str(),   -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 19, n.deathScript.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 20, n.deathFunc.c_str(),   -1, SQLITE_TRANSIENT);
+            sqlite3_step(stmt);
+            n.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.npcs.push_back(n);
+            selectedID_ = n.id;
+            PushUndo(kUndoCreate, kSelNpc, n.id);
+            if (media) SyncSceneryCache(media);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated NPC id=%d.", n.id);
+        }
+        break;
+    }
+    case kSelEmitter: {
+        auto it = std::find_if(scene_.emitters.begin(), scene_.emitters.end(),
+                               [&](auto& e){ return e.id == selectedID_; });
+        if (it == scene_.emitters.end()) return;
+        ZEmitter e = *it;
+        e.id = 0;
+        e.pos += offset;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO zone_emitters (area_name, config_name, x, y, z)"
+            " VALUES (?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, e.configName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 3, e.pos.x); sqlite3_bind_double(stmt, 4, e.pos.y); sqlite3_bind_double(stmt, 5, e.pos.z);
+            sqlite3_step(stmt);
+            e.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.emitters.push_back(e);
+            selectedID_ = e.id;
+            PushUndo(kUndoCreate, kSelEmitter, e.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated emitter id=%d.", e.id);
+        }
+        break;
+    }
+    case kSelWater: {
+        auto it = std::find_if(scene_.water.begin(), scene_.water.end(),
+                               [&](auto& w){ return w.id == selectedID_; });
+        if (it == scene_.water.end()) return;
+        ZWater w = *it;
+        w.id = 0;
+        w.pos += offset;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO zone_water (area_name, x, y, z, scale_x, scale_z, color_r, color_g, color_b, opacity, tex_path, tex_scale, damage, dmg_type)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            auto to255 = [](float v) -> int {
+                int iv = (int)(v * 255.f);
+                if (iv < 0) iv = 0;
+                if (iv > 255) iv = 255;
+                return iv;
+            };
+            sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 2, w.pos.x); sqlite3_bind_double(stmt, 3, w.pos.y); sqlite3_bind_double(stmt, 4, w.pos.z);
+            sqlite3_bind_double(stmt, 5, w.scale.x); sqlite3_bind_double(stmt, 6, w.scale.y);
+            sqlite3_bind_int(stmt, 7, to255(w.color.r)); sqlite3_bind_int(stmt, 8, to255(w.color.g)); sqlite3_bind_int(stmt, 9, to255(w.color.b));
+            sqlite3_bind_int(stmt,10, w.opacity);
+            sqlite3_bind_text(stmt,11, w.texPath.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt,12, w.texScale);
+            sqlite3_bind_int(stmt,13, w.damage); sqlite3_bind_int(stmt,14, w.dmgType);
+            sqlite3_step(stmt);
+            w.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.water.push_back(w);
+            selectedID_ = w.id;
+            PushUndo(kUndoCreate, kSelWater, w.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated water id=%d.", w.id);
+        }
+        break;
+    }
+    case kSelSpawnPoint: {
+        auto it = std::find_if(scene_.spawnPoints.begin(), scene_.spawnPoints.end(),
+                               [&](auto& sp){ return sp.id == selectedID_; });
+        if (it == scene_.spawnPoints.end()) return;
+        ZSpawnPoint sp = *it;
+        sp.id = 0;
+        sp.pos += offset;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO spawn_points (name, area_name, x, y, z, radius)"
+            " VALUES (?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, sp.name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 3, sp.pos.x);
+            sqlite3_bind_double(stmt, 4, sp.pos.y);
+            sqlite3_bind_double(stmt, 5, sp.pos.z);
+            sqlite3_bind_double(stmt, 6, sp.radius);
+            sqlite3_step(stmt);
+            sp.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+
+            sqlite3_stmt* mobStmt = nullptr;
+            if (sqlite3_prepare_v2(db,
+                "INSERT INTO spawn_point_mobs (spawn_point_id, actor_def_id, mob_count, name, race, class, level, aggressiveness, aggressive_range, attack_range, respawn_delay_ms)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)", -1, &mobStmt, nullptr) == SQLITE_OK) {
+                for (auto& m : sp.mobs) {
+                    sqlite3_bind_int(mobStmt, 1, sp.id);
+                    sqlite3_bind_int(mobStmt, 2, m.actor_def_id);
+                    sqlite3_bind_int(mobStmt, 3, m.count);
+                    sqlite3_bind_text(mobStmt, 4, m.name.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(mobStmt, 5, m.race.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(mobStmt, 6, m.class_.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_int(mobStmt, 7, m.level);
+                    sqlite3_bind_int(mobStmt, 8, m.aggressiveness);
+                    sqlite3_bind_double(mobStmt, 9, m.aggressive_range);
+                    sqlite3_bind_double(mobStmt,10, m.attack_range);
+                    sqlite3_bind_int(mobStmt,11, m.respawn_delay_ms);
+                    sqlite3_step(mobStmt);
+                    m.id = (int)sqlite3_last_insert_rowid(db);
+                    sqlite3_reset(mobStmt);
+                    sqlite3_clear_bindings(mobStmt);
+                }
+                sqlite3_finalize(mobStmt);
+            }
+
+            scene_.spawnPoints.push_back(sp);
+            selectedID_ = sp.id;
+            selectedType_ = kSelSpawnPoint;
+            spawnPtSelMob_ = -1;
+            PushUndo(kUndoCreate, kSelSpawnPoint, sp.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated spawn point id=%d.", sp.id);
+        }
+        break;
+    }
     case kSelScenery: {
         auto it = std::find_if(scene_.scenery.begin(), scene_.scenery.end(),
                                [&](auto& s){ return s.id == selectedID_; });
@@ -754,29 +1266,9 @@ void ZonesTab::DuplicateSelected(sqlite3* db) {
             scene_.scenery.push_back(s);
             selectedID_ = s.id;
             PushUndo(kUndoCreate, kSelScenery, s.id);
-            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated scenery → id=%d.", s.id);
-        }
-        break;
-    }
-    case kSelPortal: {
-        auto it = std::find_if(scene_.portals.begin(), scene_.portals.end(),
-                               [&](auto& p){ return p.id == selectedID_; });
-        if (it == scene_.portals.end()) return;
-        ZPortal p = *it; p.id = 0; p.pos += offset;
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db,
-            "INSERT INTO area_portals (area_name,x,z,radius,target_area,dest_x,dest_y,dest_z,dest_yaw)"
-            " VALUES (?,?,?,?,?,0,0,0,0)", -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_text(stmt,1,scene_.areaName.c_str(),-1,SQLITE_TRANSIENT);
-            sqlite3_bind_double(stmt,2,p.pos.x); sqlite3_bind_double(stmt,3,p.pos.z);
-            sqlite3_bind_double(stmt,4,p.radius); sqlite3_bind_text(stmt,5,p.linkArea.c_str(),-1,SQLITE_TRANSIENT);
-            sqlite3_step(stmt);
-            p.id = (int)sqlite3_last_insert_rowid(db);
-            sqlite3_finalize(stmt);
-            scene_.portals.push_back(p);
-            selectedID_ = p.id;
-            PushUndo(kUndoCreate, kSelPortal, p.id);
-            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated portal → id=%d.", p.id);
+            scene_.colVisDirty = true;
+            if (media) SyncSceneryCache(media);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated scenery id=%d.", s.id);
         }
         break;
     }
@@ -784,11 +1276,33 @@ void ZonesTab::DuplicateSelected(sqlite3* db) {
         std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicate not supported for this object type.");
         break;
     }
+
+    if (selectedID_ >= 0 && selectedType_ != kSelNone) {
+        SelectSingle(selectedType_, selectedID_);
+    }
 }
 
 // ─── DeleteSelected ───────────────────────────────────────────────────────────
 
 void ZonesTab::DeleteSelected(sqlite3* db) {
+    const auto refs = ActiveSelection();
+    if (refs.size() > 1) {
+        int deleted = 0;
+        ClearSelection();
+        for (const auto& ref : refs) {
+            if (ref.id < 0 || ref.type == kSelNone) continue;
+            selectedID_ = ref.id;
+            selectedType_ = ref.type;
+            DeleteSelected(db);
+            ++deleted;
+        }
+        if (deleted > 0) {
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                          "Deleted %d object(s).", deleted);
+        }
+        return;
+    }
+
     if (selectedID_ < 0) return;
     const char* table = nullptr;
     switch (selectedType_) {
@@ -814,7 +1328,8 @@ void ZonesTab::DeleteSelected(sqlite3* db) {
             scene_.spawnPoints.end());
         std::snprintf(statusMsg_, sizeof(statusMsg_),
             "Deleted spawn point %d.", selectedID_);
-        selectedID_ = -1; selectedType_ = kSelNone; spawnPtSelMob_ = -1;
+        ClearSelection();
+        spawnPtSelMob_ = -1;
         return;
     }
     case kSelWater:     table = "zone_water";       break;
@@ -856,7 +1371,7 @@ void ZonesTab::DeleteSelected(sqlite3* db) {
     default: break;
     }
     std::snprintf(statusMsg_, sizeof(statusMsg_), "Deleted object %d.", selectedID_);
-    selectedID_ = -1; selectedType_ = kSelNone;
+    ClearSelection();
 }
 
 // ─── Main Draw ────────────────────────────────────────────────────────────────
@@ -918,7 +1433,7 @@ void ZonesTab::Draw(sqlite3* db, MediaTab* media) {
     }
 
     // ── Top bar ────────────────────────────────────────────────────────────
-    DrawTopBar(db);
+    DrawTopBar(db, media);
     ImGui::Separator();
 
     float totalH  = ImGui::GetContentRegionAvail().y - kStatusBarH - 6.f;
@@ -1026,10 +1541,14 @@ void ZonesTab::Draw(sqlite3* db, MediaTab* media) {
         ImGui::SameLine();
         ImGui::TextDisabled("— drag to viewport to place");
 
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 360.f);
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 560.f);
         // Grid snap toggle (G key)
         if (vpHovered_ && ImGui::IsKeyPressed(ImGuiKey_G, false))
             scnSnapGrid_ = !scnSnapGrid_;
+        if (vpHovered_ && ImGui::IsKeyPressed(ImGuiKey_O, false))
+            scnObjSnap_ = !scnObjSnap_;
+        if (vpHovered_ && ImGui::IsKeyPressed(ImGuiKey_N, false))
+            scnFaceSnap_ = !scnFaceSnap_;
         ImGui::Checkbox("Grid##ab", &scnSnapGrid_);
         if (scnSnapGrid_) {
             ImGui::SameLine();
@@ -1042,6 +1561,35 @@ void ZonesTab::Draw(sqlite3* db, MediaTab* media) {
         ImGui::DragFloat("Rot##ab", &scnRotSnap_, 1.f, 0.f, 90.f, "%.0f°");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rotation snap (0 = free)");
         ImGui::SameLine();
+        ImGui::Checkbox("ObjSnap##ab", &scnObjSnap_);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pivot-to-pivot snap while moving gizmo [O]");
+        if (scnObjSnap_) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(55.f);
+            ImGui::DragFloat("##abobjsnapdist", &scnObjSnapDist_, 0.05f, 0.05f, 8.f, "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Snap distance threshold (axis units)");
+        }
+        ImGui::SameLine();
+        ImGui::Checkbox("FaceSnap##ab", &scnFaceSnap_);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Face-to-face surface snap while moving gizmo [N]");
+        if (scnFaceSnap_) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(50.f);
+            ImGui::DragFloat("##abfacesnapdist", &scnFaceSnapDist_, 0.05f, 0.05f, 8.f, "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Face snap gap threshold");
+            ImGui::SameLine();
+            ImGui::Checkbox("AlignN##ab", &scnAlignNormal_);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Align scenery yaw to snapped normal (XZ)");
+            ImGui::SameLine();
+            ImGui::Checkbox("AutoRot##ab", &scnAutoRotate_);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Auto-rotate scenery yaw during FaceSnap.\n"
+                    "Picks the nearest snapped angle to current yaw.\n"
+                    "Uses Rot step when > 0; otherwise falls back to 90°.");
+            }
+        }
+        ImGui::SameLine();
         ImGui::Checkbox("Ground##ab", &scnAlignGround_);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Snap Y to terrain on placement");
 
@@ -1052,6 +1600,8 @@ void ZonesTab::Draw(sqlite3* db, MediaTab* media) {
             ImGui::SameLine();
             if (ImGui::SmallButton("x##abclear")) scnFilter_[0] = 0;
         }
+        ImGui::SameLine();
+        ImGui::TextDisabled("Ctrl=fine  Shift=fast");
 
         // ── Model grid with folder groups ─────────────────────────────────
         ImGui::Separator();
@@ -1119,14 +1669,12 @@ void ZonesTab::Draw(sqlite3* db, MediaTab* media) {
                     float al=0.4f+0.6f*(0.5f+0.5f*std::sin(t+d));
                     dl->AddCircleFilled({px,py},3.f,IM_COL32(120,160,220,(int)(al*255)));}
             }
-            // Label: show only the base name (after last /).
-            const char* base = std::strrchr(m.name.c_str(), '/');
-            base = base ? base+1 : m.name.c_str();
+            // Label: show full media name (folder/name) to avoid ambiguity.
+            const char* label = m.name.c_str();
             float ly = iy+kThumbSz+2.f;
             ImGui::PushClipRect({tilePos.x,ly},{tilePos.x+kTileW,ly+18.f},true);
-            float tw = ImGui::CalcTextSize(base).x;
-            float tx = tilePos.x + (kTileW - std::min(tw, kTileW-4.f)) * 0.5f;
-            dl->AddText({tx,ly}, sel?IM_COL32(180,210,255,255):IM_COL32(200,200,200,255), base);
+            float tx = tilePos.x + 3.f;
+            dl->AddText({tx,ly}, sel?IM_COL32(180,210,255,255):IM_COL32(200,200,200,255), label);
             ImGui::PopClipRect();
             if (col_idx % per_row != per_row-1) ImGui::SameLine(0,4.f);
         };

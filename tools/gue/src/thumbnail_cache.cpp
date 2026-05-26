@@ -24,6 +24,16 @@ namespace gue {
 // Cache directory helpers
 // ---------------------------------------------------------------------------
 
+static bool ReadMtimeNs(const std::string& absPath, long long* outNs) {
+    if (!outNs) return false;
+    *outNs = 0;
+    std::error_code ec;
+    auto mtime = std::filesystem::last_write_time(absPath, ec);
+    if (ec) return false;
+    *outNs = (long long)mtime.time_since_epoch().count();
+    return true;
+}
+
 std::filesystem::path ThumbnailCache::CacheDir() {
     std::filesystem::path dir = "thumbcache";
     std::error_code ec;
@@ -99,6 +109,10 @@ void ThumbnailCache::Destroy() {
     for (auto& [id, tex] : cache_)
         if (tex) glDeleteTextures(1, &tex);
     cache_.clear();
+    cacheRelPath_.clear();
+    cacheMtimeNs_.clear();
+    cacheHasMtime_.clear();
+    cacheGen_.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -108,20 +122,46 @@ void ThumbnailCache::Destroy() {
 GLuint ThumbnailCache::Get(int model_id, const std::string& file_path_rel) {
     if (!workerStarted_) return 0;
 
-    auto it = cache_.find(model_id);
-    if (it != cache_.end()) return it->second;
+    std::string abs = ResolveClientAsset(file_path_rel);
+    long long mtimeNs = 0;
+    const bool hasMtime = ReadMtimeNs(abs, &mtimeNs);
 
+    auto it = cache_.find(model_id);
+    if (it != cache_.end()) {
+        bool stale = false;
+        auto itRel = cacheRelPath_.find(model_id);
+        auto itHasMtime = cacheHasMtime_.find(model_id);
+        auto itMtime = cacheMtimeNs_.find(model_id);
+        stale = stale || (itRel == cacheRelPath_.end()) || (itRel->second != file_path_rel);
+        stale = stale || (itHasMtime == cacheHasMtime_.end()) || (itHasMtime->second != hasMtime);
+        stale = stale || (itMtime == cacheMtimeNs_.end()) || (itMtime->second != mtimeNs);
+        if (!stale) return it->second;
+
+        if (it->second) glDeleteTextures(1, &it->second);
+        cache_.erase(it);
+        cacheRelPath_.erase(model_id);
+        cacheMtimeNs_.erase(model_id);
+        cacheHasMtime_.erase(model_id);
+        cacheGen_.erase(model_id);
+    }
+
+    const uint64_t gen = nextGen_++;
     cache_[model_id] = 0;  // mark pending
+    cacheRelPath_[model_id] = file_path_rel;
+    cacheMtimeNs_[model_id] = mtimeNs;
+    cacheHasMtime_[model_id] = hasMtime;
+    cacheGen_[model_id] = gen;
 
     // Check disk cache first — skip the queue entirely if we have a valid jpg.
-    std::string abs = ResolveClientAsset(file_path_rel);
     std::error_code ec;
-    auto mtime = std::filesystem::last_write_time(abs, ec);
-    if (!ec) {
-        std::string jpg = CachePath(model_id, mtime);
-        if (std::filesystem::exists(jpg, ec)) {
-            GLuint tex = LoadFromDisk(jpg);
-            if (tex) { cache_[model_id] = tex; return tex; }
+    if (hasMtime) {
+        auto mtime = std::filesystem::last_write_time(abs, ec);
+        if (!ec) {
+            std::string jpg = CachePath(model_id, mtime);
+            if (std::filesystem::exists(jpg, ec)) {
+                GLuint tex = LoadFromDisk(jpg);
+                if (tex) { cache_[model_id] = tex; return tex; }
+            }
         }
     }
 
@@ -129,8 +169,8 @@ GLuint ThumbnailCache::Get(int model_id, const std::string& file_path_rel) {
     {
         std::lock_guard<std::mutex> lk(mutex_);
         // Avoid duplicates.
-        for (auto& j : jobQueue_) if (j.id == model_id) return 0;
-        jobQueue_.push_back({model_id, file_path_rel, abs});
+        for (auto& j : jobQueue_) if (j.id == model_id && j.gen == gen) return 0;
+        jobQueue_.push_back({model_id, gen, file_path_rel, abs});
     }
     cv_.notify_one();
     return 0;
@@ -145,6 +185,11 @@ void ThumbnailCache::Tick() {
     while (!readyQueue_.empty()) {
         auto r = readyQueue_.front();
         readyQueue_.pop();
+        auto itGen = cacheGen_.find(r.id);
+        if (itGen == cacheGen_.end() || itGen->second != r.gen) {
+            if (r.tex) glDeleteTextures(1, &r.tex);
+            continue;
+        }
         cache_[r.id] = r.tex;
     }
 }
@@ -256,7 +301,7 @@ void main() {
                     stbi_image_free(px);
                     glFlush();  // ensure texture is visible to main context
                     std::lock_guard<std::mutex> lk(mutex_);
-                    readyQueue_.push({job.id, tex});
+                    readyQueue_.push({job.id, job.gen, tex});
                 }
                 continue;
             }
@@ -341,7 +386,7 @@ void main() {
         glFlush();
         {
             std::lock_guard<std::mutex> lk(mutex_);
-            readyQueue_.push({job.id, colTex});
+            readyQueue_.push({job.id, job.gen, colTex});
         }
     }
 

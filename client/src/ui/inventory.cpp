@@ -599,8 +599,6 @@ void Inventory::RenderCharacter(int screenW, int screenH, const rco::PlayerState
             draw_derived_int("MagicDmgMin", confirmed_derived.MagicDmgMin, preview_derived.MagicDmgMin);
             draw_derived_int("MagicDmgMax", confirmed_derived.MagicDmgMax, preview_derived.MagicDmgMax);
             draw_derived_float("CritDamageMult", confirmed_derived.CritDamageMult, preview_derived.CritDamageMult);
-            draw_derived_int("HeavyAttackValue", confirmed_derived.HeavyAttackValue, preview_derived.HeavyAttackValue);
-            draw_derived_float("HeavyAttackDamage", confirmed_derived.HeavyAttackDamage, preview_derived.HeavyAttackDamage);
             draw_derived_float("AttackSpeedMult", confirmed_derived.AttackSpeedMult, preview_derived.AttackSpeedMult);
             draw_derived_float("MovementSpeedMult", confirmed_derived.MovementSpeedMult, preview_derived.MovementSpeedMult);
             draw_derived_float("CooldownSpeedPct", confirmed_derived.CooldownSpeedPct, preview_derived.CooldownSpeedPct);
@@ -640,6 +638,7 @@ void Inventory::RenderCharacter(int screenW, int screenH, const rco::PlayerState
             }
 
             ImGui::SetCursorPos({equipOrigin.x, equipOrigin.y + kColH + 8.f});
+            ImGui::Dummy(ImVec2(0, 0));
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

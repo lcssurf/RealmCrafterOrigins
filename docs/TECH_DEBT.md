@@ -206,3 +206,155 @@ em `PStartGame` usa `Done()` + `ReadU16()` + `OK()`.
 
 Funciona para compat retroativa, mas manteria o parser mais claro se existisse
 helper explicito de bytes restantes.
+
+## 23. sendVitalsUpdate centraliza PStatUpdate, mas sendXPUpdate ainda duplica
+
+Foi adicionado helper `sendVitalsUpdate` para centralizar envio de
+`PStatUpdate` (HP/EP/SP atuais e maximos), usado em fluxos de distribute/respec.
+
+`sendXPUpdate` ainda contem a mesma logica inline. Futuro refactor: migrar
+`sendXPUpdate` para chamar `sendVitalsUpdate` internamente e eliminar duplicacao.
+
+## 24. Cache de kill_xp_scaling_config exige restart
+
+`kill_xp_scaling_config` e carregada para cache runtime no startup do server.
+
+Edicoes via GUE/SQL nao refletem em runtime ate reiniciar o processo.
+
+## 25. XP scaling editado dentro de Progression Config tab
+
+No GUE, os campos de kill XP scaling foram adicionados na mesma tab de
+Progression Config.
+
+Se o escopo dessa tab crescer demais, considerar separar em uma tab dedicada de
+XP scaling para reduzir ruido operacional.
+
+## 26. `awardXPGain` usa `scalingMobLevel=0` como sentinela
+
+Para manter um unico caminho de aplicacao de XP, `awardXPGain` recebe
+`scalingMobLevel` e interpreta `0` como "nao aplicar scaling de kill".
+
+Funciona, mas a intencao ficaria mais explicita com split futuro entre
+`awardKillXP` e `awardQuestXP`.
+
+## 27. Mastery kill window nao cobre heal/buff/debuff/defense
+
+O tracking de combat window para mastery XP por kill foi conectado apenas em
+skills de dano no fluxo de special hit.
+
+Skills de heal/buff/debuff/defense ainda nao entram na janela e nao recebem
+mastery XP nesse modelo. Precisa de hooks dedicados por categoria.
+
+## 28. Decisao de design: melee basico nao progride mastery
+
+Por decisao de design, ataque basico (melee normal) nao trackeia combat window
+e nao concede mastery XP.
+
+Mastery e progressao de skills nomeadas (Slash, Cleave, etc). Para progredir
+mastery, o player deve usar specials.
+
+## 29. Legacy spell com runtime_ability_id=0 nao participa de mastery kill window
+
+Quando spell legada nao mapeia para runtime ability (`runtime_ability_id=0`),
+ela nao entra no tracking de skill usada para mastery kill XP.
+
+Idealmente esse caminho some quando o fluxo legado de spells for migrado.
+
+## 30. Combat windows sao runtime-only
+
+As janelas de combate sao mantidas em memoria e nao persistem em crash/restart.
+Se o server cair durante combate, estado de tracking e descartado.
+
+## 31. Cleanup de janelas depende de tickRegen
+
+Expiracao por timeout e executada no `tickRegen` (a cada ~3s). Isso pode atrasar
+coleta de janelas expiradas em ate um tick.
+
+## 32. Cache de mastery kill scaling exige restart
+
+Os valores de mastery kill scaling carregam no startup e ficam em cache runtime.
+Edicoes no GUE/SQL exigem restart para refletir no servidor ativo.
+
+## 33. Heavy Attack stats removidos por decisao de design
+
+Heavy Attack stats foram removidos porque o modelo T&L-style de proc 2x cria
+stat dominante (builds convergem para o mesmo eixo). Critico ja cobre o papel
+de proc multiplier sem introduzir esse acoplamento.
+
+Se feature de "heavy attack" voltar no futuro, tratar como design novo
+(ex.: charged attack Souls-style, stagger mechanic, ou outra direcao), sem
+ressuscitar automaticamente os stats antigos.
+
+As animacoes `AttackHeavyWindup`/`AttackHeavyImpact` foram mantidas, pois sao
+nomes genericos usados por specials como Cleave e nao dependem desses stats.
+
+## 34. DamageStatScale em runtime ainda limitado a primary/level
+
+`damage_stat_scale_json` agora e aplicado no runtime moderno, mas os sources de
+scaling suportados no momento sao apenas `STR`, `DEX`, `INT`, `WIS`, `PER` e
+`level`.
+
+Campos derived (ex.: `MeleeCritValue`, `MagicDmgMax`) ainda nao estao
+disponiveis como source de scaling por skill.
+
+## 35. CritPolicy em runtime depende de JSON valido com fallback silencioso
+
+`crit_policy_json` agora substitui a formula global de crit quando parseia com
+sucesso. Se vier vazio/invalido, runtime faz fallback para a formula global e
+registra `WARN` no log.
+
+## 36. GUE sem validador inline de JSON para scaling/crit
+
+O GUE exibe apenas hints de exemplo para `damage_stat_scale_json` e
+`crit_policy_json`. Ainda nao existe validacao inline; erros so aparecem no
+runtime via log.
+
+## 37. GUE sem "Insert Template" para JSON de ability
+
+Ainda nao existe botao de preenchimento automatico de template JSON para os
+campos de scaling/crit. O usuario continua escrevendo manualmente.
+
+## 38. GUE sem auto-complete inline para JSON de ability
+
+Os campos `damage_stat_scale_json` e `crit_policy_json` ainda nao tem
+auto-complete inline. Hoje o fluxo usa templates por dropdown para cobrir os
+casos mais comuns.
+
+Quando essa UX virar prioridade, avaliar widget custom de edicao JSON
+(ex.: ImGuiColorTextEdit ou equivalente).
+
+## 39. Validacao semantica de JSON nao cobre interacoes logicas
+
+A validacao atual cobre sintaxe JSON, nomes de stats e ranges de campos.
+Ainda nao cobre interacoes logicas mais profundas (ex.: `scaling` vazio, que e
+sintaticamente valido mas pode nao gerar efeito pratico no runtime).
+
+## 40. Save no GUE permite JSON invalido por design (WIP-friendly)
+
+O GUE permite salvar ability mesmo com JSON invalido em scaling/crit e apenas
+emite `WARN` no console para nao bloquear iteracao.
+
+No runtime do server, JSON invalido continua caindo em fallback da formula
+global.
+
+## 41. nlohmann/json foi adicionado apenas no GUE
+
+`nlohmann/json.hpp` foi adicionado como header-only em
+`tools/gue/third_party/nlohmann/`.
+
+Existem outros pontos do projeto (especialmente no client) com parsing JSON
+manual; avaliar consolidacao futura para reduzir codigo ad-hoc.
+
+## 42. `resource_type=hp` usa clamp em 1 HP (nao auto-suicida)
+
+No runtime de cast, custo de HP agora e consumido com clamp em 1 de vida para
+evitar auto-kill acidental ao usar ability.
+
+Se no futuro o design quiser permitir "blood magic" com auto-sacrificio,
+remover esse clamp no `consumeCastResource`.
+
+## 43. HP cost segue sem modificadores adicionais
+
+Custo de HP por ability nao interage com mastery cooldown reduction nem com
+outros modificadores de recurso, mantendo comportamento consistente com o fluxo
+atual de MP/SP.

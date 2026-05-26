@@ -62,10 +62,8 @@ type DerivedStats struct {
 	MagicDmgMin int32
 	MagicDmgMax int32
 
-	// ===== Crit Damage & Heavy Attack =====
+	// ===== Crit Damage =====
 	CritDamageMult float32
-	HeavyAttackValue  int32
-	HeavyAttackDamage float32
 
 	// ===== Speed =====
 	AttackSpeedMult float32
@@ -168,15 +166,6 @@ const (
 	critDmgCap    float32 = 3.0
 )
 
-// ----- Heavy Attack -----
-const (
-	heavyAttackSTR      int32   = 5
-	heavyAttackPerLevel int32   = 1
-	heavyDmgBase        float32 = 0.25
-	heavyDmgPerSTR      float32 = 0.001
-	heavyDmgCap         float32 = 0.75
-)
-
 // ----- Speed -----
 const (
 	attackSpeedBase   float32 = 1.0
@@ -238,10 +227,6 @@ const (
 	defenseSoftcap int32   = 3000
 	defenseCap     float32 = 0.80
 
-	// Heavy Attack: 1500 -> 15% (cap 30%)
-	heavyAttackSoftcap int32   = 1500
-	heavyAttackCap     float32 = 0.30
-
 	// CC: 1500 -> 30% (cap 60%)
 	ccValueSoftcap int32   = 1500
 	ccValueCap     float32 = 0.60
@@ -284,10 +269,6 @@ func ComputeDerivedStats(primary PrimaryStats, level int32, weaponDmg int32, arm
 
 	// Crit damage multiplier
 	d.CritDamageMult = clampFloat(critDmgBase+float32(primary.DEX)*critDmgPerDEX, critDmgBase, critDmgCap)
-
-	// Heavy attack
-	d.HeavyAttackValue = primary.STR*heavyAttackSTR + level*heavyAttackPerLevel
-	d.HeavyAttackDamage = clampFloat(heavyDmgBase+float32(primary.STR)*heavyDmgPerSTR, heavyDmgBase, heavyDmgCap)
 
 	// Speed
 	d.AttackSpeedMult = clampFloat(attackSpeedBase+float32(primary.DEX)*attackSpeedPerDEX, attackSpeedBase, attackSpeedCap)

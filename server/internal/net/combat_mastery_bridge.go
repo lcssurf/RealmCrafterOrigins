@@ -9,22 +9,25 @@ import (
 	"realm-crafter/server/internal/world"
 )
 
-// handleSpecialHit receives world special-hit callbacks for successful impacts.
-// XP persistence runs asynchronously so the area AI tick remains non-blocking.
-func (s *Server) handleSpecialHit(_ *world.Area, attacker *world.Actor, _ *world.Actor, abilityID int) {
-	if s == nil || s.db == nil || attacker == nil || attacker.IsNPC || abilityID <= 0 {
+// handleNPCKilledMasteryDistribute receives world kill-window callbacks.
+// XP persistence runs asynchronously so combat runtime remains non-blocking.
+func (s *Server) handleNPCKilledMasteryDistribute(charID string, abilityID uint32, xp int64, isKillingBlow bool) {
+	if s == nil || s.db == nil || strings.TrimSpace(charID) == "" || abilityID == 0 || xp <= 0 {
 		return
 	}
-	charID := strings.TrimSpace(attacker.CharacterID)
-	if charID == "" {
+	gain := int(xp)
+	maxInt := int(^uint(0) >> 1)
+	if xp > int64(maxInt) {
+		gain = maxInt
+	}
+	if gain <= 0 {
 		return
 	}
-
-	go s.grantPlayerSkillXP(charID, abilityID)
+	go s.grantPlayerSkillXPAmount(charID, int(abilityID), gain, isKillingBlow)
 }
 
-func (s *Server) grantPlayerSkillXP(charID string, abilityID int) {
-	if s == nil || s.db == nil || strings.TrimSpace(charID) == "" || abilityID <= 0 {
+func (s *Server) grantPlayerSkillXPAmount(charID string, abilityID int, xpAmount int, isKillingBlow bool) {
+	if s == nil || s.db == nil || strings.TrimSpace(charID) == "" || abilityID <= 0 || xpAmount <= 0 {
 		return
 	}
 
@@ -32,10 +35,6 @@ func (s *Server) grantPlayerSkillXP(charID string, abilityID int) {
 	if !ok {
 		log.Printf("mastery: ability template missing for char=%s ability=%d", charID, abilityID)
 		return
-	}
-	xpPerUse := ability.MasteryXPPerUse
-	if xpPerUse <= 0 {
-		xpPerUse = 10
 	}
 
 	ctx := context.Background()
@@ -61,7 +60,7 @@ func (s *Server) grantPlayerSkillXP(charID string, abilityID int) {
 	progress.XP, progress.Level, _ = db.ProcessMasteryXPCumulative(
 		progress.XP,
 		progress.Level,
-		xpPerUse,
+		xpAmount,
 		&ability,
 	)
 
@@ -81,11 +80,11 @@ func (s *Server) grantPlayerSkillXP(charID string, abilityID int) {
 			client.actor.SkillLevels[abilityID] = progress.Level
 			client.actor.Mu.Unlock()
 		}
-		log.Printf("mastery: char=%s ability=%d LEVEL UP %d->%d xp=%d",
-			charID, abilityID, oldLevel, progress.Level, progress.XP)
+		log.Printf("mastery: char=%s ability=%d LEVEL UP %d->%d xp=%d gain=%d killing_blow=%t",
+			charID, abilityID, oldLevel, progress.Level, progress.XP, xpAmount, isKillingBlow)
 	} else {
-		log.Printf("mastery: char=%s ability=%d xp=%d level=%d",
-			charID, abilityID, progress.XP, progress.Level)
+		log.Printf("mastery: char=%s ability=%d xp=%d level=%d gain=%d killing_blow=%t",
+			charID, abilityID, progress.XP, progress.Level, xpAmount, isKillingBlow)
 	}
 
 	if client == nil {

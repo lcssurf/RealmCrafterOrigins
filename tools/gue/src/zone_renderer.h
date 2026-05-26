@@ -99,6 +99,8 @@ public:
         glm::vec3 pos         = {};
         int       axis        = -1;       // active / highlighted
         unsigned  allow_axes  = 0b111;
+        bool      use_local_axes = false;
+        glm::mat3 local_axes     = glm::mat3(1.f); // columns = X/Y/Z
     };
     void SetGizmo(const GizmoState& g) { gizmo_ = g; }
 

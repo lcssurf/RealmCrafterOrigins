@@ -6,6 +6,9 @@
 #include <rco/renderer/model.h>
 #include <string>
 #include <vector>
+#include <array>
+
+struct ImVec2;
 
 namespace rco::renderer { class Engine; class Pipeline; }
 
@@ -17,6 +20,14 @@ namespace gue {
 // etc. lands in one place and is picked up everywhere.
 class PreviewViewport {
 public:
+    struct CollisionShape {
+        int   type     = 0; // 0=box, 1=sphere, 2=mesh, 3=wedge
+        float offset_x = 0.f, offset_y = 0.f, offset_z = 0.f;
+        float size_x   = 1.f, size_y   = 1.f, size_z   = 1.f;
+        float detail_a = 0.f;
+        float detail_b = 0.f;
+    };
+
     ~PreviewViewport();
 
     void Init(rco::renderer::Engine*   engine,
@@ -44,7 +55,10 @@ public:
     // Actor-level scale multiplier. Multiplies each submesh's model scale
     // live — used by the Actor Def editor to preview size overrides
     // (filhote/pai grandão). Default 1.0.
-    void SetActorScale(float s) { actor_.scale = s > 0.f ? s : 1.f; }
+    void SetActorScale(float s) {
+        actor_scale_ = s > 0.f ? s : 1.f;
+        actor_.scale = actor_scale_;
+    }
 
     // After LoadModel, resolve each submesh's aiMaterial name against the
     // MediaTab's materials list and bind real PBR textures from disk.
@@ -76,8 +90,16 @@ public:
         sx = uv_scale_[0];  sy = uv_scale_[1];
     }
 
+    void SetCollisionShapes(const std::vector<CollisionShape>& shapes) {
+        collision_shapes_ = shapes;
+    }
+    void SetCollisionPreviewVisible(bool v) { show_collision_preview_ = v; }
+    bool CollisionPreviewVisible() const { return show_collision_preview_; }
+
 private:
     void RenderToEngineFrame_(int w, int h, float dt);
+    void DrawCollisionOverlay_(const ImVec2& image_pos, const ImVec2& image_size) const;
+    void EnsureCollisionMeshCache_() const;
 
     rco::renderer::Engine*   engine_   = nullptr;
     rco::renderer::Pipeline* pipeline_ = nullptr;
@@ -102,6 +124,7 @@ private:
     float anim_t_        = 0.f;
     bool  playing_       = true;
     float sun_intensity_ = 1.0f;
+    float actor_scale_   = 1.0f;
 
     // UV diagnostic — apply offset/scale on top of the VBO's UVs so the user
     // can confirm the right alignment when the import didn't pick up the
@@ -123,6 +146,14 @@ private:
     // Debounce Engine::Resize when the user drags the splitter.
     int last_w_        = 0, last_h_ = 0;
     int stable_frames_ = 0;
+
+    bool                        show_collision_preview_ = false;
+    std::vector<CollisionShape> collision_shapes_;
+    mutable std::vector<std::array<glm::vec3, 3>> collision_mesh_tris_;
+    mutable std::string                         collision_mesh_cache_path_;
+    mutable std::vector<std::array<glm::vec3, 3>> collision_mesh_simplified_tris_;
+    mutable std::string                           collision_mesh_simplified_path_;
+    mutable float                                 collision_mesh_simplified_budget_ = -1.f;
 };
 
 } // namespace gue

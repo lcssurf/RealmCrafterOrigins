@@ -17,7 +17,7 @@ struct ZScenery {
     glm::vec3 pos         = {};
     glm::vec3 rot         = {};   // pitch/yaw/roll degrees
     glm::vec3 scale       = {1,1,1};
-    int       collision   = 1;    // 0=none 1=sphere 2=box 3=polygon
+    int       collision   = 1;    // 0=none 1=sphere 2=box/wedge 3=polygon
     int       animMode    = 0;    // 0=none 1=loop 2=ping-pong 3=on-select
     int       invSize     = 0;
     bool      ownable     = false;

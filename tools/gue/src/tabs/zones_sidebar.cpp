@@ -13,7 +13,7 @@ namespace gue {
 
 // ─── Top bar (Save / Undo / hints) ───────────────────────────────────────────
 
-void ZonesTab::DrawTopBar(sqlite3* db) {
+void ZonesTab::DrawTopBar(sqlite3* db, MediaTab* media) {
     bool hasZone = !scene_.areaName.empty();
 
     if (!hasZone) ImGui::BeginDisabled();
@@ -30,8 +30,14 @@ void ZonesTab::DrawTopBar(sqlite3* db) {
     if (ImGui::Button("Undo"))          Undo(db);
     if (ImGui::IsItemHovered())         ImGui::SetTooltip("Ctrl+Z");
     ImGui::SameLine();
-    if (ImGui::Button("Duplicate"))     DuplicateSelected(db);
+    if (ImGui::Button("Duplicate"))     DuplicateSelected(db, media);
     if (ImGui::IsItemHovered())         ImGui::SetTooltip("Ctrl+D");
+    ImGui::SameLine();
+    if (ImGui::Button("Copy"))          CopySelected();
+    if (ImGui::IsItemHovered())         ImGui::SetTooltip("Ctrl+C");
+    ImGui::SameLine();
+    if (ImGui::Button("Paste"))         PasteSelected(db, media);
+    if (ImGui::IsItemHovered())         ImGui::SetTooltip("Ctrl+V");
 
     // ── Mode selector ────────────────────────────────────────────────────
     ImGui::SameLine(0, 24.f);
@@ -49,8 +55,7 @@ void ZonesTab::DrawTopBar(sqlite3* db) {
             if (ImGui::Selectable(kModeLabels[i], sel)) {
                 zoneMode_ = (ZoneMode)i;
                 // Drop the current selection — the mode's placement panel takes over.
-                selectedID_   = -1;
-                selectedType_ = kSelNone;
+                ClearSelection();
             }
             if (sel) ImGui::SetItemDefaultFocus();
         }
@@ -75,6 +80,9 @@ static void SectionHeader(const char* label, ImVec4 col = {0.45f, 0.75f, 1.f, 1.
 }
 
 void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
+    const bool ctrlSelect = ImGui::IsKeyDown(ImGuiKey_LeftCtrl)
+                         || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
+
     // ── Zone selector ──────────────────────────────────────────────────────
     ImGui::SetNextItemWidth(-1.f);
     const char* cur = scene_.areaName.empty() ? "(select zone)" : scene_.areaName.c_str();
@@ -148,7 +156,7 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
         ImGui::PopStyleColor();
         if (!open) return;
         for (auto& obj : vec) {
-            bool sel = (selectedType_ == selType && selectedID_ == obj.id);
+            bool sel = IsInSelection(selType, obj.id);
             ImGuiTreeNodeFlags flags =
                 ImGuiTreeNodeFlags_Leaf |
                 ImGuiTreeNodeFlags_NoTreePushOnOpen |
@@ -171,8 +179,8 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
             ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s", lbl);
             if (sel) ImGui::PopStyleColor();
             if (ImGui::IsItemClicked()) {
-                selectedID_   = obj.id;
-                selectedType_ = selType;
+                if (ctrlSelect) ToggleSelection(selType, obj.id);
+                else SelectSingle(selType, obj.id);
             }
         }
         ImGui::TreePop();
@@ -210,7 +218,7 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
         ImGui::PopStyleColor();
         if (open) {
             for (const auto& obj : scene_.scenery) {
-                bool sel = (selectedType_ == kSelScenery && selectedID_ == obj.id);
+                bool sel = IsInSelection(kSelScenery, obj.id);
                 ImGuiTreeNodeFlags flags =
                     ImGuiTreeNodeFlags_Leaf |
                     ImGuiTreeNodeFlags_NoTreePushOnOpen |
@@ -231,8 +239,8 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
                 ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s", lbl);
                 if (sel) ImGui::PopStyleColor();
                 if (ImGui::IsItemClicked()) {
-                    selectedID_   = obj.id;
-                    selectedType_ = kSelScenery;
+                    if (ctrlSelect) ToggleSelection(kSelScenery, obj.id);
+                    else SelectSingle(kSelScenery, obj.id);
                 }
             }
             ImGui::TreePop();
@@ -306,8 +314,14 @@ void ZonesTab::DrawStatusBar() {
             "Portal","Trigger","Sound","ColBox","Waypoint","NPC","Emitter","Water","Scenery","SpawnPt","ColSphere"
         };
         int si = std::clamp(selectedType_, 0, 10);
-        ImGui::TextColored({0.4f, 0.8f, 1.f, 0.8f},
-                           "Selected: %s #%d", kSelNames[si], selectedID_);
+        const int selCount = (int)ActiveSelection().size();
+        if (selCount > 1) {
+            ImGui::TextColored({0.4f, 0.8f, 1.f, 0.8f},
+                               "Selected: %s #%d (+%d)", kSelNames[si], selectedID_, selCount - 1);
+        } else {
+            ImGui::TextColored({0.4f, 0.8f, 1.f, 0.8f},
+                               "Selected: %s #%d", kSelNames[si], selectedID_);
+        }
     } else {
         ImGui::TextDisabled("Nothing selected");
     }

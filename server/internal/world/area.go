@@ -184,6 +184,8 @@ const regenCombatWindow = int64(5_000) // ms out-of-combat before regen starts
 
 func (a *Area) tickRegen() {
 	now := time.Now().UnixMilli()
+	masteryCfg := GetMasteryKillScalingConfig()
+	GetCombatWindowManager().CleanupExpired(masteryCfg.WindowTimeoutMs)
 	actors := a.Snapshot()
 	for _, actor := range actors {
 		actor.Mu.Lock()
@@ -294,8 +296,13 @@ func broadcastNPCPosition(a *Area, npc *Actor) {
 // moveNPCToward advances npc one AI step toward target and updates its yaw.
 // Returns true if the NPC moved (was not already in attack range).
 func moveNPCToward(npc, target *Actor, a *Area) {
-	dx := target.X - npc.X
-	dz := target.Z - npc.Z
+	moveNPCToPoint(npc, target.X, target.Z, a)
+}
+
+// moveNPCToPoint advances npc one AI step toward a world point and updates yaw.
+func moveNPCToPoint(npc *Actor, targetX, targetZ float32, a *Area) {
+	dx := targetX - npc.X
+	dz := targetZ - npc.Z
 	dist := float32(math.Sqrt(float64(dx*dx + dz*dz)))
 	if dist < 0.05 {
 		return
@@ -317,18 +324,15 @@ func moveNPCToward(npc, target *Actor, a *Area) {
 	npc.Yaw = yaw
 }
 
-// leashNPC resets an NPC to its spawn point and resumes the appropriate idle
-// mode (patrol, wander, or stationary).
+// leashNPC clears chase/combat transient state and starts a walking return to
+// spawn instead of teleporting.
 func leashNPC(npc *Actor, a *Area) {
 	npc.Mu.Lock()
-	npc.X = npc.SpawnX
-	npc.Y = npc.SpawnY
-	npc.Z = npc.SpawnZ
-	npc.Yaw = npc.SpawnYaw
 	npc.Guarding = false
 	npc.GuardUntil = 0
 	npc.ParryUntil = 0
 	npc.DodgeUntil = 0
+	npc.AITarget = nil
 	npc.SpecialWindupUntil = 0
 	npc.SpecialTargetRID = 0
 	npc.SpecialAbilityID = 0
@@ -337,10 +341,10 @@ func leashNPC(npc *Actor, a *Area) {
 	npc.SpecialClientTraceID = ""
 	npc.SpecialChainCount = 0
 	npc.AbilityCooldowns = make(map[int]int64)
-	postChaseMode(npc)
+	npc.AIMode = AIReturn
+	npc.WaypointPauseUntil = 0
 	npc.Mu.Unlock()
-	broadcastNPCPosition(a, npc)
-	BroadcastAnimate(a, npc, "Idle")
+	BroadcastAnimate(a, npc, "Walk")
 }
 
 // pickWanderTarget selects a new random XZ destination within the NPC's wander
@@ -592,6 +596,36 @@ func (a *Area) tickAI() {
 					npc.AIMode = AIWait
 				}
 				npc.Mu.Unlock()
+			}
+
+		case AIReturn:
+			// Aggressive NPCs can re-acquire targets while returning home.
+			if npc.Aggressiveness == 2 {
+				a.lookForTarget(npc, players)
+				npc.Mu.Lock()
+				mode = npc.AIMode
+				npc.Mu.Unlock()
+				if mode == AIChase {
+					continue
+				}
+			}
+
+			dx := npc.SpawnX - npc.X
+			dz := npc.SpawnZ - npc.Z
+			if dx*dx+dz*dz < 0.25 { // arrived at spawn (within 0.5 units)
+				npc.X = npc.SpawnX
+				npc.Y = npc.SpawnY
+				npc.Z = npc.SpawnZ
+				npc.Yaw = npc.SpawnYaw
+				broadcastNPCPosition(a, npc)
+				npc.Mu.Lock()
+				postChaseMode(npc)
+				npc.Mu.Unlock()
+				BroadcastAnimate(a, npc, "Idle")
+			} else {
+				moveNPCToPoint(npc, npc.SpawnX, npc.SpawnZ, a)
+				broadcastNPCPosition(a, npc)
+				BroadcastAnimate(a, npc, "Walk")
 			}
 
 		case AIChase:

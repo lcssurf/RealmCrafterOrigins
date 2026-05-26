@@ -14,6 +14,7 @@ const (
 	AIChase       = 3
 	AIPatrolPause = 4
 	AIWanderPause = 5
+	AIReturn      = 6
 )
 
 // Actor represents any entity in the game world — player or NPC.

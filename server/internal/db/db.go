@@ -140,6 +140,9 @@ type KillXPScalingConfig struct {
 	LevelDiffCoefficient float64
 	MultiplierMin        float64
 	MultiplierMax        float64
+	MasteryXPPerMobLevel int
+	MasteryKillingBlow   float64
+	MasteryWindowTimeout int
 }
 
 // PlayerKitAbilityEntry is one ability slot in an active kit.
@@ -408,6 +411,8 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV33(ctx)
 	d.migrateV34(ctx)
 	d.migrateV35(ctx)
+	d.migrateV36(ctx)
+	d.migrateV37(ctx)
 
 	return d, nil
 }
@@ -1338,9 +1343,10 @@ func (d *DB) SeedDefaultKillXPScalingConfig(ctx context.Context) error {
 
 	if _, err := d.db.ExecContext(ctx, d.q(`
 		INSERT INTO kill_xp_scaling_config
-		(id, base_xp_per_npc_level, level_diff_coefficient, multiplier_min, multiplier_max)
-		VALUES (1, ?, ?, ?, ?)`),
-		25, 0.1, 0.0, 2.0); err != nil {
+		(id, base_xp_per_npc_level, level_diff_coefficient, multiplier_min, multiplier_max,
+		 mastery_xp_per_mob_level, mastery_killing_blow_mult, mastery_window_timeout_ms)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?)`),
+		25, 0.1, 0.1, 1.5, 10, 1.5, 10000); err != nil {
 		return fmt.Errorf("seed kill_xp_scaling_config insert: %w", err)
 	}
 	log.Printf("seed: kill xp scaling config seeded (defaults)")
@@ -4943,11 +4949,13 @@ func (d *DB) GetKillXPScalingConfig(ctx context.Context) (*KillXPScalingConfig, 
 	load := func() (*KillXPScalingConfig, error) {
 		cfg := &KillXPScalingConfig{}
 		err := d.db.QueryRowContext(ctx, d.q(`
-			SELECT id, base_xp_per_npc_level, level_diff_coefficient, multiplier_min, multiplier_max
+			SELECT id, base_xp_per_npc_level, level_diff_coefficient, multiplier_min, multiplier_max,
+			       mastery_xp_per_mob_level, mastery_killing_blow_mult, mastery_window_timeout_ms
 			  FROM kill_xp_scaling_config
 			 ORDER BY id
 			 LIMIT 1`)).
-			Scan(&cfg.ID, &cfg.BaseXPPerNPCLevel, &cfg.LevelDiffCoefficient, &cfg.MultiplierMin, &cfg.MultiplierMax)
+			Scan(&cfg.ID, &cfg.BaseXPPerNPCLevel, &cfg.LevelDiffCoefficient, &cfg.MultiplierMin, &cfg.MultiplierMax,
+				&cfg.MasteryXPPerMobLevel, &cfg.MasteryKillingBlow, &cfg.MasteryWindowTimeout)
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -4993,17 +5001,31 @@ func (d *DB) UpdateKillXPScalingConfig(ctx context.Context, c *KillXPScalingConf
 	if c.MultiplierMax < c.MultiplierMin {
 		return fmt.Errorf("db: UpdateKillXPScalingConfig: multiplier_max must be >= multiplier_min")
 	}
+	if c.MasteryXPPerMobLevel < 1 {
+		return fmt.Errorf("db: UpdateKillXPScalingConfig: mastery_xp_per_mob_level must be >= 1")
+	}
+	if c.MasteryKillingBlow < 1.0 {
+		return fmt.Errorf("db: UpdateKillXPScalingConfig: mastery_killing_blow_mult must be >= 1.0")
+	}
+	if c.MasteryWindowTimeout < 1000 {
+		return fmt.Errorf("db: UpdateKillXPScalingConfig: mastery_window_timeout_ms must be >= 1000")
+	}
 
 	_, err := d.db.ExecContext(ctx, d.q(`
 		INSERT INTO kill_xp_scaling_config
-		    (id, base_xp_per_npc_level, level_diff_coefficient, multiplier_min, multiplier_max)
-		VALUES (1, ?, ?, ?, ?)
+		    (id, base_xp_per_npc_level, level_diff_coefficient, multiplier_min, multiplier_max,
+		     mastery_xp_per_mob_level, mastery_killing_blow_mult, mastery_window_timeout_ms)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 		    base_xp_per_npc_level = excluded.base_xp_per_npc_level,
 		    level_diff_coefficient = excluded.level_diff_coefficient,
 		    multiplier_min = excluded.multiplier_min,
-		    multiplier_max = excluded.multiplier_max`),
-		c.BaseXPPerNPCLevel, c.LevelDiffCoefficient, c.MultiplierMin, c.MultiplierMax)
+		    multiplier_max = excluded.multiplier_max,
+		    mastery_xp_per_mob_level = excluded.mastery_xp_per_mob_level,
+		    mastery_killing_blow_mult = excluded.mastery_killing_blow_mult,
+		    mastery_window_timeout_ms = excluded.mastery_window_timeout_ms`),
+		c.BaseXPPerNPCLevel, c.LevelDiffCoefficient, c.MultiplierMin, c.MultiplierMax,
+		c.MasteryXPPerMobLevel, c.MasteryKillingBlow, c.MasteryWindowTimeout)
 	if err != nil {
 		return fmt.Errorf("db: UpdateKillXPScalingConfig: %w", err)
 	}
@@ -7164,8 +7186,8 @@ func (d *DB) migrateV32(ctx context.Context) {
 			id                     SERIAL PRIMARY KEY,
 			base_xp_per_npc_level  INTEGER NOT NULL DEFAULT 25,
 			level_diff_coefficient REAL    NOT NULL DEFAULT 0.1,
-			multiplier_min         REAL    NOT NULL DEFAULT 0.0,
-			multiplier_max         REAL    NOT NULL DEFAULT 2.0
+			multiplier_min         REAL    NOT NULL DEFAULT 0.1,
+			multiplier_max         REAL    NOT NULL DEFAULT 1.5
 		)`)
 	} else {
 		exec(`CREATE TABLE IF NOT EXISTS character_progression_config (
@@ -7187,8 +7209,8 @@ func (d *DB) migrateV32(ctx context.Context) {
 			id                     INTEGER PRIMARY KEY AUTOINCREMENT,
 			base_xp_per_npc_level  INTEGER NOT NULL DEFAULT 25,
 			level_diff_coefficient REAL    NOT NULL DEFAULT 0.1,
-			multiplier_min         REAL    NOT NULL DEFAULT 0.0,
-			multiplier_max         REAL    NOT NULL DEFAULT 2.0
+			multiplier_min         REAL    NOT NULL DEFAULT 0.1,
+			multiplier_max         REAL    NOT NULL DEFAULT 1.5
 		)`)
 	}
 }
@@ -7666,6 +7688,86 @@ func (d *DB) migrateV35(ctx context.Context) {
 	_, _ = d.db.ExecContext(ctx, d.q(`
 		UPDATE characters SET unspent_stat_points = (level - 1) * 5
 		WHERE unspent_stat_points = 0 AND level > 1
+	`))
+
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO meta (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
+		conversionDoneKey, "1")
+}
+
+func (d *DB) migrateV36(ctx context.Context) {
+	const conversionDoneKey = "migration_v36_xp_scaling_defaults_done"
+
+	if _, err := d.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		log.Printf("migrateV36: ensure meta table failed: %v", err)
+		return
+	}
+
+	var doneValue string
+	doneErr := d.db.QueryRowContext(ctx, d.q(`SELECT value FROM meta WHERE key = ?`), conversionDoneKey).Scan(&doneValue)
+	if doneErr == nil && strings.TrimSpace(doneValue) == "1" {
+		return
+	}
+
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		UPDATE kill_xp_scaling_config
+		SET multiplier_min = 0.1, multiplier_max = 1.5
+		WHERE id = 1 AND multiplier_min = 0.0 AND multiplier_max = 2.0
+	`))
+
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO meta (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
+		conversionDoneKey, "1")
+}
+
+func (d *DB) migrateV37(ctx context.Context) {
+	const conversionDoneKey = "migration_v37_mastery_window_done"
+
+	if _, err := d.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		log.Printf("migrateV37: ensure meta table failed: %v", err)
+		return
+	}
+
+	var doneValue string
+	doneErr := d.db.QueryRowContext(ctx, d.q(`SELECT value FROM meta WHERE key = ?`), conversionDoneKey).Scan(&doneValue)
+	if doneErr == nil && strings.TrimSpace(doneValue) == "1" {
+		return
+	}
+
+	addCol := func(table, col, def string) {
+		sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, col, def)
+		_, _ = d.db.ExecContext(ctx, sql)
+	}
+	addCol("kill_xp_scaling_config", "mastery_xp_per_mob_level", "INTEGER NOT NULL DEFAULT 10")
+	addCol("kill_xp_scaling_config", "mastery_killing_blow_mult", "REAL NOT NULL DEFAULT 1.5")
+	addCol("kill_xp_scaling_config", "mastery_window_timeout_ms", "INTEGER NOT NULL DEFAULT 10000")
+
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		UPDATE kill_xp_scaling_config
+		SET mastery_xp_per_mob_level = 10
+		WHERE mastery_xp_per_mob_level IS NULL OR mastery_xp_per_mob_level <= 0
+	`))
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		UPDATE kill_xp_scaling_config
+		SET mastery_killing_blow_mult = 1.5
+		WHERE mastery_killing_blow_mult IS NULL OR mastery_killing_blow_mult < 1.0
+	`))
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		UPDATE kill_xp_scaling_config
+		SET mastery_window_timeout_ms = 10000
+		WHERE mastery_window_timeout_ms IS NULL OR mastery_window_timeout_ms < 1000
 	`))
 
 	_, _ = d.db.ExecContext(ctx, d.q(`

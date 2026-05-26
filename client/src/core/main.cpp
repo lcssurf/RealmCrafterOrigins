@@ -233,18 +233,8 @@ static bool SceneDebugLogsEnabled() {
 }
 
 static bool EntryPerfEnabled() {
-    static const bool enabled = []() {
-        const char* v = std::getenv("RCO_PERF_ENTRY");
-        bool parsed = false;
-        if (v && ParseConfigBool(v, parsed)) return parsed;
-
-        bool cfg_enabled = false;
-        if (ReadConfigBool("perf", "entry_log_enabled", cfg_enabled)) {
-            return cfg_enabled;
-        }
-        return false;
-    }();
-    return enabled;
+    // Temporarily disabled: avoid generating perf_entry_*.jsonl files.
+    return false;
 }
 
 class EntryPerfLogger {
@@ -1087,6 +1077,13 @@ int main() {
     rco::ui::Chat            chat;
     rco::ui::Inventory       inventory;
     rco::ui::FloatingNumbers float_nums;
+    struct RecentFloatingPacket {
+        uint32_t target_rid = 0;
+        int16_t value = 0;
+        bool is_crit = false;
+        double at = 0.0;
+    };
+    std::vector<RecentFloatingPacket> recent_floating_packets;
     rco::ui::SpellBar        spellbar;
     rco::ui::SkillHotbar     skill_hotbar;
     rco::ui::SpellEffects    spell_fx;
@@ -2175,23 +2172,20 @@ int main() {
                 if (!r.OK()) break;
                 chat.AddMessage(sender, text);
                 // Attach speech bubble to the speaker.
-                float bx = 0.f, by = 0.f, bz = 0.f;
-                bool found = false;
+                uint32_t sender_rid = 0;
                 if (sender == player.name) {
-                    bx = player.x; by = player.y; bz = player.z; found = true;
+                    sender_rid = player.runtimeId;
                 } else {
                     for (auto& [rid, e] : world_actors) {
                         if (e.name == sender) {
-                            bx = e.x;
-                            by = e.y;   // chat bubble sits above the actor's actual Y
-                            bz = e.z;
-                            found = true;
+                            sender_rid = rid;
                             break;
                         }
                     }
                 }
-                if (found)
-                    chat_bubbles.Add(bx, by + 2.3f, bz, text, static_cast<float>(glfwGetTime()));
+                if (sender_rid != 0) {
+                    chat_bubbles.Add(sender_rid, 2.8f, text, static_cast<float>(glfwGetTime()));
+                }
                 break;
             }
 
@@ -2432,13 +2426,57 @@ int main() {
                         }
                         break;
                     case rco::net::kCombatEventSpecialHit:
+                    {
+                        bool matched_floating = false;
+                        for (auto it = recent_floating_packets.begin();
+                             it != recent_floating_packets.end(); ++it) {
+                            const double dt = std::abs(event_now - it->at);
+                            if (it->target_rid == target_rid &&
+                                it->value == value &&
+                                !it->is_crit &&
+                                dt <= 0.25) {
+                                matched_floating = true;
+                                break;
+                            }
+                        }
+                        if (!matched_floating) {
+                            float wx = 0.f, wy = 0.f, wz = 0.f;
+                            if (resolve_actor_position(target_rid, wx, wy, wz)) {
+                                float_nums.AddDamage(wx, wy + 1.8f, wz,
+                                                     static_cast<int32_t>(value),
+                                                     false, true);
+                            }
+                        }
                         msg = actor_name(source_rid) + " landed a special hit on " +
                               actor_name(target_rid) + " for " + std::to_string(value) + " damage.";
                         break;
+                    }
                     case rco::net::kCombatEventSpecialCritHit:
+                    {
+                        bool matched_floating = false;
+                        for (auto it = recent_floating_packets.begin();
+                             it != recent_floating_packets.end(); ++it) {
+                            const double dt = std::abs(event_now - it->at);
+                            if (it->target_rid == target_rid &&
+                                it->value == value &&
+                                it->is_crit &&
+                                dt <= 0.25) {
+                                matched_floating = true;
+                                break;
+                            }
+                        }
+                        if (!matched_floating) {
+                            float wx = 0.f, wy = 0.f, wz = 0.f;
+                            if (resolve_actor_position(target_rid, wx, wy, wz)) {
+                                float_nums.AddDamage(wx, wy + 1.8f, wz,
+                                                     static_cast<int32_t>(value),
+                                                     true, true);
+                            }
+                        }
                         msg = actor_name(source_rid) + " landed a critical special hit on " +
                               actor_name(target_rid) + " for " + std::to_string(value) + " damage.";
                         break;
+                    }
                     default:
                         msg = "Combat event received.";
                         break;
@@ -2641,6 +2679,23 @@ int main() {
                 int16_t  dmg        = static_cast<int16_t>(r.ReadU16());
                 bool     is_crit    = r.ReadU8() != 0;
                 if (!r.OK()) break;
+                const double floating_now = glfwGetTime();
+                recent_floating_packets.erase(
+                    std::remove_if(
+                        recent_floating_packets.begin(),
+                        recent_floating_packets.end(),
+                        [floating_now](const RecentFloatingPacket& pkt) {
+                            return (floating_now - pkt.at) > 0.75;
+                        }),
+                    recent_floating_packets.end());
+                recent_floating_packets.push_back(
+                    RecentFloatingPacket{target_rid, dmg, is_crit, floating_now});
+                if (recent_floating_packets.size() > 48) {
+                    const std::size_t overflow = recent_floating_packets.size() - 48;
+                    recent_floating_packets.erase(
+                        recent_floating_packets.begin(),
+                        recent_floating_packets.begin() + overflow);
+                }
                 // Resolve world position from target RID.
                 float wx = 0, wy = 0, wz = 0;
                 if (target_rid == player.runtimeId) {
@@ -5260,7 +5315,8 @@ int main() {
 
                 // Chat bubbles.
                 chat_bubbles.Render(window.Width(), window.Height(),
-                                    view_mat, proj_mat, static_cast<float>(now));
+                                    view_mat, proj_mat, static_cast<float>(now),
+                                    player, world_actors);
 
                 // Dialog window.
                 if (dialog.open && !player_dead) {

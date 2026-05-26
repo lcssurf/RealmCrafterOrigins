@@ -759,30 +759,68 @@ void ZoneRenderer::DrawMoveGizmo(const glm::vec3& pos, const glm::mat4& vp,
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    float len = GizmoAxisLength(pos, camPos);
-    float thick = len * 0.05f;
-    float head  = len * 0.15f;
+    float len  = GizmoAxisLength(pos, camPos);
+    float head = len * 0.15f;
 
-    struct Axis { glm::vec3 dir; glm::vec4 col; };
-    Axis axes[3] = {
-        {{1,0,0}, {1.00f, 0.25f, 0.25f, 1.f}},
-        {{0,1,0}, {0.25f, 1.00f, 0.25f, 1.f}},
-        {{0,0,1}, {0.25f, 0.40f, 1.00f, 1.f}},
+    glm::vec3 axesDir[3] = {
+        {1,0,0}, {0,1,0}, {0,0,1}
+    };
+    if (gizmo_.use_local_axes) {
+        axesDir[0] = glm::normalize(gizmo_.local_axes[0]);
+        axesDir[1] = glm::normalize(gizmo_.local_axes[1]);
+        axesDir[2] = glm::normalize(gizmo_.local_axes[2]);
+    }
+
+    const glm::vec4 axisColors[3] = {
+        {1.00f, 0.25f, 0.25f, 1.f},
+        {0.25f, 1.00f, 0.25f, 1.f},
+        {0.25f, 0.40f, 1.00f, 1.f},
     };
 
+    glLineWidth(2.0f);
     for (int i = 0; i < 3; ++i) {
-        glm::vec4 col = axes[i].col;
-        if (highlightAxis == i) col = glm::vec4(1.f, 0.95f, 0.2f, 1.f);
-        glm::vec3 mid   = pos + axes[i].dir * (len * 0.5f);
-        glm::vec3 scale = glm::vec3(thick);
-        if (i == 0) scale.x = len;
-        if (i == 1) scale.y = len;
-        if (i == 2) scale.z = len;
-        DrawBox(mid, scale, col, vp);
-        glm::vec3 tip = pos + axes[i].dir * len;
+        glm::vec4 col = (highlightAxis == i) ? glm::vec4(1.f, 0.95f, 0.2f, 1.f)
+                                             : axisColors[i];
+        DrawLine(pos, pos + axesDir[i] * len, col, vp);
+        glm::vec3 tip = pos + axesDir[i] * len;
         DrawBox(tip, glm::vec3(head), col, vp);
     }
-    DrawBox(pos, glm::vec3(thick * 1.5f), {0.9f, 0.9f, 0.9f, 1.f}, vp);
+
+    // Plane handles (XY, XZ, YZ) for 2-axis translation.
+    // highlightAxis ids: 4=XY, 5=XZ, 6=YZ
+    const float planeOff  = len * 0.28f;
+    const float planeSize = len * 0.28f;
+    auto planeCol = [&](int id, const glm::vec4& base) {
+        if (highlightAxis == id) return glm::vec4(1.f, 0.95f, 0.2f, 0.95f);
+        return glm::vec4(base.r, base.g, base.b, 0.55f);
+    };
+    auto drawPlaneQuad = [&](const glm::vec3& a, const glm::vec3& b,
+                             const glm::vec3& c, const glm::vec3& d,
+                             const glm::vec4& col) {
+        DrawLine(a, b, col, vp);
+        DrawLine(b, c, col, vp);
+        DrawLine(c, d, col, vp);
+        DrawLine(d, a, col, vp);
+    };
+    auto p0 = pos + axesDir[0] * (planeOff - planeSize * 0.5f);
+    auto p1 = pos + axesDir[0] * (planeOff + planeSize * 0.5f);
+    auto q0 = pos + axesDir[1] * (planeOff - planeSize * 0.5f);
+    auto q1 = pos + axesDir[1] * (planeOff + planeSize * 0.5f);
+    auto r0 = pos + axesDir[2] * (planeOff - planeSize * 0.5f);
+    auto r1 = pos + axesDir[2] * (planeOff + planeSize * 0.5f);
+
+    // XY
+    drawPlaneQuad(p0 + q0 - pos, p1 + q0 - pos, p1 + q1 - pos, p0 + q1 - pos,
+                  planeCol(4, glm::vec4(0.95f, 0.75f, 0.20f, 0.55f)));
+    // XZ
+    drawPlaneQuad(p0 + r0 - pos, p1 + r0 - pos, p1 + r1 - pos, p0 + r1 - pos,
+                  planeCol(5, glm::vec4(0.25f, 0.95f, 0.95f, 0.55f)));
+    // YZ
+    drawPlaneQuad(q0 + r0 - pos, q1 + r0 - pos, q1 + r1 - pos, q0 + r1 - pos,
+                  planeCol(6, glm::vec4(0.95f, 0.35f, 0.95f, 0.55f)));
+
+    DrawBox(pos, glm::vec3(head * 0.9f), {0.9f, 0.9f, 0.9f, 1.f}, vp);
+    glLineWidth(1.0f);
 
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -801,7 +839,12 @@ void ZoneRenderer::DrawRotateGizmo(const glm::vec3& pos, const glm::mat4& vp,
 
     const float radius = GizmoAxisLength(pos, camPos);
     const int   segments = 48;
-    const glm::vec3 kAxes[3] = {{1,0,0},{0,1,0},{0,0,1}};
+    glm::vec3 kAxes[3] = {{1,0,0},{0,1,0},{0,0,1}};
+    if (gizmo_.use_local_axes) {
+        kAxes[0] = glm::normalize(gizmo_.local_axes[0]);
+        kAxes[1] = glm::normalize(gizmo_.local_axes[1]);
+        kAxes[2] = glm::normalize(gizmo_.local_axes[2]);
+    }
     const glm::vec4 kColors[3] = {
         {1.00f, 0.25f, 0.25f, 1.f},
         {0.25f, 1.00f, 0.25f, 1.f},
@@ -813,7 +856,7 @@ void ZoneRenderer::DrawRotateGizmo(const glm::vec3& pos, const glm::mat4& vp,
         glm::vec4 col = (highlightAxis == a)
             ? glm::vec4(1.f, 0.95f, 0.2f, 1.f)
             : kColors[a];
-        glm::vec3 u = (a == 1) ? glm::vec3(1,0,0) : glm::vec3(0,1,0);
+        glm::vec3 u = (std::abs(kAxes[a].y) > 0.8f) ? glm::vec3(1,0,0) : glm::vec3(0,1,0);
         glm::vec3 t = glm::normalize(glm::cross(kAxes[a], u));
         glm::vec3 b = glm::normalize(glm::cross(kAxes[a], t));
         glm::vec3 prev = pos + t * radius;
@@ -841,26 +884,26 @@ void ZoneRenderer::DrawScaleGizmo(const glm::vec3& pos, const glm::mat4& vp,
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     const float len   = GizmoAxisLength(pos, camPos);
-    const float thick = len * 0.04f;
     const float cube  = len * 0.13f;
 
-    struct Axis { glm::vec3 dir; glm::vec4 col; };
-    Axis axes[3] = {
-        {{1,0,0}, {1.00f, 0.25f, 0.25f, 1.f}},
-        {{0,1,0}, {0.25f, 1.00f, 0.25f, 1.f}},
-        {{0,0,1}, {0.25f, 0.40f, 1.00f, 1.f}},
+    glm::vec3 axesDir[3] = {{1,0,0}, {0,1,0}, {0,0,1}};
+    if (gizmo_.use_local_axes) {
+        axesDir[0] = glm::normalize(gizmo_.local_axes[0]);
+        axesDir[1] = glm::normalize(gizmo_.local_axes[1]);
+        axesDir[2] = glm::normalize(gizmo_.local_axes[2]);
+    }
+    const glm::vec4 axisColors[3] = {
+        {1.00f, 0.25f, 0.25f, 1.f},
+        {0.25f, 1.00f, 0.25f, 1.f},
+        {0.25f, 0.40f, 1.00f, 1.f},
     };
+    glLineWidth(2.0f);
     for (int i = 0; i < 3; ++i) {
         if ((allowAxes & (1u << i)) == 0) continue;
-        glm::vec4 col = axes[i].col;
+        glm::vec4 col = axisColors[i];
         if (highlightAxis == i) col = glm::vec4(1.f, 0.95f, 0.2f, 1.f);
-        glm::vec3 mid = pos + axes[i].dir * (len * 0.5f);
-        glm::vec3 shaftScale(thick);
-        if (i == 0) shaftScale.x = len;
-        if (i == 1) shaftScale.y = len;
-        if (i == 2) shaftScale.z = len;
-        DrawBox(mid, shaftScale, col, vp);
-        glm::vec3 tip = pos + axes[i].dir * len;
+        glm::vec3 tip = pos + axesDir[i] * len;
+        DrawLine(pos, tip, col, vp);
         DrawBox(tip, glm::vec3(cube), col, vp);
     }
     {
@@ -869,6 +912,7 @@ void ZoneRenderer::DrawScaleGizmo(const glm::vec3& pos, const glm::mat4& vp,
             : glm::vec4(0.85f, 0.85f, 0.85f, 1.f);
         DrawBox(pos, glm::vec3(cube * 0.9f), col, vp);
     }
+    glLineWidth(1.0f);
     glEnable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
 }
