@@ -262,23 +262,38 @@ func (a *Area) tickRegen() {
 // StartAI launches the NPC AI goroutine for this area.
 func (a *Area) StartAI(ctx context.Context) {
 	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
+		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
+		lastTick := time.Now()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				a.tickAI()
+				nowTick := time.Now()
+				tickSec := float32(nowTick.Sub(lastTick).Seconds())
+				lastTick = nowTick
+				if tickSec <= 0 {
+					tickSec = aiTickSecBase
+				}
+				if tickSec < aiTickSecMin {
+					tickSec = aiTickSecMin
+				}
+				if tickSec > aiTickSecMax {
+					tickSec = aiTickSecMax
+				}
+				a.tickAI(tickSec)
 			}
 		}
 	}()
 }
 
 const (
-	npcMoveSpeed  = 5.0 // world units per second
-	aiTickSec     = 0.5 // seconds per AI tick (matches 500ms ticker)
-	leashMultiple = 2.5 // NPC leashes when player is > aggro * leashMultiple from NPC spawn
+	npcMoveSpeed  = 5.0  // world units per second
+	aiTickSecBase = 0.1  // nominal tick seconds (100ms ticker)
+	aiTickSecMin  = 0.05 // clamp low jitter
+	aiTickSecMax  = 0.20 // clamp high jitter; avoids burst-jumps after stalls
+	leashMultiple = 2.5  // NPC leashes when player is > aggro * leashMultiple from NPC spawn
 )
 
 // broadcastNPCPosition sends a PStandardUpdate for the NPC to every player in the area.
@@ -295,19 +310,22 @@ func broadcastNPCPosition(a *Area, npc *Actor) {
 
 // moveNPCToward advances npc one AI step toward target and updates its yaw.
 // Returns true if the NPC moved (was not already in attack range).
-func moveNPCToward(npc, target *Actor, a *Area) {
-	moveNPCToPoint(npc, target.X, target.Z, a)
+func moveNPCToward(npc, target *Actor, a *Area, tickSec float32) {
+	moveNPCToPoint(npc, target.X, target.Z, a, tickSec)
 }
 
 // moveNPCToPoint advances npc one AI step toward a world point and updates yaw.
-func moveNPCToPoint(npc *Actor, targetX, targetZ float32, a *Area) {
+func moveNPCToPoint(npc *Actor, targetX, targetZ float32, a *Area, tickSec float32) {
 	dx := targetX - npc.X
 	dz := targetZ - npc.Z
 	dist := float32(math.Sqrt(float64(dx*dx + dz*dz)))
 	if dist < 0.05 {
 		return
 	}
-	step := float32(npcMoveSpeed * aiTickSec)
+	if tickSec <= 0 {
+		tickSec = aiTickSecBase
+	}
+	step := float32(npcMoveSpeed * tickSec)
 	if step > dist {
 		step = dist
 	}
@@ -389,7 +407,7 @@ func postChaseMode(npc *Actor) {
 func endChase(npc *Actor) { postChaseMode(npc) }
 
 // tickAI runs one AI update step for all NPCs in the area.
-func (a *Area) tickAI() {
+func (a *Area) tickAI(tickSec float32) {
 	now := time.Now().UnixMilli()
 	a.tickDropDespawn(now)
 
@@ -472,7 +490,7 @@ func (a *Area) tickAI() {
 				npc.Mu.Unlock()
 			} else {
 				dist := float32(math.Sqrt(float64(dx*dx + dz*dz)))
-				step := float32(npcMoveSpeed * aiTickSec)
+				step := float32(npcMoveSpeed * tickSec)
 				if step > dist {
 					step = dist
 				}
@@ -551,7 +569,7 @@ func (a *Area) tickAI() {
 				dx2 := wp.X - npc.X
 				dz2 := wp.Z - npc.Z
 				dist := float32(math.Sqrt(float64(dx2*dx2 + dz2*dz2)))
-				step := float32(npcMoveSpeed * aiTickSec)
+				step := float32(npcMoveSpeed * tickSec)
 				if step > dist {
 					step = dist
 				}
@@ -623,7 +641,7 @@ func (a *Area) tickAI() {
 				npc.Mu.Unlock()
 				BroadcastAnimate(a, npc, "Idle")
 			} else {
-				moveNPCToPoint(npc, npc.SpawnX, npc.SpawnZ, a)
+				moveNPCToPoint(npc, npc.SpawnX, npc.SpawnZ, a, tickSec)
 				broadcastNPCPosition(a, npc)
 				BroadcastAnimate(a, npc, "Walk")
 			}
@@ -703,7 +721,7 @@ func (a *Area) tickAI() {
 				}
 			} else {
 				// Not in attack range — step toward the target.
-				moveNPCToward(npc, target, a)
+				moveNPCToward(npc, target, a, tickSec)
 				broadcastNPCPosition(a, npc)
 				BroadcastAnimate(a, npc, "Walk")
 			}

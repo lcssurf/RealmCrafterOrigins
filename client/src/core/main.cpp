@@ -96,6 +96,23 @@ static bool ParseConfigBool(std::string raw, bool& out) {
     return false;
 }
 
+static float NormalizeYawDegrees(float yaw) {
+    while (yaw < 0.f) yaw += 360.f;
+    while (yaw >= 360.f) yaw -= 360.f;
+    return yaw;
+}
+
+static float ShortestYawDeltaDegrees(float from, float to) {
+    float delta = std::fmod((to - from) + 540.f, 360.f) - 180.f;
+    return delta;
+}
+
+static float SmoothLerpFactor(float dt, float rate_per_sec) {
+    if (dt <= 0.f || rate_per_sec <= 0.f) return 1.f;
+    float a = 1.f - std::exp(-rate_per_sec * dt);
+    return std::clamp(a, 0.f, 1.f);
+}
+
 static bool ReadConfigBool(const char* section_name,
                            const char* key_name,
                            bool& out_value) {
@@ -995,8 +1012,11 @@ int main() {
     };
 
     struct WorldActorEntry {
+        // Smoothed/rendered transform used across client systems.
         float x = 0, y = 0, z = 0, yaw = 0;
-        float prev_x = 0, prev_z = 0; // for velocity estimation
+        // Last authoritative transform received from server.
+        float net_x = 0, net_y = 0, net_z = 0, net_yaw = 0;
+        float prev_x = 0, prev_z = 0; // for velocity estimation from smoothed motion
         std::string name;
         uint16_t level = 1;
         int32_t health = 100, health_max = 100;
@@ -2001,6 +2021,7 @@ int main() {
 
                 auto& e = world_actors[rid];  // in-place; avoids copy (actor is unique_ptr)
                 e.x = x; e.y = y; e.z = z; e.yaw = yaw;
+                e.net_x = x; e.net_y = y; e.net_z = z; e.net_yaw = yaw;
                 e.prev_x = x; e.prev_z = z;
                 e.name = name; e.level = level;
                 e.health = hp; e.health_max = hpmax;
@@ -2126,10 +2147,10 @@ int main() {
                 } else {
                     auto it = world_actors.find(rid);
                     if (it != world_actors.end()) {
-                        it->second.x   = x;
-                        it->second.y   = y;
-                        it->second.z   = z;
-                        it->second.yaw = yaw;
+                        it->second.net_x   = x;
+                        it->second.net_y   = y;
+                        it->second.net_z   = z;
+                        it->second.net_yaw = yaw;
                     }
                 }
                 break;
@@ -2569,6 +2590,8 @@ int main() {
                     if (it != world_actors.end()) {
                         it->second.x = rx; it->second.y = ry;
                         it->second.z = rz; it->second.yaw = ryaw;
+                        it->second.net_x = rx; it->second.net_y = ry;
+                        it->second.net_z = rz; it->second.net_yaw = ryaw;
                         it->second.prev_x = rx; it->second.prev_z = rz;
                     }
                 }
@@ -3283,6 +3306,33 @@ int main() {
         {
             rco::net::InboundPacket pkt;
             while (conn.Poll(pkt)) handle_packet(pkt);
+        }
+
+        // Smooth remote actor movement between server snapshots.
+        if (state == rco::GameState::InGame && !world_actors.empty()) {
+            constexpr float kPosLerpRate = 16.0f;
+            constexpr float kYawLerpRate = 20.0f;
+            constexpr float kSnapDistSq  = 36.0f; // snap when divergence > 6 units
+            const float posAlpha = SmoothLerpFactor(dt, kPosLerpRate);
+            const float yawAlpha = SmoothLerpFactor(dt, kYawLerpRate);
+            for (auto& kv : world_actors) {
+                auto& e = kv.second;
+                const float dx = e.net_x - e.x;
+                const float dy = e.net_y - e.y;
+                const float dz = e.net_z - e.z;
+                const float distSq = dx * dx + dy * dy + dz * dz;
+                if (distSq > kSnapDistSq) {
+                    e.x = e.net_x;
+                    e.y = e.net_y;
+                    e.z = e.net_z;
+                } else {
+                    e.x += dx * posAlpha;
+                    e.y += dy * posAlpha;
+                    e.z += dz * posAlpha;
+                }
+                const float yawDelta = ShortestYawDeltaDegrees(e.yaw, e.net_yaw);
+                e.yaw = NormalizeYawDegrees(e.yaw + yawDelta * yawAlpha);
+            }
         }
 
         // ---- Begin frame (clears buffers, polls events) ----
@@ -4237,14 +4287,14 @@ int main() {
 
                 // Render all other actors (NPCs + other players)
                 for (auto& [rid, e] : world_actors) {
-                    // Compute velocity for auto-locomotion from position delta
-                    // (we only have position updates from PStandardUpdate, so
-                    // approximate as a very small value when standing still)
+                    // Compute velocity for auto-locomotion from smoothed movement.
                     float dx = e.x - e.prev_x;
                     float dz = e.z - e.prev_z;
-                    // NPC positions jump at ~10Hz; use binary moved/stopped so
-                    // AnimController auto-locomotion stays stable between updates.
-                    float actor_vel = (dx*dx + dz*dz > 0.0001f) ? 5.0f : 0.f;
+                    float actor_vel = 0.f;
+                    if (dt > 0.00001f) {
+                        actor_vel = std::sqrt(dx * dx + dz * dz) / dt;
+                    }
+                    actor_vel = std::clamp(actor_vel, 0.f, 8.f);
                     e.prev_x = e.x;
                     e.prev_z = e.z;
                     // Update AnimController and sync anim_name

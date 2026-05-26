@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const logAnimateBroadcast = false
+
 // Combat event codes mirrored from protocol (avoids circular import).
 const (
 	combatEventGuardEnded     uint8 = 4
@@ -60,10 +62,22 @@ func BroadcastAnimate(area *Area, actor *Actor, actionName string) {
 			actor.RuntimeID, actionName, -1)
 		return
 	}
-	log.Printf("animate: actor=%d action=%q action_id=%d", actor.RuntimeID, actionName, actionID)
+
+	// Suppress repeated locomotion broadcasts for the same state.
+	// One-shot actions (Attack/Cast/etc.) are still sent every time.
+	isLocomotion := actionName == "Idle" || actionName == "Walk" || actionName == "Run"
 	actor.Mu.Lock()
+	if isLocomotion && actor.CurrentAction == actionName {
+		actor.Mu.Unlock()
+		return
+	}
 	actor.CurrentAction = actionName
 	actor.Mu.Unlock()
+
+	if logAnimateBroadcast {
+		log.Printf("animate: actor=%d action=%q action_id=%d", actor.RuntimeID, actionName, actionID)
+	}
+
 	var p pb
 	p.u32(actor.RuntimeID)
 	p.u8(actionID)
