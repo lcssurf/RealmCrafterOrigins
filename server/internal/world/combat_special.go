@@ -112,6 +112,7 @@ func resolveActorWindup(area *Area, actor, target *Actor, now int64) (handled bo
 		BroadcastCombatEvent(area, combatEventSpecialHit, actor.RuntimeID, target.RuntimeID, int16(damage), "")
 	}
 	BroadcastHPUpdate(area, target, hp)
+	BroadcastAbilityFX(area, actor, target, ability, FXPhaseImpact)
 	if !actor.IsNPC && actor.CharacterID != "" && target.IsNPC {
 		GetCombatWindowManager().TrackSkill(
 			actor.RuntimeID,
@@ -323,6 +324,7 @@ func startNPCSpecialCast(
 	if windupAction := resolveStageAction(actionOverride, ability.ActionWindup, "Attack"); windupAction != "" {
 		BroadcastAnimate(area, npc, windupAction)
 	}
+	BroadcastAbilityFX(area, npc, target, ability, FXPhaseWindup)
 	return true
 }
 

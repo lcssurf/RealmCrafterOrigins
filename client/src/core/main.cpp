@@ -3142,19 +3142,88 @@ int main() {
                 uint8_t  type = r.ReadU8();
                 float    ex   = r.ReadF32(), ey = r.ReadF32(), ez = r.ReadF32();
                 uint16_t dur  = r.ReadU16();
-                if (r.OK() && renderer_ready)
-                    particles.SpawnEmitter(
-                        static_cast<rco::renderer::EmitterType>(type),
-                        {ex, ey, ez},
-                        static_cast<float>(glfwGetTime()),
-                        dur > 0 ? dur / 1000.f : 0.f);
+
+                // Optional rich context (appended to legacy payload).
+                std::string vfx_path;
+                uint32_t    caster_rid = 0;
+                uint32_t    target_rid = 0;
+                uint32_t    ability_id = 0;
+                float       magnitude  = 1.0f;
+                std::string phase;
+                if (!r.Done()) {
+                    vfx_path   = r.ReadString();
+                    caster_rid = r.ReadU32();
+                    target_rid = r.ReadU32();
+                    ability_id = r.ReadU32();
+                    magnitude  = r.ReadF32();
+                    phase      = r.ReadString();
+                }
+
+                if (!r.OK() || !renderer_ready) break;
+                (void)caster_rid;
+                (void)target_rid;
+                (void)magnitude;
+
+                rco::renderer::EmitterType emitter_type =
+                    static_cast<rco::renderer::EmitterType>(type);
+                if (!vfx_path.empty()) {
+                    bool resolved = false;
+                    emitter_type = rco::renderer::ResolveVFXPathToType(vfx_path, &resolved);
+                    if (!resolved) {
+                        std::fprintf(
+                            stderr,
+                            "WARN: VFX path '%s' not mapped (ability=%u phase=%s)\n",
+                            vfx_path.c_str(),
+                            ability_id,
+                            phase.c_str());
+                        break;
+                    }
+                }
+
+                particles.SpawnEmitter(
+                    emitter_type,
+                    {ex, ey, ez},
+                    static_cast<float>(glfwGetTime()),
+                    dur > 0 ? dur / 1000.f : 2.0f);
                 break;
             }
 
             case rco::net::kPSound: {
                 uint8_t id  = r.ReadU8();
                 uint8_t vol = r.ReadU8();
-                if (r.OK()) audio.PlaySfx(id, vol / 255.f);
+
+                // Optional rich context (appended to legacy payload).
+                std::string sfx_path;
+                uint32_t    caster_rid = 0;
+                uint32_t    target_rid = 0;
+                uint32_t    ability_id = 0;
+                float       magnitude  = 1.0f;
+                std::string phase;
+                if (!r.Done()) {
+                    sfx_path   = r.ReadString();
+                    caster_rid = r.ReadU32();
+                    target_rid = r.ReadU32();
+                    ability_id = r.ReadU32();
+                    magnitude  = r.ReadF32();
+                    phase      = r.ReadString();
+                }
+
+                if (!r.OK()) break;
+                (void)caster_rid;
+                (void)target_rid;
+                (void)magnitude;
+
+                if (!sfx_path.empty()) {
+                    std::fprintf(
+                        stderr,
+                        "[sfx-path] received path='%s' ability=%u phase=%s (legacy id playback skipped)\n",
+                        sfx_path.c_str(),
+                        ability_id,
+                        phase.c_str());
+                    break;
+                }
+
+                audio.PlaySfx(id, vol / 255.f);
                 break;
             }
 

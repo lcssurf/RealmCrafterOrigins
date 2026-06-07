@@ -243,7 +243,45 @@ CREATE TABLE IF NOT EXISTS ability_templates (
     vfx_id_impact             INTEGER      NOT NULL DEFAULT 0,
     sfx_id_windup             INTEGER      NOT NULL DEFAULT 0,
     sfx_id_impact             INTEGER      NOT NULL DEFAULT 0,
+    vfx_path_windup           TEXT         NOT NULL DEFAULT '',
+    vfx_path_impact           TEXT         NOT NULL DEFAULT '',
+    sfx_path_windup           TEXT         NOT NULL DEFAULT '',
+    sfx_path_impact           TEXT         NOT NULL DEFAULT '',
     enabled                   BOOLEAN      NOT NULL DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS fx_templates (
+    id                  SERIAL       PRIMARY KEY,
+    fx_key              TEXT         NOT NULL UNIQUE,
+    display_name        TEXT         NOT NULL DEFAULT '',
+
+    -- Emission
+    burst_count         INTEGER      NOT NULL DEFAULT 0,        -- 0=stream, >0=burst all at once
+    stream_interval     REAL         NOT NULL DEFAULT 0.04,     -- seconds between stream particles (used if burst_count=0)
+    lifetime_seconds    REAL         NOT NULL DEFAULT 1.0,      -- particle lifetime
+
+    -- Velocity
+    speed_min           REAL         NOT NULL DEFAULT 1.0,
+    speed_max           REAL         NOT NULL DEFAULT 3.0,
+    velocity_bias_x     REAL         NOT NULL DEFAULT 0.0,
+    velocity_bias_y     REAL         NOT NULL DEFAULT 2.0,
+    velocity_bias_z     REAL         NOT NULL DEFAULT 0.0,
+    velocity_spread     REAL         NOT NULL DEFAULT 0.5,      -- random spread radius
+
+    -- Visual
+    color_start_r       REAL         NOT NULL DEFAULT 1.0,
+    color_start_g       REAL         NOT NULL DEFAULT 0.5,
+    color_start_b       REAL         NOT NULL DEFAULT 0.0,
+    color_start_a       REAL         NOT NULL DEFAULT 1.0,
+    color_end_r         REAL         NOT NULL DEFAULT 1.0,
+    color_end_g         REAL         NOT NULL DEFAULT 0.0,
+    color_end_b         REAL         NOT NULL DEFAULT 0.0,
+    color_end_a         REAL         NOT NULL DEFAULT 0.0,
+    size_start          REAL         NOT NULL DEFAULT 8.0,      -- pixels or world units (matches kCfg[] values)
+    size_end            REAL         NOT NULL DEFAULT 2.0,
+    texture_path        TEXT         NOT NULL DEFAULT '',       -- empty = solid colored quad
+
+    enabled             INTEGER      NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS npc_ability_loadouts (

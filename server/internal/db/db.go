@@ -145,6 +145,38 @@ type KillXPScalingConfig struct {
 	MasteryWindowTimeout int
 }
 
+// FXTemplate defines one visual effect template keyed by path-like string.
+type FXTemplate struct {
+	ID          int
+	Key         string
+	DisplayName string
+
+	BurstCount      int
+	StreamInterval  float32
+	LifetimeSeconds float32
+
+	SpeedMin       float32
+	SpeedMax       float32
+	VelocityBiasX  float32
+	VelocityBiasY  float32
+	VelocityBiasZ  float32
+	VelocitySpread float32
+
+	ColorStartR float32
+	ColorStartG float32
+	ColorStartB float32
+	ColorStartA float32
+	ColorEndR   float32
+	ColorEndG   float32
+	ColorEndB   float32
+	ColorEndA   float32
+	SizeStart   float32
+	SizeEnd     float32
+	TexturePath string
+
+	Enabled bool
+}
+
 // PlayerKitAbilityEntry is one ability slot in an active kit.
 type PlayerKitAbilityEntry struct {
 	SlotIndex   int
@@ -413,6 +445,8 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV35(ctx)
 	d.migrateV36(ctx)
 	d.migrateV37(ctx)
+	d.migrateV38(ctx)
+	d.migrateV39(ctx)
 
 	return d, nil
 }
@@ -1102,9 +1136,11 @@ func (d *DB) SeedDefaultWeaponKits(ctx context.Context) error {
 			telegraph_type, telegraph_radius, telegraph_color_rgba,
 			action_windup, action_impact, action_recover,
 			allow_action_override, allowed_action_tags_json,
-			vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, enabled
+			vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact,
+			vfx_path_windup, vfx_path_impact, sfx_path_windup, sfx_path_impact,
+			enabled
 		)
-		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		WHERE NOT EXISTS (SELECT 1 FROM ability_templates WHERE name = ?)
 	`)
 	for _, a := range abilities {
@@ -1124,7 +1160,9 @@ func (d *DB) SeedDefaultWeaponKits(ctx context.Context) error {
 			a.TelegraphType, a.TelegraphRadius, a.TelegraphColorRGBA,
 			a.ActionWindup, a.ActionImpact, a.ActionRecover,
 			0, "",
-			0, 0, 0, 0, enabled,
+			0, 0, 0, 0,
+			"", "", "", "",
+			enabled,
 			a.Name,
 		); err != nil {
 			return fmt.Errorf("db: SeedDefaultWeaponKits insert ability %q: %w", a.Name, err)
@@ -1918,6 +1956,10 @@ type AbilityTemplateRow struct {
 	VFXIDImpact                int
 	SFXIDWindup                int
 	SFXIDImpact                int
+	VFXPathWindup              string
+	VFXPathImpact              string
+	SFXPathWindup              string
+	SFXPathImpact              string
 	MasteryXPPerUse            int
 	MasteryMaxLevel            int
 	MasteryXPCurveType         string
@@ -1999,6 +2041,7 @@ func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, er
 		       action_windup, action_impact, action_recover,
 		       allow_action_override, allowed_action_tags_json,
 		       vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact,
+		       vfx_path_windup, vfx_path_impact, sfx_path_windup, sfx_path_impact,
 		       mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type,
 		       mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity,
 		       mastery_primary_bonus_per_lvl,
@@ -2025,6 +2068,7 @@ func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, er
 			&r.ActionWindup, &r.ActionImpact, &r.ActionRecover,
 			&allowOverrideRaw, &r.AllowedActionTagsJSON,
 			&r.VFXIDWindup, &r.VFXIDImpact, &r.SFXIDWindup, &r.SFXIDImpact,
+			&r.VFXPathWindup, &r.VFXPathImpact, &r.SFXPathWindup, &r.SFXPathImpact,
 			&r.MasteryXPPerUse, &r.MasteryMaxLevel, &r.MasteryXPCurveType,
 			&r.MasteryXPCurveBase, &r.MasteryXPCurveExponent, &r.MasteryXPIrregularity,
 			&r.MasteryPrimaryBonusPerLvl,
@@ -5032,6 +5076,281 @@ func (d *DB) UpdateKillXPScalingConfig(ctx context.Context, c *KillXPScalingConf
 	return nil
 }
 
+// ListFXTemplates returns all FX templates ordered by id.
+func (d *DB) ListFXTemplates(ctx context.Context) ([]FXTemplate, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT id, fx_key, display_name,
+		       burst_count, stream_interval, lifetime_seconds,
+		       speed_min, speed_max, velocity_bias_x, velocity_bias_y, velocity_bias_z, velocity_spread,
+		       color_start_r, color_start_g, color_start_b, color_start_a,
+		       color_end_r, color_end_g, color_end_b, color_end_a,
+		       size_start, size_end, texture_path, enabled
+		  FROM fx_templates
+		 ORDER BY id`))
+	if err != nil {
+		return nil, fmt.Errorf("db: ListFXTemplates: %w", err)
+	}
+	defer rows.Close()
+
+	var out []FXTemplate
+	for rows.Next() {
+		var t FXTemplate
+		var enabledRaw interface{}
+		if err := rows.Scan(
+			&t.ID, &t.Key, &t.DisplayName,
+			&t.BurstCount, &t.StreamInterval, &t.LifetimeSeconds,
+			&t.SpeedMin, &t.SpeedMax, &t.VelocityBiasX, &t.VelocityBiasY, &t.VelocityBiasZ, &t.VelocitySpread,
+			&t.ColorStartR, &t.ColorStartG, &t.ColorStartB, &t.ColorStartA,
+			&t.ColorEndR, &t.ColorEndG, &t.ColorEndB, &t.ColorEndA,
+			&t.SizeStart, &t.SizeEnd, &t.TexturePath, &enabledRaw,
+		); err != nil {
+			return nil, fmt.Errorf("db: ListFXTemplates scan: %w", err)
+		}
+		t.Enabled = boolFromDB(enabledRaw)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// GetFXTemplateByID returns one FX template by id, or nil if it doesn't exist.
+func (d *DB) GetFXTemplateByID(ctx context.Context, id int) (*FXTemplate, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("db: GetFXTemplateByID: id must be > 0")
+	}
+	var t FXTemplate
+	var enabledRaw interface{}
+	err := d.db.QueryRowContext(ctx, d.q(`
+		SELECT id, fx_key, display_name,
+		       burst_count, stream_interval, lifetime_seconds,
+		       speed_min, speed_max, velocity_bias_x, velocity_bias_y, velocity_bias_z, velocity_spread,
+		       color_start_r, color_start_g, color_start_b, color_start_a,
+		       color_end_r, color_end_g, color_end_b, color_end_a,
+		       size_start, size_end, texture_path, enabled
+		  FROM fx_templates
+		 WHERE id = ?`), id).
+		Scan(
+			&t.ID, &t.Key, &t.DisplayName,
+			&t.BurstCount, &t.StreamInterval, &t.LifetimeSeconds,
+			&t.SpeedMin, &t.SpeedMax, &t.VelocityBiasX, &t.VelocityBiasY, &t.VelocityBiasZ, &t.VelocitySpread,
+			&t.ColorStartR, &t.ColorStartG, &t.ColorStartB, &t.ColorStartA,
+			&t.ColorEndR, &t.ColorEndG, &t.ColorEndB, &t.ColorEndA,
+			&t.SizeStart, &t.SizeEnd, &t.TexturePath, &enabledRaw,
+		)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: GetFXTemplateByID: %w", err)
+	}
+	t.Enabled = boolFromDB(enabledRaw)
+	return &t, nil
+}
+
+// GetFXTemplateByKey returns one FX template by key, or nil if it doesn't exist.
+func (d *DB) GetFXTemplateByKey(ctx context.Context, key string) (*FXTemplate, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, fmt.Errorf("db: GetFXTemplateByKey: key is required")
+	}
+	var t FXTemplate
+	var enabledRaw interface{}
+	err := d.db.QueryRowContext(ctx, d.q(`
+		SELECT id, fx_key, display_name,
+		       burst_count, stream_interval, lifetime_seconds,
+		       speed_min, speed_max, velocity_bias_x, velocity_bias_y, velocity_bias_z, velocity_spread,
+		       color_start_r, color_start_g, color_start_b, color_start_a,
+		       color_end_r, color_end_g, color_end_b, color_end_a,
+		       size_start, size_end, texture_path, enabled
+		  FROM fx_templates
+		 WHERE fx_key = ?`), key).
+		Scan(
+			&t.ID, &t.Key, &t.DisplayName,
+			&t.BurstCount, &t.StreamInterval, &t.LifetimeSeconds,
+			&t.SpeedMin, &t.SpeedMax, &t.VelocityBiasX, &t.VelocityBiasY, &t.VelocityBiasZ, &t.VelocitySpread,
+			&t.ColorStartR, &t.ColorStartG, &t.ColorStartB, &t.ColorStartA,
+			&t.ColorEndR, &t.ColorEndG, &t.ColorEndB, &t.ColorEndA,
+			&t.SizeStart, &t.SizeEnd, &t.TexturePath, &enabledRaw,
+		)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: GetFXTemplateByKey: %w", err)
+	}
+	t.Enabled = boolFromDB(enabledRaw)
+	return &t, nil
+}
+
+// CreateFXTemplate inserts a new FX template and returns its id.
+func (d *DB) CreateFXTemplate(ctx context.Context, t *FXTemplate) (int, error) {
+	if t == nil {
+		return 0, fmt.Errorf("db: CreateFXTemplate: template is nil")
+	}
+	key := strings.TrimSpace(t.Key)
+	if key == "" {
+		return 0, fmt.Errorf("db: CreateFXTemplate: fx_key is required")
+	}
+	enabled := 0
+	if t.Enabled {
+		enabled = 1
+	}
+
+	if d.driver == "postgres" {
+		var id int
+		err := d.db.QueryRowContext(ctx, d.q(`
+			INSERT INTO fx_templates (
+				fx_key, display_name,
+				burst_count, stream_interval, lifetime_seconds,
+				speed_min, speed_max, velocity_bias_x, velocity_bias_y, velocity_bias_z, velocity_spread,
+				color_start_r, color_start_g, color_start_b, color_start_a,
+				color_end_r, color_end_g, color_end_b, color_end_a,
+				size_start, size_end, texture_path, enabled
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			RETURNING id`),
+			key, t.DisplayName,
+			t.BurstCount, t.StreamInterval, t.LifetimeSeconds,
+			t.SpeedMin, t.SpeedMax, t.VelocityBiasX, t.VelocityBiasY, t.VelocityBiasZ, t.VelocitySpread,
+			t.ColorStartR, t.ColorStartG, t.ColorStartB, t.ColorStartA,
+			t.ColorEndR, t.ColorEndG, t.ColorEndB, t.ColorEndA,
+			t.SizeStart, t.SizeEnd, t.TexturePath, enabled,
+		).Scan(&id)
+		if err != nil {
+			return 0, fmt.Errorf("db: CreateFXTemplate: %w", err)
+		}
+		return id, nil
+	}
+
+	res, err := d.db.ExecContext(ctx, d.q(`
+		INSERT INTO fx_templates (
+			fx_key, display_name,
+			burst_count, stream_interval, lifetime_seconds,
+			speed_min, speed_max, velocity_bias_x, velocity_bias_y, velocity_bias_z, velocity_spread,
+			color_start_r, color_start_g, color_start_b, color_start_a,
+			color_end_r, color_end_g, color_end_b, color_end_a,
+			size_start, size_end, texture_path, enabled
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		key, t.DisplayName,
+		t.BurstCount, t.StreamInterval, t.LifetimeSeconds,
+		t.SpeedMin, t.SpeedMax, t.VelocityBiasX, t.VelocityBiasY, t.VelocityBiasZ, t.VelocitySpread,
+		t.ColorStartR, t.ColorStartG, t.ColorStartB, t.ColorStartA,
+		t.ColorEndR, t.ColorEndG, t.ColorEndB, t.ColorEndA,
+		t.SizeStart, t.SizeEnd, t.TexturePath, enabled,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("db: CreateFXTemplate: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return int(id), nil
+}
+
+// UpdateFXTemplate updates an existing FX template by id.
+func (d *DB) UpdateFXTemplate(ctx context.Context, t *FXTemplate) error {
+	if t == nil {
+		return fmt.Errorf("db: UpdateFXTemplate: template is nil")
+	}
+	if t.ID <= 0 {
+		return fmt.Errorf("db: UpdateFXTemplate: id must be > 0")
+	}
+	key := strings.TrimSpace(t.Key)
+	if key == "" {
+		return fmt.Errorf("db: UpdateFXTemplate: fx_key is required")
+	}
+	enabled := 0
+	if t.Enabled {
+		enabled = 1
+	}
+	_, err := d.db.ExecContext(ctx, d.q(`
+		UPDATE fx_templates
+		   SET fx_key = ?, display_name = ?,
+		       burst_count = ?, stream_interval = ?, lifetime_seconds = ?,
+		       speed_min = ?, speed_max = ?, velocity_bias_x = ?, velocity_bias_y = ?, velocity_bias_z = ?, velocity_spread = ?,
+		       color_start_r = ?, color_start_g = ?, color_start_b = ?, color_start_a = ?,
+		       color_end_r = ?, color_end_g = ?, color_end_b = ?, color_end_a = ?,
+		       size_start = ?, size_end = ?, texture_path = ?, enabled = ?
+		 WHERE id = ?`),
+		key, t.DisplayName,
+		t.BurstCount, t.StreamInterval, t.LifetimeSeconds,
+		t.SpeedMin, t.SpeedMax, t.VelocityBiasX, t.VelocityBiasY, t.VelocityBiasZ, t.VelocitySpread,
+		t.ColorStartR, t.ColorStartG, t.ColorStartB, t.ColorStartA,
+		t.ColorEndR, t.ColorEndG, t.ColorEndB, t.ColorEndA,
+		t.SizeStart, t.SizeEnd, t.TexturePath, enabled, t.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("db: UpdateFXTemplate: %w", err)
+	}
+	return nil
+}
+
+// UpsertFXTemplate inserts or updates one FX template by key.
+func (d *DB) UpsertFXTemplate(ctx context.Context, t *FXTemplate) error {
+	if t == nil {
+		return fmt.Errorf("db: UpsertFXTemplate: template is nil")
+	}
+	key := strings.TrimSpace(t.Key)
+	if key == "" {
+		return fmt.Errorf("db: UpsertFXTemplate: fx_key is required")
+	}
+	enabled := 0
+	if t.Enabled {
+		enabled = 1
+	}
+	_, err := d.db.ExecContext(ctx, d.q(`
+		INSERT INTO fx_templates (
+			fx_key, display_name,
+			burst_count, stream_interval, lifetime_seconds,
+			speed_min, speed_max, velocity_bias_x, velocity_bias_y, velocity_bias_z, velocity_spread,
+			color_start_r, color_start_g, color_start_b, color_start_a,
+			color_end_r, color_end_g, color_end_b, color_end_a,
+			size_start, size_end, texture_path, enabled
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(fx_key) DO UPDATE SET
+			display_name = excluded.display_name,
+			burst_count = excluded.burst_count,
+			stream_interval = excluded.stream_interval,
+			lifetime_seconds = excluded.lifetime_seconds,
+			speed_min = excluded.speed_min,
+			speed_max = excluded.speed_max,
+			velocity_bias_x = excluded.velocity_bias_x,
+			velocity_bias_y = excluded.velocity_bias_y,
+			velocity_bias_z = excluded.velocity_bias_z,
+			velocity_spread = excluded.velocity_spread,
+			color_start_r = excluded.color_start_r,
+			color_start_g = excluded.color_start_g,
+			color_start_b = excluded.color_start_b,
+			color_start_a = excluded.color_start_a,
+			color_end_r = excluded.color_end_r,
+			color_end_g = excluded.color_end_g,
+			color_end_b = excluded.color_end_b,
+			color_end_a = excluded.color_end_a,
+			size_start = excluded.size_start,
+			size_end = excluded.size_end,
+			texture_path = excluded.texture_path,
+			enabled = excluded.enabled`),
+		key, t.DisplayName,
+		t.BurstCount, t.StreamInterval, t.LifetimeSeconds,
+		t.SpeedMin, t.SpeedMax, t.VelocityBiasX, t.VelocityBiasY, t.VelocityBiasZ, t.VelocitySpread,
+		t.ColorStartR, t.ColorStartG, t.ColorStartB, t.ColorStartA,
+		t.ColorEndR, t.ColorEndG, t.ColorEndB, t.ColorEndA,
+		t.SizeStart, t.SizeEnd, t.TexturePath, enabled,
+	)
+	if err != nil {
+		return fmt.Errorf("db: UpsertFXTemplate: %w", err)
+	}
+	return nil
+}
+
+// DeleteFXTemplate performs a soft delete by disabling the template.
+func (d *DB) DeleteFXTemplate(ctx context.Context, id int) error {
+	if id <= 0 {
+		return fmt.Errorf("db: DeleteFXTemplate: id must be > 0")
+	}
+	_, err := d.db.ExecContext(ctx, d.q(`UPDATE fx_templates SET enabled = ? WHERE id = ?`), 0, id)
+	if err != nil {
+		return fmt.Errorf("db: DeleteFXTemplate: %w", err)
+	}
+	return nil
+}
+
 // GetSkillProgressionConfig returns the singleton config.
 // If none exists, creates default and returns it.
 func (d *DB) GetSkillProgressionConfig(ctx context.Context) (*SkillProgressionConfig, error) {
@@ -6235,6 +6554,10 @@ func (d *DB) migrateV19(ctx context.Context) {
 			vfx_id_impact           INTEGER NOT NULL DEFAULT 0,
 			sfx_id_windup           INTEGER NOT NULL DEFAULT 0,
 			sfx_id_impact           INTEGER NOT NULL DEFAULT 0,
+			vfx_path_windup         TEXT NOT NULL DEFAULT '',
+			vfx_path_impact         TEXT NOT NULL DEFAULT '',
+			sfx_path_windup         TEXT NOT NULL DEFAULT '',
+			sfx_path_impact         TEXT NOT NULL DEFAULT '',
 			enabled                 BOOLEAN NOT NULL DEFAULT TRUE
 		)`)
 		exec(`CREATE TABLE IF NOT EXISTS npc_ability_loadouts (
@@ -6307,6 +6630,10 @@ func (d *DB) migrateV19(ctx context.Context) {
 			vfx_id_impact            INTEGER NOT NULL DEFAULT 0,
 			sfx_id_windup            INTEGER NOT NULL DEFAULT 0,
 			sfx_id_impact            INTEGER NOT NULL DEFAULT 0,
+			vfx_path_windup          TEXT NOT NULL DEFAULT '',
+			vfx_path_impact          TEXT NOT NULL DEFAULT '',
+			sfx_path_windup          TEXT NOT NULL DEFAULT '',
+			sfx_path_impact          TEXT NOT NULL DEFAULT '',
 			enabled                  INTEGER NOT NULL DEFAULT 1
 		)`)
 		exec(`CREATE TABLE IF NOT EXISTS npc_ability_loadouts (
@@ -6359,9 +6686,11 @@ func (d *DB) migrateV19(ctx context.Context) {
 			telegraph_type, telegraph_radius, telegraph_color_rgba,
 			action_windup, action_impact, action_recover,
 			allow_action_override, allowed_action_tags_json,
-			vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, enabled
+			vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact,
+			vfx_path_windup, vfx_path_impact, sfx_path_windup, sfx_path_impact,
+			enabled
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO NOTHING`),
 		"legacy_special_v1", "melee_special", "none", 0, 6500,
 		0.0, 2.5, 1300, 0, 350,
@@ -6370,7 +6699,9 @@ func (d *DB) migrateV19(ctx context.Context) {
 		"ring_close", 2.5, "1,0.2,0.2,0.75",
 		"Attack", "Attack", "Idle",
 		false, "",
-		0, 0, 0, 0, true,
+		0, 0, 0, 0,
+		"", "", "", "",
+		true,
 	)
 	_, _ = d.db.ExecContext(ctx, d.q(`
 		INSERT INTO npc_combat_profiles (
@@ -6422,9 +6753,11 @@ func (d *DB) migrateV21(ctx context.Context) {
 				telegraph_type, telegraph_radius, telegraph_color_rgba,
 				action_windup, action_impact, action_recover,
 				allow_action_override, allowed_action_tags_json,
-				vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, enabled
+				vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact,
+				vfx_path_windup, vfx_path_impact, sfx_path_windup, sfx_path_impact,
+				enabled
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(name) DO NOTHING
 		`,
 			name, "melee_special", "none", 0, cooldownMs,
@@ -6434,7 +6767,9 @@ func (d *DB) migrateV21(ctx context.Context) {
 			"ring_close", telegraphRadius, telegraphColor,
 			"Attack", "Attack", "Idle",
 			true, allowedTags,
-			0, 0, 0, 0, true,
+			0, 0, 0, 0,
+			"", "", "", "",
+			true,
 		)
 	}
 
@@ -7775,6 +8110,346 @@ func (d *DB) migrateV37(ctx context.Context) {
 		VALUES (?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
 		conversionDoneKey, "1")
+}
+
+func (d *DB) addColumnIfMissing(ctx context.Context, table, column, def string) {
+	hasColumn := func() bool {
+		if d.driver == "postgres" {
+			var exists bool
+			err := d.db.QueryRowContext(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_name = $1 AND column_name = $2
+				)`, table, column).Scan(&exists)
+			return err == nil && exists
+		}
+		rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+		if err != nil {
+			return false
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt sql.NullString
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(name), column) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if hasColumn() {
+		return
+	}
+	sqlStmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, def)
+	_, _ = d.db.ExecContext(ctx, sqlStmt)
+}
+
+func (d *DB) migrateV38(ctx context.Context) {
+	const conversionDoneKey = "migration_v38_vfx_paths_done"
+
+	if _, err := d.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		log.Printf("migrateV38: ensure meta table failed: %v", err)
+		return
+	}
+
+	var doneValue string
+	doneErr := d.db.QueryRowContext(ctx, d.q(`SELECT value FROM meta WHERE key = ?`), conversionDoneKey).Scan(&doneValue)
+	if doneErr == nil && strings.TrimSpace(doneValue) == "1" {
+		return
+	}
+
+	d.addColumnIfMissing(ctx, "ability_templates", "vfx_path_windup", "TEXT NOT NULL DEFAULT ''")
+	d.addColumnIfMissing(ctx, "ability_templates", "vfx_path_impact", "TEXT NOT NULL DEFAULT ''")
+	d.addColumnIfMissing(ctx, "ability_templates", "sfx_path_windup", "TEXT NOT NULL DEFAULT ''")
+	d.addColumnIfMissing(ctx, "ability_templates", "sfx_path_impact", "TEXT NOT NULL DEFAULT ''")
+
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO meta (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
+		conversionDoneKey, "1")
+}
+
+func (d *DB) migrateV39(ctx context.Context) {
+	const conversionDoneKey = "migration_v39_fx_templates_done"
+
+	if _, err := d.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		log.Printf("migrateV39: ensure meta table failed: %v", err)
+		return
+	}
+
+	var doneValue string
+	doneErr := d.db.QueryRowContext(ctx, d.q(`SELECT value FROM meta WHERE key = ?`), conversionDoneKey).Scan(&doneValue)
+	if doneErr == nil && strings.TrimSpace(doneValue) == "1" {
+		return
+	}
+
+	createTableSQL := `
+		CREATE TABLE IF NOT EXISTS fx_templates (
+			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+			fx_key              TEXT    NOT NULL UNIQUE,
+			display_name        TEXT    NOT NULL DEFAULT '',
+
+			-- Emission
+			burst_count         INTEGER NOT NULL DEFAULT 0,
+			stream_interval     REAL    NOT NULL DEFAULT 0.04,
+			lifetime_seconds    REAL    NOT NULL DEFAULT 1.0,
+
+			-- Velocity
+			speed_min           REAL    NOT NULL DEFAULT 1.0,
+			speed_max           REAL    NOT NULL DEFAULT 3.0,
+			velocity_bias_x     REAL    NOT NULL DEFAULT 0.0,
+			velocity_bias_y     REAL    NOT NULL DEFAULT 2.0,
+			velocity_bias_z     REAL    NOT NULL DEFAULT 0.0,
+			velocity_spread     REAL    NOT NULL DEFAULT 0.5,
+
+			-- Visual
+			color_start_r       REAL    NOT NULL DEFAULT 1.0,
+			color_start_g       REAL    NOT NULL DEFAULT 0.5,
+			color_start_b       REAL    NOT NULL DEFAULT 0.0,
+			color_start_a       REAL    NOT NULL DEFAULT 1.0,
+			color_end_r         REAL    NOT NULL DEFAULT 1.0,
+			color_end_g         REAL    NOT NULL DEFAULT 0.0,
+			color_end_b         REAL    NOT NULL DEFAULT 0.0,
+			color_end_a         REAL    NOT NULL DEFAULT 0.0,
+			size_start          REAL    NOT NULL DEFAULT 8.0,
+			size_end            REAL    NOT NULL DEFAULT 2.0,
+			texture_path        TEXT    NOT NULL DEFAULT '',
+
+			enabled             INTEGER NOT NULL DEFAULT 1
+		)`
+	if d.driver == "postgres" {
+		createTableSQL = `
+			CREATE TABLE IF NOT EXISTS fx_templates (
+				id                  SERIAL PRIMARY KEY,
+				fx_key              TEXT    NOT NULL UNIQUE,
+				display_name        TEXT    NOT NULL DEFAULT '',
+
+				-- Emission
+				burst_count         INTEGER NOT NULL DEFAULT 0,
+				stream_interval     REAL    NOT NULL DEFAULT 0.04,
+				lifetime_seconds    REAL    NOT NULL DEFAULT 1.0,
+
+				-- Velocity
+				speed_min           REAL    NOT NULL DEFAULT 1.0,
+				speed_max           REAL    NOT NULL DEFAULT 3.0,
+				velocity_bias_x     REAL    NOT NULL DEFAULT 0.0,
+				velocity_bias_y     REAL    NOT NULL DEFAULT 2.0,
+				velocity_bias_z     REAL    NOT NULL DEFAULT 0.0,
+				velocity_spread     REAL    NOT NULL DEFAULT 0.5,
+
+				-- Visual
+				color_start_r       REAL    NOT NULL DEFAULT 1.0,
+				color_start_g       REAL    NOT NULL DEFAULT 0.5,
+				color_start_b       REAL    NOT NULL DEFAULT 0.0,
+				color_start_a       REAL    NOT NULL DEFAULT 1.0,
+				color_end_r         REAL    NOT NULL DEFAULT 1.0,
+				color_end_g         REAL    NOT NULL DEFAULT 0.0,
+				color_end_b         REAL    NOT NULL DEFAULT 0.0,
+				color_end_a         REAL    NOT NULL DEFAULT 0.0,
+				size_start          REAL    NOT NULL DEFAULT 8.0,
+				size_end            REAL    NOT NULL DEFAULT 2.0,
+				texture_path        TEXT    NOT NULL DEFAULT '',
+
+				enabled             INTEGER NOT NULL DEFAULT 1
+			)`
+	}
+	if _, err := d.db.ExecContext(ctx, createTableSQL); err != nil {
+		log.Printf("migrateV39: create fx_templates failed: %v", err)
+		return
+	}
+
+	var count int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM fx_templates`).Scan(&count); err != nil {
+		log.Printf("migrateV39: count fx_templates failed: %v", err)
+		return
+	}
+	if count == 0 {
+		d.seedDefaultFXTemplates(ctx)
+	}
+
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO meta (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
+		conversionDoneKey, "1")
+}
+
+func (d *DB) seedDefaultFXTemplates(ctx context.Context) {
+	defaults := []FXTemplate{
+		{
+			Key:             "vfx:fire",
+			DisplayName:     "Fire Burst",
+			BurstCount:      0,
+			StreamInterval:  0.04,
+			LifetimeSeconds: 1.2,
+			SpeedMin:        1.5,
+			SpeedMax:        3.0,
+			VelocityBiasX:   0.0,
+			VelocityBiasY:   2.5,
+			VelocityBiasZ:   0.0,
+			VelocitySpread:  0.5,
+			ColorStartR:     1.0,
+			ColorStartG:     0.55,
+			ColorStartB:     0.05,
+			ColorStartA:     0.9,
+			ColorEndR:       0.8,
+			ColorEndG:       0.1,
+			ColorEndB:       0.0,
+			ColorEndA:       0.0,
+			SizeStart:       8.0,
+			SizeEnd:         2.0,
+			TexturePath:     "",
+			Enabled:         true,
+		},
+		{
+			Key:             "vfx:explosion",
+			DisplayName:     "Explosion",
+			BurstCount:      40,
+			StreamInterval:  0.0,
+			LifetimeSeconds: 0.8,
+			SpeedMin:        3.0,
+			SpeedMax:        7.0,
+			VelocityBiasX:   0.0,
+			VelocityBiasY:   1.0,
+			VelocityBiasZ:   0.0,
+			VelocitySpread:  3.14159,
+			ColorStartR:     1.0,
+			ColorStartG:     0.6,
+			ColorStartB:     0.0,
+			ColorStartA:     1.0,
+			ColorEndR:       0.3,
+			ColorEndG:       0.0,
+			ColorEndB:       0.0,
+			ColorEndA:       0.0,
+			SizeStart:       12.0,
+			SizeEnd:         2.0,
+			TexturePath:     "",
+			Enabled:         true,
+		},
+		{
+			Key:             "vfx:heal",
+			DisplayName:     "Healing Light",
+			BurstCount:      20,
+			StreamInterval:  0.0,
+			LifetimeSeconds: 1.4,
+			SpeedMin:        1.0,
+			SpeedMax:        2.5,
+			VelocityBiasX:   0.0,
+			VelocityBiasY:   2.0,
+			VelocityBiasZ:   0.0,
+			VelocitySpread:  0.7,
+			ColorStartR:     0.2,
+			ColorStartG:     1.0,
+			ColorStartB:     0.4,
+			ColorStartA:     0.9,
+			ColorEndR:       0.0,
+			ColorEndG:       0.5,
+			ColorEndB:       0.1,
+			ColorEndA:       0.0,
+			SizeStart:       6.0,
+			SizeEnd:         2.0,
+			TexturePath:     "",
+			Enabled:         true,
+		},
+		{
+			Key:             "vfx:portal",
+			DisplayName:     "Portal Swirl",
+			BurstCount:      0,
+			StreamInterval:  0.06,
+			LifetimeSeconds: 1.8,
+			SpeedMin:        1.5,
+			SpeedMax:        3.0,
+			VelocityBiasX:   0.0,
+			VelocityBiasY:   0.5,
+			VelocityBiasZ:   0.0,
+			VelocitySpread:  3.14159,
+			ColorStartR:     0.0,
+			ColorStartG:     0.8,
+			ColorStartB:     1.0,
+			ColorStartA:     0.8,
+			ColorEndR:       0.0,
+			ColorEndG:       0.2,
+			ColorEndB:       0.6,
+			ColorEndA:       0.0,
+			SizeStart:       5.0,
+			SizeEnd:         1.5,
+			TexturePath:     "",
+			Enabled:         true,
+		},
+		{
+			Key:             "vfx:blood",
+			DisplayName:     "Blood Splat",
+			BurstCount:      15,
+			StreamInterval:  0.0,
+			LifetimeSeconds: 0.4,
+			SpeedMin:        2.0,
+			SpeedMax:        5.0,
+			VelocityBiasX:   0.0,
+			VelocityBiasY:   -1.5,
+			VelocityBiasZ:   0.0,
+			VelocitySpread:  1.8,
+			ColorStartR:     0.9,
+			ColorStartG:     0.0,
+			ColorStartB:     0.0,
+			ColorStartA:     1.0,
+			ColorEndR:       0.4,
+			ColorEndG:       0.0,
+			ColorEndB:       0.0,
+			ColorEndA:       0.0,
+			SizeStart:       5.0,
+			SizeEnd:         1.0,
+			TexturePath:     "",
+			Enabled:         true,
+		},
+		{
+			Key:             "vfx:smoke",
+			DisplayName:     "Smoke",
+			BurstCount:      0,
+			StreamInterval:  0.12,
+			LifetimeSeconds: 2.0,
+			SpeedMin:        0.3,
+			SpeedMax:        0.8,
+			VelocityBiasX:   0.0,
+			VelocityBiasY:   1.2,
+			VelocityBiasZ:   0.0,
+			VelocitySpread:  0.4,
+			ColorStartR:     0.5,
+			ColorStartG:     0.5,
+			ColorStartB:     0.5,
+			ColorStartA:     0.5,
+			ColorEndR:       0.3,
+			ColorEndG:       0.3,
+			ColorEndB:       0.3,
+			ColorEndA:       0.0,
+			SizeStart:       10.0,
+			SizeEnd:         6.0,
+			TexturePath:     "",
+			Enabled:         true,
+		},
+	}
+
+	for i := range defaults {
+		t := defaults[i]
+		if err := d.UpsertFXTemplate(ctx, &t); err != nil {
+			log.Printf("seedDefaultFXTemplates: insert %s failed: %v", t.Key, err)
+		}
+	}
+	log.Printf("seedDefaultFXTemplates: seeded %d defaults", len(defaults))
 }
 
 // LoadWorldObjects returns all placed static world objects from zone_scenery with resolved model paths.

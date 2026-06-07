@@ -77,6 +77,7 @@ func NewServer(cfg *Config, database *db.DB, accts *accounts.Service, w *world.W
 	}
 	world.SetSpecialKillHook(s.handleSpecialKill)
 	world.SetNPCKilledMasteryHook(s.handleNPCKilledMasteryDistribute)
+	world.SetAbilityFXHook(s.handleAbilityFXBroadcast)
 	return s
 }
 

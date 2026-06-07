@@ -121,3 +121,4 @@ unreal/Plugins/*/Intermediate/
 unreal/**/*.sln
 unreal/**/*.vcxproj*
 dist/tools/thumbcache/
+graphify-out

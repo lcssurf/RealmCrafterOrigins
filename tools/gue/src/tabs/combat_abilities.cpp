@@ -360,6 +360,33 @@ bool DrawAbilityFields(CombatAbilityTemplate& row) {
     if (ImGui::InputInt("VFX Impact", &row.vfx_id_impact)) changed = true;
     if (ImGui::InputInt("SFX Windup", &row.sfx_id_windup)) changed = true;
     if (ImGui::InputInt("SFX Impact", &row.sfx_id_impact)) changed = true;
+    ImGui::Separator();
+    ImGui::TextUnformatted("FX Asset Paths (Unreal-like, futuro)");
+    ImGui::TextDisabled("Example: vfx/cleave_impact.fx or vfx:cleave:impact");
+    char vfx_path_windup_buf[256] = {};
+    char vfx_path_impact_buf[256] = {};
+    char sfx_path_windup_buf[256] = {};
+    char sfx_path_impact_buf[256] = {};
+    std::strncpy(vfx_path_windup_buf, row.vfx_path_windup.c_str(), sizeof(vfx_path_windup_buf) - 1);
+    std::strncpy(vfx_path_impact_buf, row.vfx_path_impact.c_str(), sizeof(vfx_path_impact_buf) - 1);
+    std::strncpy(sfx_path_windup_buf, row.sfx_path_windup.c_str(), sizeof(sfx_path_windup_buf) - 1);
+    std::strncpy(sfx_path_impact_buf, row.sfx_path_impact.c_str(), sizeof(sfx_path_impact_buf) - 1);
+    if (ImGui::InputText("VFX Path Windup", vfx_path_windup_buf, IM_ARRAYSIZE(vfx_path_windup_buf))) {
+        row.vfx_path_windup = vfx_path_windup_buf;
+        changed = true;
+    }
+    if (ImGui::InputText("VFX Path Impact", vfx_path_impact_buf, IM_ARRAYSIZE(vfx_path_impact_buf))) {
+        row.vfx_path_impact = vfx_path_impact_buf;
+        changed = true;
+    }
+    if (ImGui::InputText("SFX Path Windup", sfx_path_windup_buf, IM_ARRAYSIZE(sfx_path_windup_buf))) {
+        row.sfx_path_windup = sfx_path_windup_buf;
+        changed = true;
+    }
+    if (ImGui::InputText("SFX Path Impact", sfx_path_impact_buf, IM_ARRAYSIZE(sfx_path_impact_buf))) {
+        row.sfx_path_impact = sfx_path_impact_buf;
+        changed = true;
+    }
 
     ImGui::Separator();
     ImGui::TextUnformatted("Category & Mastery");
@@ -529,6 +556,10 @@ void CombatAbilitiesTab::EnsureTables(sqlite3* db) {
         "  vfx_id_impact INTEGER NOT NULL DEFAULT 0,"
         "  sfx_id_windup INTEGER NOT NULL DEFAULT 0,"
         "  sfx_id_impact INTEGER NOT NULL DEFAULT 0,"
+        "  vfx_path_windup TEXT NOT NULL DEFAULT '',"
+        "  vfx_path_impact TEXT NOT NULL DEFAULT '',"
+        "  sfx_path_windup TEXT NOT NULL DEFAULT '',"
+        "  sfx_path_impact TEXT NOT NULL DEFAULT '',"
         "  enabled INTEGER NOT NULL DEFAULT 1"
         ")",
         nullptr, nullptr, nullptr);
@@ -670,6 +701,14 @@ void CombatAbilitiesTab::EnsureTables(sqlite3* db) {
         "mastery_primary_bonus_per_lvl REAL NOT NULL DEFAULT 0.03");
     add_column_if_missing("ability_templates", "mastery_cooldown_redux_per_lvl",
         "mastery_cooldown_redux_per_lvl REAL NOT NULL DEFAULT 0.01");
+    add_column_if_missing("ability_templates", "vfx_path_windup",
+        "vfx_path_windup TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing("ability_templates", "vfx_path_impact",
+        "vfx_path_impact TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing("ability_templates", "sfx_path_windup",
+        "sfx_path_windup TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing("ability_templates", "sfx_path_impact",
+        "sfx_path_impact TEXT NOT NULL DEFAULT ''");
     add_column_if_missing("skill_progression_config", "xp_curve_exponent",
         "xp_curve_exponent REAL NOT NULL DEFAULT 2.0");
     add_column_if_missing("skill_progression_config", "xp_irregularity",
@@ -776,6 +815,7 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
         "       action_windup, action_impact, action_recover, "
         "       allow_action_override, allowed_action_tags_json, "
         "       vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, "
+        "       vfx_path_windup, vfx_path_impact, sfx_path_windup, sfx_path_impact, "
         "       mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type, "
         "       mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity, "
         "       mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, "
@@ -821,15 +861,19 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
         row.vfx_id_impact = sqlite3_column_int(stmt, 29);
         row.sfx_id_windup = sqlite3_column_int(stmt, 30);
         row.sfx_id_impact = sqlite3_column_int(stmt, 31);
-        row.mastery_xp_per_use = sqlite3_column_int(stmt, 32);
-        row.mastery_max_level = sqlite3_column_int(stmt, 33);
-        if (const auto* text = sqlite3_column_text(stmt, 34)) row.mastery_xp_curve_type = reinterpret_cast<const char*>(text);
-        row.mastery_xp_curve_base = sqlite3_column_int(stmt, 35);
-        row.mastery_xp_curve_exponent = static_cast<float>(sqlite3_column_double(stmt, 36));
-        row.mastery_xp_irregularity = static_cast<float>(sqlite3_column_double(stmt, 37));
-        row.mastery_primary_bonus_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 38));
-        row.mastery_cooldown_redux_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 39));
-        row.enabled = sqlite3_column_int(stmt, 40) != 0;
+        if (const auto* text = sqlite3_column_text(stmt, 32)) row.vfx_path_windup = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 33)) row.vfx_path_impact = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 34)) row.sfx_path_windup = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 35)) row.sfx_path_impact = reinterpret_cast<const char*>(text);
+        row.mastery_xp_per_use = sqlite3_column_int(stmt, 36);
+        row.mastery_max_level = sqlite3_column_int(stmt, 37);
+        if (const auto* text = sqlite3_column_text(stmt, 38)) row.mastery_xp_curve_type = reinterpret_cast<const char*>(text);
+        row.mastery_xp_curve_base = sqlite3_column_int(stmt, 39);
+        row.mastery_xp_curve_exponent = static_cast<float>(sqlite3_column_double(stmt, 40));
+        row.mastery_xp_irregularity = static_cast<float>(sqlite3_column_double(stmt, 41));
+        row.mastery_primary_bonus_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 42));
+        row.mastery_cooldown_redux_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 43));
+        row.enabled = sqlite3_column_int(stmt, 44) != 0;
         abilities_.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
@@ -1211,6 +1255,10 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     row.damage_stat_scale_json = TrimCopy(row.damage_stat_scale_json);
     row.crit_policy_json = TrimCopy(row.crit_policy_json);
     row.allowed_action_tags_json = TrimCopy(row.allowed_action_tags_json);
+    row.vfx_path_windup = TrimCopy(row.vfx_path_windup);
+    row.vfx_path_impact = TrimCopy(row.vfx_path_impact);
+    row.sfx_path_windup = TrimCopy(row.sfx_path_windup);
+    row.sfx_path_impact = TrimCopy(row.sfx_path_impact);
     row.mastery_xp_curve_type = ToLowerCopy(TrimCopy(row.mastery_xp_curve_type));
     if (row.family.empty()) row.family = "melee_special";
     if (!IsAllowedCategory(row.category)) row.category = "damage";
@@ -1268,10 +1316,11 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
             "action_windup, action_impact, action_recover, "
             "allow_action_override, allowed_action_tags_json, "
             "vfx_id_windup, vfx_id_impact, sfx_id_windup, sfx_id_impact, "
+            "vfx_path_windup, vfx_path_impact, sfx_path_windup, sfx_path_impact, "
             "mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type, "
             "mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity, "
             "mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, enabled"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
             SetStatus("Ability create error: %s", sqlite3_errmsg(db));
@@ -1288,6 +1337,7 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
             "action_windup=?, action_impact=?, action_recover=?, "
             "allow_action_override=?, allowed_action_tags_json=?, "
             "vfx_id_windup=?, vfx_id_impact=?, sfx_id_windup=?, sfx_id_impact=?, "
+            "vfx_path_windup=?, vfx_path_impact=?, sfx_path_windup=?, sfx_path_impact=?, "
             "mastery_xp_per_use=?, mastery_max_level=?, mastery_xp_curve_type=?, "
             "mastery_xp_curve_base=?, mastery_xp_curve_exponent=?, mastery_xp_irregularity=?, "
             "mastery_primary_bonus_per_lvl=?, mastery_cooldown_redux_per_lvl=?, enabled=? "
@@ -1330,17 +1380,21 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     sqlite3_bind_int(stmt, 29, row.vfx_id_impact);
     sqlite3_bind_int(stmt, 30, row.sfx_id_windup);
     sqlite3_bind_int(stmt, 31, row.sfx_id_impact);
-    sqlite3_bind_int(stmt, 32, row.mastery_xp_per_use);
-    sqlite3_bind_int(stmt, 33, row.mastery_max_level);
-    sqlite3_bind_text(stmt, 34, row.mastery_xp_curve_type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 35, row.mastery_xp_curve_base);
-    sqlite3_bind_double(stmt, 36, row.mastery_xp_curve_exponent);
-    sqlite3_bind_double(stmt, 37, row.mastery_xp_irregularity);
-    sqlite3_bind_double(stmt, 38, row.mastery_primary_bonus_per_lvl);
-    sqlite3_bind_double(stmt, 39, row.mastery_cooldown_redux_per_lvl);
-    sqlite3_bind_int(stmt, 40, row.enabled ? 1 : 0);
+    sqlite3_bind_text(stmt, 32, row.vfx_path_windup.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 33, row.vfx_path_impact.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 34, row.sfx_path_windup.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 35, row.sfx_path_impact.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 36, row.mastery_xp_per_use);
+    sqlite3_bind_int(stmt, 37, row.mastery_max_level);
+    sqlite3_bind_text(stmt, 38, row.mastery_xp_curve_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 39, row.mastery_xp_curve_base);
+    sqlite3_bind_double(stmt, 40, row.mastery_xp_curve_exponent);
+    sqlite3_bind_double(stmt, 41, row.mastery_xp_irregularity);
+    sqlite3_bind_double(stmt, 42, row.mastery_primary_bonus_per_lvl);
+    sqlite3_bind_double(stmt, 43, row.mastery_cooldown_redux_per_lvl);
+    sqlite3_bind_int(stmt, 44, row.enabled ? 1 : 0);
     if (!is_new) {
-        sqlite3_bind_int(stmt, 41, row.id);
+        sqlite3_bind_int(stmt, 45, row.id);
     }
 
     rc = sqlite3_step(stmt);

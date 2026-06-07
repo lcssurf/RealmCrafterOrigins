@@ -312,6 +312,10 @@ func main() {
 					VFXIDImpact:                row.VFXIDImpact,
 					SFXIDWindup:                row.SFXIDWindup,
 					SFXIDImpact:                row.SFXIDImpact,
+					VFXPathWindup:              row.VFXPathWindup,
+					VFXPathImpact:              row.VFXPathImpact,
+					SFXPathWindup:              row.SFXPathWindup,
+					SFXPathImpact:              row.SFXPathImpact,
 					MasteryXPPerUse:            row.MasteryXPPerUse,
 					MasteryMaxLevel:            row.MasteryMaxLevel,
 					MasteryXPCurveType:         row.MasteryXPCurveType,
@@ -325,6 +329,43 @@ func main() {
 			}
 			world.SetAbilityCatalog(abilities)
 			log.Printf("main: loaded %d ability templates", len(abilities))
+		}
+
+		fxTemplateRows, err := database.ListFXTemplates(ctx)
+		if err != nil {
+			log.Printf("main: failed to load fx_templates: %v", err)
+		} else {
+			converted := make([]world.FXTemplate, 0, len(fxTemplateRows))
+			for _, r := range fxTemplateRows {
+				converted = append(converted, world.FXTemplate{
+					ID:              r.ID,
+					Key:             r.Key,
+					DisplayName:     r.DisplayName,
+					BurstCount:      r.BurstCount,
+					StreamInterval:  r.StreamInterval,
+					LifetimeSeconds: r.LifetimeSeconds,
+					SpeedMin:        r.SpeedMin,
+					SpeedMax:        r.SpeedMax,
+					VelocityBiasX:   r.VelocityBiasX,
+					VelocityBiasY:   r.VelocityBiasY,
+					VelocityBiasZ:   r.VelocityBiasZ,
+					VelocitySpread:  r.VelocitySpread,
+					ColorStartR:     r.ColorStartR,
+					ColorStartG:     r.ColorStartG,
+					ColorStartB:     r.ColorStartB,
+					ColorStartA:     r.ColorStartA,
+					ColorEndR:       r.ColorEndR,
+					ColorEndG:       r.ColorEndG,
+					ColorEndB:       r.ColorEndB,
+					ColorEndA:       r.ColorEndA,
+					SizeStart:       r.SizeStart,
+					SizeEnd:         r.SizeEnd,
+					TexturePath:     r.TexturePath,
+					Enabled:         r.Enabled,
+				})
+			}
+			world.SetFXTemplateCatalog(converted)
+			log.Printf("main: loaded %d FX templates", len(converted))
 		}
 
 		loadoutRows, err := database.LoadNPCAbilityLoadouts(ctx)
@@ -393,6 +434,7 @@ func main() {
 		}
 	} else {
 		world.SetAbilityCatalog(nil)
+		world.SetFXTemplateCatalog(nil)
 		world.SetNPCAbilityLoadouts(nil)
 		world.SetNPCCombatProfiles(nil)
 		world.SetNPCProfileBindings(nil)

@@ -40,6 +40,10 @@ struct CombatAbilityTemplate {
     int         vfx_id_impact = 0;
     int         sfx_id_windup = 0;
     int         sfx_id_impact = 0;
+    std::string vfx_path_windup;
+    std::string vfx_path_impact;
+    std::string sfx_path_windup;
+    std::string sfx_path_impact;
     int         mastery_xp_per_use = 10;
     int         mastery_max_level = 10;
     std::string mastery_xp_curve_type = "irregular";

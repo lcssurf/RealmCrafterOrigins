@@ -358,3 +358,95 @@ remover esse clamp no `consumeCastResource`.
 Custo de HP por ability nao interage com mastery cooldown reduction nem com
 outros modificadores de recurso, mantendo comportamento consistente com o fluxo
 atual de MP/SP.
+
+## 44. ability_templates: IDs legados e paths coexistem para FX
+
+`vfx_id_*` / `sfx_id_*` (INTEGER) coexistem com `vfx_path_*` / `sfx_path_*`
+(TEXT) em `ability_templates`.
+
+Os IDs legados serao removidos em commit futuro, apos Q3.2/Q3.3 estarem
+funcionando e a migracao de conteudo para paths estar concluida.
+
+## 45. GUE Combat Abilities com campos duplicados (legado + novo)
+
+A tab de Combat Abilities mantem os campos antigos `InputInt` (IDs) e os novos
+`InputText` (paths) ao mesmo tempo para compatibilidade de transicao.
+
+Apos a remocao dos IDs legados, simplificar UI removendo os campos inteiros.
+
+## 46. Fase recover de FX ainda nao suportada em schema path
+
+No modelo de paths, por enquanto so existem fases `windup` e `impact`.
+`recover` ainda nao foi adicionado.
+
+Se design futuro exigir, adicionar `vfx_path_recover` / `sfx_path_recover` em
+migration dedicada.
+
+## 47. VFX path mapping hardcoded para 6 chaves
+
+No client, o mapeamento de `vfx_path` para `EmitterType` e hardcoded com as
+chaves:
+`vfx:fire`, `vfx:explosion`, `vfx:heal`, `vfx:portal`, `vfx:blood`,
+`vfx:smoke`.
+
+Quando o sistema de FX evoluir para templates/data-driven, esse mapeamento
+deve migrar para lookup em catalogo configuravel.
+
+## 48. SFX path recebido, mas audio ainda e ID-based
+
+`PSound` agora pode carregar `sfx_path` no payload expandido, mas o client
+ainda usa pipeline de audio por `sound_id`.
+
+Quando `sfx_path` vier preenchido, o client apenas registra log e ignora
+playback legado para esse evento.
+
+## 49. Writer.Read/WriteString usa prefixo uint16
+
+O formato de string no protocolo segue `uint16 length + bytes UTF-8` sem
+terminador nulo.
+
+Esse contrato deve continuar documentado em qualquer extensao futura de packet
+para evitar divergencia entre parser Go/C++.
+
+## 50. Campos opcionais em packet dependem de bytes restantes
+
+No client, parsing dos campos ricos de `PCreateEmitter`/`PSound` depende de
+checagem de bytes restantes (`!Reader.Done()`) para manter backward compat com
+payload legado.
+
+Padrao deve ser mantido enquanto coexistirem formatos antigo e expandido.
+
+## 51. PCreateEmitter/PSound ainda carregam campos legados
+
+Os packets `PCreateEmitter` e `PSound` foram expandidos com contexto rico,
+mas mantem prefixo legado para compatibilidade.
+
+Quando todos os clientes estiverem atualizados e o uso legado for removido,
+simplificar payload e remover campos antigos.
+
+## 52. fx_templates V0.1 ainda e single-emitter
+
+`fx_templates` V0.1 suporta apenas 1 emitter por template.
+
+Ainda nao existe suporte a sub-emitters, multi-stage emitters ou composicao de
+efeitos mais complexos no mesmo template.
+
+## 53. fx_templates sem curvas avancadas e GPU compute
+
+Interpolacoes atuais sao lineares (`start -> end`) e nao ha curvas
+customizadas por canal/tempo.
+
+Tambem nao existe caminho para simulacao GPU/compute no pipeline atual.
+
+## 54. fx_templates sem hot-reload
+
+O catalogo de FX e carregado no startup do server e cacheado em memoria.
+
+Edicoes futuras no GUE exigem restart para refletirem no runtime.
+
+## 55. Campos de FX V0.1 ainda limitados
+
+`fx_templates` V0.1 nao inclui multi-emitter, `particle_orientation`,
+billboard mode, alpha curves, drag ou turbulence.
+
+Esses campos ficam para evolucao V0.2+ quando o mini Niagara avancar.

@@ -4,9 +4,36 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/random.hpp>
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
+#include <string>
+#include <unordered_map>
 
 namespace rco::renderer {
+
+EmitterType ResolveVFXPathToType(const std::string& path, bool* resolved) {
+	static const std::unordered_map<std::string, EmitterType> kPathMap = {
+		{"vfx:fire", EmitterType::Fire},
+		{"vfx:explosion", EmitterType::Explosion},
+		{"vfx:heal", EmitterType::Heal},
+		{"vfx:portal", EmitterType::Portal},
+		{"vfx:blood", EmitterType::Blood},
+		{"vfx:smoke", EmitterType::Smoke},
+	};
+
+	std::string normalized = path;
+	std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+	auto it = kPathMap.find(normalized);
+	if (it != kPathMap.end()) {
+		if (resolved) *resolved = true;
+		return it->second;
+	}
+
+	if (resolved) *resolved = false;
+	return EmitterType::Fire;
+}
 
 // ---------------------------------------------------------------------------
 // Per-type configuration

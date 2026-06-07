@@ -88,6 +88,10 @@ type AbilityTemplate struct {
 	VFXIDImpact                int
 	SFXIDWindup                int
 	SFXIDImpact                int
+	VFXPathWindup              string
+	VFXPathImpact              string
+	SFXPathWindup              string
+	SFXPathImpact              string
 	MasteryXPPerUse            int
 	MasteryMaxLevel            int
 	MasteryXPCurveType         string

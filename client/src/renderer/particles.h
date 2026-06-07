@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <cstdint>
+#include <string>
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 
@@ -15,6 +16,10 @@ enum class EmitterType : uint8_t {
     Blood     = 4,  // short red splatter burst
     Smoke     = 5,  // rising grey wisps
 };
+
+// Resolves a soft path key from ability_templates into an existing emitter type.
+// Known keys (case-insensitive): vfx:fire/explosion/heal/portal/blood/smoke
+EmitterType ResolveVFXPathToType(const std::string& path, bool* resolved);
 
 class ParticleSystem {
 public:
