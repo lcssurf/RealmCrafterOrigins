@@ -5076,7 +5076,7 @@ func (d *DB) UpdateKillXPScalingConfig(ctx context.Context, c *KillXPScalingConf
 	return nil
 }
 
-// ListFXTemplates returns all FX templates ordered by id.
+// ListFXTemplates returns enabled FX templates ordered by id.
 func (d *DB) ListFXTemplates(ctx context.Context) ([]FXTemplate, error) {
 	rows, err := d.db.QueryContext(ctx, d.q(`
 		SELECT id, fx_key, display_name,
@@ -5086,6 +5086,7 @@ func (d *DB) ListFXTemplates(ctx context.Context) ([]FXTemplate, error) {
 		       color_end_r, color_end_g, color_end_b, color_end_a,
 		       size_start, size_end, texture_path, enabled
 		  FROM fx_templates
+ 		 WHERE enabled = 1
 		 ORDER BY id`))
 	if err != nil {
 		return nil, fmt.Errorf("db: ListFXTemplates: %w", err)

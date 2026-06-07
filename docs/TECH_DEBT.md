@@ -450,3 +450,14 @@ Edicoes futuras no GUE exigem restart para refletirem no runtime.
 billboard mode, alpha curves, drag ou turbulence.
 
 Esses campos ficam para evolucao V0.2+ quando o mini Niagara avancar.
+
+## 56. fx_templates V0.1 fundação sem runtime
+
+- `fx_templates` V0.1 usa 1 emitter por template, sem sub-emitters, sem curvas
+  customizadas (interpolação linear start→end), sem GPU compute.
+- `fx_templates` não tem hot-reload no runtime: edição no GUE (F2) exige restart
+  do server para refletir no cache usado pelo gameplay (F4).
+- `seed` de `fx_templates` replica os valores exatos de `kCfg[]` hardcoded.
+  A remoção de `kCfg[]` do cliente só ocorrerá em F6.
+- `fx_templates` V0.1 não inclui: multi-emitter, particle_orientation,
+  billboard mode, alpha curves, drag, turbulence. Evoluir para V0.2+.
