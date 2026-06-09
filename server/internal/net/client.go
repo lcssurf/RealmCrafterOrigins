@@ -567,6 +567,7 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	// Send known spells.
 	c.sendKnownSpells()
 	c.sendSkillSnapshots(ctx)
+	c.sendFXCatalog()
 
 	// Send current quest state after entering world.
 	_ = c.sendQuestLogSnapshot(ctx)
@@ -1379,6 +1380,87 @@ func (c *ClientConn) sendKnownSpells() {
 		w.WriteFloat32(def.AoERadius)
 	}
 	c.actor.Send(buildFramedPacket(protocol.PKnownSpells, w.Bytes()))
+}
+
+// sendFXCatalog sends the full server FX catalog over the wire once when entering
+// the world. Contract (PFXCatalog payload):
+//   uint16  count
+//   for each template:
+//     string  fx_key
+//     string  display_name
+//     int32   id
+//     int32   burst_count
+//     float32 stream_interval
+//     float32 lifetime_seconds
+//     float32 speed_min
+//     float32 speed_max
+//     float32 velocity_bias_x
+//     float32 velocity_bias_y
+//     float32 velocity_bias_z
+//     float32 velocity_spread
+//     float32 color_start_r
+//     float32 color_start_g
+//     float32 color_start_b
+//     float32 color_start_a
+//     float32 color_end_r
+//     float32 color_end_g
+//     float32 color_end_b
+//     float32 color_end_a
+//     float32 size_start
+//     float32 size_end
+//     string  texture_path
+//     uint8   enabled
+func (c *ClientConn) sendFXCatalog() {
+	keys := world.ListFXTemplateKeys()
+
+	var body Writer
+	sent := 0
+	for _, key := range keys {
+		if sent >= int(^uint16(0)) {
+			log.Printf("sendFXCatalog: count reached protocol limit, truncating to %d templates", sent)
+			break
+		}
+		t, ok := world.GetFXTemplate(key)
+		if !ok || t == nil {
+			log.Printf("sendFXCatalog: missing template for key=%q", key)
+			continue
+		}
+		body.WriteString(t.Key)
+		body.WriteString(t.DisplayName)
+		body.WriteInt32(int32(t.ID))
+		body.WriteInt32(int32(t.BurstCount))
+		body.WriteFloat32(t.StreamInterval)
+		body.WriteFloat32(t.LifetimeSeconds)
+		body.WriteFloat32(t.SpeedMin)
+		body.WriteFloat32(t.SpeedMax)
+		body.WriteFloat32(t.VelocityBiasX)
+		body.WriteFloat32(t.VelocityBiasY)
+		body.WriteFloat32(t.VelocityBiasZ)
+		body.WriteFloat32(t.VelocitySpread)
+		body.WriteFloat32(t.ColorStartR)
+		body.WriteFloat32(t.ColorStartG)
+		body.WriteFloat32(t.ColorStartB)
+		body.WriteFloat32(t.ColorStartA)
+		body.WriteFloat32(t.ColorEndR)
+		body.WriteFloat32(t.ColorEndG)
+		body.WriteFloat32(t.ColorEndB)
+		body.WriteFloat32(t.ColorEndA)
+		body.WriteFloat32(t.SizeStart)
+		body.WriteFloat32(t.SizeEnd)
+		body.WriteString(t.TexturePath)
+		if t.Enabled {
+			body.WriteUint8(1)
+		} else {
+			body.WriteUint8(0)
+		}
+		sent++
+	}
+
+	var w Writer
+	w.WriteUint16(uint16(sent))
+	w.WriteRaw(body.Bytes())
+	c.actor.Send(buildFramedPacket(protocol.PFXCatalog, w.Bytes()))
+	log.Printf("sendFXCatalog: sent %d FX templates", sent)
 }
 
 // sendSkillSnapshots sends both active hotbar state and active kit pool snapshots.

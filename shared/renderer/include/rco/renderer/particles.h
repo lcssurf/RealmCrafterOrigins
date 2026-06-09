@@ -17,6 +17,22 @@ enum class EmitterType : uint8_t {
     Smoke     = 5,  // rising grey wisps
 };
 
+struct FXParams {
+    int      burstCount = 0;
+    float    streamInterval = 0.04f;
+    float    lifetimeSeconds = 1.0f;
+
+    float    speedMin = 1.0f;
+    float    speedMax = 3.0f;
+    glm::vec3 velBias = {0.f, 2.f, 0.f};
+    float    velSpread = 0.5f;
+
+    glm::vec4 colorStart = {1.f, 0.5f, 0.f, 1.f};
+    glm::vec4 colorEnd = {1.f, 0.f, 0.f, 0.f};
+    float    sizeStart = 8.f;
+    float    sizeEnd = 2.f;
+};
+
 // Resolves a soft path key from ability_templates into an existing emitter type.
 // Known keys (case-insensitive): vfx:fire/explosion/heal/portal/blood/smoke
 EmitterType ResolveVFXPathToType(const std::string& path, bool* resolved);
@@ -25,6 +41,11 @@ class ParticleSystem {
 public:
     void Init();
     void Shutdown();
+
+    void SpawnEmitterParams(const FXParams& params,
+                           glm::vec3 pos,
+                           float now,
+                           float duration = 0.f);
 
     // Spawn an emitter at a world position.
     // duration > 0: streaming emitter (fire, portal).
@@ -47,7 +68,7 @@ private:
     };
 
     struct Emitter {
-        EmitterType type;
+        FXParams    params;
         glm::vec3   pos;
         float       startTime;
         float       duration;    // 0 = burst only
@@ -56,7 +77,7 @@ private:
     };
 
     void  spawnParticle(Emitter& e, float now);
-    float spawnInterval(EmitterType t) const;
+    float spawnInterval(const Emitter& e) const;
 
     std::vector<Emitter> emitters_;
 

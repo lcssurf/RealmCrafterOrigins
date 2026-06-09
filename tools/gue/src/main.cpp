@@ -34,6 +34,7 @@
 #include "tabs/equipment_slots.h"
 #include "tabs/actors.h"
 #include "tabs/areas.h"
+#include "tabs/fx_templates.h"
 #include "tabs/quests.h"
 #include "tabs/media.h"
 #include "tabs/zones.h"
@@ -161,6 +162,7 @@ int main() {
     gue::ItemsTab        itemsTab;
     gue::SpellsTab       spellsTab;
     gue::CombatAbilitiesTab combatAbilitiesTab;
+    gue::FXTemplatesTab  fxTemplatesTab;
     gue::ProgressionConfigTab progressionConfigTab;
     gue::WeaponKitsTab   weaponKitsTab;
     gue::EquipmentSlotsTab equipmentSlotsTab;
@@ -274,6 +276,10 @@ int main() {
             }
             if (ImGui::BeginTabItem("Combat Abilities")) {
                 combatAbilitiesTab.Draw(db);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("FX Templates")) {
+                fxTemplatesTab.Draw(db);
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Progression Config")) {

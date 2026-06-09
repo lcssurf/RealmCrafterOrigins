@@ -55,7 +55,7 @@
 #include "../renderer/camera.h"
 #include "../renderer/terrain/terrain.h"
 #include "../renderer/actors/actor.h"
-#include "../renderer/particles.h"
+#include "rco/renderer/particles.h"
 #include "../renderer/anim_controller.h"
 #include "../input/input_system.h"
 #include "../audio/audio.h"
@@ -1105,6 +1105,7 @@ int main() {
     };
     std::vector<RecentFloatingPacket> recent_floating_packets;
     rco::ui::SpellBar        spellbar;
+    std::unordered_map<std::string, rco::renderer::FXParams> fx_catalog;
     rco::ui::SkillHotbar     skill_hotbar;
     rco::ui::SpellEffects    spell_fx;
     rco::ui::QuestLog        quest_log;
@@ -3164,27 +3165,101 @@ int main() {
                 (void)target_rid;
                 (void)magnitude;
 
-                rco::renderer::EmitterType emitter_type =
-                    static_cast<rco::renderer::EmitterType>(type);
                 if (!vfx_path.empty()) {
+                    auto it = fx_catalog.find(vfx_path);
+                    if (it != fx_catalog.end()) {
+                        particles.SpawnEmitterParams(
+                            it->second,
+                            {ex, ey, ez},
+                            static_cast<float>(glfwGetTime()),
+                            dur > 0 ? dur / 1000.f : 0.f);
+                        break;
+                    }
+
                     bool resolved = false;
-                    emitter_type = rco::renderer::ResolveVFXPathToType(vfx_path, &resolved);
-                    if (!resolved) {
+                    rco::renderer::EmitterType emitter_type =
+                        rco::renderer::ResolveVFXPathToType(vfx_path, &resolved);
+                    if (resolved) {
+                        particles.SpawnEmitter(
+                            emitter_type,
+                            {ex, ey, ez},
+                            static_cast<float>(glfwGetTime()),
+                            dur > 0 ? dur / 1000.f : 0.f);
+                    } else {
                         std::fprintf(
                             stderr,
-                            "WARN: VFX path '%s' not mapped (ability=%u phase=%s)\n",
+                            "WARN: VFX path '%s' not in catalog and not hardcoded (ability=%u phase=%s)\n",
                             vfx_path.c_str(),
                             ability_id,
                             phase.c_str());
-                        break;
                     }
+                    break;
                 }
 
+                rco::renderer::EmitterType emitter_type =
+                    static_cast<rco::renderer::EmitterType>(type);
                 particles.SpawnEmitter(
                     emitter_type,
                     {ex, ey, ez},
                     static_cast<float>(glfwGetTime()),
-                    dur > 0 ? dur / 1000.f : 2.0f);
+                    dur > 0 ? dur / 1000.f : 0.f);
+                break;
+            }
+
+            case rco::net::kPFXCatalog: {
+                uint16_t count = r.ReadU16();
+                fx_catalog.clear();
+                int loaded = 0;
+                for (uint16_t i = 0; i < count; ++i) {
+                    std::string key          = r.ReadString();
+                    std::string display_name = r.ReadString();
+                    int32_t id               = static_cast<int32_t>(r.ReadU32());
+                    int32_t burst            = static_cast<int32_t>(r.ReadU32());
+                    float stream_interval     = r.ReadF32();
+                    float lifetime           = r.ReadF32();
+                    float speed_min          = r.ReadF32();
+                    float speed_max          = r.ReadF32();
+                    float vbx                = r.ReadF32();
+                    float vby                = r.ReadF32();
+                    float vbz                = r.ReadF32();
+                    float vspread            = r.ReadF32();
+                    float csr                = r.ReadF32();
+                    float csg                = r.ReadF32();
+                    float csb                = r.ReadF32();
+                    float csa                = r.ReadF32();
+                    float cer                = r.ReadF32();
+                    float ceg                = r.ReadF32();
+                    float ceb                = r.ReadF32();
+                    float cea                = r.ReadF32();
+                    float size_start         = r.ReadF32();
+                    float size_end           = r.ReadF32();
+                    std::string texture_path = r.ReadString();
+                    uint8_t enabled          = r.ReadU8();
+
+                    (void)id;
+                    (void)display_name;
+                    (void)texture_path;
+                    if (!r.OK()) break;
+
+                    if (enabled == 0) continue;
+
+                    rco::renderer::FXParams p;
+                    p.burstCount      = burst;
+                    p.streamInterval  = stream_interval;
+                    p.lifetimeSeconds = lifetime;
+                    p.speedMin        = speed_min;
+                    p.speedMax        = speed_max;
+                    p.velBias         = {vbx, vby, vbz};
+                    p.velSpread       = vspread;
+                    p.colorStart      = {csr, csg, csb, csa};
+                    p.colorEnd        = {cer, ceg, ceb, cea};
+                    p.sizeStart       = size_start;
+                    p.sizeEnd         = size_end;
+                    fx_catalog[key] = p;
+                    loaded++;
+                }
+                std::fprintf(stderr, "[fx-catalog] received %u templates, cached %d\n",
+                             (unsigned)count, loaded);
                 break;
             }
 

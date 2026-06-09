@@ -53,6 +53,9 @@ add_library(rco_renderer STATIC
     # Renderable skeletal instance (shared across client + GUE)
     src/actor.cpp
 
+    # Particle effects (shared with client + future GUE preview UI)
+    src/particles.cpp
+
     # Model cache (weak_ptr-based, path-keyed)
     src/model_cache.cpp
 

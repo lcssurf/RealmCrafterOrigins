@@ -79,6 +79,7 @@ constexpr uint16_t kPStatPointsUpdate  = 134; // S->C: unspent stat point pool u
 constexpr uint16_t kPPrimaryStatsUpdate = 135; // S->C: primary stats + unspent snapshot
 constexpr uint16_t kPDistributeStatPoint = 136; // C->S: allocate primary stat points
 constexpr uint16_t kPRespec            = 137; // C->S: reset primary stats to base
+constexpr uint16_t kPFXCatalog         = 138;
 
 // ---------------------------------------------------------------------------
 // Result codes

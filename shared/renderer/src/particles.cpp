@@ -1,8 +1,8 @@
-#include "particles.h"
+#include "rco/renderer/particles.h"
 
 #include "rco/renderer/shader.h"
-#include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/random.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -12,27 +12,27 @@
 namespace rco::renderer {
 
 EmitterType ResolveVFXPathToType(const std::string& path, bool* resolved) {
-	static const std::unordered_map<std::string, EmitterType> kPathMap = {
-		{"vfx:fire", EmitterType::Fire},
-		{"vfx:explosion", EmitterType::Explosion},
-		{"vfx:heal", EmitterType::Heal},
-		{"vfx:portal", EmitterType::Portal},
-		{"vfx:blood", EmitterType::Blood},
-		{"vfx:smoke", EmitterType::Smoke},
-	};
+    static const std::unordered_map<std::string, EmitterType> kPathMap = {
+        {"vfx:fire", EmitterType::Fire},
+        {"vfx:explosion", EmitterType::Explosion},
+        {"vfx:heal", EmitterType::Heal},
+        {"vfx:portal", EmitterType::Portal},
+        {"vfx:blood", EmitterType::Blood},
+        {"vfx:smoke", EmitterType::Smoke},
+    };
 
-	std::string normalized = path;
-	std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::string normalized = path;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-	auto it = kPathMap.find(normalized);
-	if (it != kPathMap.end()) {
-		if (resolved) *resolved = true;
-		return it->second;
-	}
+    auto it = kPathMap.find(normalized);
+    if (it != kPathMap.end()) {
+        if (resolved) *resolved = true;
+        return it->second;
+    }
 
-	if (resolved) *resolved = false;
-	return EmitterType::Fire;
+    if (resolved) *resolved = false;
+    return EmitterType::Fire;
 }
 
 // ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ struct TypeCfg {
     float     lifetime;       // particle lifetime (seconds)
     float     speedMin;
     float     speedMax;
-    glm::vec3 velBias;        // directional bias (e.g. upward)
+    glm::vec3 velBias;       // directional bias (e.g. upward)
     float     spread;         // random spread radius added to velBias
     int       burstCount;     // > 0: emit all at once; 0: stream
     float     streamInterval; // seconds between streamed particles
@@ -78,6 +78,22 @@ static const TypeCfg kCfg[] = {
 
 static float frand() { return static_cast<float>(rand()) / RAND_MAX; }
 
+static FXParams ParamsFromTypeCfg(const TypeCfg& cfg) {
+    FXParams p;
+    p.burstCount = cfg.burstCount;
+    p.streamInterval = cfg.streamInterval;
+    p.lifetimeSeconds = cfg.lifetime;
+    p.speedMin = cfg.speedMin;
+    p.speedMax = cfg.speedMax;
+    p.velBias = cfg.velBias;
+    p.velSpread = cfg.spread;
+    p.colorStart = cfg.colorStart;
+    p.colorEnd = cfg.colorEnd;
+    p.sizeStart = cfg.sizeStart;
+    p.sizeEnd = cfg.sizeEnd;
+    return p;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -86,21 +102,21 @@ static float frand() { return static_cast<float>(rand()) / RAND_MAX; }
 
 void ParticleSystem::Init() {
     // Shader compiled once by the engine via CompileAllShaders(); we just reference it.
-    glGenVertexArrays(1, &vao_);
-    glGenBuffers(1, &vbo_);
+    glCreateVertexArrays(1, &vao_);
+    glCreateBuffers(1, &vbo_);
 
-    glBindVertexArray(vao_);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glVertexArrayVertexBuffer(vao_, 0, vbo_, 0, sizeof(Vertex));
 
-    const GLsizei stride = sizeof(Vertex);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(Vertex, x));
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(Vertex, r));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(Vertex, s));
-    glEnableVertexAttribArray(2);
+    glEnableVertexArrayAttrib(vao_, 0);
+    glVertexArrayAttribFormat(vao_, 0, 3, GL_FLOAT, GL_FALSE, offsetof(Vertex, x));
+    glVertexArrayAttribBinding(vao_, 0, 0);
+    glEnableVertexArrayAttrib(vao_, 1);
+    glVertexArrayAttribFormat(vao_, 1, 4, GL_FLOAT, GL_FALSE, offsetof(Vertex, r));
+    glVertexArrayAttribBinding(vao_, 1, 0);
+    glEnableVertexArrayAttrib(vao_, 2);
+    glVertexArrayAttribFormat(vao_, 2, 1, GL_FLOAT, GL_FALSE, offsetof(Vertex, s));
+    glVertexArrayAttribBinding(vao_, 2, 0);
 
-    glBindVertexArray(0);
     glEnable(GL_PROGRAM_POINT_SIZE);
 }
 
@@ -114,17 +130,19 @@ void ParticleSystem::Shutdown() {
 // SpawnEmitter
 // ---------------------------------------------------------------------------
 
-void ParticleSystem::SpawnEmitter(EmitterType type, glm::vec3 pos, float now, float duration) {
+void ParticleSystem::SpawnEmitterParams(const FXParams& params,
+                                       glm::vec3 pos,
+                                       float now,
+                                       float duration) {
     Emitter e;
-    e.type      = type;
+    e.params    = params;
     e.pos       = pos;
     e.startTime = now;
     e.duration  = duration;
     e.nextSpawn = now;
 
-    const auto& cfg = kCfg[static_cast<int>(type)];
-    if (cfg.burstCount > 0) {
-        for (int i = 0; i < cfg.burstCount; ++i)
+    if (e.params.burstCount > 0) {
+        for (int i = 0; i < e.params.burstCount; ++i)
             spawnParticle(e, now);
         e.nextSpawn = 1e30f; // no further streaming
     }
@@ -132,15 +150,19 @@ void ParticleSystem::SpawnEmitter(EmitterType type, glm::vec3 pos, float now, fl
     emitters_.push_back(std::move(e));
 }
 
+void ParticleSystem::SpawnEmitter(EmitterType type, glm::vec3 pos, float now, float duration) {
+    SpawnEmitterParams(ParamsFromTypeCfg(kCfg[static_cast<int>(type)]), pos, now, duration);
+}
+
 // ---------------------------------------------------------------------------
 // spawnParticle
 // ---------------------------------------------------------------------------
 
 void ParticleSystem::spawnParticle(Emitter& e, float now) {
-    const auto& cfg = kCfg[static_cast<int>(e.type)];
+    const auto& cfg = e.params;
 
-    glm::vec3 dir   = glm::normalize(cfg.velBias + glm::ballRand(cfg.spread));
-    float     speed = cfg.speedMin + frand() * (cfg.speedMax - cfg.speedMin);
+    glm::vec3 dir = glm::normalize(cfg.velBias + glm::ballRand(cfg.velSpread));
+    float speed = cfg.speedMin + frand() * (cfg.speedMax - cfg.speedMin);
 
     Particle p;
     p.pos        = e.pos + glm::vec3((frand()-0.5f)*0.3f, 0.f, (frand()-0.5f)*0.3f);
@@ -150,13 +172,13 @@ void ParticleSystem::spawnParticle(Emitter& e, float now) {
     p.sizeStart  = cfg.sizeStart;
     p.sizeEnd    = cfg.sizeEnd;
     p.age        = 0.f;
-    p.lifetime   = cfg.lifetime * (0.7f + 0.6f * frand());
+    p.lifetime   = cfg.lifetimeSeconds * (0.7f + 0.6f * frand());
 
     e.particles.push_back(p);
 }
 
-float ParticleSystem::spawnInterval(EmitterType t) const {
-    return kCfg[static_cast<int>(t)].streamInterval;
+float ParticleSystem::spawnInterval(const Emitter& e) const {
+    return e.params.streamInterval;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +193,7 @@ void ParticleSystem::Update(float now, float dt) {
 
         float age          = now - e.startTime;
         bool  emitterAlive = e.duration > 0.f && age < e.duration;
-        float interval     = spawnInterval(e.type);
+        float interval     = spawnInterval(e);
 
         if (emitterAlive && interval > 0.f) {
             while (e.nextSpawn <= now) {
@@ -225,11 +247,14 @@ void ParticleSystem::Render(const glm::mat4& view, const glm::mat4& proj) {
     shader.SetMat4("uView", view);
     shader.SetMat4("uProj", proj);
 
+    GLint prevVao = 0;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVao);
+
+    glNamedBufferData(vbo_,
+                     static_cast<GLsizei>(verts_.size() * sizeof(Vertex)),
+                     verts_.data(), GL_DYNAMIC_DRAW);
+
     glBindVertexArray(vao_);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-    glBufferData(GL_ARRAY_BUFFER,
-                 static_cast<GLsizei>(verts_.size() * sizeof(Vertex)),
-                 verts_.data(), GL_DYNAMIC_DRAW);
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE); // additive blending for glow effect
@@ -239,7 +264,7 @@ void ParticleSystem::Render(const glm::mat4& view, const glm::mat4& proj) {
 
     glDepthMask(GL_TRUE);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glBindVertexArray(0);
+    glBindVertexArray(static_cast<GLuint>(prevVao));
 }
 
 } // namespace rco::renderer

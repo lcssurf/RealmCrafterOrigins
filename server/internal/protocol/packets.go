@@ -78,6 +78,7 @@ const (
 	PPrimaryStatsUpdate  uint16 = 135 // S->C: primary stats + unspent snapshot
 	PDistributeStatPoint uint16 = 136 // C->S: allocate primary stat points
 	PRespec              uint16 = 137 // C->S: reset primary stats to base
+	PFXCatalog           uint16 = 138 // S->C: full fx_templates catalog sent once on startgame
 )
 
 // EmitterType values for PCreateEmitter.
