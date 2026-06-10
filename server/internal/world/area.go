@@ -866,7 +866,13 @@ func (a *Area) SnapshotDroppedItems() []*DroppedItem {
 
 // SpawnDropsForNPC rolls the drop table for npc and adds any results to the world.
 func (a *Area) SpawnDropsForNPC(npc *Actor) {
-	drops := RollDrops(npc.Name, npc.X, npc.Y, npc.Z)
+	if npc == nil {
+		return
+	}
+	if npc.LootTableID <= 0 {
+		return
+	}
+	drops := RollDropsByTable(npc.LootTableID, npc.X, npc.Y, npc.Z)
 	if len(drops) > 0 {
 		log.Printf("world: %s dropped %d item(s)", npc.Name, len(drops))
 	}

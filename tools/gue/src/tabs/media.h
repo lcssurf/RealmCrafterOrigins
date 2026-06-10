@@ -5,6 +5,7 @@
 
 #include <string>
 #include <vector>
+#include <utility>
 #include <unordered_map>
 #include <memory>
 #include <sqlite3.h>
@@ -164,6 +165,7 @@ struct ActorDef {
     float       default_aggro_range   = 8.f;
     float       default_attack_range  = 2.f;
     int         default_respawn_ms    = 30000;
+    int         loot_table_id        = 0;
     bool        is_playable    = false;
     bool        is_mountable   = false;
     bool        is_interactive = false;
@@ -191,6 +193,7 @@ public:
     // Public so other tabs (Actors) can build pickers without their own query.
     void EnsureTables(sqlite3* db);
     void FetchAll(sqlite3* db);
+    void LoadDropListOptions(sqlite3* db);
 
     const std::vector<MediaModel>&    Models()     const { return models_;     }
     const std::vector<MediaMaterial>& Materials()  const { return materials_;  }
@@ -248,6 +251,7 @@ private:
     std::vector<MediaMaterial> materials_;
     std::vector<MediaAnimClip> clips_;
     std::vector<ActorDef>      actor_defs_;
+    std::vector<std::pair<int, std::string>> drop_list_options_;
 
     bool needFetch_        = true;
     char statusMsg_[256]   = {};

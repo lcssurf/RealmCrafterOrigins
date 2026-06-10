@@ -75,6 +75,7 @@ type Actor struct {
 	// Combat config — set once at spawn, then read-only.
 	SpawnID         int // source npc_spawns.id when spawned from authored spawn rows
 	ActorDefID      int // visual archetype id (media_actor_defs.id)
+	LootTableID     int // drop table id (media_actor_defs.loot_table_id)
 	IsNPC           bool
 	Aggressiveness  int     // 0=passive 1=defensive 2=aggressive 3=no-combat
 	AggressiveRange float32 // detection radius; NPC starts chasing when player enters this

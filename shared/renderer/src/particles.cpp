@@ -4,95 +4,14 @@
 #include <glm/gtc/random.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
-#include <cctype>
 #include <cstdlib>
-#include <string>
-#include <unordered_map>
 
 namespace rco::renderer {
 
-EmitterType ResolveVFXPathToType(const std::string& path, bool* resolved) {
-    static const std::unordered_map<std::string, EmitterType> kPathMap = {
-        {"vfx:fire", EmitterType::Fire},
-        {"vfx:explosion", EmitterType::Explosion},
-        {"vfx:heal", EmitterType::Heal},
-        {"vfx:portal", EmitterType::Portal},
-        {"vfx:blood", EmitterType::Blood},
-        {"vfx:smoke", EmitterType::Smoke},
-    };
-
-    std::string normalized = path;
-    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-
-    auto it = kPathMap.find(normalized);
-    if (it != kPathMap.end()) {
-        if (resolved) *resolved = true;
-        return it->second;
-    }
-
-    if (resolved) *resolved = false;
-    return EmitterType::Fire;
-}
-
 // ---------------------------------------------------------------------------
-// Per-type configuration
-// ---------------------------------------------------------------------------
-
 namespace {
 
-struct TypeCfg {
-    glm::vec4 colorStart;
-    glm::vec4 colorEnd;
-    float     sizeStart;
-    float     sizeEnd;
-    float     lifetime;       // particle lifetime (seconds)
-    float     speedMin;
-    float     speedMax;
-    glm::vec3 velBias;       // directional bias (e.g. upward)
-    float     spread;         // random spread radius added to velBias
-    int       burstCount;     // > 0: emit all at once; 0: stream
-    float     streamInterval; // seconds between streamed particles
-};
-
-static const TypeCfg kCfg[] = {
-    // Fire
-    { {1.f,0.55f,0.05f,0.9f}, {0.8f,0.1f,0.f,0.f},
-      8.f, 2.f, 1.2f, 1.5f, 3.0f, {0.f,2.5f,0.f}, 0.5f, 0, 0.04f },
-    // Explosion
-    { {1.f,0.6f,0.f,1.f}, {0.3f,0.f,0.f,0.f},
-      12.f, 2.f, 0.8f, 3.0f, 7.0f, {0.f,1.0f,0.f}, 3.14159f, 40, 0.f },
-    // Heal
-    { {0.2f,1.f,0.4f,0.9f}, {0.f,0.5f,0.1f,0.f},
-      6.f, 2.f, 1.4f, 1.0f, 2.5f, {0.f,2.0f,0.f}, 0.7f, 20, 0.f },
-    // Portal
-    { {0.f,0.8f,1.f,0.8f}, {0.f,0.2f,0.6f,0.f},
-      5.f, 1.5f, 1.8f, 1.5f, 3.0f, {0.f,0.5f,0.f}, 3.14159f, 0, 0.06f },
-    // Blood
-    { {0.9f,0.f,0.f,1.f}, {0.4f,0.f,0.f,0.f},
-      5.f, 1.f, 0.4f, 2.0f, 5.0f, {0.f,-1.5f,0.f}, 1.8f, 15, 0.f },
-    // Smoke
-    { {0.5f,0.5f,0.5f,0.5f}, {0.3f,0.3f,0.3f,0.f},
-      10.f, 6.f, 2.0f, 0.3f, 0.8f, {0.f,1.2f,0.f}, 0.4f, 0, 0.12f },
-};
-
 static float frand() { return static_cast<float>(rand()) / RAND_MAX; }
-
-static FXParams ParamsFromTypeCfg(const TypeCfg& cfg) {
-    FXParams p;
-    p.burstCount = cfg.burstCount;
-    p.streamInterval = cfg.streamInterval;
-    p.lifetimeSeconds = cfg.lifetime;
-    p.speedMin = cfg.speedMin;
-    p.speedMax = cfg.speedMax;
-    p.velBias = cfg.velBias;
-    p.velSpread = cfg.spread;
-    p.colorStart = cfg.colorStart;
-    p.colorEnd = cfg.colorEnd;
-    p.sizeStart = cfg.sizeStart;
-    p.sizeEnd = cfg.sizeEnd;
-    return p;
-}
 
 } // namespace
 
@@ -148,10 +67,6 @@ void ParticleSystem::SpawnEmitterParams(const FXParams& params,
     }
 
     emitters_.push_back(std::move(e));
-}
-
-void ParticleSystem::SpawnEmitter(EmitterType type, glm::vec3 pos, float now, float duration) {
-    SpawnEmitterParams(ParamsFromTypeCfg(kCfg[static_cast<int>(type)]), pos, now, duration);
 }
 
 // ---------------------------------------------------------------------------

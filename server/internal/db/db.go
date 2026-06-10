@@ -56,6 +56,23 @@ type WeaponKit struct {
 	Enabled     bool
 }
 
+// LootTable groups one drop table definition.
+type LootTable struct {
+	ID      int
+	Name    string
+	Enabled bool
+}
+
+// LootEntry defines an item row in a loot table.
+type LootEntry struct {
+	ID          int
+	LootTableID int
+	ItemID      int
+	Chance      float64
+	MinQty      int
+	MaxQty      int
+}
+
 // WeaponKitAbility links an ability_template to a weapon_kit at a specific slot.
 type WeaponKitAbility struct {
 	ID        int
@@ -447,6 +464,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV37(ctx)
 	d.migrateV38(ctx)
 	d.migrateV39(ctx)
+	d.migrateV40(ctx)
 
 	return d, nil
 }
@@ -2826,6 +2844,7 @@ type ActorDef struct {
 	DefaultAggroRange     float32
 	DefaultAttackRange    float32
 	DefaultRespawnMs      int
+	LootTableID           int
 	IsPlayable            bool
 	IsMountable           bool
 	IsInteractive         bool
@@ -2847,14 +2866,14 @@ func (d *DB) LoadActorDef(ctx context.Context, id int) (*ActorDef, error) {
 		        default_name, default_race, default_class,
 		        default_level, default_hp, default_ep,
 		        default_aggressiveness, default_aggro_range, default_attack_range,
-		        default_respawn_ms,
+		        default_respawn_ms, loot_table_id,
 		        is_playable, is_mountable, is_interactive
 		 FROM media_actor_defs WHERE id = ?`), id).Scan(
 		&out.Name, &out.Scale, &out.YawOffset, &out.YOffset,
 		&out.DefaultName, &out.DefaultRace, &out.DefaultClass,
 		&out.DefaultLevel, &out.DefaultHP, &out.DefaultEP,
 		&out.DefaultAggressiveness, &out.DefaultAggroRange, &out.DefaultAttackRange,
-		&out.DefaultRespawnMs,
+		&out.DefaultRespawnMs, &out.LootTableID,
 		&playable, &mountable, &interactive,
 	)
 	if err != nil {
@@ -4158,6 +4177,180 @@ func (d *DB) DeleteItemTemplate(ctx context.Context, id int) error {
 	_, err := d.db.ExecContext(ctx, `DELETE FROM item_templates WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("db: DeleteItemTemplate: %w", err)
+	}
+	return nil
+}
+
+// ListLootTables returns all loot tables ordered by id.
+func (d *DB) ListLootTables(ctx context.Context) ([]*LootTable, error) {
+	rows, err := d.db.QueryContext(ctx,
+		d.q(`SELECT id, name, CASE WHEN enabled THEN 1 ELSE 0 END AS enabled FROM loot_tables ORDER BY id`))
+	if err != nil {
+		return nil, fmt.Errorf("db: ListLootTables: %w", err)
+	}
+	defer rows.Close()
+	var out []*LootTable
+	for rows.Next() {
+		t := &LootTable{}
+		var enabled int
+		if err := rows.Scan(&t.ID, &t.Name, &enabled); err != nil {
+			return nil, fmt.Errorf("db: ListLootTables scan: %w", err)
+		}
+		t.Enabled = enabled != 0
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// GetLootTable returns a single loot table by id, or nil if not found.
+func (d *DB) GetLootTable(ctx context.Context, id int) (*LootTable, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("db: GetLootTable: id must be > 0")
+	}
+	t := &LootTable{}
+	var enabled int
+	err := d.db.QueryRowContext(ctx,
+		d.q(`SELECT id, name, CASE WHEN enabled THEN 1 ELSE 0 END AS enabled
+		       FROM loot_tables
+		      WHERE id = ?`), id).Scan(&t.ID, &t.Name, &enabled)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: GetLootTable: %w", err)
+	}
+	t.Enabled = enabled != 0
+	return t, nil
+}
+
+// CreateLootTable inserts a new loot table and returns the new id.
+func (d *DB) CreateLootTable(ctx context.Context, name string) (int, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, fmt.Errorf("db: CreateLootTable: name is required")
+	}
+	res, err := d.db.ExecContext(ctx,
+		d.q(`INSERT INTO loot_tables (name, enabled) VALUES (?, 1)`),
+		name)
+	if err != nil {
+		return 0, fmt.Errorf("db: CreateLootTable: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return int(id), nil
+}
+
+// UpdateLootTable updates an existing loot table.
+func (d *DB) UpdateLootTable(ctx context.Context, t LootTable) error {
+	if t.ID <= 0 {
+		return fmt.Errorf("db: UpdateLootTable: id must be > 0")
+	}
+	t.Name = strings.TrimSpace(t.Name)
+	if t.Name == "" {
+		return fmt.Errorf("db: UpdateLootTable: name is required")
+	}
+	enabled := 0
+	if t.Enabled {
+		enabled = 1
+	}
+	_, err := d.db.ExecContext(ctx,
+		d.q(`UPDATE loot_tables SET name = ?, enabled = ? WHERE id = ?`),
+		t.Name, enabled, t.ID)
+	if err != nil {
+		return fmt.Errorf("db: UpdateLootTable: %w", err)
+	}
+	return nil
+}
+
+// DeleteLootTable soft-deletes a loot table by setting enabled = 0.
+func (d *DB) DeleteLootTable(ctx context.Context, id int) error {
+	if id <= 0 {
+		return fmt.Errorf("db: DeleteLootTable: id must be > 0")
+	}
+	_, err := d.db.ExecContext(ctx,
+		d.q(`UPDATE loot_tables SET enabled = 0 WHERE id = ?`), id)
+	if err != nil {
+		return fmt.Errorf("db: DeleteLootTable: %w", err)
+	}
+	return nil
+}
+
+// ListLootEntries returns all loot entries for a given table id.
+func (d *DB) ListLootEntries(ctx context.Context, lootTableID int) ([]LootEntry, error) {
+	if lootTableID <= 0 {
+		return nil, fmt.Errorf("db: ListLootEntries: lootTableID must be > 0")
+	}
+	rows, err := d.db.QueryContext(ctx,
+		d.q(`SELECT id, loot_table_id, item_id, chance, min_qty, max_qty
+		       FROM loot_entries
+		      WHERE loot_table_id = ?
+		      ORDER BY id`),
+		lootTableID)
+	if err != nil {
+		return nil, fmt.Errorf("db: ListLootEntries: %w", err)
+	}
+	defer rows.Close()
+
+	var out []LootEntry
+	for rows.Next() {
+		var e LootEntry
+		if err := rows.Scan(&e.ID, &e.LootTableID, &e.ItemID, &e.Chance, &e.MinQty, &e.MaxQty); err != nil {
+			return nil, fmt.Errorf("db: ListLootEntries scan: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// CreateLootEntry inserts a new loot entry and returns the new id.
+func (d *DB) CreateLootEntry(ctx context.Context, e LootEntry) (int, error) {
+	if e.LootTableID <= 0 {
+		return 0, fmt.Errorf("db: CreateLootEntry: lootTableID must be > 0")
+	}
+	if e.ItemID <= 0 {
+		return 0, fmt.Errorf("db: CreateLootEntry: itemID must be > 0")
+	}
+	res, err := d.db.ExecContext(ctx,
+		d.q(`INSERT INTO loot_entries (loot_table_id, item_id, chance, min_qty, max_qty)
+		      VALUES (?, ?, ?, ?, ?)`),
+		e.LootTableID, e.ItemID, e.Chance, e.MinQty, e.MaxQty)
+	if err != nil {
+		return 0, fmt.Errorf("db: CreateLootEntry: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return int(id), nil
+}
+
+// UpdateLootEntry updates an existing loot entry.
+func (d *DB) UpdateLootEntry(ctx context.Context, e LootEntry) error {
+	if e.ID <= 0 {
+		return fmt.Errorf("db: UpdateLootEntry: id must be > 0")
+	}
+	if e.LootTableID <= 0 {
+		return fmt.Errorf("db: UpdateLootEntry: lootTableID must be > 0")
+	}
+	if e.ItemID <= 0 {
+		return fmt.Errorf("db: UpdateLootEntry: itemID must be > 0")
+	}
+	_, err := d.db.ExecContext(ctx,
+		d.q(`UPDATE loot_entries
+		        SET loot_table_id = ?, item_id = ?, chance = ?, min_qty = ?, max_qty = ?
+		      WHERE id = ?`),
+		e.LootTableID, e.ItemID, e.Chance, e.MinQty, e.MaxQty, e.ID)
+	if err != nil {
+		return fmt.Errorf("db: UpdateLootEntry: %w", err)
+	}
+	return nil
+}
+
+// DeleteLootEntry removes a loot entry.
+func (d *DB) DeleteLootEntry(ctx context.Context, id int) error {
+	if id <= 0 {
+		return fmt.Errorf("db: DeleteLootEntry: id must be > 0")
+	}
+	_, err := d.db.ExecContext(ctx,
+		d.q(`DELETE FROM loot_entries WHERE id = ?`), id)
+	if err != nil {
+		return fmt.Errorf("db: DeleteLootEntry: %w", err)
 	}
 	return nil
 }
@@ -8282,6 +8475,74 @@ func (d *DB) migrateV39(ctx context.Context) {
 	if count == 0 {
 		d.seedDefaultFXTemplates(ctx)
 	}
+
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO meta (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
+		conversionDoneKey, "1")
+}
+
+func (d *DB) migrateV40(ctx context.Context) {
+	const conversionDoneKey = "schema_v40_loot_tables"
+
+	if _, err := d.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		log.Printf("migrateV40: ensure meta table failed: %v", err)
+		return
+	}
+
+	var doneValue string
+	doneErr := d.db.QueryRowContext(ctx, d.q(`SELECT value FROM meta WHERE key = ?`), conversionDoneKey).Scan(&doneValue)
+	if doneErr == nil && strings.TrimSpace(doneValue) == "1" {
+		return
+	}
+
+	createLootTablesSQL := `
+		CREATE TABLE IF NOT EXISTS loot_tables (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1
+		)`
+	createLootEntriesSQL := `
+		CREATE TABLE IF NOT EXISTS loot_entries (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			loot_table_id INTEGER NOT NULL,
+			item_id INTEGER NOT NULL,
+			chance REAL NOT NULL DEFAULT 0,
+			min_qty INTEGER NOT NULL DEFAULT 1,
+			max_qty INTEGER NOT NULL DEFAULT 1
+		)`
+	if d.driver == "postgres" {
+		createLootTablesSQL = `
+			CREATE TABLE IF NOT EXISTS loot_tables (
+				id SERIAL PRIMARY KEY,
+				name TEXT NOT NULL,
+				enabled INTEGER NOT NULL DEFAULT 1
+			)`
+		createLootEntriesSQL = `
+			CREATE TABLE IF NOT EXISTS loot_entries (
+				id SERIAL PRIMARY KEY,
+				loot_table_id INTEGER NOT NULL,
+				item_id INTEGER NOT NULL,
+				chance REAL NOT NULL DEFAULT 0,
+				min_qty INTEGER NOT NULL DEFAULT 1,
+				max_qty INTEGER NOT NULL DEFAULT 1
+			)`
+	}
+	if _, err := d.db.ExecContext(ctx, createLootTablesSQL); err != nil {
+		log.Printf("migrateV40: create loot_tables failed: %v", err)
+		return
+	}
+	if _, err := d.db.ExecContext(ctx, createLootEntriesSQL); err != nil {
+		log.Printf("migrateV40: create loot_entries failed: %v", err)
+		return
+	}
+
+	d.addColumnIfMissing(ctx, "media_actor_defs", "loot_table_id", "INTEGER NOT NULL DEFAULT 0")
 
 	_, _ = d.db.ExecContext(ctx, d.q(`
 		INSERT INTO meta (key, value)

@@ -336,3 +336,22 @@ CREATE INDEX IF NOT EXISTS idx_npc_profile_bindings_actor
 
 CREATE INDEX IF NOT EXISTS idx_npc_profile_bindings_profile
     ON npc_profile_bindings (profile_id);
+
+-- ---------------------------------------------------------------------------
+-- Loot tables (data-driven drop tables, L1)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS loot_tables (
+    id                  SERIAL       PRIMARY KEY,
+    name                TEXT         NOT NULL,
+    enabled             INTEGER      NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS loot_entries (
+    id                  SERIAL       PRIMARY KEY,
+    loot_table_id       INTEGER      NOT NULL,
+    item_id             INTEGER      NOT NULL,
+    chance              REAL         NOT NULL DEFAULT 0,
+    min_qty             INTEGER      NOT NULL DEFAULT 1,
+    max_qty             INTEGER      NOT NULL DEFAULT 1
+);

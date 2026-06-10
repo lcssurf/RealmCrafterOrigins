@@ -1445,10 +1445,20 @@ int main() {
         w.WriteF32(gz);
         conn.SendPacket(rco::net::kPCastSpell, w);
         // Visual: explosion emitter at ground point (client-side preview)
-        if (renderer_ready)
-            particles.SpawnEmitter(rco::renderer::EmitterType::Explosion,
-                                   {gx, terrain.SampleHeight(gx, gz), gz},
-                                   static_cast<float>(glfwGetTime()), 0.f);
+        if (renderer_ready) {
+            auto it_fx = fx_catalog.find("vfx:explosion");
+            if (it_fx != fx_catalog.end()) {
+                particles.SpawnEmitterParams(
+                    it_fx->second,
+                    {gx, terrain.SampleHeight(gx, gz), gz},
+                    static_cast<float>(glfwGetTime()),
+                    0.f);
+            } else {
+                std::fprintf(stderr,
+                             "WARN: FX key '%s' not found for local cast preview (spell=%u)\n",
+                             "vfx:explosion", spell_id);
+            }
+        }
     };
 
     g_camera = &camera;
@@ -3175,34 +3185,52 @@ int main() {
                             dur > 0 ? dur / 1000.f : 0.f);
                         break;
                     }
+                    std::fprintf(
+                        stderr,
+                        "WARN: VFX path '%s' not in catalog (ability=%u phase=%s)\n",
+                        vfx_path.c_str(),
+                        ability_id,
+                        phase.c_str());
+                    break;
+                }
 
-                    bool resolved = false;
-                    rco::renderer::EmitterType emitter_type =
-                        rco::renderer::ResolveVFXPathToType(vfx_path, &resolved);
-                    if (resolved) {
-                        particles.SpawnEmitter(
-                            emitter_type,
+                const char* legacy_key = nullptr;
+                switch (type) {
+                case 0: legacy_key = "vfx:fire"; break;
+                case 1: legacy_key = "vfx:explosion"; break;
+                case 2: legacy_key = "vfx:heal"; break;
+                case 3: legacy_key = "vfx:portal"; break;
+                case 4: legacy_key = "vfx:blood"; break;
+                case 5: legacy_key = "vfx:smoke"; break;
+                default: legacy_key = nullptr;
+                }
+
+                if (legacy_key != nullptr) {
+                    auto it = fx_catalog.find(legacy_key);
+                    if (it != fx_catalog.end()) {
+                        particles.SpawnEmitterParams(
+                            it->second,
                             {ex, ey, ez},
                             static_cast<float>(glfwGetTime()),
                             dur > 0 ? dur / 1000.f : 0.f);
                     } else {
                         std::fprintf(
                             stderr,
-                            "WARN: VFX path '%s' not in catalog and not hardcoded (ability=%u phase=%s)\n",
-                            vfx_path.c_str(),
+                            "WARN: legacy PCreateEmitter type=%u without catalog path (legacy_key=%s, ability=%u phase=%s)\n",
+                            static_cast<uint32_t>(type),
+                            legacy_key,
                             ability_id,
                             phase.c_str());
                     }
                     break;
                 }
 
-                rco::renderer::EmitterType emitter_type =
-                    static_cast<rco::renderer::EmitterType>(type);
-                particles.SpawnEmitter(
-                    emitter_type,
-                    {ex, ey, ez},
-                    static_cast<float>(glfwGetTime()),
-                    dur > 0 ? dur / 1000.f : 0.f);
+                std::fprintf(
+                    stderr,
+                    "WARN: PCreateEmitter without vfx_path (ability=%u phase=%s type=%u). No effect.\n",
+                    ability_id,
+                    phase.c_str(),
+                    static_cast<uint32_t>(type));
                 break;
             }
 

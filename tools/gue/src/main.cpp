@@ -37,6 +37,7 @@
 #include "tabs/fx_templates.h"
 #include "tabs/quests.h"
 #include "tabs/media.h"
+#include "tabs/drop_lists.h"
 #include "tabs/zones.h"
 #include "tabs/input_maps.h"
 #include "tabs/spawn_points.h"
@@ -170,6 +171,7 @@ int main() {
     gue::AreasTab        areasTab;
     gue::QuestsTab       questsTab;
     gue::MediaTab        mediaTab;
+    gue::DropListsTab    dropListsTab;
     gue::ZonesTab        zonesTab;
     gue::InputMapsTab    inputMapsTab;
     gue::SpawnPointsTab  spawnPointsTab;
@@ -280,6 +282,10 @@ int main() {
             }
             if (ImGui::BeginTabItem("FX Templates")) {
                 fxTemplatesTab.Draw(db);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Drop Lists")) {
+                dropListsTab.Draw(db);
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Progression Config")) {

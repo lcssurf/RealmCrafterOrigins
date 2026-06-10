@@ -2,20 +2,10 @@
 
 #include <vector>
 #include <cstdint>
-#include <string>
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 
 namespace rco::renderer {
-
-enum class EmitterType : uint8_t {
-    Fire      = 0,  // continuous rising flame
-    Explosion = 1,  // one-shot outward burst (NPC death / impact)
-    Heal      = 2,  // rising green sparkles
-    Portal    = 3,  // spinning cyan ring
-    Blood     = 4,  // short red splatter burst
-    Smoke     = 5,  // rising grey wisps
-};
 
 struct FXParams {
     int      burstCount = 0;
@@ -33,10 +23,6 @@ struct FXParams {
     float    sizeEnd = 2.f;
 };
 
-// Resolves a soft path key from ability_templates into an existing emitter type.
-// Known keys (case-insensitive): vfx:fire/explosion/heal/portal/blood/smoke
-EmitterType ResolveVFXPathToType(const std::string& path, bool* resolved);
-
 class ParticleSystem {
 public:
     void Init();
@@ -46,11 +32,6 @@ public:
                            glm::vec3 pos,
                            float now,
                            float duration = 0.f);
-
-    // Spawn an emitter at a world position.
-    // duration > 0: streaming emitter (fire, portal).
-    // duration == 0: one-shot burst (explosion, heal).
-    void SpawnEmitter(EmitterType type, glm::vec3 pos, float now, float duration = 0.f);
 
     void Update(float now, float dt);
     void Render(const glm::mat4& view, const glm::mat4& proj);

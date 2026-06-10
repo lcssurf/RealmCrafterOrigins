@@ -179,7 +179,47 @@ bool IsAllowedCurveType(const std::string& curve_type) {
     return false;
 }
 
-bool DrawAbilityFields(CombatAbilityTemplate& row) {
+} // namespace
+
+
+bool CombatAbilitiesTab::DrawFXKeyCombo(const char* label, std::string& value) {
+    bool changed = false;
+    const char* preview = value.empty() ? "(none)" : value.c_str();
+    if (ImGui::BeginCombo(label, preview)) {
+        const bool none_selected = value.empty();
+        if (ImGui::Selectable("(none)", none_selected)) {
+            if (!value.empty()) {
+                value.clear();
+                changed = true;
+            }
+        }
+        if (none_selected) ImGui::SetItemDefaultFocus();
+
+        bool found_current = value.empty();
+        for (const auto& key : fx_keys_) {
+            const bool sel = (key == value);
+            if (sel) found_current = true;
+            if (ImGui::Selectable(key.c_str(), sel)) {
+                if (value != key) {
+                    value = key;
+                    changed = true;
+                }
+            }
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+
+        if (!found_current && !value.empty()) {
+            ImGui::Separator();
+            const std::string orphan = value + "  (not in catalog)";
+            ImGui::Selectable(orphan.c_str(), true);
+        }
+
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
+bool CombatAbilitiesTab::DrawAbilityFields(CombatAbilityTemplate& row) {
     bool changed = false;
 
     char name_buf[128] = {};
@@ -363,22 +403,12 @@ bool DrawAbilityFields(CombatAbilityTemplate& row) {
     ImGui::Separator();
     ImGui::TextUnformatted("FX Asset Paths (Unreal-like, futuro)");
     ImGui::TextDisabled("Example: vfx/cleave_impact.fx or vfx:cleave:impact");
-    char vfx_path_windup_buf[256] = {};
-    char vfx_path_impact_buf[256] = {};
     char sfx_path_windup_buf[256] = {};
     char sfx_path_impact_buf[256] = {};
-    std::strncpy(vfx_path_windup_buf, row.vfx_path_windup.c_str(), sizeof(vfx_path_windup_buf) - 1);
-    std::strncpy(vfx_path_impact_buf, row.vfx_path_impact.c_str(), sizeof(vfx_path_impact_buf) - 1);
     std::strncpy(sfx_path_windup_buf, row.sfx_path_windup.c_str(), sizeof(sfx_path_windup_buf) - 1);
     std::strncpy(sfx_path_impact_buf, row.sfx_path_impact.c_str(), sizeof(sfx_path_impact_buf) - 1);
-    if (ImGui::InputText("VFX Path Windup", vfx_path_windup_buf, IM_ARRAYSIZE(vfx_path_windup_buf))) {
-        row.vfx_path_windup = vfx_path_windup_buf;
-        changed = true;
-    }
-    if (ImGui::InputText("VFX Path Impact", vfx_path_impact_buf, IM_ARRAYSIZE(vfx_path_impact_buf))) {
-        row.vfx_path_impact = vfx_path_impact_buf;
-        changed = true;
-    }
+    if (DrawFXKeyCombo("VFX Path Windup", row.vfx_path_windup)) changed = true;
+    if (DrawFXKeyCombo("VFX Path Impact", row.vfx_path_impact)) changed = true;
     if (ImGui::InputText("SFX Path Windup", sfx_path_windup_buf, IM_ARRAYSIZE(sfx_path_windup_buf))) {
         row.sfx_path_windup = sfx_path_windup_buf;
         changed = true;
@@ -511,13 +541,26 @@ bool DrawAbilityFields(CombatAbilityTemplate& row) {
     return changed;
 }
 
-} // namespace
-
 void CombatAbilitiesTab::SetStatus(const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
     std::vsnprintf(status_msg_, sizeof(status_msg_), fmt, args);
     va_end(args);
+}
+
+void CombatAbilitiesTab::LoadFXKeys(sqlite3* db) {
+    fx_keys_.clear();
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT fx_key FROM fx_templates WHERE enabled=1 ORDER BY id;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char* key = sqlite3_column_text(stmt, 0);
+            if (key) {
+                fx_keys_.push_back(reinterpret_cast<const char*>(key));
+            }
+        }
+    }
+    sqlite3_finalize(stmt);
 }
 
 void CombatAbilitiesTab::EnsureTables(sqlite3* db) {
@@ -1743,6 +1786,7 @@ void CombatAbilitiesTab::Draw(sqlite3* db) {
     if (!db) return;
     EnsureTables(db);
     LoadDefaultsIfNeeded(db);
+    LoadFXKeys(db);
     if (need_fetch_) {
         FetchAll(db);
         need_fetch_ = false;

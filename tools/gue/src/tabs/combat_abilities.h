@@ -134,6 +134,9 @@ private:
     void FetchNPCSpawns(sqlite3* db);
     void FetchActorDefs(sqlite3* db);
     void LoadDefaultsIfNeeded(sqlite3* db);
+    void LoadFXKeys(sqlite3* db);
+    bool DrawFXKeyCombo(const char* label, std::string& value);
+    bool DrawAbilityFields(CombatAbilityTemplate& row);
 
     bool SaveAbility(sqlite3* db, CombatAbilityTemplate& row);
     bool DeleteAbility(sqlite3* db, int ability_id);
@@ -172,6 +175,7 @@ private:
     std::vector<NPCSpawnOption> npc_spawns_;
     std::vector<ActorDefOption> actor_defs_;
     std::vector<ProfileOption> profile_options_;
+    std::vector<std::string> fx_keys_;
 
     int selected_ability_ = -1;
     int selected_loadout_ = -1;

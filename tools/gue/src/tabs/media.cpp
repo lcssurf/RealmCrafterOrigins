@@ -422,6 +422,7 @@ void MediaTab::EnsureTables(sqlite3* db) {
         "ALTER TABLE media_actor_defs ADD COLUMN is_playable            INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE media_actor_defs ADD COLUMN is_mountable           INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE media_actor_defs ADD COLUMN is_interactive         INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE media_actor_defs ADD COLUMN loot_table_id          INTEGER NOT NULL DEFAULT 0",
     };
     for (const char* s : adefColumns)
         sqlite3_exec(db, s, nullptr, nullptr, nullptr);
@@ -548,7 +549,7 @@ void MediaTab::FetchAll(sqlite3* db) {
         "       default_name, default_race, default_class,"
         "       default_level, default_hp, default_ep,"
         "       default_aggressiveness, default_aggro_range, default_attack_range,"
-        "       default_respawn_ms, is_playable, is_mountable, is_interactive"
+        "       default_respawn_ms, is_playable, is_mountable, is_interactive, loot_table_id"
         " FROM media_actor_defs ORDER BY name",
         -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -572,6 +573,7 @@ void MediaTab::FetchAll(sqlite3* db) {
             d.is_playable             = sqlite3_column_int(stmt, 15) != 0;
             d.is_mountable            = sqlite3_column_int(stmt, 16) != 0;
             d.is_interactive          = sqlite3_column_int(stmt, 17) != 0;
+            d.loot_table_id           = sqlite3_column_int(stmt, 18);
             actor_defs_.push_back(std::move(d));
         }
         sqlite3_finalize(stmt);
@@ -595,6 +597,8 @@ void MediaTab::FetchAll(sqlite3* db) {
         }
         sqlite3_finalize(stmt);
     }
+
+    LoadDropListOptions(db);
 
     // Actor anim map — also pulls each backing clip's source_path + clip_override
     // so the Actor Def editor can edit them inline without visiting the
@@ -633,6 +637,24 @@ void MediaTab::FetchAll(sqlite3* db) {
                   "Loaded: %d models, %d materials, %d clips, %d actor defs",
                   (int)models_.size(), (int)materials_.size(),
                   (int)clips_.size(),  (int)actor_defs_.size());
+}
+
+void MediaTab::LoadDropListOptions(sqlite3* db) {
+    drop_list_options_.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, name FROM loot_tables WHERE enabled=1 ORDER BY id",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        return;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        int id = sqlite3_column_int(stmt, 0);
+        const char* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        drop_list_options_.push_back({id, text ? text : ""});
+    }
+    sqlite3_finalize(stmt);
 }
 
 // ---------------------------------------------------------------------------
@@ -951,8 +973,8 @@ void MediaTab::SaveActorDef(sqlite3* db, ActorDef& d) {
             " (name, scale, yaw_offset, y_offset, default_name, default_race, default_class,"
             "  default_level, default_hp, default_ep,"
             "  default_aggressiveness, default_aggro_range, default_attack_range,"
-            "  default_respawn_ms, is_playable, is_mountable, is_interactive)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  default_respawn_ms, is_playable, is_mountable, is_interactive, loot_table_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
@@ -961,7 +983,8 @@ void MediaTab::SaveActorDef(sqlite3* db, ActorDef& d) {
             "  default_name=?, default_race=?, default_class=?,"
             "  default_level=?, default_hp=?, default_ep=?,"
             "  default_aggressiveness=?, default_aggro_range=?, default_attack_range=?,"
-            "  default_respawn_ms=?, is_playable=?, is_mountable=?, is_interactive=?"
+            "  default_respawn_ms=?, is_playable=?, is_mountable=?, is_interactive=?,"
+            "  loot_table_id=?"
             " WHERE id=?",
             -1, &stmt, nullptr);
     }
@@ -988,6 +1011,7 @@ void MediaTab::SaveActorDef(sqlite3* db, ActorDef& d) {
     sqlite3_bind_int   (stmt, i++, d.is_playable    ? 1 : 0);
     sqlite3_bind_int   (stmt, i++, d.is_mountable   ? 1 : 0);
     sqlite3_bind_int   (stmt, i++, d.is_interactive ? 1 : 0);
+    sqlite3_bind_int   (stmt, i++, d.loot_table_id);
     if (d.id != 0) sqlite3_bind_int(stmt, i++, d.id);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
@@ -2315,10 +2339,11 @@ static const char* lookupName(const std::vector<std::pair<int, std::string>>& v,
 
 void MediaTab::DrawActorDefs(sqlite3* db) {
     EnsurePreview(preview_, preview_init_ok_, engine_, pipeline_);
+    LoadDropListOptions(db);
 
     auto modelList = idNameList(models_);
     auto matList   = idNameList(materials_);
-    auto clipList  = idNameList(clips_);
+    auto dropLists = drop_list_options_;
 
     if (ImGui::Button("Refresh")) needFetch_ = true;
     ImGui::SameLine();
@@ -2449,6 +2474,11 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
             if (ImGui::Checkbox("Mountable",  &d.is_mountable))   dirtyActorDef_ = true;
             ImGui::SameLine();
             if (ImGui::Checkbox("Has dialog", &d.is_interactive)) dirtyActorDef_ = true;
+
+            ImGui::Spacing();
+            ImGui::SeparatorText("Loot");
+            if (ComboId("Drop List", d.loot_table_id, dropLists, "(none)"))
+                dirtyActorDef_ = true;
         }
 
         ImGui::Spacing();

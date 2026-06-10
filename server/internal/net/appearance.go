@@ -19,7 +19,14 @@ func BuildAppearance(ctx context.Context, database *db.DB, defID int) *world.App
 	if err != nil || def == nil {
 		return nil
 	}
+	return BuildAppearanceFromDef(ctx, database, def)
+}
 
+// BuildAppearanceFromDef resolves appearance data from an already-loaded actor def.
+func BuildAppearanceFromDef(ctx context.Context, database *db.DB, def *db.ActorDef) *world.Appearance {
+	if def == nil || def.ID <= 0 {
+		return nil
+	}
 	out := &world.Appearance{}
 
 	actorScale := def.Scale

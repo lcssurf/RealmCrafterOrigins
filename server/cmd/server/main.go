@@ -266,9 +266,12 @@ func main() {
 		log.Printf("main: runtime ability mapping patched for %d spells from DB", len(runtimeRows))
 	}
 
-	// Load item templates and register drop tables + shops.
-	if err := setupDropsAndShops(ctx, database); err != nil {
-		log.Printf("main: drops/shops: %v", err)
+	// Load item templates and register runtime drop tables + shops.
+	if err := setupLootCatalog(ctx, database); err != nil {
+		log.Printf("main: drops catalog: %v", err)
+	}
+	if err := setupShops(ctx, database); err != nil {
+		log.Printf("main: shops: %v", err)
 	}
 
 	// Load data-driven combat ability runtime definitions.
@@ -441,6 +444,29 @@ func main() {
 		log.Printf("main: combat ability runtime disabled via config")
 	}
 
+	actorDefCache := make(map[int]*db.ActorDef)
+	resolveAndApplyActorDef := func(npc *world.Actor, actorDefID int) {
+		if actorDefID <= 0 {
+			return
+		}
+		def, ok := actorDefCache[actorDefID]
+		if !ok {
+			var err error
+			def, err = database.LoadActorDef(ctx, actorDefID)
+			if err != nil {
+				log.Printf("main: load actor_def %d: %v", actorDefID, err)
+			}
+			actorDefCache[actorDefID] = def
+		}
+		if def == nil {
+			return
+		}
+		npc.LootTableID = def.LootTableID
+		if app := rconet.BuildAppearanceFromDef(ctx, database, def); app != nil {
+			npc.Appearance = app
+		}
+	}
+
 	// Spawn NPCs from the database.
 	npcSpawns, err := database.LoadNPCSpawns(ctx)
 	if err != nil {
@@ -462,11 +488,7 @@ func main() {
 		npc.WanderPauseMaxMs = s.WanderPauseMaxMs
 
 		// Resolve actor_def_id → full Appearance (meshes + anim bindings).
-		if s.ActorDefID > 0 {
-			if app := rconet.BuildAppearance(ctx, database, s.ActorDefID); app != nil {
-				npc.Appearance = app
-			}
-		}
+		resolveAndApplyActorDef(npc, s.ActorDefID)
 	}
 	log.Printf("main: spawned %d NPCs from database", len(npcSpawns))
 
@@ -536,11 +558,7 @@ func main() {
 					npc.AttackRange = float32(m.AttackRange)
 					npc.RespawnDelay = m.RespawnDelayMs
 					npc.ActorDefID = m.ActorDefID
-					if m.ActorDefID > 0 {
-						if app := rconet.BuildAppearance(ctx, database, m.ActorDefID); app != nil {
-							npc.Appearance = app
-						}
-					}
+					resolveAndApplyActorDef(npc, m.ActorDefID)
 					totalFromGroups++
 				}
 			}
@@ -649,32 +667,95 @@ func main() {
 	log.Println("main: shutdown complete")
 }
 
-// setupDropsAndShops loads all item templates from the DB and registers
-// NPC drop tables and shop inventories.
-func setupDropsAndShops(ctx context.Context, database *db.DB) error {
-	templates, err := database.LoadAllItemTemplates(ctx)
+// setupLootCatalog loads all enabled loot tables from the DB and caches them in runtime.
+func setupLootCatalog(ctx context.Context, database *db.DB) error {
+	lootTables, err := database.ListLootTables(ctx)
+	if err != nil {
+		return err
+	}
+	itemTemplates, err := database.ListItemTemplates(ctx)
 	if err != nil {
 		return err
 	}
 
-	entry := func(name string, chance float32, minQ, maxQ uint8) world.DropEntry {
-		t := templates[name]
-		if t == nil {
-			log.Printf("main: drop entry %q not found in item_templates", name)
-			return world.DropEntry{}
+	itemByID := make(map[int]*db.ItemTemplate, len(itemTemplates))
+	for _, t := range itemTemplates {
+		if t != nil {
+			itemByID[t.ID] = t
 		}
-		return world.DropEntry{
-			ItemID:       uint16(t.ID),
-			Name:         t.Name,
-			ItemType:     t.ItemType,
-			SlotType:     t.SlotType,
-			WeaponDamage: t.WeaponDamage,
-			ArmorLevel:   t.ArmorLevel,
-			ItemValue:    t.ItemValue,
-			Chance:       chance,
-			MinQty:       minQ,
-			MaxQty:       maxQ,
+	}
+
+	catalog := make(map[int]*world.LootTableRuntime, len(lootTables))
+	for _, table := range lootTables {
+		if table == nil || !table.Enabled || table.ID <= 0 {
+			continue
 		}
+		entries, err := database.ListLootEntries(ctx, table.ID)
+		if err != nil {
+			return err
+		}
+
+		runtimeEntries := make([]world.DropEntry, 0, len(entries))
+		for _, e := range entries {
+			if e.ItemID <= 0 {
+				log.Printf("main: loot_table=%q(id=%d) has invalid item_id=%d", table.Name, table.ID, e.ItemID)
+				continue
+			}
+			item := itemByID[e.ItemID]
+			if item == nil {
+				log.Printf("main: loot_table=%q(id=%d) entry item_id=%d not found in item_templates", table.Name, table.ID, e.ItemID)
+				continue
+			}
+
+			minQty := e.MinQty
+			maxQty := e.MaxQty
+			if maxQty < minQty {
+				maxQty = minQty
+			}
+			if minQty <= 0 || maxQty <= 0 {
+				log.Printf("main: loot_table=%q(id=%d) item_id=%d has invalid qty range [%d,%d]", table.Name, table.ID, e.ItemID, minQty, maxQty)
+				continue
+			}
+			if minQty > 255 {
+				minQty = 255
+			}
+			if maxQty > 255 {
+				maxQty = 255
+			}
+
+			runtimeEntries = append(runtimeEntries, world.DropEntry{
+				ItemID:       uint16(item.ID),
+				Name:         item.Name,
+				ItemType:     item.ItemType,
+				SlotType:     item.SlotType,
+				WeaponDamage: item.WeaponDamage,
+				ArmorLevel:   item.ArmorLevel,
+				ItemValue:    item.ItemValue,
+				Chance:       float32(e.Chance),
+				MinQty:       uint8(minQty),
+				MaxQty:       uint8(maxQty),
+			})
+		}
+
+		if len(runtimeEntries) == 0 {
+			continue
+		}
+		catalog[table.ID] = &world.LootTableRuntime{
+			Entries: runtimeEntries,
+		}
+	}
+
+	world.SetLootCatalog(catalog)
+	log.Printf("main: loaded %d loot tables", len(catalog))
+	return nil
+}
+
+// setupShops loads all item templates from the DB and registers
+// NPC shop inventories.
+func setupShops(ctx context.Context, database *db.DB) error {
+	templates, err := database.LoadAllItemTemplates(ctx)
+	if err != nil {
+		return err
 	}
 
 	shopItem := func(name string, buyPrice int32) world.ShopItem {
@@ -695,31 +776,6 @@ func setupDropsAndShops(ctx context.Context, database *db.DB) error {
 		}
 	}
 
-	// Drop tables
-	world.RegisterDropTable("Goblin", []world.DropEntry{
-		entry("Health Potion", 0.65, 1, 2),
-		entry("Rusty Sword", 0.12, 1, 1),
-		entry("Iron Ring", 0.05, 1, 1),
-	})
-	world.RegisterDropTable("Goblin Scout", []world.DropEntry{
-		entry("Health Potion", 0.55, 1, 1),
-		entry("Leather Hat", 0.10, 1, 1),
-	})
-	world.RegisterDropTable("Slime", []world.DropEntry{
-		entry("Health Potion", 0.40, 1, 1),
-	})
-	world.RegisterDropTable("Wolf", []world.DropEntry{
-		entry("Health Potion", 0.50, 1, 2),
-		entry("Leather Gloves", 0.10, 1, 1),
-	})
-	world.RegisterDropTable("Forest Troll", []world.DropEntry{
-		entry("Health Potion", 0.80, 1, 3),
-		entry("Leather Tunic", 0.15, 1, 1),
-		entry("Old Shield", 0.10, 1, 1),
-		entry("Iron Ring", 0.08, 1, 1),
-	})
-
-	// Shops
 	world.RegisterShop("Merchant", []world.ShopItem{
 		shopItem("Rusty Sword", 25),
 		shopItem("Old Shield", 20),
@@ -736,6 +792,6 @@ func setupDropsAndShops(ctx context.Context, database *db.DB) error {
 		shopItem("Health Potion", 12),
 	})
 
-	log.Printf("main: drop tables and shops registered")
+	log.Printf("main: shops registered")
 	return nil
 }
