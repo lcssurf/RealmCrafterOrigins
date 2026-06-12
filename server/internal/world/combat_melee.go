@@ -120,7 +120,6 @@ func ProcessAttack(attacker, target *Actor) (damage int32, isCrit bool, onCooldo
 		result = AttackResultGuarded
 	}
 	target.Health -= dmg
-
 	return dmg, isCrit, false, result
 }
 

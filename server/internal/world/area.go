@@ -824,6 +824,8 @@ func (a *Area) AddDroppedItem(item *DroppedItem) {
 	p.u8(item.Quantity)
 	p.str(item.Name)
 	p.u8(item.ItemType)
+	p.str(GetDropModelPath())
+	p.f32(GetDropModelScale())
 	a.BroadcastAll(buildFrame(pWorldItem, p))
 }
 

@@ -532,3 +532,128 @@ Esses campos ficam para evolucao V0.2+ quando o mini Niagara avancar.
   - `RollDropsByTable(lootTableID, x, y, z float32) []*DroppedItem`
 - O fluxo de morte do NPC agora usa `npc.LootTableID` para resolver drops; mob sem `loot_table_id` (0) não solta loot.
 - Removido hardcoded runtime de drops (`setupDropsAndShops` drops, `npcDropTables`, `RegisterDropTable`, `RollDrops(npcName)`); `spawn` de NPCs passa `ActorDefID` -> `ActorDef` -> `LootTableID` e grava no runtime actor.
+
+## 66. D1: game_settings (config global) + default_drop_model_id
+- Adicionada tabela global `game_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')` para configs globais.
+- Migration `V41` (`schema_v41_game_settings`) aplicada no `server/internal/db/db.go`, incluindo branch de idempotência via meta-flag.
+- `game_settings` também incluída no `server/internal/db/schema.sql` para provisionamento de ambiente novo.
+- CRUD genérico implementado em `server/internal/db/db.go`:
+  - `GetSetting(ctx, key) (string, error)` retorna `""` quando não existe.
+  - `SetSetting(ctx, key, value string) error` (UPSERT).
+  - `ListSettings(ctx) (map[string]string, error)`.
+- Padrão de configuração inicial `default_drop_model_id`:
+  - Chave: `default_drop_model_id`.
+  - Valor em TEXT (ex: `"5"`, vazio = sem mesh).
+- Nova tab GUE "Settings" (nova aba no `tools/gue/src/main.cpp`) criada para editar:
+  - `default_drop_model_id` com combo de `media_models` (label por `id` + `name`/`file_path`);
+  - botão **Save** que faz UPSERT em `game_settings`.
+- D2: consumo de `default_drop_model_id` no fluxo de render do `PWorldItem` para desenhar o mesh de chão.
+
+## 67. D2: mesh girando/flutuando nos itens dropados
+- Implementada a resolução de `default_drop_model_id` em `main.go`:
+  - lê `game_settings.default_drop_model_id`,
+  - converte para `media_models.id`,
+  - resolve `file_path` via `db.GetMediaModel`,
+  - publica no runtime com `world.SetDropModelPath`.
+- Adicionado estado global de runtime `world.SetDropModelPath`/`GetDropModelPath` para o mesh padrão de drops:
+  - vazio = sem mesh.
+- `PWorldItem` passa a enviar `model_path` nos dois pontos:
+  - `world.Area.AddDroppedItem` (drops ao nascer).
+  - `sendWorldItems` (itens enviados na sincronização de área/reentrada).
+- Cliente:
+  - `WorldItemEntry` ganhou `model_path`, `actor` (`unique_ptr`), `spawn_time`, move-only.
+  - `kPWorldItem` passou a ler `model_path` com `if (!r.Done()) wi.model_path = r.ReadString();`
+    para compatibilidade retroativa.
+  - Render loop cria `Actor` por item sob demanda e renderiza com:
+    - flutuação (`sinf`) e deslocamento vertical,
+    - rotação contínua por tempo,
+    - `scale = 1.0f`.
+- HUD 2D de pickup continua inalterado (rótulos/texto de interação ainda via `world_items`).
+
+## 68. D3: escala configurável + correção de textura do mesh de drop
+- Adicionada configuração global `default_drop_model_scale` em `game_settings` (TEXT), na mesma cadeia de configs já criada em D1.
+- Leitura no boot:
+  - `main.go` lê `default_drop_model_scale`,
+  - converte de string para float (fallback `1.0` em erro/ausência),
+  - publica com `world.SetDropModelScale`.
+- `PWorldItem` passou a carregar escala (após `model_path`) em ambos os pontos de serialização:
+  - `world.Area.AddDroppedItem` (spawn de novos itens);
+  - `net.ClientConn.sendWorldItems` (sync de área/reentrada).
+- Cliente:
+  - `WorldItemEntry` recebeu `model_scale` (default `1.0f`);
+  - parser `kPWorldItem` lê `model_scale` com `if (!r.Done()) wi.model_scale = r.ReadF32();` (compatível com payloads antigos);
+  - render aplica `wi.actor->scale = wi.model_scale` quando carregado;
+  - ao criar `Actor` de drop novo, marcação de materiais é feita com `engine.MarkMaterialsDirty()`, alinhado ao fluxo dos world objects.
+- GUE/Settings:
+  - `tools/gue/src/tabs/settings.cpp` agora edita e persiste:
+    - `default_drop_model_id` (string) e
+    - `default_drop_model_scale` (string numérica).
+- `default_drop_model_scale` vazio/ausente => visual padrão sem alterar escala (1.0f), mantendo compatibilidade.
+
+## 69. Centralizar combobox por id em helper reutilizável (início)
+- GUE:
+  - Adicionado `tools/gue/src/ui_widgets.h` com `gue::ui::SearchableComboId`.
+  - O helper combina `BeginCombo`, `ImGuiTextFilter` e `Selectable`, com filtro por texto e estado persistente por combo (`ImGuiID`).
+  - `tools/gue/src/tabs/settings.cpp` migra `Default Drop Model` para usar esse helper (removida cópia local de `ComboId`).
+
+## 70. B2: blood-on-hit configurável (Settings)
+- Configuração global:
+  - `blood_fx_key` (string, em `game_settings`): `fx_key` do FX de sangue/impact. `""` desativa.
+  - `blood_mode` (string, em `game_settings`): `"basic"` (padrão) ou `"all"`.
+- GUE Settings:
+  - Carrega `fx_key` de `fx_templates` para uma `SearchableComboString` nova em `tools/gue/src/ui_widgets.h`.
+  - Salva/edita `blood_fx_key` e `blood_mode` (`basic`/`all`).
+- Server bootstrap:
+  - `main.go` lê `blood_fx_key` e `blood_mode` no startup e chama `world.SetBloodFX` / `world.SetBloodMode`.
+  - Log informa `blood fx: key=%q mode=%q`.
+- Hook de FX no mundo:
+  - `world.SetBloodFXHook` + `world.BroadcastBloodFX`.
+  - O net registra via `world.SetBloodFXHook(s.handleBloodFXBroadcast)` em `server.NewServer`.
+  - `combat_fx_bridge.go` implementa `handleBloodFXBroadcast`, que reutiliza `broadcastEmitterRich` (padrão já usado por ability FX).
+- Emissão de FX:
+  - Auto-attack (`handleAttackActor`): se `dmg > 0`, `target.IsNPC` e `blood_fx_key != ""`, emite em `target.X/Y/Z` com `FXPhaseImpact` quando `blood_mode` é `"basic"` ou `"all"`.
+  - Ability/path especial (`combat_special.go`): após `ApplyDamage`, quando `GetBloodMode()=="all"` e `dmg>0` em NPC, dispara `BroadcastBloodFX`.
+  - Legacy Lua (`Combat.deal_damage`): após `ApplyDamage` no alvo principal e no splash AOE, quando `GetBloodMode()=="all"` e `amount>0`, dispara `BroadcastBloodFX`.
+- Regras:
+  - Não dispara em `dmg==-1`/miss (auto-attack usa `dmg > 0` no handler).
+  - `blood_mode == "basic"` = somente auto-attack.
+  - `blood_mode == "all"` = auto-attack + dano de ability.
+  - Em `all`, não há deduplicação com `impact` de ability (efeitos somam).
+
+## 71. B3: elevar emissões de impacto para altura de impacto do alvo (corpo/torso)
+- Cliente:
+  - Em `client/src/core/main.cpp` (`case rco::net::kPCreateEmitter`), o spawn de FX agora tenta usar `target_rid` (quando presente) para buscar `world_actors[target_rid].actor`.
+  - Calcula `impact_y = target.Y + actor->ModelHeight() * 0.5f` e usa `{x, impact_y, z}` para `SpawnEmitterParams`.
+  - Mantém fallback para `{x, target.Y, z}` quando o actor-alvo não existe em `world_actors` ou não tem `actor` válido.
+- Server:
+  - Mantido o fluxo de emissões (`broadcastEmitterRich` -> `kPCreateEmitter`) sem mudanças funcionais.
+- Debug:
+  - Removidos os logs de diagnóstico temporários usados na investigação de B3:
+    - `blood-debug` em `server/internal/net/client.go`.
+    - `HIT-DEBUG` em `server/internal/world/combat_melee.go`, `server/internal/world/combat_special.go`, `server/internal/world/spell.go`, `server/internal/scripting/api.go`.
+    - `HIT-DEBUG` no parser de `kPCreateEmitter` em `client/src/core/main.cpp`.
+
+## 73. I2b: editor de atributos por item na Items tab (GUE)
+- Implementar seção "Attributes" na `tools/gue/src/tabs/items.cpp` com lista por linha de pares `(atributo, valor)` e remoção (`PushID` por linha), seguindo padrão do editor de loot entries.
+- Inclusão de `tools/gue/src/attribute_list.h` com a lista de 37 chaves canônicas usadas em `item_attributes` (keys/display + kind/isFloat) para o lado de edição do GUE.
+- `Save` da `ItemsTab` passa a persistir atributos em `item_attributes` via transação:
+  - `BEGIN`
+  - `DELETE FROM item_attributes WHERE item_id=?`
+  - `INSERT (...)` para cada atributo não-vazio
+  - `COMMIT`
+- Atributos agora são carregados **lazy** ao selecionar um item (uma consulta por seleção), não no fetch geral de `item_templates`.
+- Pendência técnica (`TECH_DEBT`) permanece: é a 3ª cópia da lista canônica de atributos (`server/internal/world/attributes.go` + `client/src/core/derived_stats.h` + `tools/gue/src/attribute_list.h`) e precisa unificação futura.
+
+## 74. C0: completa o trio de dano com RangedDmgMin/Max
+
+- `DerivedStats` ganhou `RangedDmgMin` e `RangedDmgMax`; fórmula `RangedDamageRange`
+  adicionada em `server/internal/world/derived_stats.go` (DEX no mínimo e DEX+PER no máximo),
+  e a função é usada em `ComputeDerivedStats`.
+- `MagicDamageRange` e `MeleeDamageRange` permanecem sem alteração.
+- Registry +2 chaves (`ranged_dmg_min`, `ranged_dmg_max`) adicionadas nas 3 cópias:
+  - `server/internal/world/attributes.go`
+  - `tools/gue/src/attribute_list.h`
+  - `client/src/core/derived_stats.h` (estrutural + constants/fórmula espelhada)
+- Comportamento de combate não mudou: os novos campos ainda não são consumidos em
+  resolução de dano (foco dessa etapa é estrutural e de dados).
+- Estado: **Pendente para próxima etapa de combate (C1/C2)**.

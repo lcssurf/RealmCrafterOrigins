@@ -47,6 +47,14 @@ type ItemTemplate struct {
 	Stackable    bool
 }
 
+// ItemAttribute holds one bonus row for an item.
+type ItemAttribute struct {
+	ID           int
+	ItemID       int
+	AttributeKey string
+	Value        float64
+}
+
 // WeaponKit defines a kit of skills granted by a weapon type (sword, bow, etc).
 type WeaponKit struct {
 	ID          int
@@ -465,6 +473,8 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV38(ctx)
 	d.migrateV39(ctx)
 	d.migrateV40(ctx)
+	d.migrateV41(ctx)
+	d.migrateV42(ctx)
 
 	return d, nil
 }
@@ -4174,9 +4184,79 @@ func (d *DB) DeleteItemTemplate(ctx context.Context, id int) error {
 	if count > 0 {
 		return fmt.Errorf("db: DeleteItemTemplate: item %d is in use by %d character(s)", id, count)
 	}
-	_, err := d.db.ExecContext(ctx, `DELETE FROM item_templates WHERE id = ?`, id)
+	_, err := d.db.ExecContext(ctx, `DELETE FROM item_attributes WHERE item_id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("db: DeleteItemTemplate: clearing attributes for item %d failed: %w", id, err)
+	}
+	_, err = d.db.ExecContext(ctx, `DELETE FROM item_templates WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("db: DeleteItemTemplate: %w", err)
+	}
+	return nil
+}
+
+// ListItemAttributes returns all bonus attributes for an item template.
+func (d *DB) ListItemAttributes(ctx context.Context, itemID int) ([]ItemAttribute, error) {
+	if itemID <= 0 {
+		return nil, fmt.Errorf("db: ListItemAttributes: itemID must be > 0")
+	}
+
+	rows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT id, item_id, attribute_key, value
+		  FROM item_attributes
+		 WHERE item_id = ?
+		 ORDER BY id`), itemID)
+	if err != nil {
+		return nil, fmt.Errorf("db: ListItemAttributes: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ItemAttribute
+	for rows.Next() {
+		var a ItemAttribute
+		if err := rows.Scan(&a.ID, &a.ItemID, &a.AttributeKey, &a.Value); err != nil {
+			return nil, fmt.Errorf("db: ListItemAttributes scan: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// SetItemAttributes replaces all bonus attributes for an item template.
+// This runs as a transaction and first clears existing rows before inserting the new set.
+func (d *DB) SetItemAttributes(ctx context.Context, itemID int, attrs []ItemAttribute) error {
+	if itemID <= 0 {
+		return fmt.Errorf("db: SetItemAttributes: itemID must be > 0")
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("db: SetItemAttributes begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM item_attributes WHERE item_id = ?`), itemID); err != nil {
+		return fmt.Errorf("db: SetItemAttributes clear: %w", err)
+	}
+
+	for i, attr := range attrs {
+		key := strings.TrimSpace(attr.AttributeKey)
+		if key == "" {
+			continue
+		}
+		if _, ok := world.AttributeByKey(key); !ok {
+			return fmt.Errorf("db: SetItemAttributes: unknown attribute key %q at index %d", key, i)
+		}
+		if _, err := tx.ExecContext(ctx,
+			d.q(`INSERT INTO item_attributes (item_id, attribute_key, value) VALUES (?, ?, ?)`),
+			itemID, key, attr.Value,
+		); err != nil {
+			return fmt.Errorf("db: SetItemAttributes insert key %q at index %d: %w", key, i, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("db: SetItemAttributes commit: %w", err)
 	}
 	return nil
 }
@@ -4353,6 +4433,69 @@ func (d *DB) DeleteLootEntry(ctx context.Context, id int) error {
 		return fmt.Errorf("db: DeleteLootEntry: %w", err)
 	}
 	return nil
+}
+
+// GetSetting returns value for a key in game_settings, or "" if key does not exist.
+func (d *DB) GetSetting(ctx context.Context, key string) (string, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", fmt.Errorf("db: GetSetting: key is required")
+	}
+
+	var value string
+	err := d.db.QueryRowContext(ctx,
+		d.q(`SELECT value FROM game_settings WHERE key = ?`), key).
+		Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("db: GetSetting: key=%q: %w", key, err)
+	}
+	return value, nil
+}
+
+// SetSetting upserts a key/value pair in game_settings.
+func (d *DB) SetSetting(ctx context.Context, key string, value string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("db: SetSetting: key is required")
+	}
+	_, err := d.db.ExecContext(ctx,
+		d.q(`INSERT INTO game_settings (key, value)
+		 VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
+		key, value)
+	if err != nil {
+		return fmt.Errorf("db: SetSetting: key=%q: %w", key, err)
+	}
+	return nil
+}
+
+// ListSettings returns all rows from game_settings as a key->value map.
+func (d *DB) ListSettings(ctx context.Context) (map[string]string, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(`SELECT key, value FROM game_settings ORDER BY key`))
+	if err != nil {
+		return nil, fmt.Errorf("db: ListSettings: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]string)
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, fmt.Errorf("db: ListSettings scan: %w", err)
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: ListSettings rows: %w", err)
+	}
+	return out, nil
 }
 
 // ListWeaponKits returns all weapon kits ordered by kit_key.
@@ -8543,6 +8686,96 @@ func (d *DB) migrateV40(ctx context.Context) {
 	}
 
 	d.addColumnIfMissing(ctx, "media_actor_defs", "loot_table_id", "INTEGER NOT NULL DEFAULT 0")
+
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO meta (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
+		conversionDoneKey, "1")
+}
+
+func (d *DB) migrateV41(ctx context.Context) {
+	const conversionDoneKey = "schema_v41_game_settings"
+
+	if _, err := d.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		log.Printf("migrateV41: ensure meta table failed: %v", err)
+		return
+	}
+
+	var doneValue string
+	doneErr := d.db.QueryRowContext(ctx, d.q(`SELECT value FROM meta WHERE key = ?`), conversionDoneKey).Scan(&doneValue)
+	if doneErr == nil && strings.TrimSpace(doneValue) == "1" {
+		return
+	}
+
+	if _, err := d.db.ExecContext(ctx,
+		`CREATE TABLE IF NOT EXISTS game_settings (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)` ); err != nil {
+		log.Printf("migrateV41: create game_settings failed: %v", err)
+		return
+	}
+
+	_, _ = d.db.ExecContext(ctx,
+		`INSERT INTO game_settings (key, value)
+		 VALUES ('default_drop_model_id', '')
+		 ON CONFLICT(key) DO NOTHING`)
+
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO meta (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
+		conversionDoneKey, "1")
+}
+
+func (d *DB) migrateV42(ctx context.Context) {
+	const conversionDoneKey = "schema_v42_item_attributes"
+
+	if _, err := d.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		log.Printf("migrateV42: ensure meta table failed: %v", err)
+		return
+	}
+
+	var doneValue string
+	doneErr := d.db.QueryRowContext(ctx, d.q(`SELECT value FROM meta WHERE key = ?`), conversionDoneKey).Scan(&doneValue)
+	if doneErr == nil && strings.TrimSpace(doneValue) == "1" {
+		return
+	}
+
+	createItemAttributesSQL := `
+		CREATE TABLE IF NOT EXISTS item_attributes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			item_id INTEGER NOT NULL,
+			attribute_key TEXT NOT NULL,
+			value REAL NOT NULL DEFAULT 0
+		)`
+	createItemAttributeIndexesSQL := `CREATE INDEX IF NOT EXISTS idx_item_attributes_item ON item_attributes(item_id)`
+	if d.driver == "postgres" {
+		createItemAttributesSQL = `
+			CREATE TABLE IF NOT EXISTS item_attributes (
+				id SERIAL PRIMARY KEY,
+				item_id INTEGER NOT NULL,
+				attribute_key TEXT NOT NULL,
+				value REAL NOT NULL DEFAULT 0
+			)`
+	}
+	if _, err := d.db.ExecContext(ctx, createItemAttributesSQL); err != nil {
+		log.Printf("migrateV42: create item_attributes failed: %v", err)
+		return
+	}
+	if _, err := d.db.ExecContext(ctx, createItemAttributeIndexesSQL); err != nil {
+		log.Printf("migrateV42: create item_attributes index failed: %v", err)
+		return
+	}
 
 	_, _ = d.db.ExecContext(ctx, d.q(`
 		INSERT INTO meta (key, value)

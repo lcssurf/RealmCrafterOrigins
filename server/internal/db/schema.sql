@@ -355,3 +355,25 @@ CREATE TABLE IF NOT EXISTS loot_entries (
     min_qty             INTEGER      NOT NULL DEFAULT 1,
     max_qty             INTEGER      NOT NULL DEFAULT 1
 );
+
+-- ---------------------------------------------------------------------------
+-- game_settings (global key-value settings)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS game_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+
+-- ---------------------------------------------------------------------------
+-- item_attributes (I2a foundation)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS item_attributes (
+    id            SERIAL       PRIMARY KEY,
+    item_id       INTEGER      NOT NULL,
+    attribute_key TEXT         NOT NULL,
+    value         REAL         NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_attributes_item
+    ON item_attributes (item_id);

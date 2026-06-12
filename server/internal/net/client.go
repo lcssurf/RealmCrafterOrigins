@@ -985,9 +985,17 @@ func (c *ClientConn) handleAttackActor(ctx context.Context, payload []byte) erro
 		return nil
 	}
 
+	if dmg > 0 && target.IsNPC && (world.GetBloodMode() == "basic" || world.GetBloodMode() == "all") {
+		bloodFX := world.GetBloodFX()
+		if bloodFX != "" {
+			x, y, z := target.X, target.Y, target.Z
+			c.server.broadcastEmitterRich(area, bloodFX, c.actor.RuntimeID, target.RuntimeID, 0, 0, x, y, z, string(world.FXPhaseImpact))
+		}
+	}
+
 	died := world.BroadcastAttack(area, c.actor, target, dmg, isCrit, result)
 	if died && target.IsNPC {
-		x, y, z := target.X, target.Y, target.Z
+		x, z := target.X, target.Z
 		world.OnNPCKilled(area, target, c.actor.RuntimeID)
 		area.KillNPC(target)
 		area.SpawnDropsForNPC(target)
@@ -996,7 +1004,6 @@ func (c *ClientConn) handleAttackActor(ctx context.Context, payload []byte) erro
 			TargetNPCName: target.Name,
 			Delta:         1,
 		})
-		c.broadcastEmitter(area, protocol.EmitterBlood, x, y, z, 0)
 		c.broadcastSound(area, protocol.SoundNPCDeath, 200)
 		return c.awardXP(ctx, int(target.Level), x, z)
 	}
@@ -2128,6 +2135,8 @@ func (c *ClientConn) sendWorldItems(area *world.Area) {
 		w.WriteUint8(item.Quantity)
 		w.WriteString(item.Name)
 		w.WriteUint8(item.ItemType)
+		w.WriteString(world.GetDropModelPath())
+		w.WriteFloat32(world.GetDropModelScale())
 		c.actor.Send(buildFramedPacket(protocol.PWorldItem, w.Bytes()))
 	}
 }

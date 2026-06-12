@@ -6,6 +6,11 @@
 
 namespace gue {
 
+struct ItemAttribute {
+    std::string key;
+    double      value = 0.0;
+};
+
 struct ItemTemplate {
     int         id            = 0;
     std::string name;
@@ -18,6 +23,7 @@ struct ItemTemplate {
     int         max_stack     = 1;
     int         item_value    = 0;
     bool        stackable     = false;
+    std::vector<ItemAttribute> attributes;
 };
 
 class ItemsTab {
@@ -35,6 +41,8 @@ private:
     bool DrawFields(ItemTemplate& t);
     bool Save(sqlite3* db, ItemTemplate& t);
     bool Delete(sqlite3* db, int id);
+    bool LoadItemAttributes(sqlite3* db, ItemTemplate& t);
+    bool SaveItemAttributes(sqlite3* db, const ItemTemplate& t);
 
     std::vector<ItemTemplate> items_;
     std::vector<WeaponKitOption> weapon_kit_options_;

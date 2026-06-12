@@ -25,6 +25,18 @@ func (s *Server) handleAbilityFXBroadcast(
 	}
 }
 
+func (s *Server) handleBloodFXBroadcast(
+	area *world.Area,
+	casterRID, targetRID uint32,
+	vfxPath string,
+	posX, posY, posZ float32,
+) {
+	if s == nil || area == nil || vfxPath == "" {
+		return
+	}
+	s.broadcastEmitterRich(area, vfxPath, casterRID, targetRID, 0, 0, posX, posY, posZ, string(world.FXPhaseImpact))
+}
+
 func (s *Server) broadcastEmitterRich(
 	area *world.Area,
 	vfxPath string,

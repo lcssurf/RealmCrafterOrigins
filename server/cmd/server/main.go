@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"realm-crafter/server/internal/accounts"
@@ -264,6 +266,30 @@ func main() {
 		scriptReg.PatchRuntimeAbilityFromDB(runtimeRows)
 		log.Printf("main: AoE config patched for %d spells from DB", len(aoeRows))
 		log.Printf("main: runtime ability mapping patched for %d spells from DB", len(runtimeRows))
+	}
+
+	dropModelPath := resolveDropModelPath(ctx, database)
+	world.SetDropModelPath(dropModelPath)
+	if dropModelPath == "" {
+		log.Printf("main: default_drop_model_id empty/invalid; drop mesh not configured")
+	} else {
+		log.Printf("main: using world drop mesh %q", dropModelPath)
+	}
+	dropModelScale := resolveDropModelScale(ctx, database)
+	world.SetDropModelScale(dropModelScale)
+	if dropModelScale == 1.0 {
+		log.Printf("main: default_drop_model_scale unset/invalid; using 1.0")
+	} else {
+		log.Printf("main: using world drop scale %.3f", dropModelScale)
+	}
+	bloodFXKey := resolveBloodFXKey(ctx, database)
+	bloodMode := resolveBloodMode(ctx, database)
+	world.SetBloodFX(bloodFXKey)
+	world.SetBloodMode(bloodMode)
+	if bloodFXKey == "" {
+		log.Printf("main: blood FX disabled (blood_fx_key empty)")
+	} else {
+		log.Printf("main: blood fx: key=%q mode=%q", bloodFXKey, bloodMode)
 	}
 
 	// Load item templates and register runtime drop tables + shops.
@@ -748,6 +774,93 @@ func setupLootCatalog(ctx context.Context, database *db.DB) error {
 	world.SetLootCatalog(catalog)
 	log.Printf("main: loaded %d loot tables", len(catalog))
 	return nil
+}
+
+func resolveDropModelPath(ctx context.Context, database *db.DB) string {
+	raw, err := database.GetSetting(ctx, "default_drop_model_id")
+	if err != nil {
+		log.Printf("main: loading default_drop_model_id failed: %v", err)
+		return ""
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	modelID, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("main: default_drop_model_id=%q invalid (expected media_models.id): %v", raw, err)
+		return ""
+	}
+	if modelID <= 0 {
+		return ""
+	}
+
+	model, err := database.GetMediaModel(ctx, modelID)
+	if err != nil {
+		log.Printf("main: loading media_models id=%d failed: %v", modelID, err)
+		return ""
+	}
+	if model == nil {
+		log.Printf("main: default_drop_model_id=%d does not exist in media_models", modelID)
+		return ""
+	}
+
+	modelPath := strings.TrimSpace(model.FilePath)
+	if modelPath == "" {
+		log.Printf("main: media_models id=%d has empty file_path; drop mesh disabled", modelID)
+	}
+	return modelPath
+}
+
+func resolveDropModelScale(ctx context.Context, database *db.DB) float32 {
+	raw, err := database.GetSetting(ctx, "default_drop_model_scale")
+	if err != nil {
+		log.Printf("main: loading default_drop_model_scale failed: %v", err)
+		return 1.0
+	}
+
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 1.0
+	}
+
+	scale, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		log.Printf("main: default_drop_model_scale=%q invalid (expected number): %v", raw, err)
+		return 1.0
+	}
+	if scale <= 0.0 {
+		log.Printf("main: default_drop_model_scale=%f <= 0; using 1.0", scale)
+		return 1.0
+	}
+	if scale < 0.01 {
+		return 0.01
+	}
+	return float32(scale)
+}
+
+func resolveBloodFXKey(ctx context.Context, database *db.DB) string {
+	raw, err := database.GetSetting(ctx, "blood_fx_key")
+	if err != nil {
+		log.Printf("main: loading blood_fx_key failed: %v", err)
+		return ""
+	}
+	return strings.TrimSpace(raw)
+}
+
+func resolveBloodMode(ctx context.Context, database *db.DB) string {
+	raw, err := database.GetSetting(ctx, "blood_mode")
+	if err != nil {
+		log.Printf("main: loading blood_mode failed: %v", err)
+		return "basic"
+	}
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "all":
+		return "all"
+	default:
+		return "basic"
+	}
 }
 
 // setupShops loads all item templates from the DB and registers

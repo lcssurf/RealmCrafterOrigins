@@ -111,6 +111,11 @@ func resolveActorWindup(area *Area, actor, target *Actor, now int64) (handled bo
 		BroadcastFloatingNumber(area, target, int16(damage), 0)
 		BroadcastCombatEvent(area, combatEventSpecialHit, actor.RuntimeID, target.RuntimeID, int16(damage), "")
 	}
+	if damage > 0 && target.IsNPC && GetBloodMode() == "all" {
+		if bloodFX := GetBloodFX(); bloodFX != "" {
+			BroadcastBloodFX(area, actor, target, bloodFX)
+		}
+	}
 	BroadcastHPUpdate(area, target, hp)
 	BroadcastAbilityFX(area, actor, target, ability, FXPhaseImpact)
 	if !actor.IsNPC && actor.CharacterID != "" && target.IsNPC {

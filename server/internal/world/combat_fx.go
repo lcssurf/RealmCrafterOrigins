@@ -21,15 +21,33 @@ type AbilityFXHook func(
 	phase string,
 )
 
+// BloodFXHook is implemented by the net layer to serialize and broadcast
+// blood VFX payloads for impact hits.
+type BloodFXHook func(
+	area *Area,
+	casterRID, targetRID uint32,
+	vfxPath string,
+	posX, posY, posZ float32,
+)
+
 var (
 	abilityFXHookMu sync.RWMutex
 	abilityFXHook   AbilityFXHook
+	bloodFXHookMu   sync.RWMutex
+	bloodFXHook     BloodFXHook
 )
 
 func SetAbilityFXHook(h AbilityFXHook) {
 	abilityFXHookMu.Lock()
 	abilityFXHook = h
 	abilityFXHookMu.Unlock()
+}
+
+// SetBloodFXHook registers a callback that serializes and broadcasts blood VFX.
+func SetBloodFXHook(h BloodFXHook) {
+	bloodFXHookMu.Lock()
+	bloodFXHook = h
+	bloodFXHookMu.Unlock()
 }
 
 // BroadcastAbilityFX dispatches windup/impact VFX/SFX metadata for one ability
@@ -87,4 +105,24 @@ func BroadcastAbilityFX(area *Area, caster, target *Actor, ability AbilityTempla
 		1.0,
 		string(phase),
 	)
+}
+
+// BroadcastBloodFX sends an impact blood VFX for a hit event.
+// Actual packet serialization/broadcast is owned by the net hook.
+func BroadcastBloodFX(area *Area, caster, target *Actor, vfxPath string) {
+	bloodFXHookMu.RLock()
+	h := bloodFXHook
+	bloodFXHookMu.RUnlock()
+	if h == nil || area == nil || caster == nil || target == nil || vfxPath == "" {
+		return
+	}
+
+	var posX, posY, posZ float32
+	target.Mu.Lock()
+	posX, posY, posZ = target.X, target.Y, target.Z
+	target.Mu.Unlock()
+
+	casterRID := caster.RuntimeID
+	targetRID := target.RuntimeID
+	h(area, casterRID, targetRID, vfxPath, posX, posY, posZ)
 }

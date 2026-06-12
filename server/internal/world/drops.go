@@ -2,6 +2,7 @@ package world
 
 import (
 	"math/rand"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -50,7 +51,23 @@ type DroppedItem struct {
 var (
 	lootCatalogMu sync.RWMutex
 	lootCatalog   = make(map[int]*LootTableRuntime)
+	dropModelPathMu sync.RWMutex
+	dropModelPath   string
+	dropModelScaleMu sync.RWMutex
+	dropModelScale float32 = 1
+	bloodFXMu sync.RWMutex
+	bloodFX string
+	bloodModeMu sync.RWMutex
+	bloodMode string = "basic"
 )
+
+func normalizeBloodMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "all" {
+		return "all"
+	}
+	return "basic"
+}
 
 // SetLootCatalog replaces the in-memory loot catalog.
 func SetLootCatalog(tables map[int]*LootTableRuntime) {
@@ -66,6 +83,73 @@ func SetLootCatalog(tables map[int]*LootTableRuntime) {
 	lootCatalogMu.Lock()
 	lootCatalog = next
 	lootCatalogMu.Unlock()
+}
+
+// SetDropModelPath stores the fallback mesh path used for rendering world drops.
+// Empty path means world drops are rendered without a mesh.
+func SetDropModelPath(path string) {
+	dropModelPathMu.Lock()
+	dropModelPath = path
+	dropModelPathMu.Unlock()
+}
+
+// GetDropModelPath returns the configured fallback mesh path for world drops.
+// Empty path means disabled/legacy behavior (no drop mesh).
+func GetDropModelPath() string {
+	dropModelPathMu.RLock()
+	defer dropModelPathMu.RUnlock()
+	return dropModelPath
+}
+
+// SetDropModelScale stores the configured uniform scale used for default world drops.
+// A value <= 0 defaults to 1.0 (legacy behavior).
+func SetDropModelScale(scale float32) {
+	if scale <= 0 {
+		scale = 1
+	}
+	dropModelScaleMu.Lock()
+	dropModelScale = scale
+	dropModelScaleMu.Unlock()
+}
+
+// GetDropModelScale returns the configured fallback scale for world drops.
+// Default value is 1.0.
+func GetDropModelScale() float32 {
+	dropModelScaleMu.RLock()
+	defer dropModelScaleMu.RUnlock()
+	return dropModelScale
+}
+
+// SetBloodFX stores the configured blood VFX key used by hit FX.
+// Empty key disables the hit FX.
+func SetBloodFX(key string) {
+	bloodFXMu.Lock()
+	bloodFX = strings.TrimSpace(key)
+	bloodFXMu.Unlock()
+}
+
+// GetBloodFX returns the configured blood VFX key for hit FX.
+// Empty string means hit blood FX is disabled.
+func GetBloodFX() string {
+	bloodFXMu.RLock()
+	defer bloodFXMu.RUnlock()
+	return bloodFX
+}
+
+// SetBloodMode stores the blood FX mode. Allowed values: "basic", "all".
+// Unknown values are normalized to "basic".
+func SetBloodMode(mode string) {
+	bloodModeMu.Lock()
+	bloodMode = normalizeBloodMode(mode)
+	bloodModeMu.Unlock()
+}
+
+// GetBloodMode returns the runtime blood FX mode.
+// Returns "basic" when unset or invalid.
+func GetBloodMode() string {
+	bloodModeMu.RLock()
+	defer bloodModeMu.RUnlock()
+	return normalizeBloodMode(bloodMode)
 }
 
 // GetLootTable resolves one loot table from the in-memory catalog.

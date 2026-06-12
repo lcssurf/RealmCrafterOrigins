@@ -41,6 +41,8 @@ struct DerivedStats {
 
     int32_t MeleeDmgMin = 0;
     int32_t MeleeDmgMax = 0;
+    int32_t RangedDmgMin = 0;
+    int32_t RangedDmgMax = 0;
     int32_t MagicDmgMin = 0;
     int32_t MagicDmgMax = 0;
 
@@ -102,6 +104,10 @@ constexpr int32_t critPerLevel = 1;
 constexpr float meleeDmgMinFromSTR = 1.5f;
 constexpr float meleeDmgMaxFromSTR = 2.0f;
 constexpr float meleeDmgMaxFromDEX = 0.5f;
+
+constexpr float rangedDmgMinFromDEX = meleeDmgMinFromSTR;
+constexpr float rangedDmgMaxFromDEX = meleeDmgMaxFromSTR;
+constexpr float rangedDmgMaxFromPER = meleeDmgMaxFromDEX;
 
 constexpr float magicDmgMinFromINT = 1.5f;
 constexpr float magicDmgMaxFromINT = 2.0f;
@@ -171,6 +177,16 @@ inline void MeleeDamageRange(PrimaryStats primary, int32_t weaponDmg, int32_t& m
     }
 }
 
+inline void RangedDamageRange(PrimaryStats primary, int32_t weaponDmg, int32_t& min_out, int32_t& max_out) {
+    min_out = weaponDmg + static_cast<int32_t>(static_cast<float>(primary.DEX) * rangedDmgMinFromDEX);
+    max_out = weaponDmg + static_cast<int32_t>(
+        static_cast<float>(primary.DEX) * rangedDmgMaxFromDEX +
+        static_cast<float>(primary.PER) * rangedDmgMaxFromPER);
+    if (min_out > max_out) {
+        max_out = min_out;
+    }
+}
+
 inline void MagicDamageRange(PrimaryStats primary, int32_t weaponDmg, int32_t& min_out, int32_t& max_out) {
     min_out = weaponDmg + static_cast<int32_t>(static_cast<float>(primary.INT) * magicDmgMinFromINT);
     max_out = weaponDmg + static_cast<int32_t>(
@@ -218,6 +234,7 @@ inline DerivedStats ComputeDerivedStats(PrimaryStats primary, int32_t level, int
     d.MagicCritValue = primary.DEX * magicCritDEX + primary.INT * magicCritINT + level * critPerLevel;
 
     MeleeDamageRange(primary, weaponDmg, d.MeleeDmgMin, d.MeleeDmgMax);
+    RangedDamageRange(primary, weaponDmg, d.RangedDmgMin, d.RangedDmgMax);
     MagicDamageRange(primary, weaponDmg, d.MagicDmgMin, d.MagicDmgMax);
 
     d.CritDamageMult = clampFloat(

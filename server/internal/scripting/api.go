@@ -136,6 +136,29 @@ func (r *Registry) registerCombatAPI() {
 			return 1
 		}
 
+		emitBloodFX := func(casterRID uint32, target *world.Actor, amount int32) {
+			if amount <= 0 || target == nil || !target.IsNPC {
+				return
+			}
+			if world.GetBloodMode() != "all" {
+				return
+			}
+			bloodFX := world.GetBloodFX()
+			if bloodFX == "" {
+				return
+			}
+			caster := r.ctx.caster
+			if caster == nil {
+				if c, ok := area.GetActor(casterRID); ok {
+					caster = c
+				}
+			}
+			if caster == nil {
+				return
+			}
+			world.BroadcastBloodFX(area, caster, target, bloodFX)
+		}
+
 		primaryDied := false
 
 		// Hit primary target (skipped for ground-AoE where target_id == 0).
@@ -145,6 +168,7 @@ func (r *Registry) registerCombatAPI() {
 				hp, died := world.ApplyDamage(target, amount, casterRID)
 				world.BroadcastFloatingNumber(area, target, int16(amount), 1)
 				world.BroadcastHPUpdate(area, target, hp)
+				emitBloodFX(casterRID, target, amount)
 				if died {
 					r.ctx.killedRID = targetRID
 					world.BroadcastActorDead(area, targetRID, casterRID)
@@ -172,6 +196,7 @@ func (r *Registry) registerCombatAPI() {
 					hp, died := world.ApplyDamage(splash, amount, casterRID)
 					world.BroadcastFloatingNumber(area, splash, int16(amount), 1)
 					world.BroadcastHPUpdate(area, splash, hp)
+					emitBloodFX(casterRID, splash, amount)
 					if died && r.ctx.killedRID == 0 {
 						r.ctx.killedRID = splash.RuntimeID
 						world.BroadcastActorDead(area, splash.RuntimeID, casterRID)

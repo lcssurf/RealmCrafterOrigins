@@ -1,4 +1,6 @@
 #include "items.h"
+#include "../attribute_list.h"
+#include "../ui_widgets.h"
 #include <imgui.h>
 #include <cstring>
 #include <cstdio>
@@ -19,6 +21,112 @@ static const char* kWeaponTypes[] = { "None", "One-Hand", "Two-Hand", "Ranged" }
 // ---------------------------------------------------------------------------
 // DB helpers
 // ---------------------------------------------------------------------------
+
+bool ItemsTab::LoadItemAttributes(sqlite3* db, ItemTemplate& item) {
+    item.attributes.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT attribute_key, value"
+        " FROM item_attributes WHERE item_id=? ORDER BY id";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "LoadItemAttributes error: %s", sqlite3_errmsg(db));
+        return false;
+    }
+
+    sqlite3_bind_int(stmt, 1, item.id);
+
+    while (true) {
+        int rc = sqlite3_step(stmt);
+        if (rc == SQLITE_DONE) break;
+        if (rc != SQLITE_ROW) {
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                          "LoadItemAttributes read error: %s", sqlite3_errmsg(db));
+            sqlite3_finalize(stmt);
+            return false;
+        }
+
+        ItemAttribute attr;
+        const unsigned char* key = sqlite3_column_text(stmt, 0);
+        attr.key = key ? reinterpret_cast<const char*>(key) : "";
+        attr.value = sqlite3_column_double(stmt, 1);
+        item.attributes.push_back(std::move(attr));
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+bool ItemsTab::SaveItemAttributes(sqlite3* db, const ItemTemplate& item) {
+    if (item.id <= 0) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "SaveItemAttributes error: invalid item id.");
+        return false;
+    }
+
+    if (sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "SaveItemAttributes: begin transaction failed: %s", sqlite3_errmsg(db));
+        return false;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, "DELETE FROM item_attributes WHERE item_id=?", -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "SaveItemAttributes: %s", sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_int(stmt, 1, item.id);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "SaveItemAttributes: %s", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_finalize(stmt);
+
+    if (sqlite3_prepare_v2(db,
+        "INSERT INTO item_attributes (item_id, attribute_key, value)"
+        " VALUES (?, ?, ?)", -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "SaveItemAttributes: %s", sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    for (const auto& attr : item.attributes) {
+        const std::string& key = attr.key;
+        if (key.empty()) continue;
+        if (!IsKnownAttributeKey(key)) continue;
+
+        sqlite3_bind_int(stmt, 1, item.id);
+        sqlite3_bind_text(stmt, 2, key.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(stmt, 3, attr.value);
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                          "SaveItemAttributes insert error: %s", sqlite3_errmsg(db));
+            sqlite3_finalize(stmt);
+            sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+            return false;
+        }
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+    }
+    sqlite3_finalize(stmt);
+
+    if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "SaveItemAttributes: commit failed: %s", sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    return true;
+}
 
 void ItemsTab::Fetch(sqlite3* db) {
     items_.clear();
@@ -130,6 +238,9 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
     }
 
     sqlite3_finalize(stmt);
+    if (!SaveItemAttributes(db, t)) {
+        return false;
+    }
     needFetch_ = true;
     dirty_     = false;
     std::snprintf(statusMsg_, sizeof(statusMsg_),
@@ -159,7 +270,7 @@ bool ItemsTab::Delete(sqlite3* db, int id) {
         return false;
     }
 
-    sqlite3_prepare_v2(db, "DELETE FROM item_templates WHERE id=?", -1, &stmt, nullptr);
+    sqlite3_prepare_v2(db, "DELETE FROM item_attributes WHERE item_id=?", -1, &stmt, nullptr);
     sqlite3_bind_int(stmt, 1, id);
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -168,6 +279,17 @@ bool ItemsTab::Delete(sqlite3* db, int id) {
                       "Delete error: %s", sqlite3_errmsg(db));
         return false;
     }
+
+    sqlite3_prepare_v2(db, "DELETE FROM item_templates WHERE id=?", -1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, id);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Delete error: %s", sqlite3_errmsg(db));
+        return false;
+    }
+
     needFetch_ = true;
     selected_  = -1;
     std::snprintf(statusMsg_, sizeof(statusMsg_), "Deleted item %d.", id);
@@ -256,6 +378,39 @@ bool ItemsTab::DrawFields(ItemTemplate& t) {
     if (ImGui::InputInt("Max Stack",       &t.max_stack))   changed = true;
     if (ImGui::Checkbox("Stackable",       &t.stackable))   changed = true;
 
+    static const auto displayNames = AttributeDisplayNames();
+    ImGui::SeparatorText("Attributes");
+    for (size_t i = 0; i < t.attributes.size();) {
+        auto& attr = t.attributes[i];
+        ImGui::PushID((int)i);
+
+        bool removed = false;
+        std::string display = AttributeDisplayFromKey(attr.key);
+        if (gue::ui::SearchableComboString("Attribute", display, displayNames, "(select)")) {
+            attr.key = AttributeKeyFromDisplay(display);
+            changed = true;
+        }
+
+        float value = static_cast<float>(attr.value);
+        if (ImGui::InputFloat("Value", &value, 0.f, 0.f, "%.2f")) {
+            attr.value = static_cast<double>(value);
+            changed = true;
+        }
+
+        if (ImGui::Button("Remove")) {
+            t.attributes.erase(t.attributes.begin() + (int)i);
+            changed = true;
+            removed = true;
+        }
+        ImGui::PopID();
+        if (removed) continue;
+        ++i;
+    }
+    if (ImGui::Button("+ Add Attribute")) {
+        t.attributes.push_back({"", 0.0});
+        changed = true;
+    }
+
     if (t.weapon_damage < 0)  t.weapon_damage = 0;
     if (t.armor_level   < 0)  t.armor_level   = 0;
     if (t.item_value    < 0)  t.item_value    = 0;
@@ -292,6 +447,7 @@ void ItemsTab::Draw(sqlite3* db) {
         if (ImGui::Selectable(label, selected_ == i)) {
             selected_ = i;
             editing_  = it;
+            LoadItemAttributes(db, editing_);
             dirty_    = false;
             showNew_  = false;
         }
@@ -322,7 +478,11 @@ void ItemsTab::Draw(sqlite3* db) {
         if (ImGui::Button("Save"))   Save(db, editing_);
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("Revert")) { editing_ = items_[selected_]; dirty_ = false; }
+        if (ImGui::Button("Revert")) {
+            editing_ = items_[selected_];
+            LoadItemAttributes(db, editing_);
+            dirty_ = false;
+        }
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, {0.65f, 0.1f, 0.1f, 1.f});
         if (ImGui::Button("Delete")) Delete(db, editing_.id);

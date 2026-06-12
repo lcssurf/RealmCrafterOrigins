@@ -1167,6 +1167,15 @@ int main() {
         uint8_t     quantity;
         std::string name;
         uint8_t     item_type;
+        std::string model_path;
+        float       model_scale = 1.f;
+        std::unique_ptr<rco::renderer::Actor> actor;
+        float       spawn_time = 0.f;
+        WorldItemEntry() = default;
+        WorldItemEntry(WorldItemEntry&&) = default;
+        WorldItemEntry& operator=(WorldItemEntry&&) = default;
+        WorldItemEntry(const WorldItemEntry&) = delete;
+        WorldItemEntry& operator=(const WorldItemEntry&) = delete;
     };
     std::vector<WorldItemEntry> world_items;
 
@@ -2903,7 +2912,12 @@ int main() {
                 wi.quantity = r.ReadU8();
                 wi.name     = r.ReadString();
                 wi.item_type = r.ReadU8();
-                if (r.OK()) world_items.push_back(wi);
+                if (!r.Done()) wi.model_path = r.ReadString();
+                if (!r.Done()) wi.model_scale = r.ReadF32();
+                if (r.OK()) {
+                    wi.spawn_time = static_cast<float>(glfwGetTime());
+                    world_items.push_back(std::move(wi));
+                }
                 break;
             }
 
@@ -3171,16 +3185,21 @@ int main() {
                 }
 
                 if (!r.OK() || !renderer_ready) break;
-                (void)caster_rid;
-                (void)target_rid;
-                (void)magnitude;
+
+                float impact_y = ey;
+                if (target_rid != 0) {
+                    auto actor_it = world_actors.find(target_rid);
+                    if (actor_it != world_actors.end() && actor_it->second.actor) {
+                        impact_y = ey + actor_it->second.actor->ModelHeight() * 0.5f;
+                    }
+                }
 
                 if (!vfx_path.empty()) {
                     auto it = fx_catalog.find(vfx_path);
                     if (it != fx_catalog.end()) {
                         particles.SpawnEmitterParams(
                             it->second,
-                            {ex, ey, ez},
+                            {ex, impact_y, ez},
                             static_cast<float>(glfwGetTime()),
                             dur > 0 ? dur / 1000.f : 0.f);
                         break;
@@ -3210,7 +3229,7 @@ int main() {
                     if (it != fx_catalog.end()) {
                         particles.SpawnEmitterParams(
                             it->second,
-                            {ex, ey, ez},
+                            {ex, impact_y, ez},
                             static_cast<float>(glfwGetTime()),
                             dur > 0 ? dur / 1000.f : 0.f);
                     } else {
@@ -4697,6 +4716,32 @@ int main() {
                     if (obj.actor && obj.actor->IsLoaded()) {
                         obj.actor->Submit(*pipeline);
                     }
+                }
+
+                // World item meshes (D2): fallback mesh from world settings with bobbing + rotation.
+                const float now_t = static_cast<float>(now);
+                bool any_drop_loaded_this_frame = false;
+                for (auto& wi : world_items) {
+                    if (wi.model_path.empty())
+                        continue;
+
+                    if (!wi.actor) {
+                        wi.actor = std::make_unique<rco::renderer::Actor>();
+                        wi.actor->Init("shaders", wi.model_path.c_str(), &engine.materials());
+                        any_drop_loaded_this_frame = true;
+                    }
+
+                    if (wi.actor && wi.actor->IsLoaded()) {
+                        const float phase = now_t - wi.spawn_time;
+                        const float bob   = std::sinf(phase * 2.0f) * 0.15f;
+                        wi.actor->position = {wi.x, wi.y + 0.4f + bob, wi.z};
+                        wi.actor->yaw      = phase * 60.0f;
+                        wi.actor->scale    = (wi.model_scale > 0.f) ? wi.model_scale : 1.f;
+                        wi.actor->Submit(*pipeline);
+                    }
+                }
+                if (any_drop_loaded_this_frame) {
+                    engine.MarkMaterialsDirty();
                 }
 
                 // Frustum culling stats — throttled to ~1 Hz

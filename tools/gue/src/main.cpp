@@ -38,6 +38,7 @@
 #include "tabs/quests.h"
 #include "tabs/media.h"
 #include "tabs/drop_lists.h"
+#include "tabs/settings.h"
 #include "tabs/zones.h"
 #include "tabs/input_maps.h"
 #include "tabs/spawn_points.h"
@@ -172,6 +173,7 @@ int main() {
     gue::QuestsTab       questsTab;
     gue::MediaTab        mediaTab;
     gue::DropListsTab    dropListsTab;
+    gue::SettingsTab     settingsTab;
     gue::ZonesTab        zonesTab;
     gue::InputMapsTab    inputMapsTab;
     gue::SpawnPointsTab  spawnPointsTab;
@@ -268,28 +270,17 @@ int main() {
 
         // Main content
         if (db && ImGui::BeginTabBar("##main_tabs")) {
+            if (ImGui::BeginTabItem("Assets")) {
+                mediaTab.Draw(db);
+                ImGui::EndTabItem();
+            }
+            // "Actors" tab is hidden: the global npc_spawns CRUD is now
+            // redundant. Placement + per-instance overrides happen in the
+            // Zones tab via the Creature Library. The class stays built so
+            // it can be resurrected as an NPC Browser later if needed.
+            (void)actorsTab;
             if (ImGui::BeginTabItem("Items")) {
                 itemsTab.Draw(db);
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Spells")) {
-                spellsTab.Draw(db);
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Combat Abilities")) {
-                combatAbilitiesTab.Draw(db);
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("FX Templates")) {
-                fxTemplatesTab.Draw(db);
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Drop Lists")) {
-                dropListsTab.Draw(db);
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Progression Config")) {
-                progressionConfigTab.Draw(db);
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Weapon Kits")) {
@@ -300,29 +291,44 @@ int main() {
                 equipmentSlotsTab.Draw(db);
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Assets")) {
-                mediaTab.Draw(db);
+            if (ImGui::BeginTabItem("Spells")) {
+                spellsTab.Draw(db);
                 ImGui::EndTabItem();
             }
-            // "Actors" tab is hidden: the global npc_spawns CRUD is now
-            // redundant. Placement + per-instance overrides happen in the
-            // Zones tab via the Creature Library. The class stays built so
-            // it can be resurrected as an NPC Browser later if needed.
-            (void)actorsTab;
+            if (ImGui::BeginTabItem("Combat Abilities")) {
+                combatAbilitiesTab.Draw(db);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Progression Config")) {
+                progressionConfigTab.Draw(db);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Drop Lists")) {
+                dropListsTab.Draw(db);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("FX Templates")) {
+                fxTemplatesTab.Draw(db);
+                ImGui::EndTabItem();
+            }
             if (ImGui::BeginTabItem("Areas")) {
                 areasTab.Draw(db);
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Quests")) {
-                questsTab.Draw(db);
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Zones")) {
                 zonesTab.Draw(db, &mediaTab);
                 ImGui::EndTabItem();
             }
+            if (ImGui::BeginTabItem("Quests")) {
+                questsTab.Draw(db);
+                ImGui::EndTabItem();
+            }
             if (ImGui::BeginTabItem("Input Maps")) {
                 inputMapsTab.Draw(db);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Settings")) {
+                settingsTab.Draw(db);
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();

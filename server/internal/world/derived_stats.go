@@ -59,6 +59,8 @@ type DerivedStats struct {
 	// ===== Damage Range =====
 	MeleeDmgMin int32
 	MeleeDmgMax int32
+	RangedDmgMin int32
+	RangedDmgMax int32
 	MagicDmgMin int32
 	MagicDmgMax int32
 
@@ -150,6 +152,13 @@ const (
 	meleeDmgMinFromSTR float32 = 1.5
 	meleeDmgMaxFromSTR float32 = 2.0
 	meleeDmgMaxFromDEX float32 = 0.5
+)
+
+// ----- Ranged Damage -----
+const (
+	rangedDmgMinFromDEX float32 = meleeDmgMinFromSTR
+	rangedDmgMaxFromDEX float32 = meleeDmgMaxFromSTR
+	rangedDmgMaxFromPER float32 = meleeDmgMaxFromDEX
 )
 
 // ----- Magic Damage -----
@@ -265,6 +274,7 @@ func ComputeDerivedStats(primary PrimaryStats, level int32, weaponDmg int32, arm
 
 	// Damage ranges
 	d.MeleeDmgMin, d.MeleeDmgMax = MeleeDamageRange(primary, weaponDmg)
+	d.RangedDmgMin, d.RangedDmgMax = RangedDamageRange(primary, weaponDmg)
 	d.MagicDmgMin, d.MagicDmgMax = MagicDamageRange(primary, weaponDmg)
 
 	// Crit damage multiplier
@@ -298,6 +308,16 @@ func ComputeDerivedStats(primary PrimaryStats, level int32, weaponDmg int32, arm
 func MeleeDamageRange(primary PrimaryStats, weaponDmg int32) (min int32, max int32) {
 	min = weaponDmg + int32(float32(primary.STR)*meleeDmgMinFromSTR)
 	max = weaponDmg + int32(float32(primary.STR)*meleeDmgMaxFromSTR+float32(primary.DEX)*meleeDmgMaxFromDEX)
+	if min > max {
+		max = min
+	}
+	return
+}
+
+// RangedDamageRange returns min/max ranged damage from primary stats + weapon.
+func RangedDamageRange(primary PrimaryStats, weaponDmg int32) (min int32, max int32) {
+	min = weaponDmg + int32(float32(primary.DEX)*rangedDmgMinFromDEX)
+	max = weaponDmg + int32(float32(primary.DEX)*rangedDmgMaxFromDEX+float32(primary.PER)*rangedDmgMaxFromPER)
 	if min > max {
 		max = min
 	}
