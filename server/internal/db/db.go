@@ -40,7 +40,9 @@ type ItemTemplate struct {
 	SlotType     uint8 // equip slot: 0=weapon 1=shield 2=hat 3=chest 4=hands 5=belt 6=legs 7=feet 8=ring 9=amulet 255=backpack-only
 	WeaponDamage int16
 	ArmorLevel   int16
-	WeaponType   uint8  // 1=one-hand 2=two-hand 3=ranged
+	WeaponDimension int32  // 0=melee, 1=ranged, 2=magic (matches world.CombatDimension)
+	WeaponHands     int32  // 1=one-hand, 2=two-hand (no mechanical effect yet)
+	WeaponRange     float32 // explicit attack range (world units); 0 = use dimension default
 	WeaponKit    string // kit_key reference in weapon_kits, "" if item is not a kit-providing weapon
 	MaxStack     uint8
 	ItemValue    int32
@@ -475,6 +477,8 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV40(ctx)
 	d.migrateV41(ctx)
 	d.migrateV42(ctx)
+	d.migrateV43(ctx)
+	d.migrateV44(ctx)
 
 	return d, nil
 }
@@ -955,35 +959,36 @@ func (d *DB) SeedDefaultItems(ctx context.Context) error {
 	// item_type: 0=weapon 1=armor 2=consumable 3=misc
 	// slot_type: 0=weapon 1=shield 2=hat 3=chest 4=hands 5=belt 6=legs 7=feet 8=ring 9=amulet 255=bag-only
 	items := []struct {
-		name         string
-		itemType     int
-		slotType     int
-		weaponDamage int
-		armorLevel   int
-		weaponType   int
-		maxStack     int
-		itemValue    int
-		stackable    int
+		name            string
+		itemType        int
+		slotType        int
+		weaponDamage    int
+		armorLevel      int
+		weaponDimension int
+		weaponHands     int
+		maxStack        int
+		itemValue       int
+		stackable       int
 	}{
-		{"Rusty Sword", 0, 0, 15, 0, 1, 1, 10, 0},
-		{"Old Shield", 1, 1, 0, 5, 0, 1, 8, 0},
-		{"Leather Tunic", 1, 3, 0, 8, 0, 1, 15, 0},
-		{"Leather Hat", 1, 2, 0, 3, 0, 1, 5, 0},
-		{"Leather Gloves", 1, 4, 0, 2, 0, 1, 4, 0},
-		{"Leather Belt", 1, 5, 0, 2, 0, 1, 3, 0},
-		{"Leather Leggings", 1, 6, 0, 5, 0, 1, 10, 0},
-		{"Traveller's Boots", 1, 7, 0, 3, 0, 1, 6, 0},
-		{"Health Potion", 2, 255, 0, 0, 0, 10, 50, 1},
-		{"Iron Ring", 3, 8, 0, 0, 0, 1, 20, 0},
+		{"Rusty Sword", 0, 0, 15, 0, 0, 1, 1, 10, 0},
+		{"Old Shield", 1, 1, 0, 5, 0, 1, 1, 8, 0},
+		{"Leather Tunic", 1, 3, 0, 8, 0, 1, 1, 15, 0},
+		{"Leather Hat", 1, 2, 0, 3, 0, 1, 1, 5, 0},
+		{"Leather Gloves", 1, 4, 0, 2, 0, 1, 1, 4, 0},
+		{"Leather Belt", 1, 5, 0, 2, 0, 1, 1, 3, 0},
+		{"Leather Leggings", 1, 6, 0, 5, 0, 1, 1, 10, 0},
+		{"Traveller's Boots", 1, 7, 0, 3, 0, 1, 1, 6, 0},
+		{"Health Potion", 2, 255, 0, 0, 0, 1, 10, 50, 1},
+		{"Iron Ring", 3, 8, 0, 0, 0, 1, 1, 20, 0},
 	}
 	for _, it := range items {
 		_, err := d.db.ExecContext(ctx,
 			d.q(`INSERT INTO item_templates
-			       (name, item_type, slot_type, weapon_damage, armor_level, weapon_type, max_stack, item_value, stackable, weapon_kit)
-			     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			       (name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, max_stack, item_value, stackable, weapon_kit)
+			     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 			     WHERE NOT EXISTS (SELECT 1 FROM item_templates WHERE name = ?)`),
 			it.name, it.itemType, it.slotType, it.weaponDamage, it.armorLevel,
-			it.weaponType, it.maxStack, it.itemValue, it.stackable, "", it.name,
+			it.weaponDimension, it.weaponHands, it.maxStack, it.itemValue, it.stackable, "", it.name,
 		)
 		if err != nil {
 			return fmt.Errorf("db: SeedDefaultItems %q: %w", it.name, err)
@@ -1457,9 +1462,14 @@ func (d *DB) GiveStarterItems(ctx context.Context, charID string) error {
 	return nil
 }
 
-// GetEquippedStats returns the weapon damage of the highest-damage weapon
-// and the sum of armor levels from all equipment slots (0-13).
-func (d *DB) GetEquippedStats(ctx context.Context, charID string) (weaponDamage, armorLevel int32, err error) {
+// GetEquippedStats returns the weapon damage of the highest-damage weapon,
+// the sum of armor levels from all equipment slots (0-13), and the
+// weapon_dimension/weapon_range of the item equipped in the weapon slot (slot 0).
+// weaponDimension is a world.CombatDimension value (0=melee, 1=ranged,
+// 2=magic) and is 0 (melee) if no weapon is equipped in slot 0.
+// weaponRange is the weapon's explicit attack range (0 if unset or no weapon
+// equipped); callers should resolve it via world.ResolveAttackRange.
+func (d *DB) GetEquippedStats(ctx context.Context, charID string) (weaponDamage, armorLevel, weaponDimension int32, weaponRange float32, err error) {
 	rows, err := d.db.QueryContext(ctx,
 		d.q(`SELECT it.weapon_damage, it.armor_level
 		     FROM character_items ci
@@ -1468,7 +1478,7 @@ func (d *DB) GetEquippedStats(ctx context.Context, charID string) (weaponDamage,
 		charID,
 	)
 	if err != nil {
-		return 0, 0, fmt.Errorf("db: GetEquippedStats: %w", err)
+		return 0, 0, 0, 0, fmt.Errorf("db: GetEquippedStats: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -1481,7 +1491,57 @@ func (d *DB) GetEquippedStats(ctx context.Context, charID string) (weaponDamage,
 		}
 		armorLevel += al
 	}
-	return weaponDamage, armorLevel, rows.Err()
+	if err := rows.Err(); err != nil {
+		return weaponDamage, armorLevel, 0, 0, err
+	}
+
+	wdRow := d.db.QueryRowContext(ctx,
+		d.q(`SELECT it.weapon_dimension, it.weapon_range
+		     FROM character_items ci
+		     JOIN item_templates it ON it.id = ci.item_id
+		     WHERE ci.character_id = ? AND ci.slot = 0`),
+		charID,
+	)
+	if scanErr := wdRow.Scan(&weaponDimension, &weaponRange); scanErr != nil {
+		weaponDimension = 0
+		weaponRange = 0
+	}
+
+	return weaponDamage, armorLevel, weaponDimension, weaponRange, nil
+}
+
+// GetEquippedAttributes aggregates item_attributes from all equipped items
+// (slot 0-13) into a single bonus map, summing values when multiple equipped
+// items grant the same attribute key (e.g. two rings each granting +str).
+// Returns an empty (non-nil) map if no equipped item has attributes.
+func (d *DB) GetEquippedAttributes(ctx context.Context, charID string) (map[string]float64, error) {
+	bonuses := make(map[string]float64)
+
+	rows, err := d.db.QueryContext(ctx,
+		d.q(`SELECT ia.attribute_key, ia.value
+		     FROM character_items ci
+		     JOIN item_attributes ia ON ia.item_id = ci.item_id
+		     WHERE ci.character_id = ? AND ci.slot < 14`),
+		charID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("db: GetEquippedAttributes: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var key string
+		var value float64
+		if err := rows.Scan(&key, &value); err != nil {
+			continue
+		}
+		bonuses[key] += value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: GetEquippedAttributes: %w", err)
+	}
+
+	return bonuses, nil
 }
 
 // resolveSlotAbilities returns abilities for one equipped kit contribution.
@@ -4098,7 +4158,7 @@ func (d *DB) GetItemAtSlot(ctx context.Context, charID string, slot uint8) (*Cha
 // LoadAllItemTemplates returns all item templates keyed by name.
 func (d *DB) LoadAllItemTemplates(ctx context.Context) (map[string]*ItemTemplate, error) {
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_type, max_stack, item_value, stackable, weapon_kit
+		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit
 		 FROM item_templates ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: LoadAllItemTemplates: %w", err)
@@ -4109,7 +4169,7 @@ func (d *DB) LoadAllItemTemplates(ctx context.Context) (map[string]*ItemTemplate
 		t := &ItemTemplate{}
 		var stackable int
 		if err := rows.Scan(&t.ID, &t.Name, &t.ItemType, &t.SlotType, &t.WeaponDamage,
-			&t.ArmorLevel, &t.WeaponType, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit); err != nil {
+			&t.ArmorLevel, &t.WeaponDimension, &t.WeaponHands, &t.WeaponRange, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit); err != nil {
 			return nil, err
 		}
 		t.Stackable = stackable != 0
@@ -4121,7 +4181,7 @@ func (d *DB) LoadAllItemTemplates(ctx context.Context) (map[string]*ItemTemplate
 // ListItemTemplates returns all item templates as a slice ordered by id.
 func (d *DB) ListItemTemplates(ctx context.Context) ([]*ItemTemplate, error) {
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_type, max_stack, item_value, stackable, weapon_kit
+		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit
 		 FROM item_templates ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: ListItemTemplates: %w", err)
@@ -4132,7 +4192,7 @@ func (d *DB) ListItemTemplates(ctx context.Context) ([]*ItemTemplate, error) {
 		t := &ItemTemplate{}
 		var stackable int
 		if err := rows.Scan(&t.ID, &t.Name, &t.ItemType, &t.SlotType, &t.WeaponDamage,
-			&t.ArmorLevel, &t.WeaponType, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit); err != nil {
+			&t.ArmorLevel, &t.WeaponDimension, &t.WeaponHands, &t.WeaponRange, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit); err != nil {
 			return nil, err
 		}
 		t.Stackable = stackable != 0
@@ -4148,9 +4208,9 @@ func (d *DB) CreateItemTemplate(ctx context.Context, t *ItemTemplate) (int, erro
 		stackable = 1
 	}
 	res, err := d.db.ExecContext(ctx,
-		`INSERT INTO item_templates (name, item_type, slot_type, weapon_damage, armor_level, weapon_type, max_stack, item_value, stackable, weapon_kit)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponType, t.MaxStack, t.ItemValue, stackable, t.WeaponKit)
+		`INSERT INTO item_templates (name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponDimension, t.WeaponHands, t.WeaponRange, t.MaxStack, t.ItemValue, stackable, t.WeaponKit)
 	if err != nil {
 		return 0, fmt.Errorf("db: CreateItemTemplate: %w", err)
 	}
@@ -4166,9 +4226,9 @@ func (d *DB) UpdateItemTemplate(ctx context.Context, t *ItemTemplate) error {
 	}
 	_, err := d.db.ExecContext(ctx,
 		`UPDATE item_templates
-		 SET name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, weapon_type=?, max_stack=?, item_value=?, stackable=?, weapon_kit=?
+		 SET name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, weapon_dimension=?, weapon_hands=?, weapon_range=?, max_stack=?, item_value=?, stackable=?, weapon_kit=?
 		 WHERE id=?`,
-		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponType, t.MaxStack, t.ItemValue, stackable, t.WeaponKit, t.ID)
+		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponDimension, t.WeaponHands, t.WeaponRange, t.MaxStack, t.ItemValue, stackable, t.WeaponKit, t.ID)
 	if err != nil {
 		return fmt.Errorf("db: UpdateItemTemplate: %w", err)
 	}
@@ -8775,6 +8835,159 @@ func (d *DB) migrateV42(ctx context.Context) {
 	if _, err := d.db.ExecContext(ctx, createItemAttributeIndexesSQL); err != nil {
 		log.Printf("migrateV42: create item_attributes index failed: %v", err)
 		return
+	}
+
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO meta (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
+		conversionDoneKey, "1")
+}
+
+// columnExists reports whether the given table has a column with the given
+// name, on both the sqlite and postgres drivers.
+func (d *DB) columnExists(ctx context.Context, table, column string) bool {
+	if d.driver == "postgres" {
+		var exists int
+		err := d.db.QueryRowContext(ctx,
+			`SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = $2`,
+			table, column,
+		).Scan(&exists)
+		return err == nil
+	}
+
+	rows, err := d.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		log.Printf("columnExists: PRAGMA table_info(%s) failed: %v", table, err)
+		return false
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			continue
+		}
+		if name == column {
+			return true
+		}
+	}
+	return false
+}
+
+// migrateV43 splits the legacy item_templates.weapon_type column (which mixed
+// hand-grip and combat dimension) into two clean columns:
+//   - weapon_dimension: 0=melee, 1=ranged, 2=magic (matches world.CombatDimension)
+//   - weapon_hands: 1=one-hand, 2=two-hand (no mechanical effect yet)
+//
+// It migrates existing data from weapon_type, then drops the legacy column.
+func (d *DB) migrateV43(ctx context.Context) {
+	const conversionDoneKey = "schema_v43_weapon_dimension"
+
+	if _, err := d.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		log.Printf("migrateV43: ensure meta table failed: %v", err)
+		return
+	}
+
+	var doneValue string
+	doneErr := d.db.QueryRowContext(ctx, d.q(`SELECT value FROM meta WHERE key = ?`), conversionDoneKey).Scan(&doneValue)
+	if doneErr == nil && strings.TrimSpace(doneValue) == "1" {
+		return
+	}
+
+	var addCols []string
+	if d.driver == "postgres" {
+		addCols = []string{
+			"ALTER TABLE item_templates ADD COLUMN IF NOT EXISTS weapon_dimension INTEGER NOT NULL DEFAULT 0",
+			"ALTER TABLE item_templates ADD COLUMN IF NOT EXISTS weapon_hands     INTEGER NOT NULL DEFAULT 1",
+		}
+	} else {
+		addCols = []string{
+			"ALTER TABLE item_templates ADD COLUMN weapon_dimension INTEGER NOT NULL DEFAULT 0",
+			"ALTER TABLE item_templates ADD COLUMN weapon_hands     INTEGER NOT NULL DEFAULT 1",
+		}
+	}
+	for _, sql := range addCols {
+		// SQLite has no "ADD COLUMN IF NOT EXISTS"; ignore errors if the
+		// column already exists from a partially-applied migration.
+		if _, err := d.db.ExecContext(ctx, sql); err != nil {
+			log.Printf("migrateV43: add column (may already exist): %v", err)
+		}
+	}
+
+	// Migrate data from the legacy weapon_type column before dropping it.
+	// If a previous run already dropped weapon_type but died before
+	// recording the meta-key, skip straight to marking done.
+	if d.columnExists(ctx, "item_templates", "weapon_type") {
+		if _, err := d.db.ExecContext(ctx, `
+			UPDATE item_templates SET
+				weapon_dimension = CASE weapon_type
+					WHEN 3 THEN 1 -- ranged
+					WHEN 4 THEN 2 -- magic
+					ELSE 0        -- 0,1,2 -> melee
+				END,
+				weapon_hands = CASE weapon_type
+					WHEN 2 THEN 2 -- two-hand
+					WHEN 3 THEN 2 -- ranged: conventionally two-handed
+					ELSE 1        -- 0,1,4 -> one-hand (default)
+				END
+			WHERE weapon_type IS NOT NULL`); err != nil {
+			log.Printf("migrateV43: backfill weapon_dimension/weapon_hands failed: %v", err)
+			return
+		}
+
+		if _, err := d.db.ExecContext(ctx, `ALTER TABLE item_templates DROP COLUMN weapon_type`); err != nil {
+			log.Printf("migrateV43: drop weapon_type column failed: %v", err)
+			return
+		}
+	}
+
+	_, _ = d.db.ExecContext(ctx, d.q(`
+		INSERT INTO meta (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
+		conversionDoneKey, "1")
+}
+
+// migrateV44 adds item_templates.weapon_range, the explicit attack range for a
+// weapon (world units). A value of 0 means "no explicit range" — the basic
+// attack falls back to world.DefaultRangeForDimension(weapon_dimension).
+// Purely additive; no data migration or column drop needed.
+func (d *DB) migrateV44(ctx context.Context) {
+	const conversionDoneKey = "schema_v44_weapon_range"
+
+	if _, err := d.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		log.Printf("migrateV44: ensure meta table failed: %v", err)
+		return
+	}
+
+	var doneValue string
+	doneErr := d.db.QueryRowContext(ctx, d.q(`SELECT value FROM meta WHERE key = ?`), conversionDoneKey).Scan(&doneValue)
+	if doneErr == nil && strings.TrimSpace(doneValue) == "1" {
+		return
+	}
+
+	var addCol string
+	if d.driver == "postgres" {
+		addCol = "ALTER TABLE item_templates ADD COLUMN IF NOT EXISTS weapon_range REAL NOT NULL DEFAULT 0"
+	} else {
+		addCol = "ALTER TABLE item_templates ADD COLUMN weapon_range REAL NOT NULL DEFAULT 0"
+	}
+	// SQLite has no "ADD COLUMN IF NOT EXISTS"; ignore errors if the column
+	// already exists from a partially-applied migration.
+	if _, err := d.db.ExecContext(ctx, addCol); err != nil {
+		log.Printf("migrateV44: add column (may already exist): %v", err)
 	}
 
 	_, _ = d.db.ExecContext(ctx, d.q(`

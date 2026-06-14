@@ -657,3 +657,195 @@ Esses campos ficam para evolucao V0.2+ quando o mini Niagara avancar.
 - Comportamento de combate não mudou: os novos campos ainda não são consumidos em
   resolução de dano (foco dessa etapa é estrutural e de dados).
 - Estado: **Pendente para próxima etapa de combate (C1/C2)**.
+
+## 76. C2: ataque básico roteia por dimensão da arma (+ weapon_type 4 magic)
+- `WeaponTypeToDimension` (1/2→melee, 3→ranged, 4→magic) em `combat_dimension.go`.
+- `Actor.BasicAttackDim`: dimensão do básico, setada no equip (start/swap/useItem)
+  via `GetEquippedStats` estendido (agora retorna também o `weapon_type` da arma
+  do slot 0).
+- `ProcessAttack` usa `attacker.BasicAttackDim` (lido sob lock junto com
+  `aDerived`) em vez de `DimMelee` fixo.
+- NPCs: `BasicAttackDim = DimMelee` explícito em `SpawnNPC` (melee mantido).
+- `weapon_type` 4 (magic) adicionado no GUE (`kWeaponTypes`, Combo "Weapon Type").
+- Resultado: arco (weapon_type=3) usa stats ranged, cajado (weapon_type=4) usa
+  stats magic, espada (1/2) e sem-arma (0) continuam melee. Ability/special
+  attack NÃO afetada (C3).
+- Lembrete: `handleInventorySwap` só recomputa/atualiza stats quando o slot 0
+  (arma) é trocado — `BasicAttackDim` segue a mesma regra (atualizado só quando
+  `weaponSlotAffected`). Bug de armadura-não-recomputa noutros slots fica pro
+  arco de itens (I3).
+
+## 77. C2.5: separa weapon_type em weapon_dimension + weapon_hands
+- `weapon_type` (misturava empunhadura+dimensão) REMOVIDO. Migration V43 cria
+  `weapon_dimension` (0/1/2=melee/ranged/magic) + `weapon_hands` (1/2), migra
+  dados, dropa `weapon_type` (SQLite moderno via `modernc.org/sqlite` suporta
+  `DROP COLUMN` diretamente — sem necessidade de recriar a tabela).
+- `weapon_hands` SEM efeito mecânico ainda (rótulo, como era one/two-hand
+  antes) — reservado pra futuro (two-hand bloquear escudo, dar dano, etc).
+- `GetEquippedStats` retorna `weaponDimension` (valor direto de
+  `world.CombatDimension`); `WeaponTypeToDimension` REMOVIDA (não converte
+  mais — `BasicAttackDim = world.CombatDimension(wdim)`).
+- GUE: dois combos ("Dimension": Melee/Ranged/Magic, "Hands": One-Hand/Two-Hand)
+  no lugar do "Weapon Type" único.
+- `weapon_kit` NÃO tocado (ortogonal, sistema de abilities). Possível
+  inconsistência de dados (kit=bow + dimension=melee) é responsabilidade de
+  autoria, não validada.
+
+## 78. Fix: slot_type=255 em itens weapon/armor novos no GUE (não equipavam)
+- Combo "Equip Slot" mostrava valor (fallback 0) sem sincronizar t.slot_type,
+  deixando 255 (bag-only) → item não equipava. Agora sincroniza o fallback.
+- Bug pré-existente, exposto pelos primeiros itens-arma criados via GUE (C2.5).
+- Itens já quebrados (Fire Staff, Bow) corrigir via GUE re-selecionando o slot.
+
+## 79. CB1: range por arma (+ fallback por dimensão)
+- weapon_range no item (migration V44). Equip resolve: arma se >0, senão default
+  da dimensão (melee 2 / ranged 15 / magic 12) via ResolveAttackRange.
+- actor.AttackRange setado no equip (junto de BasicAttackDim). InAttackRange JÁ
+  usava AttackRange — intocado.
+- Arco/cajado agora atacam de longe. Desarmado = melee 2.
+- NPCs intocados (já têm AttackRange do spawn).
+- weapon_range por arma prepara terreno pra buffs de range futuros (RangeBonusPct órfão).
+- NOTA: InMeleeRange tinha nome enganoso (serve todas dimensões). Renomeada para
+  InAttackRange — ver item 91.
+
+## 80. CB2: AttackSpeedMult liga ao delay do ataque básico
+- ProcessAttack: delay efetivo = CombatDelay / AttackSpeedMult (era CombatDelay
+  fixo 800ms). Mais DEX = ataque mais rápido. Faixa: 800ms (mult 1.0) → 533ms
+  (mult 1.5, cap).
+- AttackSpeedMult lido sob lock antes do check de cooldown.
+- Afeta player E NPC (agnóstico a IsNPC, padrão do projeto). NPC com DEX alto
+  ataca mais rápido.
+- Guard atkSpeed<=0 → 1.0 (evita div-zero). Piso 1.0 = nunca mais lento que antes.
+- Só ataque básico. Abilities têm cooldown próprio (CooldownSpeedPct órfão fica
+  pra CB futuro).
+
+## 81. CB3: regen real (misto HP max + atributo)
+- HealthRegen/EnergyRegen agora MISTO: proporcional ao HealthMax/EnergyMax (justo
+  pra tanks) + bônus do atributo (STR/WIS). Calculado no derived (por segundo).
+- tickRegen usa HealthRegen*regenTickSeconds em vez de hpMax/20 hardcoded. Piso 1,
+  clamp no max, só fora de combate (preservado).
+- Constantes: healthRegenPctOfMax=0.01 (1%/s), energyRegenPctOfMax=0.02 (2%/s) +
+  os perSTR/perWIS existentes.
+- Cliente derived_stats.h espelhado.
+- Stamina inalterada. NPCs incluídos (Derived deles).
+
+## 83. AO-Go: consolida atributos num arquivo central (attributes.go)
+- Tudo de atributos do lado Go agora em attributes.go: registry + structs
+  (Primary/Derived) + constantes + ComputeDerivedStats + RecomputeDerivedStats +
+  helpers. derived_stats.go removido.
+- Organizado em seções (typing / constants / computation / recompute).
+- Reorganização PURA, comportamento idêntico, mesmo package (zero mudança de import).
+- Objetivo: UMA fonte de atributos por linguagem (menos lugares espalhados).
+- GUE já organizado (attribute_list.h). Cliente (unificar PlayerState/PrimaryStats)
+  fica pra um AO-Client futuro.
+- Reforça contexto do TECH_DEBT #73 (3 cópias) — agora cada cópia é 1 arquivo central.
+
+## 84. Renomeia combat_melee.go → combat_basic.go (nome legado)
+- ProcessAttack trata as 3 dimensões desde C1/C2; o nome "melee" enganava.
+- Só o ARQUIVO + comentários renomeados. Símbolos (InMeleeRange, etc) mantidos
+  pra não afetar callers — renomear símbolos fica pra cleanup futuro (ver item 91).
+
+## 91. Rename InMeleeRange → InAttackRange (símbolo)
+- Função tratava todas dimensões desde CB1; nome "melee" era enganoso. Renomeada
+  + todos os callers. Constante MeleeRange (fallback default) mantida (não enganosa).
+
+## 85. I3: atributos de item aplicados no personagem
+- GetEquippedAttributes (db.go) agrega item_attributes dos equipados (slot<14),
+  somando valores repetidos (2 anéis +str = +2*str).
+- RecomputeDerivedStats(actor, itemBonuses): primários somados em
+  effectivePrimary (cópia local, actor.Primary base intocado) e propagados via
+  ComputeDerivedStats; derivados aplicados via applyDerivedBonus como overlay
+  pós-compute. Recalculado do zero a cada chamada (desequipar = bônus somem).
+- applyDerivedBonus (32 cases, 1:1 com DerivedStats e AttributeRegistry) vive em
+  attributes.go, seção ITEM BONUS (AO-Go consolidado).
+- Helper c.recomputeStatsWithItemBonuses(ctx) no client.go busca os bônus e
+  chama o recompute — usado por TODOS os callers (equip, distribute-stat, respec,
+  level-up via party/quest XP) pra não esquecerem os bônus de item.
+- Gap do swap CORRIGIDO: handleInventorySwap recomputa incondicionalmente em
+  qualquer swap bem-sucedido; BasicAttackDim/AttackRange só mudam quando a arma
+  (slot 0) é afetada.
+- NPCs (world.go spawnNPC) passam nil — não usam item_attributes.
+
+## 86. DS-min: vitals atualizam ao equipar (sendVitalsUpdate nos pontos de equip)
+- SUPERSEDIDO pelo item 87 (PFullStats) — sendVitalsUpdate foi removido e o
+  helper de recompute agora envia o snapshot completo via PFullStats.
+- Limitação histórica: só os 6 vitals. Resolvido pelo PFullStats (34 derived).
+
+## 87. SYNC-1: pacote PFullStats (sync completo de stats S->C)
+- PFullStats (id 139): primários + unspent + 6 vitais + 34 derived (ordem da
+  struct DerivedStats). Enviado via sendFullStats, embutido no helper
+  recomputeStatsWithItemBonuses → dispara nos 7 pontos de "derived mudou"
+  (handleStartGame, handleInventorySwap, handleUseItem, handleDistributeStatPoint,
+  handleRespec, awardXPGain, applyQuestTurnInResult, awardXPAmount).
+- handleStartGame dispara sendFullStats após o bootstrap PStartGame (Opção A).
+- DS-min removido (sendVitalsUpdate no equip) — coberto pelo PFullStats.
+- Senders removidos (órfãos após embutir sendFullStats no helper + startgame):
+  sendVitalsUpdate (4 chamadas → 0), sendPrimaryStatsUpdate (3 chamadas → 0),
+  sendStatPointsUpdate (4 chamadas → 0). Todas as 3 funções foram deletadas.
+- Canal leve de vital atual (BroadcastHPUpdate/MPUpdate/SPUpdate + inlines de
+  dano/cura/regen/respawn/consumível) INTOCADO.
+- Cliente (receber PFullStats + PlayerState.derived + unificar primários) é o
+  SYNC-2 — ainda não implementado. Até lá, o cliente não lê PFullStats; os
+  campos que antes vinham por sendPrimaryStatsUpdate/sendStatPointsUpdate no
+  startgame já chegavam duplicados pelo próprio payload do PStartGame (extras),
+  então a remoção não regride o estado atual do cliente.
+
+## 88. SYNC-2: cliente recebe PFullStats, UI usa stats reais
+- PlayerState.primary (struct PrimaryStats, AO-Client) + PlayerState.derived (novo).
+- Handler kPFullStats (139): lê primários+vitais+34 derived na ordem da struct
+  DerivedStats (attributes.go); inteiros via ReadU32+cast (codec não tem ReadI32).
+- Painel Derived Stats: confirmed vem do servidor (com gear); preview continua local.
+- Handlers órfãos removidos: kPPrimaryStatsUpdate (135), kPStatPointsUpdate (134)
+  — servidor não manda mais (SYNC-1). kPStatUpdate (22) FICA (HP leve).
+- Primários unificados: PlayerState.primary substitui primary_strength/dexterity/
+  intelligence/wisdom/perception nos 2 escritores (kPStartGame, kPFullStats) e
+  2 leitores (inventory.cpp DrawStatRow + painel Derived Stats).
+- LIMITAÇÃO: preview local sem gear diverge do confirmed (com gear). Preview
+  gear-aware = futuro (mandar item bonuses pro cliente).
+
+## 89. SYNC-3a: primário efetivo (base+bônus) no PFullStats
+- actor.EffectivePrimary guardado no recompute (junto do Derived).
+- sendFullStats manda base (5×u16) + unspent + efetivo (5×u16) + vitais + derived.
+  Cliente mostra o total e o preview parte do efetivo (SYNC-3b).
+- Posição no pacote: efetivo após unspent, antes dos vitais.
+- PStartGame inalterado (efetivo vem pelo sendFullStats do login).
+
+## 90. SYNC-3b: cliente lê efetivo, primário total, preview condicional
+- CORRIGE o desalinhamento de 10 bytes do PFullStats (SYNC-3a mandou 5 efetivos
+  que o cliente não lia → derived corrompidos). Handler agora lê o efetivo
+  (offset 12-21), alinhamento restaurado.
+- Vitais lidos com static_cast<int32_t>(ReadU32) (sender usa Int32).
+- DrawStatRow mostra o total: "DEX: 15 (+10)"; preview de pontos parte do efetivo.
+- Preview dos derivados só aparece com HasPreviewChanges() (antes aparecia sempre
+  por causa da divergência confirmed-com-gear vs preview-sem-gear).
+- LIMITAÇÃO mantida: preview dos derivados não inclui bônus derivados diretos nem
+  weapon/armor (só aparece ao distribuir, mostra a direção).
+
+## 92. CooldownSpeedPct ligado ao cooldown de ability
+- effectiveCooldownMs reestruturado: mastery (player/damage/level>1) e
+  CooldownSpeedPct (todas abilities, player+NPC) compõem multiplicativo. Piso 0.1
+  depois do produto.
+- CooldownSpeedPct vem de WIS (cap 30%). Antes órfão.
+- Equivalência: cdSpeed=0 → comportamento idêntico ao anterior.
+- Órfão removido da lista (CooldownSpeedPct agora consumido).
+
+## 93. MovementSpeedMult ligado (cliente + servidor, player)
+- Cliente: PlayerController multiplica a velocidade por player.derived.
+  MovementSpeedMult (guard <=0→1.0).
+- Servidor: handleStandardUpdate escala o maxAllowedStep pelo mult do actor (não
+  rejeita player rápido legítimo; previne bug de item/buff futuro estourar o teto).
+- MovementSpeedMult vem de DEX (cap +30%). Antes órfão.
+- NPC FORA (add-on futuro: multiplicar npcMoveSpeed pelo mult nos 4 pontos do AI).
+- Órfão removido da lista.
+
+## 94. Balanceamento de MovementSpeedMult/CooldownSpeedPct adiado (tuning futuro)
+- Os ligáveis (CB MovementSpeedMult de DEX, CooldownSpeedPct de WIS) estão
+  FUNCIONANDO, mas os valores das constantes são placeholders:
+  - moveSpeedPerDEX=0.002, cap 1.3 (DEX 40 → só +8%)
+  - cooldownSpdPerWIS=0.002, cap 0.30
+- Calibração adiada de propósito pro tuning de PvP. Cuidado específico:
+  velocidade de movimento afeta o equilíbrio melee×ranged (ranged rápido demais
+  nunca é alcançado pelo melee) — manter o ganho de velocidade CONTIDO é uma
+  decisão de balance, não um bug. Não "fortalecer" sem considerar PvP.
+- Ajustar quando o jogo estiver mais completo (abilities por dimensão, mais
+  arquétipos testáveis).

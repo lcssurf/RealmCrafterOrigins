@@ -203,7 +203,7 @@ func (c *ClientConn) awardXPGain(ctx context.Context, gain int64, scalingMobLeve
 	c.actor.Mu.Unlock()
 	if leveled {
 		c.actor.SetPrimaryStats(primaryAfter)
-		world.RecomputeDerivedStats(c.actor)
+		c.recomputeStatsWithItemBonuses(ctx)
 		c.actor.Mu.Lock()
 		c.actor.Health = c.actor.HealthMax
 		c.actor.Energy = c.actor.EnergyMax
@@ -211,7 +211,6 @@ func (c *ClientConn) awardXPGain(ctx context.Context, gain int64, scalingMobLeve
 		if err := c.server.db.UpdateCharacterUnspentStatPoints(ctx, c.actor.CharacterID, newUnspent); err != nil {
 			log.Printf("party-xp: persist unspent points failed char=%s: %v", c.actor.CharacterID, err)
 		}
-		c.sendStatPointsUpdate(newUnspent)
 	}
 
 	return c.sendXPUpdate()

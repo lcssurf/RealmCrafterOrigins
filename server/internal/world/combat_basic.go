@@ -1,6 +1,7 @@
-// Package world - combat_melee.go
+// Package world - combat_basic.go
 //
-// Melee attack processing and the attack broadcast flow.
+// Basic attack resolution (all dimensions: melee/ranged/magic) and the
+// attack broadcast flow.
 package world
 
 import (
@@ -8,9 +9,10 @@ import (
 	"time"
 )
 
-// InMeleeRange returns true if a1 is close enough to hit a2.
+// InAttackRange returns true if a1 is close enough to hit a2.
 // Uses a1.AttackRange if set; falls back to the MeleeRange constant.
-func InMeleeRange(a1, a2 *Actor) bool {
+// Works for any attack dimension (melee/ranged/magic).
+func InAttackRange(a1, a2 *Actor) bool {
 	dx := a1.X - a2.X
 	dz := a1.Z - a2.Z
 	dy := (a1.Y - a2.Y) / 5.0
@@ -23,7 +25,8 @@ func InMeleeRange(a1, a2 *Actor) bool {
 	return distSq <= max*max
 }
 
-// ProcessAttack executes one melee attack from attacker -> target.
+// ProcessAttack executes one basic attack (uses attacker's dimension) from
+// attacker -> target.
 // Returns (damage, isCrit, onCooldown, result).
 // damage == -1 means miss or fully avoided hit.
 func ProcessAttack(attacker, target *Actor) (damage int32, isCrit bool, onCooldown bool, result AttackResult) {
@@ -39,13 +42,20 @@ func ProcessAttack(attacker, target *Actor) (damage int32, isCrit bool, onCooldo
 	// Enforce attack cooldown under attacker lock.
 	attacker.Mu.Lock()
 	now := time.Now().UnixMilli()
-	if now-attacker.LastAttack < CombatDelay {
+	// Effective attack delay scales inversely with attack speed (more speed = less delay).
+	atkSpeed := attacker.Derived.AttackSpeedMult
+	if atkSpeed <= 0 {
+		atkSpeed = 1.0
+	}
+	effectiveDelay := int64(float32(CombatDelay) / atkSpeed)
+	if now-attacker.LastAttack < effectiveDelay {
 		attacker.Mu.Unlock()
 		return 0, false, true, result
 	}
 	attacker.LastAttack = now
 	attacker.LastCombatAt = now
 	aDerived := attacker.Derived
+	aDim := attacker.BasicAttackDim
 	attacker.Mu.Unlock()
 
 	target.Mu.Lock()
@@ -53,15 +63,18 @@ func ProcessAttack(attacker, target *Actor) (damage int32, isCrit bool, onCooldo
 	legacyArmor := target.CachedArmor
 	target.Mu.Unlock()
 
+	// Resolve combat stats for the attacker's basic-attack dimension.
+	stats := selectDimensionStats(aDerived, tDerived, aDim)
+
 	// Comparative hit check (attacker hit vs target evasion).
-	hitChance := computeHitChance(aDerived.MeleeHitValue, tDerived.MeleeEvasionValue)
+	hitChance := computeHitChance(stats.HitValue, stats.EvasionValue)
 	if rand.Float32() > hitChance {
 		return -1, false, false, AttackResultMiss
 	}
 
 	// Damage range from Derived melee stats.
-	minDmg := aDerived.MeleeDmgMin
-	maxDmg := aDerived.MeleeDmgMax
+	minDmg := stats.DmgMin
+	maxDmg := stats.DmgMax
 	if maxDmg < minDmg {
 		maxDmg = minDmg
 	}
@@ -71,7 +84,7 @@ func ProcessAttack(attacker, target *Actor) (damage int32, isCrit bool, onCooldo
 	}
 
 	// Defense reduction from target Derived defense curve.
-	defPct := ValueToPercent(tDerived.MeleeDefenseValue, defenseCap, defenseSoftcap)
+	defPct := ValueToPercent(stats.DefenseValue, defenseCap, defenseSoftcap)
 	dmg = int32(float32(dmg) * (1.0 - defPct))
 	// Flat reduction from target Derived.
 	dmg -= tDerived.DamageReductionFlat
@@ -82,7 +95,7 @@ func ProcessAttack(attacker, target *Actor) (damage int32, isCrit bool, onCooldo
 	}
 
 	// Critical hit from Derived crit value and multiplier.
-	critPct := ValueToPercent(aDerived.MeleeCritValue, critValueCap, critValueSoftcap)
+	critPct := ValueToPercent(stats.CritValue, critValueCap, critValueSoftcap)
 	if rand.Float32() < critPct {
 		critMult := aDerived.CritDamageMult
 		if critMult < 1 {

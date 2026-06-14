@@ -1652,11 +1652,11 @@ int main() {
                 if (!r.Done()) {
                     uint16_t maybe_str = r.ReadU16();
                     if (!r.OK()) break;
-                    player.primary_strength = static_cast<int32_t>(maybe_str);
-                    player.primary_dexterity = static_cast<int32_t>(r.ReadU16());
-                    player.primary_intelligence = static_cast<int32_t>(r.ReadU16());
-                    player.primary_wisdom = static_cast<int32_t>(r.ReadU16());
-                    player.primary_perception = static_cast<int32_t>(r.ReadU16());
+                    player.primary.STR = static_cast<int32_t>(maybe_str);
+                    player.primary.DEX = static_cast<int32_t>(r.ReadU16());
+                    player.primary.INT = static_cast<int32_t>(r.ReadU16());
+                    player.primary.WIS = static_cast<int32_t>(r.ReadU16());
+                    player.primary.PER = static_cast<int32_t>(r.ReadU16());
                     player.unspent_stat_points = static_cast<int32_t>(r.ReadU16());
                     if (!r.OK()) break;
                 }
@@ -2699,20 +2699,75 @@ int main() {
                 break;
             }
 
-            case rco::net::kPStatPointsUpdate: {
+            case rco::net::kPFullStats: {
+                // Field order MUST match the server sender (sendFullStats in
+                // client.go) and the DerivedStats struct in attributes.go.
+                player.primary.STR = static_cast<int32_t>(r.ReadU16());
+                player.primary.DEX = static_cast<int32_t>(r.ReadU16());
+                player.primary.INT = static_cast<int32_t>(r.ReadU16());
+                player.primary.WIS = static_cast<int32_t>(r.ReadU16());
+                player.primary.PER = static_cast<int32_t>(r.ReadU16());
                 player.unspent_stat_points = static_cast<int32_t>(r.ReadU16());
-                if (!r.OK()) break;
-                break;
-            }
 
-            case rco::net::kPPrimaryStatsUpdate: {
-                player.primary_strength = static_cast<int32_t>(r.ReadU16());
-                player.primary_dexterity = static_cast<int32_t>(r.ReadU16());
-                player.primary_intelligence = static_cast<int32_t>(r.ReadU16());
-                player.primary_wisdom = static_cast<int32_t>(r.ReadU16());
-                player.primary_perception = static_cast<int32_t>(r.ReadU16());
-                player.unspent_stat_points = static_cast<int32_t>(r.ReadU16());
+                // Effective primary stats (base + item primary bonuses), 5x u16.
+                // Restores alignment introduced by SYNC-3a (sender writes these
+                // between unspent and vitals).
+                player.primary_effective.STR = static_cast<int32_t>(r.ReadU16());
+                player.primary_effective.DEX = static_cast<int32_t>(r.ReadU16());
+                player.primary_effective.INT = static_cast<int32_t>(r.ReadU16());
+                player.primary_effective.WIS = static_cast<int32_t>(r.ReadU16());
+                player.primary_effective.PER = static_cast<int32_t>(r.ReadU16());
+
+                player.health     = static_cast<int32_t>(r.ReadU32());
+                player.healthMax  = static_cast<int32_t>(r.ReadU32());
+                player.mana       = static_cast<int32_t>(r.ReadU32());
+                player.manaMax    = static_cast<int32_t>(r.ReadU32());
+                player.stamina    = static_cast<int32_t>(r.ReadU32());
+                player.staminaMax = static_cast<int32_t>(r.ReadU32());
+
+                player.derived.HealthMax   = static_cast<int32_t>(r.ReadU32());
+                player.derived.HealthRegen = r.ReadF32();
+                player.derived.EnergyMax   = static_cast<int32_t>(r.ReadU32());
+                player.derived.EnergyRegen = r.ReadF32();
+                player.derived.MeleeDefenseValue  = static_cast<int32_t>(r.ReadU32());
+                player.derived.RangedDefenseValue = static_cast<int32_t>(r.ReadU32());
+                player.derived.MagicDefenseValue  = static_cast<int32_t>(r.ReadU32());
+                player.derived.MeleeEvasionValue  = static_cast<int32_t>(r.ReadU32());
+                player.derived.RangedEvasionValue = static_cast<int32_t>(r.ReadU32());
+                player.derived.MagicEvasionValue  = static_cast<int32_t>(r.ReadU32());
+                player.derived.MeleeHitValue  = static_cast<int32_t>(r.ReadU32());
+                player.derived.RangedHitValue = static_cast<int32_t>(r.ReadU32());
+                player.derived.MagicHitValue  = static_cast<int32_t>(r.ReadU32());
+                player.derived.MeleeCritValue  = static_cast<int32_t>(r.ReadU32());
+                player.derived.RangedCritValue = static_cast<int32_t>(r.ReadU32());
+                player.derived.MagicCritValue  = static_cast<int32_t>(r.ReadU32());
+                player.derived.MeleeDmgMin  = static_cast<int32_t>(r.ReadU32());
+                player.derived.MeleeDmgMax  = static_cast<int32_t>(r.ReadU32());
+                player.derived.RangedDmgMin = static_cast<int32_t>(r.ReadU32());
+                player.derived.RangedDmgMax = static_cast<int32_t>(r.ReadU32());
+                player.derived.MagicDmgMin  = static_cast<int32_t>(r.ReadU32());
+                player.derived.MagicDmgMax  = static_cast<int32_t>(r.ReadU32());
+                player.derived.CritDamageMult    = r.ReadF32();
+                player.derived.AttackSpeedMult   = r.ReadF32();
+                player.derived.MovementSpeedMult = r.ReadF32();
+                player.derived.CooldownSpeedPct  = r.ReadF32();
+                player.derived.SkillDamageBoostPct = r.ReadF32();
+                player.derived.BuffDurationPct     = r.ReadF32();
+                player.derived.DebuffDurationPct   = r.ReadF32();
+                player.derived.RangeBonusPct   = r.ReadF32();
+                player.derived.BonusDamageFlat = static_cast<int32_t>(r.ReadU32());
+                player.derived.CCChanceValue     = static_cast<int32_t>(r.ReadU32());
+                player.derived.CCResistanceValue = static_cast<int32_t>(r.ReadU32());
+                player.derived.DamageReductionFlat = static_cast<int32_t>(r.ReadU32());
+
                 if (!r.OK()) break;
+
+                inventory.stat_hp     = player.health;
+                inventory.stat_hp_max = player.healthMax;
+                inventory.stat_mp     = player.mana;
+                inventory.stat_mp_max = player.manaMax;
+                inventory.stat_sp     = player.stamina;
+                inventory.stat_sp_max = player.staminaMax;
                 inventory.ResetPreview();
                 break;
             }

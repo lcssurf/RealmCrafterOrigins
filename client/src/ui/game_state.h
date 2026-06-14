@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include "core/derived_stats.h"
+
 namespace rco {
 
 // ---------------------------------------------------------------------------
@@ -58,11 +60,9 @@ struct PlayerState {
     uint32_t    xp         = 0;
     uint32_t    xp_current_level = 0;
     uint32_t    xp_next    = 100;
-    int32_t     primary_strength = 5;
-    int32_t     primary_dexterity = 5;
-    int32_t     primary_intelligence = 5;
-    int32_t     primary_wisdom = 5;
-    int32_t     primary_perception = 5;
+    rco::stats::PrimaryStats primary; // STR/DEX/INT/WIS/PER base (mirror of server PrimaryStats)
+    rco::stats::PrimaryStats primary_effective; // base + item primary bonuses (from PFullStats)
+    rco::stats::DerivedStats derived; // received from server via PFullStats (includes gear/item bonuses)
     int32_t     unspent_stat_points = 0;
     int32_t     free_respecs_used = 0;
     std::string name;

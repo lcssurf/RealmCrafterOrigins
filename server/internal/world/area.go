@@ -181,6 +181,7 @@ func (a *Area) StartRegen(ctx context.Context) {
 }
 
 const regenCombatWindow = int64(5_000) // ms out-of-combat before regen starts
+const regenTickSeconds = 3.0           // must match StartRegen's ticker interval
 
 func (a *Area) tickRegen() {
 	now := time.Now().UnixMilli()
@@ -194,6 +195,8 @@ func (a *Area) tickRegen() {
 		hp, hpMax := actor.Health, actor.HealthMax
 		mp, mpMax := actor.Energy, actor.EnergyMax
 		sp, spMax := actor.Stamina, actor.StaminaMax
+		healthRegen := actor.Derived.HealthRegen
+		energyRegen := actor.Derived.EnergyRegen
 		actor.Mu.Unlock()
 
 		if dead {
@@ -203,13 +206,13 @@ func (a *Area) tickRegen() {
 		var hpGain, mpGain, spGain int32
 		if !inCombat {
 			if hp < hpMax {
-				hpGain = hpMax / 20 // 5% per tick
+				hpGain = int32(healthRegen * regenTickSeconds)
 				if hpGain < 1 {
 					hpGain = 1
 				}
 			}
 			if mp < mpMax {
-				mpGain = mpMax / 12 // ~8% per tick
+				mpGain = int32(energyRegen * regenTickSeconds)
 				if mpGain < 1 {
 					mpGain = 1
 				}
@@ -706,7 +709,7 @@ func (a *Area) tickAI(tickSec float32) {
 			}
 
 			// Either attack (if in range) or move closer.
-			if InMeleeRange(npc, target) {
+			if InAttackRange(npc, target) {
 				dmg, isCrit, onCD, result := ProcessAttack(npc, target)
 				if !onCD {
 					breakNPCSpecialChain(npc)

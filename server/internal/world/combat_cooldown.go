@@ -28,20 +28,31 @@ func effectiveCooldownMs(actor *Actor, ability AbilityTemplate) int64 {
 	if base <= 0 {
 		return base
 	}
-	if actor == nil || actor.IsNPC || actor.CharacterID == "" {
-		return base
-	}
-	if !strings.EqualFold(strings.TrimSpace(ability.Category), "damage") {
+	if actor == nil {
 		return base
 	}
 
-	level := getPlayerSkillLevel(actor, ability.ID)
-	if level <= 1 {
-		return base
+	cdMul := 1.0
+
+	// Mastery cooldown reduction: only player, ability "damage", level>1.
+	if !actor.IsNPC && actor.CharacterID != "" &&
+		strings.EqualFold(strings.TrimSpace(ability.Category), "damage") {
+		level := getPlayerSkillLevel(actor, ability.ID)
+		if level > 1 {
+			levelBonus := float64(level - 1)
+			cdMul *= 1.0 - ability.MasteryCooldownReduxPerLvl*levelBonus
+		}
 	}
 
-	levelBonus := float64(level - 1)
-	cdMul := 1.0 - ability.MasteryCooldownReduxPerLvl*levelBonus
+	// CooldownSpeedPct: character stat (from WIS), applies to ALL abilities,
+	// player and NPC alike. Read directly, following this function's existing
+	// no-lock pattern for actor fields.
+	cdSpeed := float64(actor.Derived.CooldownSpeedPct)
+	if cdSpeed > 0 {
+		cdMul *= 1.0 - cdSpeed
+	}
+
+	// Floor: cooldown never drops below 10% of base, after all reductions.
 	if cdMul < 0.1 {
 		cdMul = 0.1
 	}

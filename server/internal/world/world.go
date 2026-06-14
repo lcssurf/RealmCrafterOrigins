@@ -92,6 +92,7 @@ func (w *World) SpawnNPC(area *Area, name, race, class string, level int, x, y, 
 	npc.AttackRange     = 2.0 // tight melee; override after spawn for ranged NPCs
 	npc.Radius          = 0.4
 	npc.WeaponDamage  = int32(level) * 2
+	npc.BasicAttackDim = DimMelee
 	base := int32(level) * 3
 	npc.SetPrimaryStats(PrimaryStats{
 		STR: base,
@@ -100,7 +101,7 @@ func (w *World) SpawnNPC(area *Area, name, race, class string, level int, x, y, 
 		WIS: base,
 		PER: base,
 	})
-	RecomputeDerivedStats(npc)
+	RecomputeDerivedStats(npc, nil)
 	npc.Health = npc.HealthMax
 	npc.Energy = npc.EnergyMax
 	npc.SpawnX, npc.SpawnY, npc.SpawnZ, npc.SpawnYaw = x, y, z, yaw

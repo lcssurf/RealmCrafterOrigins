@@ -197,10 +197,16 @@ PlayerController::Result PlayerController::Update(
     if (strafe_l) dir -= rdir;
     if (strafe_r) dir += rdir;
 
+    // MovementSpeedMult: character stat (from DEX, 1.0-1.3). Guard against
+    // 0 (derived not yet received from server) so the player isn't frozen.
+    float move_mult = player.derived.MovementSpeedMult;
+    if (move_mult <= 0.f) move_mult = 1.0f;
+    float base_speed = cfg_.speed * move_mult;
+
     if (glm::dot(dir, dir) > cfg_.min_dir_len_sq) {
         dir = glm::normalize(dir);
         float chosen_speed =
-            (moving_back && !moving_fwd) ? cfg_.speed * cfg_.back_mult : cfg_.speed;
+            (moving_back && !moving_fwd) ? base_speed * cfg_.back_mult : base_speed;
         if (sprinting && !moving_back) chosen_speed *= cfg_.sprint_mult;
 
         CancelMoveTarget();
@@ -215,7 +221,7 @@ PlayerController::Result PlayerController::Update(
         float d2 = dx * dx + dz * dz;
         if (d2 > cfg_.click_stop_radius * cfg_.click_stop_radius) {
             float dist = std::sqrt(d2);
-            float step = std::min(cfg_.speed * dt, dist);
+            float step = std::min(base_speed * dt, dist);
             ApplyHorizontalMove({(dx / dist) * step, (dz / dist) * step}, player, terrain);
             player.yaw = glm::degrees(std::atan2f(dx / dist, dz / dist));
         } else {

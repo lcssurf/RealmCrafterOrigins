@@ -301,7 +301,7 @@ func (c *ClientConn) handleCastSkillSlot(ctx context.Context, payload []byte) er
 	return nil
 }
 
-func (c *ClientConn) handleDistributeStatPoint(_ context.Context, payload []byte) error {
+func (c *ClientConn) handleDistributeStatPoint(ctx context.Context, payload []byte) error {
 	if c == nil || c.actor == nil || c.server == nil || c.server.db == nil || c.account == nil {
 		return nil
 	}
@@ -346,7 +346,7 @@ func (c *ClientConn) handleDistributeStatPoint(_ context.Context, payload []byte
 	c.actor.Mu.Unlock()
 
 	c.actor.SetPrimaryStats(newPrimary)
-	world.RecomputeDerivedStats(c.actor)
+	c.recomputeStatsWithItemBonuses(ctx)
 	c.actor.Mu.Lock()
 	if c.actor.Health > c.actor.HealthMax {
 		c.actor.Health = c.actor.HealthMax
@@ -364,15 +364,13 @@ func (c *ClientConn) handleDistributeStatPoint(_ context.Context, payload []byte
 		log.Printf("distribute-stat: db error user=%s: %v", c.account.Username, err)
 	}
 
-	c.sendVitalsUpdate()
-	c.sendPrimaryStatsUpdate(newPrimary, newUnspent)
 	log.Printf("distribute-stat: user=%s stat=%d amount=%d new STR=%d DEX=%d INT=%d WIS=%d PER=%d unspent=%d",
 		c.account.Username, statID, amount,
 		newPrimary.STR, newPrimary.DEX, newPrimary.INT, newPrimary.WIS, newPrimary.PER, newUnspent)
 	return nil
 }
 
-func (c *ClientConn) handleRespec(_ context.Context, payload []byte) error {
+func (c *ClientConn) handleRespec(ctx context.Context, payload []byte) error {
 	if c == nil || c.actor == nil || c.server == nil || c.server.db == nil || c.account == nil {
 		return nil
 	}
@@ -423,7 +421,7 @@ func (c *ClientConn) handleRespec(_ context.Context, payload []byte) error {
 	c.actor.Mu.Unlock()
 
 	c.actor.SetPrimaryStats(newPrimary)
-	world.RecomputeDerivedStats(c.actor)
+	c.recomputeStatsWithItemBonuses(ctx)
 	c.actor.Mu.Lock()
 	if c.actor.Health > c.actor.HealthMax {
 		c.actor.Health = c.actor.HealthMax
@@ -451,8 +449,6 @@ func (c *ClientConn) handleRespec(_ context.Context, payload []byte) error {
 		}
 	}
 
-	c.sendVitalsUpdate()
-	c.sendPrimaryStatsUpdate(newPrimary, newUnspent)
 	log.Printf("respec: user=%s free=%t points_returned=%d new_unspent=%d gold_left=%d",
 		c.account.Username, isFree, pointsBack, newUnspent, goldRemaining)
 	return nil

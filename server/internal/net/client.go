@@ -39,6 +39,19 @@ const (
 	weaponSwapCombatLockWindowMs = int64(5_000)
 )
 
+// recomputeStatsWithItemBonuses fetches the character's equipped item
+// attribute bonuses and recomputes c.actor.Derived from them. Centralizing
+// this ensures every recompute (equip, level-up, respec, etc) consistently
+// includes item bonuses — callers don't need to remember to fetch them.
+func (c *ClientConn) recomputeStatsWithItemBonuses(ctx context.Context) {
+	bonuses, err := c.server.db.GetEquippedAttributes(ctx, c.actor.CharacterID)
+	if err != nil {
+		bonuses = nil
+	}
+	world.RecomputeDerivedStats(c.actor, bonuses)
+	c.sendFullStats()
+}
+
 func (c *ClientConn) primaryStatsForLevel(ctx context.Context, level int) world.PrimaryStats {
 	_ = c
 	_ = ctx
@@ -419,9 +432,11 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	actor.UnspentStatPoints = char.UnspentStatPoints
 	actor.FreeRespecsUsed = char.FreeRespecsUsed
 	actor.Radius = 0.4
-	if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, char.ID); err == nil {
+	if wdmg, armor, wdim, wrange, err := c.server.db.GetEquippedStats(ctx, char.ID); err == nil {
 		actor.WeaponDamage = wdmg
 		actor.CachedArmor = armor
+		actor.BasicAttackDim = world.CombatDimension(wdim)
+		actor.AttackRange = world.ResolveAttackRange(wrange, actor.BasicAttackDim)
 	}
 	actor.SetPrimaryStats(world.PrimaryStats{
 		STR: char.PrimaryStrength,
@@ -430,7 +445,14 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 		WIS: char.PrimaryWisdom,
 		PER: char.PrimaryPerception,
 	})
-	world.RecomputeDerivedStats(actor)
+	// c.actor is assigned later in this function, so the shared
+	// recomputeStatsWithItemBonuses helper (which reads c.actor) can't be
+	// used yet — fetch bonuses for the local actor/char.ID directly.
+	bonuses, err := c.server.db.GetEquippedAttributes(ctx, char.ID)
+	if err != nil {
+		bonuses = nil
+	}
+	world.RecomputeDerivedStats(actor, bonuses)
 	actor.Mu.Lock()
 	actor.Health = actor.HealthMax
 	actor.Energy = actor.EnergyMax
@@ -521,14 +543,10 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 		}
 	}
 
-	// Send initial XP/level state.
+	// Send initial XP/level state, then the full stats snapshot (primary +
+	// vitals + derived) now that c.actor is the real actor.
 	_ = c.sendXPUpdate()
-	actor.Mu.Lock()
-	primarySnapshot := actor.Primary
-	unspentSnapshot := actor.UnspentStatPoints
-	actor.Mu.Unlock()
-	c.sendPrimaryStatsUpdate(primarySnapshot, unspentSnapshot)
-	c.sendStatPointsUpdate(unspentSnapshot)
+	c.sendFullStats()
 
 	// Give starter items if this is a new character, then send inventory.
 	_ = c.server.db.GiveStarterItems(ctx, char.ID)
@@ -744,7 +762,15 @@ func (c *ClientConn) handleStandardUpdate(_ context.Context, payload []byte) err
 	dx2D := float64(x - prevX)
 	dz2D := float64(z - prevZ)
 	horizDist := math.Sqrt(dx2D*dx2D + dz2D*dz2D)
-	maxAllowedStep := mv.BaseStepAllowance + (mv.MaxMoveSpeed * dtSec * mv.SpeedSlackMult)
+	// MovementSpeedMult: character stat (from DEX, 1.0-1.3). Scale the allowed
+	// step so a fast player isn't rejected as a speedhacker. Guard against 0
+	// (Derived not yet computed) following this function's existing no-lock
+	// access pattern for actor fields.
+	moveMult := float64(c.actor.Derived.MovementSpeedMult)
+	if moveMult <= 0 {
+		moveMult = 1.0
+	}
+	maxAllowedStep := mv.BaseStepAllowance + (mv.MaxMoveSpeed * moveMult * dtSec * mv.SpeedSlackMult)
 
 	// Vertical sanity check against terrain when this area has a heightmap.
 	yInvalid := false
@@ -965,7 +991,7 @@ func (c *ClientConn) handleAttackActor(ctx context.Context, payload []byte) erro
 	}
 
 	// Distance check.
-	if !world.InMeleeRange(c.actor, target) {
+	if !world.InAttackRange(c.actor, target) {
 		return nil
 	}
 
@@ -1074,61 +1100,87 @@ func (c *ClientConn) sendXPUpdate() error {
 	return nil
 }
 
-func (c *ClientConn) sendVitalsUpdate() {
+// sendFullStats sends a PFullStats packet with the actor's primary stats
+// (base), unspent points, effective primary stats (base + item primary
+// bonuses), vitals (current+max), and the full 34-field DerivedStats.
+//
+// Field order MUST match DerivedStats in attributes.go (client reads
+// sequentially): the 34 derived fields are written in struct declaration
+// order, each as Int32 or Float32 per its Go type. The effective primary
+// stats (5x u16) come immediately after unspent and before vitals.
+func (c *ClientConn) sendFullStats() {
 	if c == nil || c.actor == nil {
 		return
 	}
 	c.actor.Mu.Lock()
-	rid := c.actor.RuntimeID
-	hp := c.actor.Health
-	hpMax := c.actor.HealthMax
-	mp := c.actor.Energy
-	mpMax := c.actor.EnergyMax
-	sp := c.actor.Stamina
-	spMax := c.actor.StaminaMax
+	primary := c.actor.Primary
+	effective := c.actor.EffectivePrimary
+	unspent := c.actor.UnspentStatPoints
+	hp, hpMax := c.actor.Health, c.actor.HealthMax
+	mp, mpMax := c.actor.Energy, c.actor.EnergyMax
+	sp, spMax := c.actor.Stamina, c.actor.StaminaMax
+	d := c.actor.Derived
 	c.actor.Mu.Unlock()
 
-	for _, attr := range []struct {
-		id  uint8
-		val int32
-	}{
-		{1, hpMax},
-		{0, hp},
-		{3, mpMax},
-		{2, mp},
-		{5, spMax},
-		{4, sp},
-	} {
-		var sp Writer
-		sp.WriteUint8('A')
-		sp.WriteUint32(rid)
-		sp.WriteUint8(attr.id)
-		sp.WriteUint16(uint16(int16(attr.val)))
-		c.actor.Send(buildFramedPacket(protocol.PStatUpdate, sp.Bytes()))
-	}
-}
-
-func (c *ClientConn) sendStatPointsUpdate(unspent int32) {
-	if c == nil {
-		return
-	}
 	var w Writer
-	w.WriteUint16(uint16(unspent))
-	_ = c.sendPacket(protocol.PStatPointsUpdate, w.Bytes())
-}
-
-func (c *ClientConn) sendPrimaryStatsUpdate(primary world.PrimaryStats, unspent int32) {
-	if c == nil {
-		return
-	}
-	var w Writer
+	// Primary stats + unspent points (5x u16 + u16).
 	w.WriteUint16(uint16(primary.STR))
 	w.WriteUint16(uint16(primary.DEX))
 	w.WriteUint16(uint16(primary.INT))
 	w.WriteUint16(uint16(primary.WIS))
 	w.WriteUint16(uint16(primary.PER))
 	w.WriteUint16(uint16(unspent))
-	_ = c.sendPacket(protocol.PPrimaryStatsUpdate, w.Bytes())
+	// Effective primary stats (base + item primary bonuses), 5x u16.
+	// Position: immediately after unspent, before vitals.
+	w.WriteUint16(uint16(effective.STR))
+	w.WriteUint16(uint16(effective.DEX))
+	w.WriteUint16(uint16(effective.INT))
+	w.WriteUint16(uint16(effective.WIS))
+	w.WriteUint16(uint16(effective.PER))
+	// Vitals: current + max (6x int32).
+	w.WriteInt32(hp)
+	w.WriteInt32(hpMax)
+	w.WriteInt32(mp)
+	w.WriteInt32(mpMax)
+	w.WriteInt32(sp)
+	w.WriteInt32(spMax)
+	// Derived stats (34 fields, order matches DerivedStats in attributes.go).
+	w.WriteInt32(d.HealthMax)
+	w.WriteFloat32(d.HealthRegen)
+	w.WriteInt32(d.EnergyMax)
+	w.WriteFloat32(d.EnergyRegen)
+	w.WriteInt32(d.MeleeDefenseValue)
+	w.WriteInt32(d.RangedDefenseValue)
+	w.WriteInt32(d.MagicDefenseValue)
+	w.WriteInt32(d.MeleeEvasionValue)
+	w.WriteInt32(d.RangedEvasionValue)
+	w.WriteInt32(d.MagicEvasionValue)
+	w.WriteInt32(d.MeleeHitValue)
+	w.WriteInt32(d.RangedHitValue)
+	w.WriteInt32(d.MagicHitValue)
+	w.WriteInt32(d.MeleeCritValue)
+	w.WriteInt32(d.RangedCritValue)
+	w.WriteInt32(d.MagicCritValue)
+	w.WriteInt32(d.MeleeDmgMin)
+	w.WriteInt32(d.MeleeDmgMax)
+	w.WriteInt32(d.RangedDmgMin)
+	w.WriteInt32(d.RangedDmgMax)
+	w.WriteInt32(d.MagicDmgMin)
+	w.WriteInt32(d.MagicDmgMax)
+	w.WriteFloat32(d.CritDamageMult)
+	w.WriteFloat32(d.AttackSpeedMult)
+	w.WriteFloat32(d.MovementSpeedMult)
+	w.WriteFloat32(d.CooldownSpeedPct)
+	w.WriteFloat32(d.SkillDamageBoostPct)
+	w.WriteFloat32(d.BuffDurationPct)
+	w.WriteFloat32(d.DebuffDurationPct)
+	w.WriteFloat32(d.RangeBonusPct)
+	w.WriteInt32(d.BonusDamageFlat)
+	w.WriteInt32(d.CCChanceValue)
+	w.WriteInt32(d.CCResistanceValue)
+	w.WriteInt32(d.DamageReductionFlat)
+
+	_ = c.sendPacket(protocol.PFullStats, w.Bytes())
 }
 
 // sendInventory fetches all items for charID and sends PInventoryUpdate.
@@ -1217,14 +1269,21 @@ func (c *ClientConn) handleInventorySwap(ctx context.Context, payload []byte) er
 		c.clearWeaponWindup()
 	}
 	// Refresh equipped combat stats after any equip change.
-	if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, charID); err == nil {
+	if wdmg, armor, wdim, wrange, err := c.server.db.GetEquippedStats(ctx, charID); err == nil {
 		c.actor.Mu.Lock()
 		c.actor.WeaponDamage = wdmg
 		c.actor.CachedArmor = armor
-		c.actor.Mu.Unlock()
-		if swapErr == nil && weaponSlotAffected {
-			world.RecomputeDerivedStats(c.actor)
+		if weaponSlotAffected {
+			// Attack dimension/range only depend on the weapon (slot 0).
+			c.actor.BasicAttackDim = world.CombatDimension(wdim)
+			c.actor.AttackRange = world.ResolveAttackRange(wrange, c.actor.BasicAttackDim)
 		}
+		c.actor.Mu.Unlock()
+	}
+	// Recompute is unconditional: any equip slot can carry item_attributes
+	// (not just the weapon), so any successful swap may change Derived.
+	if swapErr == nil {
+		c.recomputeStatsWithItemBonuses(ctx)
 	}
 	if swapErr == nil && weaponSlotAffected {
 		c.sendSkillSnapshots(ctx)
@@ -1286,12 +1345,16 @@ func (c *ClientConn) handleUseItem(ctx context.Context, payload []byte) error {
 
 	// Equip change: refresh cached combat stats.
 	if res.EquipSlot != 0xFF {
-		if wdmg, armor, err := c.server.db.GetEquippedStats(ctx, charID); err == nil {
+		if wdmg, armor, wdim, wrange, err := c.server.db.GetEquippedStats(ctx, charID); err == nil {
 			c.actor.Mu.Lock()
 			c.actor.WeaponDamage = wdmg
 			c.actor.CachedArmor = armor
+			if res.EquipSlot == 0 {
+				c.actor.BasicAttackDim = world.CombatDimension(wdim)
+				c.actor.AttackRange = world.ResolveAttackRange(wrange, c.actor.BasicAttackDim)
+			}
 			c.actor.Mu.Unlock()
-			world.RecomputeDerivedStats(c.actor)
+			c.recomputeStatsWithItemBonuses(ctx)
 		}
 		if res.EquipSlot == 0 {
 			// Weapon changed: pending windup belongs to previous weapon, cancel it.

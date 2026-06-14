@@ -194,13 +194,16 @@ void Inventory::drawEquipSlot(int si, float sz) {
     ImGui::PopID();
 }
 
-void Inventory::DrawStatRow(const char* name, int32_t confirmed, int32_t* delta_ptr,
+void Inventory::DrawStatRow(const char* name, int32_t base, int32_t effective, int32_t* delta_ptr,
                             const rco::PlayerState& player) {
-    const int32_t new_val = confirmed + *delta_ptr;
+    const int32_t bonus = effective - base;
+    const int32_t new_val = effective + *delta_ptr;
     if (*delta_ptr > 0) {
-        ImGui::Text("%s: %d -> %d", name, confirmed, new_val);
+        ImGui::Text("%s: %d -> %d", name, effective, new_val);
+    } else if (bonus != 0) {
+        ImGui::Text("%s: %d (+%d)", name, effective, bonus);
     } else {
-        ImGui::Text("%s: %d", name, confirmed);
+        ImGui::Text("%s: %d", name, effective);
     }
     ImGui::SameLine();
 
@@ -474,11 +477,11 @@ void Inventory::RenderCharacter(int screenW, int screenH, const rco::PlayerState
             ImGui::Spacing();
 
             ImGui::Text("PRIMARY STATS - Unspent: %d", UnspentRemaining(player));
-            DrawStatRow("Strength", player.primary_strength, &preview_str_delta, player);
-            DrawStatRow("Dexterity", player.primary_dexterity, &preview_dex_delta, player);
-            DrawStatRow("Intelligence", player.primary_intelligence, &preview_int_delta, player);
-            DrawStatRow("Wisdom", player.primary_wisdom, &preview_wis_delta, player);
-            DrawStatRow("Perception", player.primary_perception, &preview_per_delta, player);
+            DrawStatRow("Strength", player.primary.STR, player.primary_effective.STR, &preview_str_delta, player);
+            DrawStatRow("Dexterity", player.primary.DEX, player.primary_effective.DEX, &preview_dex_delta, player);
+            DrawStatRow("Intelligence", player.primary.INT, player.primary_effective.INT, &preview_int_delta, player);
+            DrawStatRow("Wisdom", player.primary.WIS, player.primary_effective.WIS, &preview_wis_delta, player);
+            DrawStatRow("Perception", player.primary.PER, player.primary_effective.PER, &preview_per_delta, player);
 
             ImGui::Spacing();
             ImGui::BeginDisabled(!HasPreviewChanges());
@@ -543,35 +546,37 @@ void Inventory::RenderCharacter(int screenW, int screenH, const rco::PlayerState
             ImGui::Separator();
             ImGui::Text("--- DERIVED STATS ---");
 
-            rco::stats::PrimaryStats confirmed{
-                player.primary_strength,
-                player.primary_dexterity,
-                player.primary_intelligence,
-                player.primary_wisdom,
-                player.primary_perception,
-            };
-            const auto confirmed_derived = rco::stats::ComputeDerivedStats(
-                confirmed, static_cast<int32_t>(player.level), 0, 0);
+            const rco::stats::PrimaryStats& confirmed = player.primary;
+
+            // NOTE: confirmed_derived comes from the server (PFullStats,
+            // includes gear/item bonuses); preview_derived is a local
+            // simulation WITHOUT gear. They diverge by the gear contribution.
+            // Preview shows the delta direction of spending points. A fully
+            // gear-aware preview would need item bonuses sent to the client
+            // (future).
+            const auto& confirmed_derived = player.derived;
 
             rco::stats::PrimaryStats preview{
-                confirmed.STR + preview_str_delta,
-                confirmed.DEX + preview_dex_delta,
-                confirmed.INT + preview_int_delta,
-                confirmed.WIS + preview_wis_delta,
-                confirmed.PER + preview_per_delta,
+                player.primary_effective.STR + preview_str_delta,
+                player.primary_effective.DEX + preview_dex_delta,
+                player.primary_effective.INT + preview_int_delta,
+                player.primary_effective.WIS + preview_wis_delta,
+                player.primary_effective.PER + preview_per_delta,
             };
             const auto preview_derived = rco::stats::ComputeDerivedStats(
                 preview, static_cast<int32_t>(player.level), 0, 0);
 
-            auto draw_derived_int = [](const char* name, int32_t conf, int32_t prev) {
-                if (conf != prev) {
+            const bool has_changes = HasPreviewChanges();
+
+            auto draw_derived_int = [has_changes](const char* name, int32_t conf, int32_t prev) {
+                if (conf != prev && has_changes) {
                     ImGui::Text("%s: %d -> %d", name, conf, prev);
                 } else {
                     ImGui::Text("%s: %d", name, conf);
                 }
             };
-            auto draw_derived_float = [](const char* name, float conf, float prev) {
-                if (std::fabs(conf - prev) > 0.001f) {
+            auto draw_derived_float = [has_changes](const char* name, float conf, float prev) {
+                if (std::fabs(conf - prev) > 0.001f && has_changes) {
                     ImGui::Text("%s: %.2f -> %.2f", name, conf, prev);
                 } else {
                     ImGui::Text("%s: %.2f", name, conf);

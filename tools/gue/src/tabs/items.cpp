@@ -16,7 +16,8 @@ static const char* kSlotTypes[]   = {
     "Weapon (0)", "Shield (1)", "Hat (2)", "Chest (3)", "Hands (4)",
     "Belt (5)",   "Legs (6)",   "Feet (7)", "Ring (8)", "Amulet (9)",
 };
-static const char* kWeaponTypes[] = { "None", "One-Hand", "Two-Hand", "Ranged" };
+static const char* kWeaponDimensions[] = { "Melee", "Ranged", "Magic" };
+static const char* kWeaponHands[]      = { "One-Hand", "Two-Hand" };
 
 // ---------------------------------------------------------------------------
 // DB helpers
@@ -135,7 +136,7 @@ void ItemsTab::Fetch(sqlite3* db) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "SELECT id, name, item_type, slot_type, weapon_damage, armor_level, "
-        "       weapon_type, max_stack, item_value, stackable, weapon_kit "
+        "       weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit "
         "FROM item_templates ORDER BY id";
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -151,11 +152,13 @@ void ItemsTab::Fetch(sqlite3* db) {
         t.slot_type     = sqlite3_column_int(stmt, 3);
         t.weapon_damage = sqlite3_column_int(stmt, 4);
         t.armor_level   = sqlite3_column_int(stmt, 5);
-        t.weapon_type   = sqlite3_column_int(stmt, 6);
-        t.max_stack     = sqlite3_column_int(stmt, 7);
-        t.item_value    = sqlite3_column_int(stmt, 8);
-        t.stackable     = sqlite3_column_int(stmt, 9) != 0;
-        const char* wk  = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
+        t.weapon_dimension = sqlite3_column_int(stmt, 6);
+        t.weapon_hands     = sqlite3_column_int(stmt, 7);
+        t.weapon_range  = (float)sqlite3_column_double(stmt, 8);
+        t.max_stack     = sqlite3_column_int(stmt, 9);
+        t.item_value    = sqlite3_column_int(stmt, 10);
+        t.stackable     = sqlite3_column_int(stmt, 11) != 0;
+        const char* wk  = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 12));
         t.weapon_kit    = wk ? wk : "";
         items_.push_back(t);
     }
@@ -196,8 +199,8 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         const char* sql =
             "INSERT INTO item_templates "
             "(name, item_type, slot_type, weapon_damage, armor_level, "
-            " weapon_type, max_stack, item_value, stackable, weapon_kit) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)";
+            " weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
         rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) goto err;
         sqlite3_bind_text(stmt, 1, t.name.c_str(), -1, SQLITE_TRANSIENT);
@@ -205,11 +208,13 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         sqlite3_bind_int(stmt,  3, t.slot_type);
         sqlite3_bind_int(stmt,  4, t.weapon_damage);
         sqlite3_bind_int(stmt,  5, t.armor_level);
-        sqlite3_bind_int(stmt,  6, t.weapon_type);
-        sqlite3_bind_int(stmt,  7, t.max_stack);
-        sqlite3_bind_int(stmt,  8, t.item_value);
-        sqlite3_bind_int(stmt,  9, t.stackable ? 1 : 0);
-        sqlite3_bind_text(stmt, 10, t.weapon_kit.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt,  6, t.weapon_dimension);
+        sqlite3_bind_int(stmt,  7, t.weapon_hands);
+        sqlite3_bind_double(stmt, 8, (double)t.weapon_range);
+        sqlite3_bind_int(stmt,  9, t.max_stack);
+        sqlite3_bind_int(stmt, 10, t.item_value);
+        sqlite3_bind_int(stmt, 11, t.stackable ? 1 : 0);
+        sqlite3_bind_text(stmt, 12, t.weapon_kit.c_str(), -1, SQLITE_TRANSIENT);
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE) goto err;
         t.id = (int)sqlite3_last_insert_rowid(db);
@@ -218,7 +223,7 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         const char* sql =
             "UPDATE item_templates SET "
             "name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, "
-            "weapon_type=?, max_stack=?, item_value=?, stackable=?, weapon_kit=? "
+            "weapon_dimension=?, weapon_hands=?, weapon_range=?, max_stack=?, item_value=?, stackable=?, weapon_kit=? "
             "WHERE id=?";
         rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) goto err;
@@ -227,12 +232,14 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         sqlite3_bind_int(stmt,  3, t.slot_type);
         sqlite3_bind_int(stmt,  4, t.weapon_damage);
         sqlite3_bind_int(stmt,  5, t.armor_level);
-        sqlite3_bind_int(stmt,  6, t.weapon_type);
-        sqlite3_bind_int(stmt,  7, t.max_stack);
-        sqlite3_bind_int(stmt,  8, t.item_value);
-        sqlite3_bind_int(stmt,  9, t.stackable ? 1 : 0);
-        sqlite3_bind_text(stmt, 10, t.weapon_kit.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 11, t.id);
+        sqlite3_bind_int(stmt,  6, t.weapon_dimension);
+        sqlite3_bind_int(stmt,  7, t.weapon_hands);
+        sqlite3_bind_double(stmt, 8, (double)t.weapon_range);
+        sqlite3_bind_int(stmt,  9, t.max_stack);
+        sqlite3_bind_int(stmt, 10, t.item_value);
+        sqlite3_bind_int(stmt, 11, t.stackable ? 1 : 0);
+        sqlite3_bind_text(stmt, 12, t.weapon_kit.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 13, t.id);
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE) goto err;
     }
@@ -311,6 +318,14 @@ bool ItemsTab::DrawFields(ItemTemplate& t) {
 
     if (t.item_type == 0 || t.item_type == 1) {
         int st = (t.slot_type < 10) ? t.slot_type : 0;
+        // New items (or items just switched to weapon/armor) start with
+        // slot_type=255 (bag-only). The combo shows the fallback "st" value,
+        // but slot_type stayed 255 unless the user clicks the combo, so it
+        // saved as bag-only and could never be equipped. Sync it now.
+        if (t.slot_type >= 10) {
+            t.slot_type = st;
+            changed = true;
+        }
         if (ImGui::Combo("Equip Slot", &st, kSlotTypes, 10)) {
             t.slot_type = st; changed = true;
         }
@@ -320,7 +335,14 @@ bool ItemsTab::DrawFields(ItemTemplate& t) {
 
     if (t.item_type == 0) {
         if (ImGui::InputInt("Damage",      &t.weapon_damage)) changed = true;
-        if (ImGui::Combo("Weapon Type",    &t.weapon_type, kWeaponTypes, 4)) changed = true;
+        if (ImGui::Combo("Dimension",      &t.weapon_dimension, kWeaponDimensions, 3)) changed = true;
+        int hands = (t.weapon_hands == 2) ? 1 : 0;
+        if (ImGui::Combo("Hands", &hands, kWeaponHands, 2)) {
+            t.weapon_hands = hands + 1;
+            changed = true;
+        }
+        if (ImGui::InputFloat("Attack Range", &t.weapon_range, 0.5f, 1.0f, "%.1f")) changed = true;
+        ImGui::TextDisabled("0 = use dimension default (melee 2 / ranged 15 / magic 12)");
     }
     if (t.item_type == 1) {
         if (ImGui::InputInt("Armor Level", &t.armor_level)) changed = true;

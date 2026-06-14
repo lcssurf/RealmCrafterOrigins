@@ -388,7 +388,7 @@ func (c *ClientConn) applyQuestTurnInResult(ctx context.Context, turnIn *db.Ques
 	c.actor.Mu.Unlock()
 	if leveled {
 		c.actor.SetPrimaryStats(primaryAfter)
-		world.RecomputeDerivedStats(c.actor)
+		c.recomputeStatsWithItemBonuses(ctx)
 		c.actor.Mu.Lock()
 		c.actor.Health = c.actor.HealthMax
 		c.actor.Energy = c.actor.EnergyMax
@@ -396,7 +396,6 @@ func (c *ClientConn) applyQuestTurnInResult(ctx context.Context, turnIn *db.Ques
 		if err := c.server.db.UpdateCharacterUnspentStatPoints(ctx, c.actor.CharacterID, newUnspent); err != nil {
 			log.Printf("quest-runtime: persist unspent points failed char=%q err=%v", c.actor.Name, err)
 		}
-		c.sendStatPointsUpdate(newUnspent)
 	}
 
 	if turnIn.ItemsChanged {
@@ -539,7 +538,7 @@ func (c *ClientConn) awardXPAmount(ctx context.Context, gain int64) error {
 	c.actor.Mu.Unlock()
 	if leveled {
 		c.actor.SetPrimaryStats(primaryAfter)
-		world.RecomputeDerivedStats(c.actor)
+		c.recomputeStatsWithItemBonuses(ctx)
 		c.actor.Mu.Lock()
 		c.actor.Health = c.actor.HealthMax
 		c.actor.Energy = c.actor.EnergyMax
@@ -547,7 +546,6 @@ func (c *ClientConn) awardXPAmount(ctx context.Context, gain int64) error {
 		if err := c.server.db.UpdateCharacterUnspentStatPoints(ctx, c.actor.CharacterID, newUnspent); err != nil {
 			log.Printf("quest-runtime: persist unspent points failed char=%q err=%v", c.actor.Name, err)
 		}
-		c.sendStatPointsUpdate(newUnspent)
 	}
 	return c.sendXPUpdate()
 }

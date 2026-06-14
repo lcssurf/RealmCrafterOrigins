@@ -81,11 +81,13 @@ type Actor struct {
 	AggressiveRange float32 // detection radius; NPC starts chasing when player enters this
 	AttackRange     float32 // radius at which NPC can land an attack (melee ~2, ranged ~20)
 	Radius          float32
-	Primary         PrimaryStats // 5 primary stats (runtime source of truth)
-	Derived         DerivedStats // cached computed stats from Primary + level + gear
+	Primary          PrimaryStats // 5 primary stats (runtime source of truth)
+	EffectivePrimary PrimaryStats // base + item primary bonuses; result of last recompute. Base is in Primary. Used to display total primaries client-side.
+	Derived          DerivedStats // cached computed stats from Primary + level + gear
 	Strength        int32        // legacy mirror of Primary.STR (temporary migration field)
 	WeaponDamage    int32
 	CachedArmor     int32
+	BasicAttackDim  CombatDimension // dimension of the basic attack (from equipped weapon)
 
 	// Respawn — NPCs only, read-only after spawn.
 	SpawnX, SpawnY, SpawnZ, SpawnYaw float32

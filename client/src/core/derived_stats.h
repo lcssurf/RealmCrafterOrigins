@@ -69,12 +69,14 @@ constexpr int32_t healthBase = 100;
 constexpr int32_t healthPerSTR = 8;
 constexpr int32_t healthPerLevel = 15;
 constexpr float healthRegenPerSTR = 0.3f;
+constexpr float healthRegenPctOfMax = 0.01f; // 1%/s of HealthMax
 
 constexpr int32_t energyBase = 50;
 constexpr int32_t energyPerWIS = 4;
 constexpr int32_t energyPerINT = 4;
 constexpr int32_t energyPerLevel = 5;
 constexpr float energyRegenPerWIS = 0.2f;
+constexpr float energyRegenPctOfMax = 0.02f; // 2%/s of EnergyMax
 
 constexpr int32_t meleeDefSTR = 5;
 constexpr int32_t rangedDefSTR = 2;
@@ -213,9 +215,9 @@ inline DerivedStats ComputeDerivedStats(PrimaryStats primary, int32_t level, int
     DerivedStats d{};
 
     d.HealthMax = healthBase + primary.STR * healthPerSTR + level * healthPerLevel;
-    d.HealthRegen = static_cast<float>(primary.STR) * healthRegenPerSTR;
+    d.HealthRegen = static_cast<float>(d.HealthMax) * healthRegenPctOfMax + static_cast<float>(primary.STR) * healthRegenPerSTR;
     d.EnergyMax = energyBase + primary.WIS * energyPerWIS + primary.INT * energyPerINT + level * energyPerLevel;
-    d.EnergyRegen = static_cast<float>(primary.WIS) * energyRegenPerWIS;
+    d.EnergyRegen = static_cast<float>(d.EnergyMax) * energyRegenPctOfMax + static_cast<float>(primary.WIS) * energyRegenPerWIS;
 
     d.MeleeDefenseValue = primary.STR * meleeDefSTR + level * defPerLevel + armor;
     d.RangedDefenseValue = primary.STR * rangedDefSTR + primary.DEX * rangedDefDEX + level * defPerLevel + armor;

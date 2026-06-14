@@ -94,7 +94,7 @@ private:
 
     void RenderBag(int screenW, int screenH);
     void RenderCharacter(int screenW, int screenH, const rco::PlayerState& player);
-    void DrawStatRow(const char* name, int32_t confirmed, int32_t* delta_ptr,
+    void DrawStatRow(const char* name, int32_t base, int32_t effective, int32_t* delta_ptr,
                      const rco::PlayerState& player);
 
     int32_t preview_str_delta = 0;

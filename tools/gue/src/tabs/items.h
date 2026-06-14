@@ -18,7 +18,9 @@ struct ItemTemplate {
     int         slot_type     = 255;
     int         weapon_damage = 0;
     int         armor_level   = 0;
-    int         weapon_type   = 0; // 1=one-hand 2=two-hand 3=ranged
+    int         weapon_dimension = 0; // 0=melee 1=ranged 2=magic
+    int         weapon_hands     = 1; // 1=one-hand 2=two-hand (no mechanical effect yet)
+    float       weapon_range     = 0.0f; // explicit attack range; 0 = use dimension default
     std::string weapon_kit;        // kit_key reference, "" = none
     int         max_stack     = 1;
     int         item_value    = 0;

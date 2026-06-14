@@ -80,6 +80,7 @@ constexpr uint16_t kPPrimaryStatsUpdate = 135; // S->C: primary stats + unspent 
 constexpr uint16_t kPDistributeStatPoint = 136; // C->S: allocate primary stat points
 constexpr uint16_t kPRespec            = 137; // C->S: reset primary stats to base
 constexpr uint16_t kPFXCatalog         = 138;
+constexpr uint16_t kPFullStats         = 139; // S->C: full stats sync (primary + vitals + 34 derived)
 
 // ---------------------------------------------------------------------------
 // Result codes
