@@ -8,6 +8,9 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <thread>
+#include <mutex>
+#include <atomic>
 #include <filesystem>
 
 #ifdef _WIN32
@@ -65,25 +68,21 @@ static std::vector<Project> ScanProjects(const fs::path& dir) {
     return out;
 }
 
-// Returns true if the path component (any level) should be excluded from a
-// project template copy.
 static bool ShouldSkip(const fs::path& rel) {
     for (auto& comp : rel) {
         std::string s = comp.string();
         if (s.empty() || s == ".") continue;
         std::string ext = comp.extension().string();
-        if (ext == ".db")     return true;   // .db files and rco.db.backup* variants
+        if (ext == ".db")               return true;
         if (s.rfind("rco.db", 0) == 0) return true;
-        if (ext == ".log")    return true;   // gue_stdout.log, seed_run*.log, etc.
-        if (ext == ".py")     return true;   // dev scripts not needed in project copy
-        if (s == "thumbcache") return true;  // Windows thumbnail cache dir in tools/
-        if (s == "imgui.ini") return true;
+        if (ext == ".log")              return true;
+        if (ext == ".py")               return true;
+        if (s == "thumbcache")          return true;
+        if (s == "imgui.ini")           return true;
     }
     return false;
 }
 
-// Copies src tree to dst, skipping files matched by ShouldSkip.
-// Returns empty string on success, error message on failure.
 static std::string CopyTemplate(const fs::path& src, const fs::path& dst) {
     std::error_code ec;
     fs::create_directories(dst, ec);
@@ -107,6 +106,124 @@ static std::string CopyTemplate(const fs::path& src, const fs::path& dst) {
     return "";
 }
 
+// ─── Server process management ───────────────────────────────────────────────
+
+struct ServerProc {
+    PROCESS_INFORMATION pi{};
+    bool                spawned      = false;
+    std::atomic<bool>   ready{false};
+    bool                timed_out    = false;
+    float               start_time   = 0.f;
+    std::string         project_name;
+    HANDLE              pipe_read    = INVALID_HANDLE_VALUE;
+    std::mutex          log_mtx;
+    std::string         log_tail;    // capped at ~8 KB, protected by log_mtx
+};
+
+static ServerProc g_server;
+
+// Reads server stderr/stdout from pipe until the write end is closed (server
+// exits or stop is called). Sets g_server.ready when "server: listening on"
+// appears (server.go:104 — emitted after quic.ListenAddr succeeds).
+static void ServerPipeReader(HANDLE pipe, ServerProc* srv) {
+    char buf[1024];
+    DWORD nread;
+    std::string line_buf;
+    while (ReadFile(pipe, buf, sizeof(buf) - 1, &nread, nullptr) && nread > 0) {
+        buf[nread] = 0;
+        line_buf.append(buf, nread);
+        size_t pos;
+        while ((pos = line_buf.find('\n')) != std::string::npos) {
+            std::string line = line_buf.substr(0, pos + 1);
+            line_buf.erase(0, pos + 1);
+            if (line.find("server: listening on") != std::string::npos)
+                srv->ready.store(true, std::memory_order_release);
+            std::lock_guard<std::mutex> lk(srv->log_mtx);
+            srv->log_tail += line;
+            if (srv->log_tail.size() > 8192)
+                srv->log_tail.erase(0, srv->log_tail.size() - 4096);
+        }
+    }
+    // Pipe write-end was closed (server exited or StopServer closed the handle).
+    // Do NOT CloseHandle here — ServerProc owns pipe_read.
+}
+
+static bool StartServer(const fs::path& project_dir,
+                        const std::string& project_name) {
+    if (g_server.spawned) return false;
+
+    fs::path exe_path = fs::absolute(project_dir / "server" / "server.exe");
+    fs::path work_dir = fs::absolute(project_dir / "server");
+
+    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+    HANDLE pipe_r, pipe_w;
+    if (!CreatePipe(&pipe_r, &pipe_w, &sa, 0)) return false;
+    // Ensure read end is not inherited by the child
+    SetHandleInformation(pipe_r, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{};
+    si.cb         = sizeof(si);
+    si.dwFlags    = STARTF_USESTDHANDLES;
+    si.hStdOutput = pipe_w;
+    si.hStdError  = pipe_w;
+    si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+
+    std::wstring cmd  = L"\"" + exe_path.wstring() + L"\" config.toml";
+    std::wstring wdir = work_dir.wstring();
+    PROCESS_INFORMATION pi{};
+    BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr,
+                             TRUE, CREATE_NO_WINDOW, nullptr,
+                             wdir.c_str(), &si, &pi);
+    CloseHandle(pipe_w); // launcher doesn't write to the pipe
+
+    if (!ok) { CloseHandle(pipe_r); return false; }
+
+    g_server.pi           = pi;
+    g_server.spawned      = true;
+    g_server.ready        = false;
+    g_server.timed_out    = false;
+    g_server.start_time   = (float)glfwGetTime();
+    g_server.project_name = project_name;
+    g_server.pipe_read    = pipe_r;
+    { std::lock_guard<std::mutex> lk(g_server.log_mtx); g_server.log_tail.clear(); }
+
+    std::thread(ServerPipeReader, pipe_r, &g_server).detach();
+    return true;
+}
+
+static void StopServer() {
+    if (!g_server.spawned) return;
+    TerminateProcess(g_server.pi.hProcess, 0);
+    WaitForSingleObject(g_server.pi.hProcess, 3000);
+    CloseHandle(g_server.pi.hProcess);
+    CloseHandle(g_server.pi.hThread);
+    // Closing pipe_read makes any pending ReadFile in the reader thread fail → thread exits.
+    if (g_server.pipe_read != INVALID_HANDLE_VALUE) {
+        CloseHandle(g_server.pipe_read);
+        g_server.pipe_read = INVALID_HANDLE_VALUE;
+    }
+    g_server.pi           = {};
+    g_server.spawned      = false;
+    g_server.ready        = false;
+    g_server.timed_out    = false;
+    g_server.project_name.clear();
+}
+
+// Launches exe as a detached process (no pipe, no tracking). Used for GUE and
+// client which the user manages independently after spawn.
+static bool LaunchDetached(const fs::path& exe, const fs::path& work_dir) {
+    std::wstring cmd  = L"\"" + fs::absolute(exe).wstring() + L"\"";
+    std::wstring wdir = fs::absolute(work_dir).wstring();
+    STARTUPINFOW si{ sizeof(si) };
+    PROCESS_INFORMATION pi{};
+    BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr,
+                             FALSE, 0, nullptr, wdir.c_str(), &si, &pi);
+    if (ok) { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); }
+    return ok == TRUE;
+}
+
+// ─── Main ────────────────────────────────────────────────────────────────────
+
 int main() {
     SetCwdToExeDir();
     const fs::path kTemplateDir = "..";
@@ -123,7 +240,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* win = glfwCreateWindow(900, 520,
+    GLFWwindow* win = glfwCreateWindow(980, 580,
         "RCO Project Launcher", nullptr, nullptr);
     if (!win) { glfwTerminate(); return 1; }
     glfwMakeContextCurrent(win);
@@ -160,6 +277,12 @@ int main() {
         float fW = (float)fb_w;
         float fH = (float)fb_h;
 
+        // Check server timeout (5 s) without holding any lock
+        if (g_server.spawned && !g_server.ready && !g_server.timed_out) {
+            if ((float)glfwGetTime() - g_server.start_time > 5.f)
+                g_server.timed_out = true;
+        }
+
         ImGui::SetNextWindowPos({0, 0});
         ImGui::SetNextWindowSize({fW, fH});
         ImGui::Begin("##root", nullptr,
@@ -173,9 +296,24 @@ int main() {
             std::error_code ec;
             ImGui::TextDisabled("%s", fs::absolute(kProjectsDir, ec).string().c_str());
         }
+
+        // Global server status bar
+        if (g_server.spawned) {
+            ImGui::SameLine(fW - 340.f);
+            if (g_server.ready.load(std::memory_order_acquire))
+                ImGui::TextColored({0.2f,1.f,0.2f,1.f},
+                    "Server: READY  [%s]", g_server.project_name.c_str());
+            else if (g_server.timed_out)
+                ImGui::TextColored({1.f,0.6f,0.2f,1.f},
+                    "Server: Timeout [%s]", g_server.project_name.c_str());
+            else
+                ImGui::TextColored({1.f,1.f,0.2f,1.f},
+                    "Server: Starting... [%s]", g_server.project_name.c_str());
+        }
+
         ImGui::Separator();
 
-        float list_w = fW * 0.38f;
+        float list_w = fW * 0.34f;
 
         ImGui::BeginChild("##list", {list_w, fH - 110.f}, true);
         for (int i = 0; i < (int)projects.size(); ++i) {
@@ -195,12 +333,87 @@ int main() {
         ImGui::BeginChild("##detail", {fW - list_w - 24.f, fH - 110.f}, false);
         if (sel >= 0 && sel < (int)projects.size()) {
             const auto& p = projects[sel];
+            fs::path pdir = fs::absolute(kProjectsDir) / p.name;
+
             ImGui::TextUnformatted(p.name.c_str());
             ImGui::TextDisabled(p.has_db
                 ? "Database: exists (server ran before)"
                 : "Database: none (created on first start)");
+
+            // ── Server ──────────────────────────────
             ImGui::Separator();
-            ImGui::TextDisabled("(start/editor/client — coming soon)");
+            ImGui::TextUnformatted("Server");
+            ImGui::Spacing();
+
+            bool server_for_this = g_server.spawned &&
+                                   g_server.project_name == p.name;
+            bool server_other    = g_server.spawned && !server_for_this;
+
+            if (!g_server.spawned) {
+                if (ImGui::Button("Start Server"))
+                    StartServer(pdir, p.name);
+            } else if (server_for_this) {
+                bool rdy = g_server.ready.load(std::memory_order_acquire);
+                if (rdy)
+                    ImGui::TextColored({0.2f,1.f,0.2f,1.f}, "READY");
+                else if (g_server.timed_out)
+                    ImGui::TextColored({1.f,0.6f,0.2f,1.f}, "Timeout");
+                else
+                    ImGui::TextColored({1.f,1.f,0.2f,1.f}, "Starting...");
+                ImGui::SameLine();
+                if (ImGui::Button("Stop Server"))
+                    StopServer();
+            } else {
+                // Different project's server is running
+                ImGui::BeginDisabled();
+                ImGui::Button("Start Server");
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::TextDisabled("(stop '%s' first)", g_server.project_name.c_str());
+            }
+
+            // ── Editor (GUE) ─────────────────────────
+            // GUE connects to SQLite directly — no server needed.
+            ImGui::Separator();
+            ImGui::TextUnformatted("Editor");
+            ImGui::Spacing();
+            if (ImGui::Button("Open GUE")) {
+                LaunchDetached(pdir / "tools" / "rco_gue.exe",
+                               pdir / "tools");
+            }
+
+            // ── Client ───────────────────────────────
+            // Client connects to 127.0.0.1:7777 — requires server ready.
+            ImGui::Separator();
+            ImGui::TextUnformatted("Client");
+            ImGui::Spacing();
+            bool server_ready = server_for_this &&
+                                g_server.ready.load(std::memory_order_acquire);
+            if (!server_ready) ImGui::BeginDisabled();
+            if (ImGui::Button("Play (Client)")) {
+                LaunchDetached(pdir / "client" / "rco_client.exe",
+                               pdir / "client");
+            }
+            if (!server_ready) {
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::TextDisabled("(start server first)");
+            }
+
+            // ── Server log ───────────────────────────
+            if (server_for_this) {
+                ImGui::Separator();
+                ImGui::TextDisabled("Server log:");
+                std::string log_copy;
+                { std::lock_guard<std::mutex> lk(g_server.log_mtx);
+                  log_copy = g_server.log_tail; }
+                ImGui::BeginChild("##slog", {-1, 140.f}, true);
+                ImGui::TextUnformatted(log_copy.c_str());
+                if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
+                    ImGui::SetScrollHereY(1.f);
+                ImGui::EndChild();
+            }
+
         } else {
             ImGui::TextDisabled("Select a project to see actions.");
         }
@@ -241,13 +454,14 @@ int main() {
                 }
                 std::error_code ec;
                 fs::path dest = fs::absolute(kProjectsDir) / n;
-                if (fs::exists(dest, ec)) { new_err = "A project with that name already exists."; return; }
-
+                if (fs::exists(dest, ec)) {
+                    new_err = "A project with that name already exists.";
+                    return;
+                }
                 std::string err = CopyTemplate(fs::absolute(kTemplateDir), dest);
                 if (!err.empty()) { new_err = err; return; }
 
                 projects = ScanProjects(kProjectsDir);
-                // Select the newly created project
                 for (int i = 0; i < (int)projects.size(); ++i)
                     if (projects[i].name == n) { sel = i; break; }
                 show_new_dlg = false;
@@ -255,7 +469,6 @@ int main() {
             };
 
             if (pressed_enter) try_create();
-
             if (ImGui::Button("Create", {120, 0})) try_create();
             ImGui::SameLine();
             if (ImGui::Button("Cancel", {120, 0})) {
@@ -274,6 +487,15 @@ int main() {
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(win);
+    }
+
+    // Server keeps running when launcher closes (user's server process persists).
+    // Release the handles so the OS doesn't wait on us; server is not killed.
+    if (g_server.spawned) {
+        if (g_server.pipe_read != INVALID_HANDLE_VALUE)
+            CloseHandle(g_server.pipe_read);
+        CloseHandle(g_server.pi.hProcess);
+        CloseHandle(g_server.pi.hThread);
     }
 
     ImGui_ImplOpenGL3_Shutdown();
