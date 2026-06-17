@@ -849,3 +849,177 @@ Esses campos ficam para evolucao V0.2+ quando o mini Niagara avancar.
   decisão de balance, não um bug. Não "fortalecer" sem considerar PvP.
 - Ajustar quando o jogo estiver mais completo (abilities por dimensão, mais
   arquétipos testáveis).
+
+## 95. C3a: campo de dimensão na ability (fundação)
+- ability_templates.dimension (TEXT, ''=inherit). Migração addColumnIfMissing.
+- Carga: Row→Template (db.go, main.go), struct AbilityTemplate.Dimension.
+- helper resolveAbilityDimension (override ou herda BasicAttackDim) — DEFINIDO,
+  ainda não usado (C3b liga no specialAttackDamage).
+- GUE: combo dimension (inherit/melee/ranged/magic).
+- Lua NÃO afetado (sistema de spell legado separado).
+- Comportamento INALTERADO (runtime ainda usa melee fixo até o C3b).
+
+## 96. C3b: abilities roteiam por dimensão + SkillDamageBoost/BonusDamageFlat
+- specialAttackDamage usa resolveAbilityDimension + selectDimensionStats. Trocados:
+  defesa (→stats.DefenseValue), crit sem CritPolicy (→stats.CritValue), fallback
+  dmg (→stats.DmgMin/Max). Branch CritPolicy intocado.
+- SkillDamageBoostPct (órfão→ligado): multiplicador ANTES do crit (decisão dev:
+  amplifica o crit). BonusDamageFlat (órfão→ligado): no base, antes da defesa.
+- Cobre todos os caminhos (specialAttackDamage é chamada única).
+- Órfãos removidos da lista: SkillDamageBoostPct, BonusDamageFlat (no caminho de
+  ability; BonusDamageFlat no ataque básico ainda pendente — TECH_DEBT separado).
+
+NOTA: BonusDamageFlat no ATAQUE BÁSICO (ProcessAttack) ainda não ligado — fica
+como item futuro (só o caminho de ability foi feito aqui).
+
+## 97. SkillDamageBoostPct favorece builds mágicas (revisar no tuning)
+- SkillDamageBoostPct vem de INT/WIS — builds físicas (rogue DEX/STR) ganham
+  pouco, mesmo em abilities físicas. Conceitualmente estranho (dano de skill
+  física escalar com INT).
+- O DamageStatScale (JSON por ability) já permite escala por-stat correta por
+  ability — é a ferramenta certa pra "como a ability escala". O SkillDamageBoostPct
+  global (INT/WIS) é redundante e enviesado.
+- Decisão adiada pro tuning: reavaliar se o SkillDamageBoostPct deve ser revertido
+  (deixar o JSON fazer), mudar de fonte, ou virar explicitamente "magic skill
+  boost". Não mexer agora — funciona, só é enviesado.
+
+## 98. C-reações: dodge/guard nas abilities (antes só parry)
+- resolveActorWindup agora respeita as 3 reações (dodge/parry/guard), como o
+  ataque básico. Dodge (evita 100%) antes do parry; guard (reduz pra 40% + consome
+  stamina) entre specialAttackDamage e ApplyDamage.
+- Universal: sem condicional por dimensão (decisão dev; restrições temáticas tipo
+  "parry não vale vs magia" ficam pra tuning futuro).
+- Reutiliza eventos genéricos (HitDodged=8, HitGuarded=9, GuardEnded=4).
+- FECHA o arco combate por dimensões (C0→C-reações).
+
+NOTA FUTURA: condicionar reações por dimensão (ex parry/guard só físico) é um
+ajuste de balance disponível (a dimensão está acessível via resolveAbilityDimension).
+
+## 99. StaminaMax escala com nível (era fixo 100)
+- StaminaMax = staminaBase(100) + level*staminaPerLevel(5), calculado no
+  RecomputeDerivedStats (só nível, sem atributo — equilíbrio defensivo previsível).
+- NÃO entra no DerivedStats struct (evita desalinhar o PFullStats; já trafega
+  como vital spMax). Setado em actor.StaminaMax no recompute, como HealthMax/EnergyMax.
+- client.go hardcoded 100 substituído. Level-up recalcula (via recompute existente).
+- Corrige a assimetria: HP/MP escalavam, stamina não.
+- Valores placeholder (base 100, +5/nível) — tuning futuro.
+- NPC StaminaMax: world.go já chama RecomputeDerivedStats(npc, nil) no spawn, então
+  npc.StaminaMax também passa a escalar com o nível do NPC. npc.Stamina (atual)
+  continua não sendo inicializado (igual ao comportamento anterior) — NPCs não
+  usam dodge/guard hoje, então não há impacto prático.
+
+## 100. Fase A / Commit 1: vocabulário de animação em árvore (fundação)
+- Tabela anim_vocabulary(id, name, parent_id). Árvore via parent_id (0=raiz). A
+  árvore É o fallback (filho→pai). Seed com a árvore padrão + ações já em uso.
+- Carga no server (LoadAnimVocabulary → SetAnimVocabulary), getter
+  AnimFallbackParent pronto — mas NÃO usado no runtime ainda (commit do fallback).
+- GUE: sub-tab Animation Vocabulary em Settings, árvore editável (add/rename/delete).
+- String validada (Opção 2): media_actor_anims e ability_templates INTOCADOS.
+- Próximos commits da Fase A: (2) atores selecionam do vocab, (3) fallback no
+  runtime, (4) abilities selecionam do vocab.
+
+## 101. Fase A / Commit 2: atores selecionam ação do vocabulário (combo estrito)
+- media.cpp: editor de anims do ator usa SearchableComboString(anim_vocab_names_)
+  na coluna Action, em vez de InputText livre. Estrito (só escolhe do vocab).
+- Preserva actions legadas fora do vocab (aviso "(not in vocabulary)" passivo —
+  não sobrescreve; troca é ação consciente do dev).
+- MediaTab carrega anim_vocabulary independente (LoadAnimVocabNames em FetchAll).
+- Server intocado (Opção 2: action continua string).
+
+## 102. Fase A / Commit 3: fallback em cascata no runtime (o vocabulário AGE)
+- BroadcastAnimate agora sobe a árvore do vocabulário (AnimFallbackParent) quando
+  o ator não tem o slot pedido. CastForward→Cast→raiz. Guard maxFallbackDepth=8
+  contra ciclo de config.
+- Supressão de locomoção intocada (usa actionName original). action_id enviado vem
+  do slot resolvido.
+- Logs: "resolved via fallback to X" (sucesso via pai) / "missing_action_binding
+  (fallback exhausted)" (falhou até a raiz).
+- O vocabulário (Commits 1-2) agora REGE qual animação cada ator toca.
+
+## 103. Fase A / Commit 4: abilities selecionam ação do vocabulário (FECHA Fase A)
+- combat_abilities.cpp: ActionWindup/Impact/Recover usam SearchableComboString
+  (anim_vocab_names_), estrito, em vez de InputText livre.
+- Permite VAZIO via "(none)" (herança via resolveStageAction preservada).
+- Preserva legado fora do vocab (aviso passivo). Carga independente do vocab.
+- Server intocado (campos continuam string).
+- ✅ FASE A COMPLETA: vocabulário em árvore (C1) + atores selecionam (C2) +
+  fallback em cascata (C3) + abilities selecionam (C4). Pipeline de animação
+  100% por seleção, com fallback hierárquico.
+
+## 104. Hardcode "mixamorig:Hips" no ComputeBones é auto-condicional (não-travante)
+- model.cpp:510/600/621 + Load:1123: correção de retargeting Mixamo (delta do Hips
+  vs Y Bot 1.98m). Auto-condicional: só dispara se o nó "mixamorig:Hips" existe.
+- Modelos custom (ex: Hunger) caem no else (bind-pose, só rotação anima) — correto
+  pra animação in-place (RCO não usa root motion). Mixamo e custom convivem.
+- NÃO é bloqueio pra modelos não-Mixamo. Único limite: root motion seria descartado
+  (irrelevante pra RCO in-place).
+- Saída futura SE precisar (modelo custom com retarget cross-rig): membro
+  root_bone_name_ (default "mixamorig:Hips") + setter, troca as 4 ocorrências.
+  Zero quebra. Não necessário agora.
+
+## 105. Arco B / B1 COMPLETA: bone world transform exposta + fix SubmitWithMatrix
+- Model: bone_world_transforms_ (fatoração não-quebradora em Compute*Bones) +
+  GetBoneWorldTransform(name, out). Actor: delega.
+- BUG CORRIGIDO: SubmitWithMatrix não setava tex_albedo (mesh sem textura) — agora
+  com paridade total de material com Submit. Essencial pra B5 (attachment usa
+  SubmitWithMatrix).
+- bone_world_transforms_ vive no Model compartilhado (ModelCache). Dois atores
+  com o mesmo model path na mesma frame sobrescrevem um ao outro. Aceitável
+  enquanto só o player usa; B4 move isso pro Actor se necessário.
+- Validada: cubo-marcador grudou na mão e seguiu a animação (andaime removido).
+- Fundação do attachment pronta. Próximo: B2 (vocabulário de sockets).
+
+## 107. Arco B / B3a COMPLETA: socket mapping do actor def (dados + GUE + wire)
+- Tabela actor_def_sockets (actor_def_id, socket_name TEXT, bone_name TEXT,
+  offset_pos x/y/z, offset_rot x/y/z euler graus, offset_scale uniforme).
+  migrateV48, dual sqlite/postgres, sem seed — usuário cadastra no GUE.
+- world.SocketBinding{SocketName, BoneName, OffsetPos [3]float32, OffsetRot
+  [3]float32, OffsetScale float32}. Appearance.Sockets []SocketBinding.
+- appearance.go: BuildAppearanceFromDef carrega actor_def_sockets e popula
+  Appearance.Sockets (via LoadActorDefSockets).
+- frame.go: appendSockets helper; NewActorPayload adiciona sockets ao FINAL
+  (aditivo). AppearanceBytes NÃO inclui sockets — usa AppearanceSockets()
+  separado (client.go appenda após extras/primary stats). Nil: socket_count=0.
+- AJUSTE (fix): PStartGame tinha sockets ANTES dos primary stats com guard
+  !r.Done() frágil (sempre true). Movidos pro FINAL: server usa AppearanceSockets
+  após extras.Bytes(); cliente parseia sockets após primary stats. Alinha com
+  PNewActor. Guard agora genuíno: servidor antigo → r.Done()=true, cliente pula.
+- Model::BoneNames() público permanente (sorted alphabetical via bone_map_
+  iteration). Actor::BoneNames() delega.
+- GUE media.cpp: seção "Sockets" em DrawActorDefs (após Animations) — socket
+  combo (socket_vocabulary) + bone combo (preview_.GetModel().BoneNames()) +
+  DragFloat3 pos/rot + DragFloat scale + Save/Del por linha + "+ Add Socket".
+  EnsureTables cria socket_vocabulary + actor_def_sockets localmente.
+  SaveActorDefSocket/DeleteActorDefSocket CRUD. LoadSocketVocabNames.
+- Cliente: WorldSocket struct, player_sockets + WorldActorEntry::sockets.
+  PNewActor: sockets após y_offset (guard !r.Done()); PStartGame: sockets após
+  primary stats (último campo, guard genuíno). Dados guardados, NÃO usados até B5.
+- Rotação euler graus, escala uniforme, socket/bone como TEXT (não FK).
+- Próximo: B3b (preview 3D + sliders ao vivo), B4 (item→socket), B5 (render).
+
+## 106. Arco B / B2 COMPLETA: vocabulário de sockets (lista flat configurável via GUE)
+- server: migrateV47 — socket_vocabulary(id, name) sem parent_id (flat, sem
+  fallback); seed com 8 defaults: WeaponHand, OffHand, Head, Back, Hip,
+  Shoulder_R, Shoulder_L, Chest. LoadSocketVocabulary exposta mas não consumida
+  pelo servidor ainda (B3 faz o bind socket→bone por actor_def).
+- schema.sql: tabela postgres equivalente adicionada.
+- GUE: sub-tab "Sockets" em Settings (ao lado de "Animation Vocabulary") com
+  lista plana add/rename/delete + EnsureTables para sqlite local.
+- Próximo: B3 (actor_def mapeia socket→bone+offset).
+
+## 108. Project Launcher (rco_launcher) — Project Manager estilo RC
+- Novo exe C++/ImGui em tools/launcher/ (mesmo vcpkg/CMake do GUE, reutiliza
+  boilerplate GLFW+glad+ImGui). Saída: dist/tools/rco_launcher.exe.
+- Cada projeto = cópia completa de dist/ em projects/<nome>/ (binários+assets+scripts).
+  Criar projeto = copiar dist/ sem *.db / *.log / *.py / thumbcache (servidor
+  self-seeda o .db no primeiro start). Abrir = iniciar os exes daquele projeto.
+- GUE de cada projeto resolve seu .db via caminho canônico "../server/rco.db" (sem
+  necessidade de argumento; SetCwdToExeDir ancora cwd em projects/<nome>/tools/).
+- Detecta "servidor pronto" via pipe do stderr: aguarda "server: listening on"
+  (server.go:104, após quic.ListenAddr — NÃO usa "RCO Server started" que é async).
+- Stop Server via TerminateProcess + CloseHandle. GUE/cliente são detached (handles
+  descartados após spawn). Servidor mantém handle para status e stop.
+- ZERO mudança nos binários existentes. 3 commits: base+listar / criar / processos.
+- projects/ fica em ../../projects relativo ao exe (sibling de dist/ na raiz do repo).
+- Hardcode 127.0.0.1:7777 no cliente OK para servidor local. Multi-projeto remoto = futuro.
+
