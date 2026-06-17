@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -15,12 +16,17 @@
   #define NOMINMAX
   #include <windows.h>
   #include <shellapi.h>
+  #include <shlobj.h>
 #else
   #include <unistd.h>
   #include <limits.h>
 #endif
 
 namespace fs = std::filesystem;
+
+// Config file lives next to the exe (dist/tools/pm_config.txt).
+// Contains one line: absolute path of the projects folder chosen by the user.
+static constexpr const char* kConfigFile = "pm_config.txt";
 
 static void SetCwdToExeDir() {
     fs::path exe;
@@ -41,6 +47,52 @@ static void SetCwdToExeDir() {
 
 static void GlfwErrorCb(int, const char* desc) {
     std::fprintf(stderr, "[glfw] %s\n", desc);
+}
+
+// Returns the saved projects path from pm_config.txt, or "" if absent/empty.
+static std::string LoadConfig() {
+    std::ifstream f(kConfigFile);
+    if (!f.is_open()) return "";
+    std::string line;
+    std::getline(f, line);
+    while (!line.empty() && (line.back() == '\r' || line.back() == '\n'
+                              || line.back() == ' '))
+        line.pop_back();
+    return line;
+}
+
+static void SaveConfig(const std::string& path) {
+    std::ofstream f(kConfigFile, std::ios::trunc);
+    if (f.is_open()) f << path << "\n";
+}
+
+#ifdef _WIN32
+// Opens the native folder-picker (SHBrowseForFolderW, COM apartment already
+// initialized). Returns the chosen path as UTF-8, or "" on cancel.
+static std::string PickFolder() {
+    BROWSEINFOW bi{};
+    bi.ulFlags   = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    bi.lpszTitle = L"Select Projects Folder";
+    PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) return "";
+    wchar_t wpath[MAX_PATH]{};
+    SHGetPathFromIDListW(pidl, wpath);
+    CoTaskMemFree(pidl);
+    int n = WideCharToMultiByte(CP_UTF8, 0, wpath, -1,
+                                nullptr, 0, nullptr, nullptr);
+    if (n <= 1) return "";
+    std::string s(n - 1, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wpath, -1, s.data(), n, nullptr, nullptr);
+    return s;
+}
+#endif
+
+static void OpenInExplorer(const fs::path& dir) {
+#ifdef _WIN32
+    ShellExecuteW(nullptr, L"explore",
+                  fs::absolute(dir).wstring().c_str(),
+                  nullptr, nullptr, SW_SHOWNORMAL);
+#endif
 }
 
 struct Project {
@@ -104,26 +156,32 @@ static std::string CopyTemplate(const fs::path& src, const fs::path& dst) {
     return "";
 }
 
-// Opens dir in Windows Explorer. No-op on non-Windows.
-static void OpenInExplorer(const fs::path& dir) {
-#ifdef _WIN32
-    ShellExecuteW(nullptr, L"explore",
-                  fs::absolute(dir).wstring().c_str(),
-                  nullptr, nullptr, SW_SHOWNORMAL);
-#endif
-}
-
 int main() {
     SetCwdToExeDir();
     // cwd = dist/tools/ (anchored to exe dir)
-    // Template:      ".."            → dist/
-    // Projects root: "../../projects" → sibling of dist/ at repo root
+    // Template for new projects: ".." = dist/
     const fs::path kTemplateDir = "..";
-    const fs::path kProjectsDir = "../../projects";
+    // Default projects folder: dist/tools/projects/ (next to the exe).
+    // Normal rebuilds only write the exe — they do not delete dist/tools/projects/.
+    const fs::path kDefaultProjectsDir = fs::absolute("projects");
 
+#ifdef _WIN32
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+#endif
+
+    // Resolve active projects dir: saved config → fallback to default.
+    bool config_path_invalid = false;
+    fs::path projects_dir;
     {
+        std::string saved = LoadConfig();
         std::error_code ec;
-        fs::create_directories(kProjectsDir, ec);
+        if (!saved.empty() && fs::is_directory(saved, ec)) {
+            projects_dir = saved;
+        } else {
+            if (!saved.empty()) config_path_invalid = true;  // saved but gone
+            projects_dir = kDefaultProjectsDir;
+            fs::create_directories(projects_dir, ec);
+        }
     }
 
     glfwSetErrorCallback(GlfwErrorCb);
@@ -132,8 +190,8 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* win = glfwCreateWindow(900, 520,
-        "RCO Project Manager", nullptr, nullptr);
+    GLFWwindow* win = glfwCreateWindow(1000, 560,
+        "RealmCrafter: Origins — Project Manager", nullptr, nullptr);
     if (!win) { glfwTerminate(); return 1; }
     glfwMakeContextCurrent(win);
     glfwSwapInterval(1);
@@ -152,24 +210,20 @@ int main() {
     ImGui_ImplGlfw_InitForOpenGL(win, true);
     ImGui_ImplOpenGL3_Init("#version 460");
 
-    auto projects = ScanProjects(kProjectsDir);
+    auto projects = ScanProjects(projects_dir);
     int  sel      = -1;
 
-    // New Project dialog state
     bool show_new_dlg = false;
     char new_name[128]{};
     std::string new_err;
 
-    // Rename dialog state
     bool show_rename_dlg = false;
     char rename_buf[128]{};
     std::string rename_err;
 
-    // Delete confirmation state
     bool show_delete_confirm = false;
     std::string delete_err;
 
-    // General action error (shown under action buttons)
     std::string action_err;
 
     while (!glfwWindowShouldClose(win)) {
@@ -191,16 +245,38 @@ int main() {
             ImGuiWindowFlags_NoResize        |
             ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-        ImGui::Text("RCO Project Manager");
-        {
-            std::error_code ec;
-            ImGui::TextDisabled("%s", fs::absolute(kProjectsDir, ec).string().c_str());
+        ImGui::Text("RealmCrafter: Origins — Project Manager");
+        ImGui::Separator();
+
+        // ── Projects folder row ───────────────────────────────────────────
+        ImGui::Text("Projects:");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", projects_dir.string().c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Change...")) {
+#ifdef _WIN32
+            std::string picked = PickFolder();
+            if (!picked.empty()) {
+                projects_dir = picked;
+                SaveConfig(picked);
+                projects = ScanProjects(projects_dir);
+                sel = -1;
+                action_err.clear();
+                config_path_invalid = false;
+            }
+#endif
+        }
+        if (config_path_invalid) {
+            ImGui::SameLine();
+            ImGui::TextColored({1.f, 0.6f, 0.2f, 1.f},
+                "Saved folder not found — using default.");
         }
         ImGui::Separator();
 
-        float list_w = fW * 0.38f;
+        // ── Project list (left) + detail (right) ─────────────────────────
+        float list_w = fW * 0.36f;
 
-        ImGui::BeginChild("##list", {list_w, fH - 110.f}, true);
+        ImGui::BeginChild("##list", {list_w, fH - 130.f}, true);
         for (int i = 0; i < (int)projects.size(); ++i) {
             const auto& p = projects[i];
             char lbl[256];
@@ -217,22 +293,21 @@ int main() {
 
         ImGui::SameLine();
 
-        ImGui::BeginChild("##detail", {fW - list_w - 24.f, fH - 110.f}, false);
+        ImGui::BeginChild("##detail", {fW - list_w - 24.f, fH - 130.f}, false);
         if (sel >= 0 && sel < (int)projects.size()) {
             const auto& p = projects[sel];
-            fs::path pdir = fs::absolute(kProjectsDir) / p.name;
+            fs::path pdir = projects_dir / p.name;
 
             ImGui::TextUnformatted(p.name.c_str());
             ImGui::TextDisabled(p.has_db
                 ? "Database: exists (server ran before)"
                 : "Database: none (created on first start)");
-            ImGui::TextDisabled("%s", pdir.string().c_str());
+            ImGui::TextDisabled("%s", fs::absolute(pdir).string().c_str());
 
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
 
-            // Open Folder
             if (ImGui::Button("Open Folder")) {
                 action_err.clear();
                 OpenInExplorer(pdir);
@@ -242,7 +317,6 @@ int main() {
 
             ImGui::Spacing();
 
-            // Rename
             if (ImGui::Button("Rename")) {
                 show_rename_dlg = true;
                 std::strncpy(rename_buf, p.name.c_str(), sizeof(rename_buf) - 1);
@@ -254,7 +328,6 @@ int main() {
 
             ImGui::Spacing();
 
-            // Delete
             ImGui::PushStyleColor(ImGuiCol_Button,        {0.6f, 0.1f, 0.1f, 1.f});
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.8f, 0.2f, 0.2f, 1.f});
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,  {0.5f, 0.05f,0.05f,1.f});
@@ -268,13 +341,15 @@ int main() {
             ImGui::TextDisabled("Permanently delete project folder");
 
             if (!action_err.empty())
-                ImGui::TextColored({1.f, 0.35f, 0.35f, 1.f}, "%s", action_err.c_str());
+                ImGui::TextColored({1.f, 0.35f, 0.35f, 1.f},
+                    "%s", action_err.c_str());
 
         } else {
             ImGui::TextDisabled("Select a project to see actions.");
         }
         ImGui::EndChild();
 
+        // ── Bottom toolbar ────────────────────────────────────────────────
         if (ImGui::Button("New Project")) {
             show_new_dlg = true;
             new_name[0]  = 0;
@@ -282,39 +357,37 @@ int main() {
         }
         ImGui::SameLine();
         if (ImGui::Button("Refresh")) {
-            projects = ScanProjects(kProjectsDir);
+            projects = ScanProjects(projects_dir);
             sel = -1;
             action_err.clear();
         }
 
-        // ── Delete confirmation modal ──────────────────────────────────────
+        // ── Delete confirmation modal ─────────────────────────────────────
         if (show_delete_confirm && sel >= 0 && sel < (int)projects.size())
             ImGui::OpenPopup("Delete Project?##del");
 
         if (ImGui::BeginPopupModal("Delete Project?##del", nullptr,
                 ImGuiWindowFlags_AlwaysAutoResize)) {
-            // Guard: sel might have changed while popup was pending
             if (sel < 0 || sel >= (int)projects.size()) {
                 show_delete_confirm = false;
                 ImGui::CloseCurrentPopup();
             } else {
                 ImGui::Text("Permanently delete project '%s'?",
                             projects[sel].name.c_str());
-                ImGui::TextColored({1.f,0.6f,0.2f,1.f},
+                ImGui::TextColored({1.f, 0.6f, 0.2f, 1.f},
                     "This cannot be undone.");
                 if (!delete_err.empty())
-                    ImGui::TextColored({1.f,0.35f,0.35f,1.f},
+                    ImGui::TextColored({1.f, 0.35f, 0.35f, 1.f},
                         "%s", delete_err.c_str());
-
                 ImGui::Spacing();
                 if (ImGui::Button("Delete", {120, 0})) {
-                    fs::path pdir = fs::absolute(kProjectsDir) / projects[sel].name;
+                    fs::path pdir = projects_dir / projects[sel].name;
                     std::error_code ec;
                     fs::remove_all(pdir, ec);
                     if (ec) {
                         delete_err = "Delete failed: " + ec.message();
                     } else {
-                        projects = ScanProjects(kProjectsDir);
+                        projects = ScanProjects(projects_dir);
                         sel = -1;
                         show_delete_confirm = false;
                         ImGui::CloseCurrentPopup();
@@ -329,7 +402,7 @@ int main() {
             ImGui::EndPopup();
         }
 
-        // ── Rename modal ───────────────────────────────────────────────────
+        // ── Rename modal ──────────────────────────────────────────────────
         if (show_rename_dlg)
             ImGui::OpenPopup("Rename Project##ren");
 
@@ -341,7 +414,7 @@ int main() {
             bool pressed_enter = ImGui::InputText("##rname", rename_buf,
                 sizeof(rename_buf), ImGuiInputTextFlags_EnterReturnsTrue);
             if (!rename_err.empty())
-                ImGui::TextColored({1.f,0.35f,0.35f,1.f},
+                ImGui::TextColored({1.f, 0.35f, 0.35f, 1.f},
                     "%s", rename_err.c_str());
 
             auto try_rename = [&]() {
@@ -349,13 +422,11 @@ int main() {
                 std::string n(rename_buf);
                 if (n.empty()) { rename_err = "Name cannot be empty."; return; }
                 if (n.find_first_of("/\\:*?\"<>|") != std::string::npos) {
-                    rename_err = "Invalid characters in name.";
-                    return;
+                    rename_err = "Invalid characters in name."; return;
                 }
                 if (sel < 0 || sel >= (int)projects.size()) return;
-
-                fs::path old_path = fs::absolute(kProjectsDir) / projects[sel].name;
-                fs::path new_path = fs::absolute(kProjectsDir) / n;
+                fs::path old_path = projects_dir / projects[sel].name;
+                fs::path new_path = projects_dir / n;
                 std::error_code ec;
                 if (fs::exists(new_path, ec)) {
                     rename_err = "A project with that name already exists.";
@@ -363,9 +434,7 @@ int main() {
                 }
                 fs::rename(old_path, new_path, ec);
                 if (ec) { rename_err = "Rename failed: " + ec.message(); return; }
-
-                projects = ScanProjects(kProjectsDir);
-                // Reselect by new name
+                projects = ScanProjects(projects_dir);
                 sel = -1;
                 for (int i = 0; i < (int)projects.size(); ++i)
                     if (projects[i].name == n) { sel = i; break; }
@@ -384,7 +453,7 @@ int main() {
             ImGui::EndPopup();
         }
 
-        // ── New Project modal ──────────────────────────────────────────────
+        // ── New Project modal ─────────────────────────────────────────────
         if (show_new_dlg)
             ImGui::OpenPopup("New Project##new");
 
@@ -404,19 +473,16 @@ int main() {
                 std::string n(new_name);
                 if (n.empty()) { new_err = "Name cannot be empty."; return; }
                 if (n.find_first_of("/\\:*?\"<>|") != std::string::npos) {
-                    new_err = "Invalid characters in name.";
-                    return;
+                    new_err = "Invalid characters in name."; return;
                 }
                 std::error_code ec;
-                fs::path dest = fs::absolute(kProjectsDir) / n;
+                fs::path dest = projects_dir / n;
                 if (fs::exists(dest, ec)) {
-                    new_err = "A project with that name already exists.";
-                    return;
+                    new_err = "A project with that name already exists."; return;
                 }
                 std::string err = CopyTemplate(fs::absolute(kTemplateDir), dest);
                 if (!err.empty()) { new_err = err; return; }
-
-                projects = ScanProjects(kProjectsDir);
+                projects = ScanProjects(projects_dir);
                 sel = -1;
                 for (int i = 0; i < (int)projects.size(); ++i)
                     if (projects[i].name == n) { sel = i; break; }
@@ -450,5 +516,9 @@ int main() {
     ImGui::DestroyContext();
     glfwDestroyWindow(win);
     glfwTerminate();
+
+#ifdef _WIN32
+    CoUninitialize();
+#endif
     return 0;
 }

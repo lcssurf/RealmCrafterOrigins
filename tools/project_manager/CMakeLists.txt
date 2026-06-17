@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(rco_launcher LANGUAGES CXX)
+project(rco_project_manager LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,24 +14,26 @@ if (NOT TARGET rco_renderer)
     )
 endif()
 
-add_executable(rco_launcher main.cpp)
+add_executable(rco_project_manager main.cpp)
 
 find_package(glfw3  CONFIG REQUIRED)
 find_package(imgui  CONFIG REQUIRED)
 
-target_link_libraries(rco_launcher PRIVATE
+target_link_libraries(rco_project_manager PRIVATE
     rco_renderer
     glfw
     imgui::imgui
 )
 
 if (WIN32)
-    target_link_libraries(rco_launcher PRIVATE shell32)
+    # shell32: ShellExecuteW (open in Explorer), SHBrowseForFolderW, SHGetPathFromIDListW
+    # ole32:   CoInitializeEx, CoUninitialize, CoTaskMemFree (used by SHBrowseForFolderW)
+    target_link_libraries(rco_project_manager PRIVATE shell32 ole32)
 endif()
 
 set(RCO_TOOLS_DIST "${CMAKE_SOURCE_DIR}/../../dist/tools")
 
-set_target_properties(rco_launcher PROPERTIES
+set_target_properties(rco_project_manager PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY           "${RCO_TOOLS_DIST}"
     RUNTIME_OUTPUT_DIRECTORY                "${RCO_TOOLS_DIST}"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG          "${RCO_TOOLS_DIST}"

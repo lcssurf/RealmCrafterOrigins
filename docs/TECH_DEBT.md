@@ -1007,19 +1007,26 @@ ajuste de balance disponível (a dimensão está acessível via resolveAbilityDi
   lista plana add/rename/delete + EnsureTables para sqlite local.
 - Próximo: B3 (actor_def mapeia socket→bone+offset).
 
-## 108. Project Launcher (rco_launcher) — Gerenciador de Projetos
-- Novo exe C++/ImGui em tools/launcher/ (mesmo vcpkg/CMake do GUE, reutiliza
-  boilerplate GLFW+glad+ImGui). Saída: dist/tools/rco_launcher.exe.
+## 108. Project Manager (rco_project_manager) — Gerenciador de Projetos
+- Renomeado de "launcher" → "project_manager" (tools/project_manager/,
+  rco_project_manager.exe). "launcher" fica reservado para feature futura.
+- Novo exe C++/ImGui (mesmo vcpkg/CMake do GUE, boilerplate GLFW+glad+ImGui).
+  Saída: dist/tools/rco_project_manager.exe.
 - ESCOPO: gerenciador de projetos apenas. NÃO inicia processos — a pessoa abre
   server.exe/rco_gue.exe/rco_client.exe diretamente na pasta do projeto.
-- Cada projeto = cópia completa de dist/ em projects/<nome>/ (binários+assets+scripts).
+- Cada projeto = cópia completa de dist/ em <projects_dir>/<nome>/.
   Criar = copiar dist/ sem *.db / *.log / *.py / thumbcache (servidor self-seeda
-  o .db no primeiro start). projects/ fica em ../../projects (sibling de dist/).
+  o .db no primeiro start).
+- Pasta de projetos: default dist/tools/projects/ (ao lado do exe — normal
+  rebuilds não apagam subpastas, só sobrescrevem o exe). Configurável via
+  pm_config.txt (texto, 1 linha com path absoluto). Botão "Change..." na UI abre
+  SHBrowseForFolderW. Persiste entre execuções. Se o path salvo não existir mais,
+  cai no default + avisa na UI (não crasha).
 - GUE de cada projeto resolve seu .db via "../server/rco.db" sem argumento
-  (SetCwdToExeDir ancora cwd em projects/<nome>/tools/).
+  (SetCwdToExeDir ancora cwd em <projeto>/tools/).
 - Renomear a pasta do projeto é seguro: todos os paths internos são relativos ao
   exe, o .db não armazena paths absolutos da pasta raiz.
-- Ações de pasta no projeto selecionado: Open Folder (ShellExecuteW explore),
-  Rename (fs::rename + validação), Delete (fs::remove_all com confirmação obrigatória).
-- ZERO mudança nos binários existentes. Links: rco_renderer (glad), glfw, imgui, shell32.
+- Ações de pasta: Open Folder (ShellExecuteW explore), Rename (fs::rename),
+  Delete (fs::remove_all com confirmação obrigatória).
+- Links: rco_renderer (glad), glfw, imgui, shell32, ole32 (COM para folder picker).
 
