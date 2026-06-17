@@ -44,7 +44,7 @@ static void GlfwErrorCb(int, const char* desc) {
 
 struct Project {
     std::string name;
-    bool        has_db;  // any .db in server/ → server ran at least once
+    bool        has_db;
 };
 
 static std::vector<Project> ScanProjects(const fs::path& dir) {
@@ -65,11 +65,50 @@ static std::vector<Project> ScanProjects(const fs::path& dir) {
     return out;
 }
 
+// Returns true if the path component (any level) should be excluded from a
+// project template copy.
+static bool ShouldSkip(const fs::path& rel) {
+    for (auto& comp : rel) {
+        std::string s = comp.string();
+        if (s.empty() || s == ".") continue;
+        std::string ext = comp.extension().string();
+        if (ext == ".db")     return true;   // .db files and rco.db.backup* variants
+        if (s.rfind("rco.db", 0) == 0) return true;
+        if (ext == ".log")    return true;   // gue_stdout.log, seed_run*.log, etc.
+        if (ext == ".py")     return true;   // dev scripts not needed in project copy
+        if (s == "thumbcache") return true;  // Windows thumbnail cache dir in tools/
+        if (s == "imgui.ini") return true;
+    }
+    return false;
+}
+
+// Copies src tree to dst, skipping files matched by ShouldSkip.
+// Returns empty string on success, error message on failure.
+static std::string CopyTemplate(const fs::path& src, const fs::path& dst) {
+    std::error_code ec;
+    fs::create_directories(dst, ec);
+    if (ec) return "Cannot create destination: " + ec.message();
+
+    for (auto& entry : fs::recursive_directory_iterator(src,
+            fs::directory_options::skip_permission_denied, ec)) {
+        if (ec) break;
+        fs::path rel = fs::relative(entry.path(), src, ec);
+        if (ec || ShouldSkip(rel)) continue;
+        fs::path target = dst / rel;
+        if (entry.is_directory(ec)) {
+            fs::create_directories(target, ec);
+        } else if (entry.is_regular_file(ec)) {
+            fs::copy_file(entry.path(), target,
+                fs::copy_options::overwrite_existing, ec);
+            if (ec)
+                return "Copy failed for " + rel.string() + ": " + ec.message();
+        }
+    }
+    return "";
+}
+
 int main() {
     SetCwdToExeDir();
-    // cwd = dist/tools/ (anchored to exe dir)
-    // Template:      ".."            → dist/
-    // Projects root: "../../projects" → sibling of dist/ at repo root
     const fs::path kTemplateDir = "..";
     const fs::path kProjectsDir = "../../projects";
 
@@ -104,8 +143,11 @@ int main() {
     ImGui_ImplGlfw_InitForOpenGL(win, true);
     ImGui_ImplOpenGL3_Init("#version 460");
 
-    auto projects = ScanProjects(kProjectsDir);
-    int  sel      = -1;
+    auto projects    = ScanProjects(kProjectsDir);
+    int  sel         = -1;
+    bool show_new_dlg = false;
+    char new_name[128]{};
+    std::string new_err;
 
     while (!glfwWindowShouldClose(win)) {
         glfwPollEvents();
@@ -164,11 +206,64 @@ int main() {
         }
         ImGui::EndChild();
 
-        if (ImGui::Button("New Project")) { /* TODO commit 2 */ }
+        if (ImGui::Button("New Project")) {
+            show_new_dlg = true;
+            new_name[0]  = 0;
+            new_err.clear();
+        }
         ImGui::SameLine();
         if (ImGui::Button("Refresh")) {
             projects = ScanProjects(kProjectsDir);
             sel = -1;
+        }
+
+        // --- New Project modal ---
+        if (show_new_dlg)
+            ImGui::OpenPopup("New Project##modal");
+
+        ImGui::SetNextWindowSize({400, 0});
+        if (ImGui::BeginPopupModal("New Project##modal", nullptr,
+                ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Project name:");
+            ImGui::SetNextItemWidth(360.f);
+            bool pressed_enter = ImGui::InputText("##nname", new_name,
+                sizeof(new_name), ImGuiInputTextFlags_EnterReturnsTrue);
+            if (!new_err.empty())
+                ImGui::TextColored({1.f, 0.35f, 0.35f, 1.f}, "%s", new_err.c_str());
+
+            auto try_create = [&]() {
+                new_err.clear();
+                std::string n(new_name);
+                if (n.empty()) { new_err = "Name cannot be empty."; return; }
+                if (n.find_first_of("/\\:*?\"<>|") != std::string::npos) {
+                    new_err = "Invalid characters in name.";
+                    return;
+                }
+                std::error_code ec;
+                fs::path dest = fs::absolute(kProjectsDir) / n;
+                if (fs::exists(dest, ec)) { new_err = "A project with that name already exists."; return; }
+
+                std::string err = CopyTemplate(fs::absolute(kTemplateDir), dest);
+                if (!err.empty()) { new_err = err; return; }
+
+                projects = ScanProjects(kProjectsDir);
+                // Select the newly created project
+                for (int i = 0; i < (int)projects.size(); ++i)
+                    if (projects[i].name == n) { sel = i; break; }
+                show_new_dlg = false;
+                ImGui::CloseCurrentPopup();
+            };
+
+            if (pressed_enter) try_create();
+
+            if (ImGui::Button("Create", {120, 0})) try_create();
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", {120, 0})) {
+                show_new_dlg = false;
+                new_err.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
         }
 
         ImGui::End();
