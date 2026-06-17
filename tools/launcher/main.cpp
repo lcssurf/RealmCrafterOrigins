@@ -133,7 +133,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     GLFWwindow* win = glfwCreateWindow(900, 520,
-        "RCO Project Launcher", nullptr, nullptr);
+        "RCO Project Manager", nullptr, nullptr);
     if (!win) { glfwTerminate(); return 1; }
     glfwMakeContextCurrent(win);
     glfwSwapInterval(1);
@@ -191,7 +191,7 @@ int main() {
             ImGuiWindowFlags_NoResize        |
             ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-        ImGui::Text("RCO Project Launcher");
+        ImGui::Text("RCO Project Manager");
         {
             std::error_code ec;
             ImGui::TextDisabled("%s", fs::absolute(kProjectsDir, ec).string().c_str());
