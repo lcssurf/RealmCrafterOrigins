@@ -26,7 +26,7 @@ target_link_libraries(rco_launcher PRIVATE
 )
 
 if (WIN32)
-    target_link_libraries(rco_launcher PRIVATE ws2_32)
+    target_link_libraries(rco_launcher PRIVATE shell32)
 endif()
 
 set(RCO_TOOLS_DIST "${CMAKE_SOURCE_DIR}/../../dist/tools")

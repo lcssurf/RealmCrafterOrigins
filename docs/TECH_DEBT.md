@@ -1007,19 +1007,19 @@ ajuste de balance disponível (a dimensão está acessível via resolveAbilityDi
   lista plana add/rename/delete + EnsureTables para sqlite local.
 - Próximo: B3 (actor_def mapeia socket→bone+offset).
 
-## 108. Project Launcher (rco_launcher) — Project Manager estilo RC
+## 108. Project Launcher (rco_launcher) — Gerenciador de Projetos
 - Novo exe C++/ImGui em tools/launcher/ (mesmo vcpkg/CMake do GUE, reutiliza
   boilerplate GLFW+glad+ImGui). Saída: dist/tools/rco_launcher.exe.
+- ESCOPO: gerenciador de projetos apenas. NÃO inicia processos — a pessoa abre
+  server.exe/rco_gue.exe/rco_client.exe diretamente na pasta do projeto.
 - Cada projeto = cópia completa de dist/ em projects/<nome>/ (binários+assets+scripts).
-  Criar projeto = copiar dist/ sem *.db / *.log / *.py / thumbcache (servidor
-  self-seeda o .db no primeiro start). Abrir = iniciar os exes daquele projeto.
-- GUE de cada projeto resolve seu .db via caminho canônico "../server/rco.db" (sem
-  necessidade de argumento; SetCwdToExeDir ancora cwd em projects/<nome>/tools/).
-- Detecta "servidor pronto" via pipe do stderr: aguarda "server: listening on"
-  (server.go:104, após quic.ListenAddr — NÃO usa "RCO Server started" que é async).
-- Stop Server via TerminateProcess + CloseHandle. GUE/cliente são detached (handles
-  descartados após spawn). Servidor mantém handle para status e stop.
-- ZERO mudança nos binários existentes. 3 commits: base+listar / criar / processos.
-- projects/ fica em ../../projects relativo ao exe (sibling de dist/ na raiz do repo).
-- Hardcode 127.0.0.1:7777 no cliente OK para servidor local. Multi-projeto remoto = futuro.
+  Criar = copiar dist/ sem *.db / *.log / *.py / thumbcache (servidor self-seeda
+  o .db no primeiro start). projects/ fica em ../../projects (sibling de dist/).
+- GUE de cada projeto resolve seu .db via "../server/rco.db" sem argumento
+  (SetCwdToExeDir ancora cwd em projects/<nome>/tools/).
+- Renomear a pasta do projeto é seguro: todos os paths internos são relativos ao
+  exe, o .db não armazena paths absolutos da pasta raiz.
+- Ações de pasta no projeto selecionado: Open Folder (ShellExecuteW explore),
+  Rename (fs::rename + validação), Delete (fs::remove_all com confirmação obrigatória).
+- ZERO mudança nos binários existentes. Links: rco_renderer (glad), glfw, imgui, shell32.
 
