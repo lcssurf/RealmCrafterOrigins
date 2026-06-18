@@ -314,6 +314,7 @@ func main() {
 					Description:                row.Description,
 					Family:                     row.Family,
 					Category:                   row.Category,
+					Dimension:                  row.Dimension,
 					ResourceType:               row.ResourceType,
 					ResourceCost:               row.ResourceCost,
 					CooldownMs:                 row.CooldownMs,
@@ -468,6 +469,26 @@ func main() {
 		world.SetNPCCombatProfiles(nil)
 		world.SetNPCProfileBindings(nil)
 		log.Printf("main: combat ability runtime disabled via config")
+	}
+
+	// Load the animation vocabulary tree (Phase A.1 foundation). Builds a
+	// name -> parent-name fallback map for world.SetAnimVocabulary; not yet
+	// consulted by BroadcastAnimate.
+	if vocabRows, err := database.LoadAnimVocabulary(ctx); err != nil {
+		log.Printf("main: load anim_vocabulary: %v", err)
+	} else {
+		byID := make(map[int]string, len(vocabRows))
+		for _, n := range vocabRows {
+			byID[n.ID] = n.Name
+		}
+		parentByName := make(map[string]string, len(vocabRows))
+		for _, n := range vocabRows {
+			if n.ParentID != 0 {
+				parentByName[n.Name] = byID[n.ParentID]
+			}
+		}
+		world.SetAnimVocabulary(parentByName)
+		log.Printf("main: loaded %d anim_vocabulary nodes", len(vocabRows))
 	}
 
 	actorDefCache := make(map[int]*db.ActorDef)

@@ -191,6 +191,12 @@ const (
 	healthRegenPctOfMax float32 = 0.01 // 1%/s of HealthMax
 )
 
+// ----- Stamina (level-only, no attribute) -----
+const (
+	staminaBase     int32 = 100 // matches old hardcoded value at level 1
+	staminaPerLevel int32 = 5   // placeholder, tune later
+)
+
 // ----- Energy / Mana -----
 const (
 	energyBase          int32   = 50
@@ -335,6 +341,12 @@ const (
 // =============================================================================
 // STAT COMPUTATION
 // =============================================================================
+
+// StaminaMaxForLevel returns the level-scaled StaminaMax (no attribute input).
+// Used as the initial value before RecomputeDerivedStats runs.
+func StaminaMaxForLevel(level uint16) int32 {
+	return staminaBase + int32(level)*staminaPerLevel
+}
 
 // ComputeDerivedStats applies all derived stat formulas in a single pass.
 // Pure function with no side effects.
@@ -592,5 +604,6 @@ func RecomputeDerivedStats(actor *Actor, itemBonuses map[string]float64) {
 	actor.EffectivePrimary = effectivePrimary
 	actor.HealthMax = derived.HealthMax
 	actor.EnergyMax = derived.EnergyMax
+	actor.StaminaMax = staminaBase + level*staminaPerLevel
 	actor.Mu.Unlock()
 }

@@ -79,6 +79,19 @@ func resolveActorWindup(area *Area, actor, target *Actor, now int64) (handled bo
 	}
 
 	target.Mu.Lock()
+	if target.DodgeUntil > now {
+		target.LastCombatAt = now
+		target.Mu.Unlock()
+
+		BroadcastCombatEvent(area, combatEventHitDodged, actor.RuntimeID, target.RuntimeID, 0, "")
+		if recover := resolveStageAction(windupActionOverride, ability.ActionRecover, "Idle"); recover != "" {
+			BroadcastAnimate(area, actor, recover)
+		}
+		return true, false
+	}
+	target.Mu.Unlock()
+
+	target.Mu.Lock()
 	parryActive := target.ParryUntil > now
 	parryAge := now - target.LastParryAt
 	parryWindow := ability.ParryWindowMs
@@ -103,6 +116,32 @@ func resolveActorWindup(area *Area, actor, target *Actor, now int64) (handled bo
 		BroadcastAnimate(area, actor, impact)
 	}
 	damage, isCrit := specialAttackDamage(actor, target, ability)
+
+	// Guard: reduce ability damage if the target is defending (mirrors ProcessAttack).
+	target.Mu.Lock()
+	if target.Guarding && target.Stamina > 0 {
+		damage = (damage*guardDamagePct + 99) / 100 // ceil(damage * pct / 100)
+		if damage < 1 {
+			damage = 1
+		}
+		target.Stamina -= guardHitSPCost
+		guardEnded := false
+		if target.Stamina <= 0 {
+			target.Stamina = 0
+			target.Guarding = false
+			target.GuardUntil = 0
+			guardEnded = true
+		}
+		target.Mu.Unlock()
+
+		BroadcastCombatEvent(area, combatEventHitGuarded, actor.RuntimeID, target.RuntimeID, int16(damage), "")
+		if guardEnded {
+			BroadcastCombatEvent(area, combatEventGuardEnded, target.RuntimeID, target.RuntimeID, 0, "")
+		}
+	} else {
+		target.Mu.Unlock()
+	}
+
 	hp, justDied := ApplyDamage(target, damage, actor.RuntimeID)
 	if isCrit {
 		BroadcastFloatingNumber(area, target, int16(damage), 1)
@@ -345,11 +384,14 @@ func specialAttackDamage(npc, target *Actor, ability AbilityTemplate) (int32, bo
 	targetDerived := target.Derived
 	target.Mu.Unlock()
 
+	dim := resolveAbilityDimension(npc, ability)
+	stats := selectDimensionStats(npcDerived, targetDerived, dim)
+
 	baseMin := ability.BaseDamageMin
 	baseMax := ability.BaseDamageMax
 	if baseMin <= 0 && baseMax <= 0 {
-		baseMin = npcDerived.MeleeDmgMin
-		baseMax = npcDerived.MeleeDmgMax
+		baseMin = stats.DmgMin
+		baseMax = stats.DmgMax
 		if baseMin <= 0 && baseMax <= 0 {
 			baseMin = fallbackBase
 			baseMax = fallbackBase
@@ -370,6 +412,7 @@ func specialAttackDamage(npc, target *Actor, ability AbilityTemplate) (int32, bo
 			base += int32(float32(statValue) * entry.Coef)
 		}
 	}
+	base += npcDerived.BonusDamageFlat
 
 	pierce := ability.ArmorPiercePct
 	if pierce < 0 {
@@ -386,10 +429,18 @@ func specialAttackDamage(npc, target *Actor, ability AbilityTemplate) (int32, bo
 	if dmg < 1 {
 		dmg = 1
 	}
-	defPct := ValueToPercent(targetDerived.MeleeDefenseValue, defenseCap, defenseSoftcap)
+	defPct := ValueToPercent(stats.DefenseValue, defenseCap, defenseSoftcap)
 	dmg = int32(float32(dmg) * (1.0 - defPct))
 	if dmg < 1 {
 		dmg = 1
+	}
+
+	// SkillDamageBoostPct applies before crit so it amplifies crit damage too.
+	if npcDerived.SkillDamageBoostPct > 0 {
+		dmg = int32(float32(dmg) * (1.0 + npcDerived.SkillDamageBoostPct))
+		if dmg < 1 {
+			dmg = 1
+		}
 	}
 
 	var critPct float32
@@ -404,7 +455,7 @@ func specialAttackDamage(npc, target *Actor, ability AbilityTemplate) (int32, bo
 			critMult = 1
 		}
 	} else {
-		critPct = ValueToPercent(npcDerived.MeleeCritValue, critValueCap, critValueSoftcap)
+		critPct = ValueToPercent(stats.CritValue, critValueCap, critValueSoftcap)
 		critMult = npcDerived.CritDamageMult
 		if critMult < 1 {
 			critMult = 1

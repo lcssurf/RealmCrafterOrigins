@@ -36,6 +36,35 @@ func (b *pb) str(s string) {
 	*b = append(*b, []byte(s)...)
 }
 
+// appendSockets writes the socket section (B3a). Format:
+//
+//	socket_count u8,
+//	for each: socket_name str, bone_name str,
+//	          pos_x f32, pos_y f32, pos_z f32,
+//	          rot_x f32, rot_y f32, rot_z f32, scale f32
+//
+// Used by NewActorPayload (at end of payload) and AppearanceSockets (exported
+// wrapper for PStartGame, where sockets come AFTER primary stats).
+func appendSockets(p *pb, sockets []SocketBinding) {
+	ns := len(sockets)
+	if ns > 255 {
+		ns = 255
+	}
+	p.u8(uint8(ns))
+	for i := 0; i < ns; i++ {
+		s := &sockets[i]
+		p.str(s.SocketName)
+		p.str(s.BoneName)
+		p.f32(s.OffsetPos[0])
+		p.f32(s.OffsetPos[1])
+		p.f32(s.OffsetPos[2])
+		p.f32(s.OffsetRot[0])
+		p.f32(s.OffsetRot[1])
+		p.f32(s.OffsetRot[2])
+		p.f32(s.OffsetScale)
+	}
+}
+
 // appendAnimBindings writes the animation section shared by AppearanceBytes and
 // NewActorPayload:
 //
@@ -82,9 +111,10 @@ func appendAnimBindings(p *pb, anims []AnimBinding) {
 	}
 }
 
-// AppearanceBytes serialises only the appearance section (num_meshes … binding_count)
-// using the same layout as the tail of NewActorPayload. The result can be
-// appended to any packet that needs to carry appearance data (e.g. PStartGame).
+// AppearanceBytes serialises the appearance section (meshes, anims, yaw_offset,
+// y_offset) for PStartGame. Sockets are NOT included — call AppearanceSockets
+// separately and append it AFTER primary stats so the !r.Done() guard on the
+// client is genuine (sockets are the absolute last field of the packet).
 func AppearanceBytes(app *Appearance) []byte {
 	var p pb
 	if app == nil {
@@ -140,6 +170,20 @@ func AppearanceBytes(app *Appearance) []byte {
 	return p
 }
 
+// AppearanceSockets returns the socket section (B3a) as a standalone byte slice,
+// to be appended AFTER primary stats in PStartGame. Keeping sockets last makes
+// the !r.Done() guard on the client genuine — an old server that doesn't send
+// sockets will simply leave the reader Done() and the client skips the loop.
+func AppearanceSockets(app *Appearance) []byte {
+	var p pb
+	if app == nil {
+		p.u8(0)
+		return p
+	}
+	appendSockets(&p, app.Sockets)
+	return p
+}
+
 // NewActorPayload builds a PNewActor payload for any actor. Exported so the
 // `net` package can use it when a new client enters an area and needs to be
 // informed about the existing actors. Keeping this as the single source of
@@ -186,6 +230,7 @@ func NewActorPayload(a *Actor) []byte {
 		p.u16(0)  // binding_count
 		p.f32(0)  // yaw_offset
 		p.f32(0)  // y_offset
+		p.u8(0)   // socket_count (B3a)
 		return p
 	}
 	n := len(a.Appearance.Meshes)
@@ -235,6 +280,7 @@ func NewActorPayload(a *Actor) []byte {
 	appendAnimBindings(&p, a.Appearance.Anims)
 	p.f32(a.Appearance.YawOffset)
 	p.f32(a.Appearance.YOffset)
+	appendSockets(&p, a.Appearance.Sockets) // B3a — client reads but does not use until B5
 	return p
 }
 

@@ -13,6 +13,7 @@ struct CombatAbilityTemplate {
     std::string description;
     std::string family = "melee_special";
     std::string category = "damage";
+    std::string dimension; // "" (inherit) / "melee" / "ranged" / "magic"
     std::string resource_type = "none";
     int         resource_cost = 0;
     int         cooldown_ms = 2000;
@@ -134,6 +135,7 @@ private:
     void FetchNPCSpawns(sqlite3* db);
     void FetchActorDefs(sqlite3* db);
     void LoadDefaultsIfNeeded(sqlite3* db);
+    void LoadAnimVocabNames(sqlite3* db);
     void LoadFXKeys(sqlite3* db);
     bool DrawFXKeyCombo(const char* label, std::string& value);
     bool DrawAbilityFields(CombatAbilityTemplate& row);
@@ -146,6 +148,8 @@ private:
     bool DeleteProfile(sqlite3* db, int profile_id);
     bool SaveProfileBinding(sqlite3* db, NPCProfileBinding& row);
     bool DeleteProfileBinding(sqlite3* db, int binding_id);
+
+    bool VocabContains(const std::string& name) const;
 
     bool ValidateAbility(sqlite3* db, const CombatAbilityTemplate& row, bool is_new, std::string* out_error) const;
     bool ValidateLoadout(sqlite3* db, const NPCAbilityLoadoutEntry& row, std::string* out_error) const;
@@ -176,6 +180,7 @@ private:
     std::vector<ActorDefOption> actor_defs_;
     std::vector<ProfileOption> profile_options_;
     std::vector<std::string> fx_keys_;
+    std::vector<std::string> anim_vocab_names_;
 
     int selected_ability_ = -1;
     int selected_loadout_ = -1;

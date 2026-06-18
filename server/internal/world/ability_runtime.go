@@ -59,6 +59,10 @@ type AbilityTemplate struct {
 	Description                string
 	Family                     string
 	Category                   string
+	// Dimension overrides the ability's combat dimension ("melee"/"ranged"/
+	// "magic"). Empty means inherit the attacker's basic-attack dimension.
+	// Data-only in C3a; the runtime does not read this field yet (see C3b).
+	Dimension                  string
 	ResourceType               string
 	ResourceCost               int32
 	CooldownMs                 int64

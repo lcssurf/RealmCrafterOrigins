@@ -7,6 +7,7 @@ server/server.exe
 tools/build/
 tools/gue/build/
 tools/terrain-editor/build/
+tools/project_manager/build/
 
 # ---------------------------------------------------------------------------
 # Distributable runtime tree
@@ -14,12 +15,14 @@ tools/terrain-editor/build/
 # source-of-truth — what we ship is dist/client/.
 # Ignore only the binary artifacts and the database (which is regenerated).
 # ---------------------------------------------------------------------------
-dist/**/*.exe
-dist/**/*.dll
-dist/**/*.pdb
-dist/server/rco.db
-dist/server/rco.db-shm
-dist/server/rco.db-wal
+# dist/**/*.exe
+# dist/**/*.dll
+# dist/**/*.pdb
+# dist/server/rco.db
+# dist/server/rco.db-shm
+# dist/server/rco.db-wal
+
+dist2/
 
 # ---------------------------------------------------------------------------
 # Go

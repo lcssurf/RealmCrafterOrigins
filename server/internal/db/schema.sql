@@ -216,6 +216,7 @@ CREATE TABLE IF NOT EXISTS ability_templates (
     id                        SERIAL       PRIMARY KEY,
     name                      VARCHAR(96)  NOT NULL UNIQUE,
     family                    VARCHAR(32)  NOT NULL DEFAULT 'melee_special',
+    dimension                 VARCHAR(16)  NOT NULL DEFAULT '',
     resource_type             VARCHAR(16)  NOT NULL DEFAULT 'none',
     resource_cost             INTEGER      NOT NULL DEFAULT 0,
     cooldown_ms               INTEGER      NOT NULL DEFAULT 2000,
@@ -362,6 +363,40 @@ CREATE TABLE IF NOT EXISTS loot_entries (
 CREATE TABLE IF NOT EXISTS game_settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT ''
+);
+
+-- ---------------------------------------------------------------------------
+-- anim_vocabulary (Phase A.1 — animation action tree; parent_id=0 = root)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS anim_vocabulary (
+    id        SERIAL      PRIMARY KEY,
+    name      VARCHAR(64) NOT NULL UNIQUE,
+    parent_id INTEGER     NOT NULL DEFAULT 0
+);
+
+-- ---------------------------------------------------------------------------
+-- socket_vocabulary (Arco B / B2 — flat list of attachment socket names)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS socket_vocabulary (
+    id   SERIAL      PRIMARY KEY,
+    name VARCHAR(64) NOT NULL UNIQUE
+);
+
+-- ---------------------------------------------------------------------------
+-- actor_def_sockets (Arco B / B3a — per-actor-def socket→bone+offset map)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS actor_def_sockets (
+    id           SERIAL      PRIMARY KEY,
+    actor_def_id INTEGER     NOT NULL,
+    socket_name  VARCHAR(64) NOT NULL DEFAULT '',
+    bone_name    VARCHAR(128) NOT NULL DEFAULT '',
+    offset_pos_x REAL        NOT NULL DEFAULT 0.0,
+    offset_pos_y REAL        NOT NULL DEFAULT 0.0,
+    offset_pos_z REAL        NOT NULL DEFAULT 0.0,
+    offset_rot_x REAL        NOT NULL DEFAULT 0.0,
+    offset_rot_y REAL        NOT NULL DEFAULT 0.0,
+    offset_rot_z REAL        NOT NULL DEFAULT 0.0,
+    offset_scale REAL        NOT NULL DEFAULT 1.0
 );
 
 -- ---------------------------------------------------------------------------

@@ -50,9 +50,35 @@ void Inventory::drawTooltip(const InventoryItem& item) const {
 
 void Inventory::SetSlot(uint8_t slot, uint16_t item_id, uint8_t qty, uint8_t dur,
                         const std::string& name, uint8_t item_type,
-                        uint8_t slot_type, int16_t weapon_damage, int16_t armor_level) {
+                        uint8_t slot_type, int16_t weapon_damage, int16_t armor_level,
+                        const std::string& model_path, float model_scale,
+                        const std::string& socket_name, bool has_override,
+                        const float override_pos[3], const float override_rot[3],
+                        float override_scale) {
     if (slot >= kTotalSlots) return;
-    slots_[slot] = { item_id, qty, dur, item_type, slot_type, weapon_damage, armor_level, name };
+    slots_[slot].item_id = item_id;
+    slots_[slot].quantity = qty;
+    slots_[slot].durability = dur;
+    slots_[slot].item_type = item_type;
+    slots_[slot].slot_type = slot_type;
+    slots_[slot].weapon_damage = weapon_damage;
+    slots_[slot].armor_level = armor_level;
+    slots_[slot].name = name;
+    slots_[slot].model_path = model_path;
+    slots_[slot].model_scale = model_scale;
+    slots_[slot].socket_name = socket_name;
+    slots_[slot].has_override = has_override;
+    if (override_pos) {
+        slots_[slot].override_pos[0] = override_pos[0];
+        slots_[slot].override_pos[1] = override_pos[1];
+        slots_[slot].override_pos[2] = override_pos[2];
+    }
+    if (override_rot) {
+        slots_[slot].override_rot[0] = override_rot[0];
+        slots_[slot].override_rot[1] = override_rot[1];
+        slots_[slot].override_rot[2] = override_rot[2];
+    }
+    slots_[slot].override_scale = override_scale;
 }
 
 void Inventory::Clear() { slots_ = {}; }

@@ -1,5 +1,7 @@
 package world
 
+import "strings"
+
 // CombatDimension identifies which combat stat trio an attack should use.
 type CombatDimension int
 
@@ -47,6 +49,25 @@ func ResolveAttackRange(weaponRange float32, dim CombatDimension) float32 {
 		return weaponRange
 	}
 	return DefaultRangeForDimension(dim)
+}
+
+// resolveAbilityDimension returns the ability's combat dimension. If the
+// ability has no explicit dimension (empty/unrecognized), it inherits the
+// attacker's basic-attack dimension (the equipped weapon's dimension).
+//
+// Defined for C3b; not yet called from the combat runtime (C3a is data-only).
+func resolveAbilityDimension(attacker *Actor, ability AbilityTemplate) CombatDimension {
+	switch strings.ToLower(strings.TrimSpace(ability.Dimension)) {
+	case "melee":
+		return DimMelee
+	case "ranged":
+		return DimRanged
+	case "magic":
+		return DimMagic
+	default:
+		// empty/unknown → inherit from attacker's weapon
+		return attacker.BasicAttackDim
+	}
 }
 
 // selectDimensionStats resolves the combat stats for a given dimension.

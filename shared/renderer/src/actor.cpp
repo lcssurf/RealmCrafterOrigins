@@ -236,6 +236,7 @@ void Actor::SubmitWithMatrix(Pipeline& pipeline, const glm::mat4& model_matrix) 
             req.ebo          = m.ebo;
             req.index_count  = m.idx_count;
             req.material_idx = m.material_idx;
+            req.tex_albedo   = m.tex_albedo;
             req.model        = model_matrix;
             req.readability_mask = ReadabilityMask_();
             pipeline.SubmitDynamic(req);

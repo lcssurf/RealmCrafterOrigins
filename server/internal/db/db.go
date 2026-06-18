@@ -47,6 +47,9 @@ type ItemTemplate struct {
 	MaxStack     uint8
 	ItemValue    int32
 	Stackable    bool
+	ModelPath    string
+	ModelScale   float32
+	SocketName   string
 }
 
 // ItemAttribute holds one bonus row for an item.
@@ -241,6 +244,9 @@ type CharacterItem struct {
 	WeaponDamage int16
 	ArmorLevel   int16
 	ItemValue    int32
+	ModelPath    string
+	ModelScale   float32
+	SocketName   string
 }
 
 // Character mirrors the characters table.
@@ -479,8 +485,28 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV42(ctx)
 	d.migrateV43(ctx)
 	d.migrateV44(ctx)
+	d.migrateV45(ctx)
+	d.migrateV46(ctx)
+	d.migrateV47(ctx)
+	d.migrateV48(ctx)
+	d.migrateV49(ctx)
 
 	return d, nil
+}
+
+// ItemSocketOverride holds one optional override row for rendering item meshes
+// on a specific actor_def/socket combination.
+type ItemSocketOverride struct {
+	ID              int
+	ItemTemplateID  int
+	ActorDefID      int
+	OffsetPosX      float64
+	OffsetPosY      float64
+	OffsetPosZ      float64
+	OffsetRotX      float64
+	OffsetRotY      float64
+	OffsetRotZ      float64
+	OffsetScale     float64
 }
 
 // Close releases the underlying connection pool.
@@ -1809,7 +1835,7 @@ func (d *DB) ResolveActivePlayerAbilities(ctx context.Context, charID string) ([
 func (d *DB) GetInventory(ctx context.Context, charID string) ([]*CharacterItem, error) {
 	rows, err := d.db.QueryContext(ctx,
 		d.q(`SELECT ci.slot, ci.item_id, ci.quantity, ci.durability,
-		          it.name, it.item_type, it.slot_type, it.weapon_damage, it.armor_level
+		          it.name, it.item_type, it.slot_type, it.weapon_damage, it.armor_level, it.model_path, it.model_scale, it.socket_name
 		     FROM character_items ci
 		     JOIN item_templates it ON it.id = ci.item_id
 		     WHERE ci.character_id = ?
@@ -1827,6 +1853,7 @@ func (d *DB) GetInventory(ctx context.Context, charID string) ([]*CharacterItem,
 		if err := rows.Scan(
 			&ci.Slot, &ci.ItemID, &ci.Quantity, &ci.Durability,
 			&ci.Name, &ci.ItemType, &ci.SlotType, &ci.WeaponDamage, &ci.ArmorLevel,
+			&ci.ModelPath, &ci.ModelScale, &ci.SocketName,
 		); err != nil {
 			return nil, fmt.Errorf("db: GetInventory scan: %w", err)
 		}
@@ -2017,6 +2044,7 @@ type AbilityTemplateRow struct {
 	Description                string
 	Family                     string
 	Category                   string
+	Dimension                  string
 	ResourceType               string
 	ResourceCost               int32
 	CooldownMs                 int64
@@ -2121,7 +2149,7 @@ func (d *DB) LoadSpells(ctx context.Context) ([]SpellRow, error) {
 // LoadAbilityTemplates returns all ability templates ordered by id.
 func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT id, name, description, family, category, resource_type, resource_cost, cooldown_ms,
+		SELECT id, name, description, family, category, dimension, resource_type, resource_cost, cooldown_ms,
 		       range_min, range_max, windup_ms, impact_delay_ms, recover_ms,
 		       parry_window_ms, interruptible, base_damage_min, base_damage_max,
 		       damage_stat_scale_json, armor_pierce_pct, crit_policy_json,
@@ -2148,7 +2176,7 @@ func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, er
 		var allowOverrideRaw interface{}
 		var enabledRaw interface{}
 		if err := rows.Scan(
-			&r.ID, &r.Name, &r.Description, &r.Family, &r.Category, &r.ResourceType, &r.ResourceCost, &r.CooldownMs,
+			&r.ID, &r.Name, &r.Description, &r.Family, &r.Category, &r.Dimension, &r.ResourceType, &r.ResourceCost, &r.CooldownMs,
 			&r.RangeMin, &r.RangeMax, &r.WindupMs, &r.ImpactDelayMs, &r.RecoverMs,
 			&r.ParryWindowMs, &interruptibleRaw, &r.BaseDamageMin, &r.BaseDamageMax,
 			&r.DamageStatScaleJSON, &r.ArmorPiercePct, &r.CritPolicyJSON,
@@ -4142,13 +4170,15 @@ func (d *DB) GetItemAtSlot(ctx context.Context, charID string, slot uint8) (*Cha
 	ci := &CharacterItem{}
 	err := d.db.QueryRowContext(ctx,
 		d.q(`SELECT ci.slot, ci.item_id, ci.quantity, ci.durability,
-		          it.name, it.item_type, it.slot_type, it.weapon_damage, it.armor_level, it.item_value
+		          it.name, it.item_type, it.slot_type, it.weapon_damage, it.armor_level, it.item_value,
+		          it.model_path, it.model_scale, it.socket_name
 		     FROM character_items ci
 		     JOIN item_templates it ON it.id = ci.item_id
 		     WHERE ci.character_id = ? AND ci.slot = ?`),
 		charID, slot,
 	).Scan(&ci.Slot, &ci.ItemID, &ci.Quantity, &ci.Durability,
-		&ci.Name, &ci.ItemType, &ci.SlotType, &ci.WeaponDamage, &ci.ArmorLevel, &ci.ItemValue)
+		&ci.Name, &ci.ItemType, &ci.SlotType, &ci.WeaponDamage, &ci.ArmorLevel, &ci.ItemValue,
+		&ci.ModelPath, &ci.ModelScale, &ci.SocketName)
 	if err != nil {
 		return nil, fmt.Errorf("db: GetItemAtSlot: %w", err)
 	}
@@ -4158,7 +4188,7 @@ func (d *DB) GetItemAtSlot(ctx context.Context, charID string, slot uint8) (*Cha
 // LoadAllItemTemplates returns all item templates keyed by name.
 func (d *DB) LoadAllItemTemplates(ctx context.Context) (map[string]*ItemTemplate, error) {
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit
+		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name
 		 FROM item_templates ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: LoadAllItemTemplates: %w", err)
@@ -4169,7 +4199,7 @@ func (d *DB) LoadAllItemTemplates(ctx context.Context) (map[string]*ItemTemplate
 		t := &ItemTemplate{}
 		var stackable int
 		if err := rows.Scan(&t.ID, &t.Name, &t.ItemType, &t.SlotType, &t.WeaponDamage,
-			&t.ArmorLevel, &t.WeaponDimension, &t.WeaponHands, &t.WeaponRange, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit); err != nil {
+			&t.ArmorLevel, &t.WeaponDimension, &t.WeaponHands, &t.WeaponRange, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit, &t.ModelPath, &t.ModelScale, &t.SocketName); err != nil {
 			return nil, err
 		}
 		t.Stackable = stackable != 0
@@ -4181,7 +4211,7 @@ func (d *DB) LoadAllItemTemplates(ctx context.Context) (map[string]*ItemTemplate
 // ListItemTemplates returns all item templates as a slice ordered by id.
 func (d *DB) ListItemTemplates(ctx context.Context) ([]*ItemTemplate, error) {
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit
+		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name
 		 FROM item_templates ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: ListItemTemplates: %w", err)
@@ -4192,7 +4222,7 @@ func (d *DB) ListItemTemplates(ctx context.Context) ([]*ItemTemplate, error) {
 		t := &ItemTemplate{}
 		var stackable int
 		if err := rows.Scan(&t.ID, &t.Name, &t.ItemType, &t.SlotType, &t.WeaponDamage,
-			&t.ArmorLevel, &t.WeaponDimension, &t.WeaponHands, &t.WeaponRange, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit); err != nil {
+			&t.ArmorLevel, &t.WeaponDimension, &t.WeaponHands, &t.WeaponRange, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit, &t.ModelPath, &t.ModelScale, &t.SocketName); err != nil {
 			return nil, err
 		}
 		t.Stackable = stackable != 0
@@ -4208,9 +4238,9 @@ func (d *DB) CreateItemTemplate(ctx context.Context, t *ItemTemplate) (int, erro
 		stackable = 1
 	}
 	res, err := d.db.ExecContext(ctx,
-		`INSERT INTO item_templates (name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponDimension, t.WeaponHands, t.WeaponRange, t.MaxStack, t.ItemValue, stackable, t.WeaponKit)
+		`INSERT INTO item_templates (name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponDimension, t.WeaponHands, t.WeaponRange, t.MaxStack, t.ItemValue, stackable, t.WeaponKit, t.ModelPath, t.ModelScale, t.SocketName)
 	if err != nil {
 		return 0, fmt.Errorf("db: CreateItemTemplate: %w", err)
 	}
@@ -4226,9 +4256,9 @@ func (d *DB) UpdateItemTemplate(ctx context.Context, t *ItemTemplate) error {
 	}
 	_, err := d.db.ExecContext(ctx,
 		`UPDATE item_templates
-		 SET name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, weapon_dimension=?, weapon_hands=?, weapon_range=?, max_stack=?, item_value=?, stackable=?, weapon_kit=?
+		 SET name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, weapon_dimension=?, weapon_hands=?, weapon_range=?, max_stack=?, item_value=?, stackable=?, weapon_kit=?, model_path=?, model_scale=?, socket_name=?
 		 WHERE id=?`,
-		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponDimension, t.WeaponHands, t.WeaponRange, t.MaxStack, t.ItemValue, stackable, t.WeaponKit, t.ID)
+		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponDimension, t.WeaponHands, t.WeaponRange, t.MaxStack, t.ItemValue, stackable, t.WeaponKit, t.ModelPath, t.ModelScale, t.SocketName, t.ID)
 	if err != nil {
 		return fmt.Errorf("db: UpdateItemTemplate: %w", err)
 	}
@@ -4244,7 +4274,11 @@ func (d *DB) DeleteItemTemplate(ctx context.Context, id int) error {
 	if count > 0 {
 		return fmt.Errorf("db: DeleteItemTemplate: item %d is in use by %d character(s)", id, count)
 	}
-	_, err := d.db.ExecContext(ctx, `DELETE FROM item_attributes WHERE item_id = ?`, id)
+	_, err := d.db.ExecContext(ctx, `DELETE FROM item_socket_overrides WHERE item_template_id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("db: DeleteItemTemplate: clearing overrides for item %d failed: %w", id, err)
+	}
+	_, err = d.db.ExecContext(ctx, `DELETE FROM item_attributes WHERE item_id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("db: DeleteItemTemplate: clearing attributes for item %d failed: %w", id, err)
 	}
@@ -8995,6 +9029,407 @@ func (d *DB) migrateV44(ctx context.Context) {
 		VALUES (?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
 		conversionDoneKey, "1")
+}
+
+// migrateV45 adds the optional combat-dimension override column to
+// ability_templates. Empty string means "inherit the attacker's basic-attack
+// dimension" (C3a foundation; the runtime does not read this column yet).
+func (d *DB) migrateV45(ctx context.Context) {
+	d.addColumnIfMissing(ctx, "ability_templates", "dimension", "TEXT NOT NULL DEFAULT ''")
+}
+
+// migrateV46 creates anim_vocabulary, a tree of animation action names
+// (parent_id = fallback target when an actor has no binding for a given
+// action; parent_id = 0 means root / no fallback). Phase A.1 foundation:
+// media_actor_anims and ability_templates remain free-string and untouched —
+// this table only seeds an editable vocabulary for the GUE and a fallback map
+// the server can load (SetAnimVocabulary/AnimFallbackParent), not yet
+// consulted by BroadcastAnimate.
+func (d *DB) migrateV46(ctx context.Context) {
+	if d.driver == "postgres" {
+		if _, err := d.db.ExecContext(ctx, `
+			CREATE TABLE IF NOT EXISTS anim_vocabulary (
+				id        SERIAL PRIMARY KEY,
+				name      VARCHAR(64) NOT NULL UNIQUE,
+				parent_id INTEGER NOT NULL DEFAULT 0
+			)`); err != nil {
+			log.Printf("migrateV46: create anim_vocabulary failed: %v", err)
+			return
+		}
+	} else {
+		if _, err := d.db.ExecContext(ctx, `
+			CREATE TABLE IF NOT EXISTS anim_vocabulary (
+				id        INTEGER PRIMARY KEY AUTOINCREMENT,
+				name      TEXT NOT NULL UNIQUE,
+				parent_id INTEGER NOT NULL DEFAULT 0
+			)`); err != nil {
+			log.Printf("migrateV46: create anim_vocabulary failed: %v", err)
+			return
+		}
+	}
+
+	d.seedAnimVocabulary(ctx)
+}
+
+// seedAnimVocabulary populates anim_vocabulary with the default action tree,
+// plus any action strings already in use (ability_templates.action_windup/
+// action_impact/action_recover, media_actor_anims.action) that aren't part of
+// the default tree, as extra roots. Only runs when the table is empty.
+func (d *DB) seedAnimVocabulary(ctx context.Context) {
+	var count int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM anim_vocabulary`).Scan(&count); err != nil {
+		log.Printf("migrateV46: count anim_vocabulary failed: %v", err)
+		return
+	}
+	if count > 0 {
+		return
+	}
+
+	insert := func(name, parentName string) {
+		var parentID int64 = 0
+		if parentName != "" {
+			if err := d.db.QueryRowContext(ctx, d.q(`SELECT id FROM anim_vocabulary WHERE name = ?`), parentName).Scan(&parentID); err != nil {
+				log.Printf("migrateV46: seed %q: parent %q not found: %v", name, parentName, err)
+				return
+			}
+		}
+		if _, err := d.db.ExecContext(ctx, d.q(`INSERT INTO anim_vocabulary (name, parent_id) VALUES (?, ?)`), name, parentID); err != nil {
+			log.Printf("migrateV46: seed insert %q failed: %v", name, err)
+		}
+	}
+
+	// Roots
+	for _, name := range []string{"Idle", "Locomotion", "Jump", "Attack", "Cast", "Defend", "Hit", "Death", "Emote"} {
+		insert(name, "")
+	}
+
+	// Children of roots (topological order: parents must exist already)
+	type child struct{ name, parent string }
+	for _, c := range []child{
+		{"Walk", "Locomotion"}, {"Run", "Locomotion"}, {"Sprint", "Locomotion"},
+		{"Slash", "Attack"}, {"Thrust", "Attack"}, {"Bash", "Attack"}, {"Shoot", "Attack"}, {"Unarmed", "Attack"},
+		{"CastUp", "Cast"}, {"CastForward", "Cast"}, {"CastSelf", "Cast"},
+		{"Block", "Defend"}, {"Dodge", "Defend"}, {"Roll", "Defend"}, {"Parry", "Defend"},
+		{"HitHeavy", "Hit"},
+		{"Wave", "Emote"}, {"Dance", "Emote"}, {"Sit", "Emote"},
+	} {
+		insert(c.name, c.parent)
+	}
+
+	// Grandchildren: BowDraw/BowRelease are children of Shoot (itself a child of Attack).
+	for _, c := range []child{
+		{"BowDraw", "Shoot"}, {"BowRelease", "Shoot"},
+	} {
+		insert(c.name, c.parent)
+	}
+
+	d.seedExtraAnimActions(ctx)
+}
+
+// seedExtraAnimActions scans ability_templates' action_windup/action_impact/
+// action_recover columns and media_actor_anims.action for non-empty action
+// strings already in use that aren't covered by the default vocabulary tree,
+// and inserts them as extra roots so they don't disappear from GUE dropdowns.
+func (d *DB) seedExtraAnimActions(ctx context.Context) {
+	extras := map[string]bool{}
+
+	if rows, err := d.db.QueryContext(ctx, `SELECT action_windup, action_impact, action_recover FROM ability_templates`); err == nil {
+		for rows.Next() {
+			var w, i, r string
+			if scanErr := rows.Scan(&w, &i, &r); scanErr == nil {
+				for _, a := range []string{w, i, r} {
+					a = strings.TrimSpace(a)
+					if a != "" {
+						extras[a] = true
+					}
+				}
+			}
+		}
+		rows.Close()
+	}
+
+	if rows, err := d.db.QueryContext(ctx, `SELECT DISTINCT action FROM media_actor_anims`); err == nil {
+		for rows.Next() {
+			var a string
+			if scanErr := rows.Scan(&a); scanErr == nil {
+				a = strings.TrimSpace(a)
+				if a != "" {
+					extras[a] = true
+				}
+			}
+		}
+		rows.Close()
+	}
+
+	for name := range extras {
+		var existingID int64
+		if err := d.db.QueryRowContext(ctx, d.q(`SELECT id FROM anim_vocabulary WHERE name = ?`), name).Scan(&existingID); err == nil {
+			continue // already in the vocabulary (default tree)
+		}
+		if _, err := d.db.ExecContext(ctx, d.q(`INSERT INTO anim_vocabulary (name, parent_id) VALUES (?, 0)`), name); err != nil {
+			log.Printf("migrateV46: seed extra action %q failed: %v", name, err)
+			continue
+		}
+		log.Printf("migrateV46: seeded extra action %q as root (found in ability_templates/media_actor_anims)", name)
+	}
+}
+
+// migrateV47 creates socket_vocabulary, a flat list of attachment socket names
+// (WeaponHand, OffHand, Head, …). No tree — each socket is independent.
+// Arco B / B2. Server loading deferred to B3 when actor defs consume them.
+func (d *DB) migrateV47(ctx context.Context) {
+	if d.driver == "postgres" {
+		if _, err := d.db.ExecContext(ctx, `
+			CREATE TABLE IF NOT EXISTS socket_vocabulary (
+				id   SERIAL      PRIMARY KEY,
+				name VARCHAR(64) NOT NULL UNIQUE
+			)`); err != nil {
+			log.Printf("migrateV47: create socket_vocabulary failed: %v", err)
+			return
+		}
+	} else {
+		if _, err := d.db.ExecContext(ctx, `
+			CREATE TABLE IF NOT EXISTS socket_vocabulary (
+				id   INTEGER PRIMARY KEY AUTOINCREMENT,
+				name TEXT    NOT NULL UNIQUE
+			)`); err != nil {
+			log.Printf("migrateV47: create socket_vocabulary failed: %v", err)
+			return
+		}
+	}
+
+	d.seedSocketVocabulary(ctx)
+}
+
+func (d *DB) seedSocketVocabulary(ctx context.Context) {
+	var count int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM socket_vocabulary`).Scan(&count); err != nil {
+		log.Printf("migrateV47: count socket_vocabulary failed: %v", err)
+		return
+	}
+	if count > 0 {
+		return
+	}
+
+	defaults := []string{"WeaponHand", "OffHand", "Head", "Back", "Hip", "Shoulder_R", "Shoulder_L", "Chest"}
+	for _, name := range defaults {
+		if _, err := d.db.ExecContext(ctx, d.q(`INSERT INTO socket_vocabulary (name) VALUES (?)`), name); err != nil {
+			log.Printf("migrateV47: seed insert %q failed: %v", name, err)
+		}
+	}
+}
+
+// SocketVocabEntry mirrors one row in socket_vocabulary.
+type SocketVocabEntry struct {
+	ID   int
+	Name string
+}
+
+// LoadSocketVocabulary returns all socket names ordered alphabetically.
+// Deferred to B3 consumer; exposed here so the server can load them when needed.
+func (d *DB) LoadSocketVocabulary(ctx context.Context) ([]SocketVocabEntry, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT id, name FROM socket_vocabulary ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SocketVocabEntry
+	for rows.Next() {
+		var e SocketVocabEntry
+		if err2 := rows.Scan(&e.ID, &e.Name); err2 != nil {
+			return nil, err2
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// migrateV48 creates actor_def_sockets, which maps each actor def's attachment
+// sockets to a bone name + pos/rot/scale offset. Flat rows, no cascade delete —
+// orphaned rows are harmless if an actor def is deleted. Arco B / B3a.
+func (d *DB) migrateV48(ctx context.Context) {
+	if d.driver == "postgres" {
+		if _, err := d.db.ExecContext(ctx, `
+			CREATE TABLE IF NOT EXISTS actor_def_sockets (
+				id           SERIAL       PRIMARY KEY,
+				actor_def_id INTEGER      NOT NULL,
+				socket_name  VARCHAR(64)  NOT NULL DEFAULT '',
+				bone_name    VARCHAR(128) NOT NULL DEFAULT '',
+				offset_pos_x REAL         NOT NULL DEFAULT 0.0,
+				offset_pos_y REAL         NOT NULL DEFAULT 0.0,
+				offset_pos_z REAL         NOT NULL DEFAULT 0.0,
+				offset_rot_x REAL         NOT NULL DEFAULT 0.0,
+				offset_rot_y REAL         NOT NULL DEFAULT 0.0,
+				offset_rot_z REAL         NOT NULL DEFAULT 0.0,
+				offset_scale REAL         NOT NULL DEFAULT 1.0
+			)`); err != nil {
+			log.Printf("migrateV48: create actor_def_sockets failed: %v", err)
+		}
+	} else {
+		if _, err := d.db.ExecContext(ctx, `
+			CREATE TABLE IF NOT EXISTS actor_def_sockets (
+				id           INTEGER PRIMARY KEY AUTOINCREMENT,
+				actor_def_id INTEGER NOT NULL,
+				socket_name  TEXT    NOT NULL DEFAULT '',
+				bone_name    TEXT    NOT NULL DEFAULT '',
+				offset_pos_x REAL   NOT NULL DEFAULT 0.0,
+				offset_pos_y REAL   NOT NULL DEFAULT 0.0,
+				offset_pos_z REAL   NOT NULL DEFAULT 0.0,
+				offset_rot_x REAL   NOT NULL DEFAULT 0.0,
+				offset_rot_y REAL   NOT NULL DEFAULT 0.0,
+				offset_rot_z REAL   NOT NULL DEFAULT 0.0,
+				offset_scale REAL   NOT NULL DEFAULT 1.0
+			)`); err != nil {
+			log.Printf("migrateV48: create actor_def_sockets failed: %v", err)
+		}
+	}
+}
+
+// migrateV49 adds item rendering metadata for attached item meshes:
+// - item_templates.model_path / model_scale / socket_name
+// - item_socket_overrides: optional per (item_template_id, actor_def_id) transform overrides
+func (d *DB) migrateV49(ctx context.Context) {
+	if d.driver == "postgres" {
+		d.addColumnIfMissing(ctx, "item_templates", "model_path", "VARCHAR(512) NOT NULL DEFAULT ''")
+		d.addColumnIfMissing(ctx, "item_templates", "model_scale", "REAL NOT NULL DEFAULT 1.0")
+		d.addColumnIfMissing(ctx, "item_templates", "socket_name", "VARCHAR(64) NOT NULL DEFAULT ''")
+	} else {
+		d.addColumnIfMissing(ctx, "item_templates", "model_path", "TEXT NOT NULL DEFAULT ''")
+		d.addColumnIfMissing(ctx, "item_templates", "model_scale", "REAL NOT NULL DEFAULT 1.0")
+		d.addColumnIfMissing(ctx, "item_templates", "socket_name", "TEXT NOT NULL DEFAULT ''")
+	}
+
+	var createTable string
+	if d.driver == "postgres" {
+		createTable = `
+			CREATE TABLE IF NOT EXISTS item_socket_overrides (
+				id               SERIAL       PRIMARY KEY,
+				item_template_id INTEGER      NOT NULL,
+				actor_def_id     INTEGER      NOT NULL,
+				offset_pos_x     REAL         NOT NULL DEFAULT 0.0,
+				offset_pos_y     REAL         NOT NULL DEFAULT 0.0,
+				offset_pos_z     REAL         NOT NULL DEFAULT 0.0,
+				offset_rot_x     REAL         NOT NULL DEFAULT 0.0,
+				offset_rot_y     REAL         NOT NULL DEFAULT 0.0,
+				offset_rot_z     REAL         NOT NULL DEFAULT 0.0,
+				offset_scale     REAL         NOT NULL DEFAULT 1.0
+			)`
+	} else {
+		createTable = `
+			CREATE TABLE IF NOT EXISTS item_socket_overrides (
+				id               INTEGER PRIMARY KEY AUTOINCREMENT,
+				item_template_id INTEGER      NOT NULL,
+				actor_def_id     INTEGER      NOT NULL,
+				offset_pos_x     REAL         NOT NULL DEFAULT 0.0,
+				offset_pos_y     REAL         NOT NULL DEFAULT 0.0,
+				offset_pos_z     REAL         NOT NULL DEFAULT 0.0,
+				offset_rot_x     REAL         NOT NULL DEFAULT 0.0,
+				offset_rot_y     REAL         NOT NULL DEFAULT 0.0,
+				offset_rot_z     REAL         NOT NULL DEFAULT 0.0,
+				offset_scale     REAL         NOT NULL DEFAULT 1.0
+			)`
+	}
+
+	if _, err := d.db.ExecContext(ctx, createTable); err != nil {
+		log.Printf("migrateV49: create item_socket_overrides failed: %v", err)
+	}
+}
+
+// ActorDefSocket mirrors one row in actor_def_sockets.
+type ActorDefSocket struct {
+	ID          int
+	ActorDefID  int
+	SocketName  string
+	BoneName    string
+	OffsetPosX  float64
+	OffsetPosY  float64
+	OffsetPosZ  float64
+	OffsetRotX  float64
+	OffsetRotY  float64
+	OffsetRotZ  float64
+	OffsetScale float64
+}
+
+// LoadActorDefSockets returns all socket bindings for the given actor def.
+func (d *DB) LoadActorDefSockets(ctx context.Context, actorDefID int) ([]ActorDefSocket, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(
+		`SELECT id, actor_def_id, socket_name, bone_name,
+		        offset_pos_x, offset_pos_y, offset_pos_z,
+		        offset_rot_x, offset_rot_y, offset_rot_z, offset_scale
+		 FROM actor_def_sockets WHERE actor_def_id = ? ORDER BY id`), actorDefID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ActorDefSocket
+	for rows.Next() {
+		var s ActorDefSocket
+		if err2 := rows.Scan(
+			&s.ID, &s.ActorDefID, &s.SocketName, &s.BoneName,
+			&s.OffsetPosX, &s.OffsetPosY, &s.OffsetPosZ,
+			&s.OffsetRotX, &s.OffsetRotY, &s.OffsetRotZ, &s.OffsetScale,
+		); err2 != nil {
+			return nil, err2
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// LoadItemSocketOverride resolves a (item_template_id, actor_def_id) render
+// override. Returns (override, found, error).
+func (d *DB) LoadItemSocketOverride(ctx context.Context, itemTemplateID, actorDefID int) (*ItemSocketOverride, bool, error) {
+	if itemTemplateID <= 0 || actorDefID <= 0 {
+		return nil, false, nil
+	}
+
+	row := d.db.QueryRowContext(ctx, d.q(
+		`SELECT id, item_template_id, actor_def_id,
+		          offset_pos_x, offset_pos_y, offset_pos_z,
+		          offset_rot_x, offset_rot_y, offset_rot_z, offset_scale
+		   FROM item_socket_overrides
+		   WHERE item_template_id = ? AND actor_def_id = ?
+		   LIMIT 1`),
+		itemTemplateID, actorDefID)
+
+	var o ItemSocketOverride
+	if err := row.Scan(
+		&o.ID, &o.ItemTemplateID, &o.ActorDefID,
+		&o.OffsetPosX, &o.OffsetPosY, &o.OffsetPosZ,
+		&o.OffsetRotX, &o.OffsetRotY, &o.OffsetRotZ, &o.OffsetScale,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("db: LoadItemSocketOverride: %w", err)
+	}
+	return &o, true, nil
+}
+
+// AnimVocabNode mirrors one row in anim_vocabulary.
+type AnimVocabNode struct {
+	ID       int
+	Name     string
+	ParentID int
+}
+
+// LoadAnimVocabulary returns the full animation vocabulary tree.
+func (d *DB) LoadAnimVocabulary(ctx context.Context) ([]AnimVocabNode, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT id, name, parent_id FROM anim_vocabulary`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []AnimVocabNode
+	for rows.Next() {
+		var n AnimVocabNode
+		if err := rows.Scan(&n.ID, &n.Name, &n.ParentID); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
 }
 
 func (d *DB) seedDefaultFXTemplates(ctx context.Context) {

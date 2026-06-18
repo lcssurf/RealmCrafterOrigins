@@ -60,6 +60,52 @@ bool ItemsTab::LoadItemAttributes(sqlite3* db, ItemTemplate& item) {
     return true;
 }
 
+bool ItemsTab::LoadItemOverrides(sqlite3* db, ItemTemplate& item) {
+    item.overrides.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT id, item_template_id, actor_def_id,"
+        "       offset_pos_x, offset_pos_y, offset_pos_z,"
+        "       offset_rot_x, offset_rot_y, offset_rot_z, offset_scale "
+        "FROM item_socket_overrides WHERE item_template_id=? ORDER BY id";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "LoadItemOverrides error: %s", sqlite3_errmsg(db));
+        return false;
+    }
+
+    sqlite3_bind_int(stmt, 1, item.id);
+
+    while (true) {
+        int rc = sqlite3_step(stmt);
+        if (rc == SQLITE_DONE) break;
+        if (rc != SQLITE_ROW) {
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                          "LoadItemOverrides read error: %s", sqlite3_errmsg(db));
+            sqlite3_finalize(stmt);
+            return false;
+        }
+
+        ItemSocketOverride o;
+        o.id = sqlite3_column_int(stmt, 0);
+        o.item_template_id = sqlite3_column_int(stmt, 1);
+        o.actor_def_id = sqlite3_column_int(stmt, 2);
+        o.offset_pos_x = static_cast<float>(sqlite3_column_double(stmt, 3));
+        o.offset_pos_y = static_cast<float>(sqlite3_column_double(stmt, 4));
+        o.offset_pos_z = static_cast<float>(sqlite3_column_double(stmt, 5));
+        o.offset_rot_x = static_cast<float>(sqlite3_column_double(stmt, 6));
+        o.offset_rot_y = static_cast<float>(sqlite3_column_double(stmt, 7));
+        o.offset_rot_z = static_cast<float>(sqlite3_column_double(stmt, 8));
+        o.offset_scale = static_cast<float>(sqlite3_column_double(stmt, 9));
+        item.overrides.push_back(std::move(o));
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
 bool ItemsTab::SaveItemAttributes(sqlite3* db, const ItemTemplate& item) {
     if (item.id <= 0) {
         std::snprintf(statusMsg_, sizeof(statusMsg_),
@@ -129,6 +175,124 @@ bool ItemsTab::SaveItemAttributes(sqlite3* db, const ItemTemplate& item) {
     return true;
 }
 
+bool ItemsTab::SaveItemOverrides(sqlite3* db, const ItemTemplate& item) {
+    if (item.id <= 0) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "SaveItemOverrides error: invalid item id.");
+        return false;
+    }
+
+    if (sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "SaveItemOverrides: begin transaction failed: %s", sqlite3_errmsg(db));
+        return false;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, "DELETE FROM item_socket_overrides WHERE item_template_id=?", -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "SaveItemOverrides: %s", sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_int(stmt, 1, item.id);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "SaveItemOverrides: %s", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_finalize(stmt);
+
+    if (item.overrides.empty()) {
+        if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                          "SaveItemOverrides: commit failed: %s", sqlite3_errmsg(db));
+            sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+            return false;
+        }
+        return true;
+    }
+
+    if (sqlite3_prepare_v2(db,
+        "INSERT INTO item_socket_overrides "
+        "(item_template_id, actor_def_id, offset_pos_x, offset_pos_y, offset_pos_z, "
+        " offset_rot_x, offset_rot_y, offset_rot_z, offset_scale)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "SaveItemOverrides: %s", sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    for (const auto& o : item.overrides) {
+        if (o.actor_def_id <= 0) continue;
+        sqlite3_bind_int(stmt, 1, item.id);
+        sqlite3_bind_int(stmt, 2, o.actor_def_id);
+        sqlite3_bind_double(stmt, 3, o.offset_pos_x);
+        sqlite3_bind_double(stmt, 4, o.offset_pos_y);
+        sqlite3_bind_double(stmt, 5, o.offset_pos_z);
+        sqlite3_bind_double(stmt, 6, o.offset_rot_x);
+        sqlite3_bind_double(stmt, 7, o.offset_rot_y);
+        sqlite3_bind_double(stmt, 8, o.offset_rot_z);
+        sqlite3_bind_double(stmt, 9, o.offset_scale);
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                          "SaveItemOverrides insert error: %s", sqlite3_errmsg(db));
+            sqlite3_finalize(stmt);
+            sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+            return false;
+        }
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+    }
+    sqlite3_finalize(stmt);
+
+    if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "SaveItemOverrides: commit failed: %s", sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    return true;
+}
+
+bool ItemsTab::LoadSocketVocabulary(sqlite3* db) {
+    socketVocab_.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT name FROM socket_vocabulary ORDER BY name";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char* n = sqlite3_column_text(stmt, 0);
+        socketVocab_.push_back(n ? reinterpret_cast<const char*>(n) : "");
+    }
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+bool ItemsTab::LoadActorDefs(sqlite3* db) {
+    actorDefOptions_.clear();
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT id, name FROM media_actor_defs ORDER BY name";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        WeaponKitOption opt{};
+        int id = sqlite3_column_int(stmt, 0);
+        const unsigned char* name = sqlite3_column_text(stmt, 1);
+        actorDefOptions_.push_back({id, name ? reinterpret_cast<const char*>(name) : ""});
+    }
+    sqlite3_finalize(stmt);
+    return true;
+}
+
 void ItemsTab::Fetch(sqlite3* db) {
     items_.clear();
     selected_ = -1;
@@ -137,6 +301,7 @@ void ItemsTab::Fetch(sqlite3* db) {
     const char* sql =
         "SELECT id, name, item_type, slot_type, weapon_damage, armor_level, "
         "       weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit "
+        "       , model_path, model_scale, socket_name "
         "FROM item_templates ORDER BY id";
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -160,6 +325,11 @@ void ItemsTab::Fetch(sqlite3* db) {
         t.stackable     = sqlite3_column_int(stmt, 11) != 0;
         const char* wk  = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 12));
         t.weapon_kit    = wk ? wk : "";
+        const char* mp  = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 13));
+        t.model_path = mp ? mp : "";
+        t.model_scale = static_cast<float>(sqlite3_column_double(stmt, 14));
+        const char* sock = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 15));
+        t.socket_name = sock ? sock : "";
         items_.push_back(t);
     }
     sqlite3_finalize(stmt);
@@ -199,8 +369,8 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         const char* sql =
             "INSERT INTO item_templates "
             "(name, item_type, slot_type, weapon_damage, armor_level, "
-            " weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
+            " weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) goto err;
         sqlite3_bind_text(stmt, 1, t.name.c_str(), -1, SQLITE_TRANSIENT);
@@ -215,6 +385,9 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         sqlite3_bind_int(stmt, 10, t.item_value);
         sqlite3_bind_int(stmt, 11, t.stackable ? 1 : 0);
         sqlite3_bind_text(stmt, 12, t.weapon_kit.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 13, t.model_path.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(stmt, 14, static_cast<double>(t.model_scale));
+        sqlite3_bind_text(stmt, 15, t.socket_name.c_str(), -1, SQLITE_TRANSIENT);
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE) goto err;
         t.id = (int)sqlite3_last_insert_rowid(db);
@@ -223,7 +396,7 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         const char* sql =
             "UPDATE item_templates SET "
             "name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, "
-            "weapon_dimension=?, weapon_hands=?, weapon_range=?, max_stack=?, item_value=?, stackable=?, weapon_kit=? "
+            "weapon_dimension=?, weapon_hands=?, weapon_range=?, max_stack=?, item_value=?, stackable=?, weapon_kit=?, model_path=?, model_scale=?, socket_name=? "
             "WHERE id=?";
         rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) goto err;
@@ -239,13 +412,19 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         sqlite3_bind_int(stmt, 10, t.item_value);
         sqlite3_bind_int(stmt, 11, t.stackable ? 1 : 0);
         sqlite3_bind_text(stmt, 12, t.weapon_kit.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 13, t.id);
+        sqlite3_bind_text(stmt, 13, t.model_path.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(stmt, 14, static_cast<double>(t.model_scale));
+        sqlite3_bind_text(stmt, 15, t.socket_name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 16, t.id);
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE) goto err;
     }
 
     sqlite3_finalize(stmt);
     if (!SaveItemAttributes(db, t)) {
+        return false;
+    }
+    if (!SaveItemOverrides(db, t)) {
         return false;
     }
     needFetch_ = true;
@@ -277,7 +456,7 @@ bool ItemsTab::Delete(sqlite3* db, int id) {
         return false;
     }
 
-    sqlite3_prepare_v2(db, "DELETE FROM item_attributes WHERE item_id=?", -1, &stmt, nullptr);
+    sqlite3_prepare_v2(db, "DELETE FROM item_socket_overrides WHERE item_template_id=?", -1, &stmt, nullptr);
     sqlite3_bind_int(stmt, 1, id);
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -400,6 +579,81 @@ bool ItemsTab::DrawFields(ItemTemplate& t) {
     if (ImGui::InputInt("Max Stack",       &t.max_stack))   changed = true;
     if (ImGui::Checkbox("Stackable",       &t.stackable))   changed = true;
 
+    ImGui::SeparatorText("Render Attachment");
+    char modelPathBuf[260];
+    std::strncpy(modelPathBuf, t.model_path.c_str(), sizeof(modelPathBuf)-1);
+    modelPathBuf[sizeof(modelPathBuf)-1] = 0;
+    if (ImGui::InputText("Model Path", modelPathBuf, sizeof(modelPathBuf))) {
+        t.model_path = modelPathBuf;
+        changed = true;
+    }
+    if (ImGui::InputFloat("Model Scale", &t.model_scale, 0.05f, 0.1f, "%.3f")) {
+        changed = true;
+    }
+    if (socketVocab_.empty()) {
+        char sockBuf[128];
+        std::strncpy(sockBuf, t.socket_name.c_str(), sizeof(sockBuf)-1);
+        sockBuf[sizeof(sockBuf)-1] = 0;
+        if (ImGui::InputText("Socket", sockBuf, sizeof(sockBuf))) {
+            t.socket_name = sockBuf;
+            changed = true;
+        }
+    } else if (gue::ui::SearchableComboString("Socket", t.socket_name, socketVocab_, "(none)")) {
+        changed = true;
+    }
+
+    ImGui::SeparatorText("Per-actor Overrides");
+    for (size_t i = 0; i < t.overrides.size();) {
+        auto& o = t.overrides[i];
+        ImGui::PushID((int)i);
+        bool removed = false;
+
+        int actorDefID = o.actor_def_id;
+        if (gue::ui::SearchableComboId("Actor Def", actorDefID, actorDefOptions_, "(none)")) {
+            o.actor_def_id = actorDefID;
+            changed = true;
+        }
+
+        float pos[3] = {o.offset_pos_x, o.offset_pos_y, o.offset_pos_z};
+        if (ImGui::InputFloat3("Offset Pos", pos, "%.3f")) {
+            o.offset_pos_x = pos[0];
+            o.offset_pos_y = pos[1];
+            o.offset_pos_z = pos[2];
+            changed = true;
+        }
+        float rot[3] = {o.offset_rot_x, o.offset_rot_y, o.offset_rot_z};
+        if (ImGui::InputFloat3("Offset Rot", rot, "%.3f")) {
+            o.offset_rot_x = rot[0];
+            o.offset_rot_y = rot[1];
+            o.offset_rot_z = rot[2];
+            changed = true;
+        }
+        if (ImGui::InputFloat("Offset Scale", &o.offset_scale, 0.01f, 0.05f, "%.3f")) {
+            changed = true;
+        }
+
+        if (ImGui::Button("Remove")) {
+            t.overrides.erase(t.overrides.begin() + (int)i);
+            removed = true;
+            changed = true;
+        }
+        if (removed) {
+            ImGui::PopID();
+            continue;
+        }
+
+        ImGui::Separator();
+        ImGui::PopID();
+        ++i;
+    }
+
+    if (ImGui::Button("+ Add Override")) {
+        ItemSocketOverride o;
+        o.item_template_id = t.id;
+        t.overrides.push_back(o);
+        changed = true;
+    }
+
     static const auto displayNames = AttributeDisplayNames();
     ImGui::SeparatorText("Attributes");
     for (size_t i = 0; i < t.attributes.size();) {
@@ -438,6 +692,7 @@ bool ItemsTab::DrawFields(ItemTemplate& t) {
     if (t.item_value    < 0)  t.item_value    = 0;
     if (t.max_stack     < 1)  t.max_stack     = 1;
     if (t.max_stack     > 99) t.max_stack     = 99;
+    if (t.model_scale   <= 0.f) t.model_scale   = 1.f;
 
     return changed;
 }
@@ -449,6 +704,8 @@ bool ItemsTab::DrawFields(ItemTemplate& t) {
 void ItemsTab::Draw(sqlite3* db) {
     if (needFetch_) { Fetch(db); needFetch_ = false; }
     FetchWeaponKitOptions(db);
+    LoadSocketVocabulary(db);
+    LoadActorDefs(db);
 
     if (ImGui::Button("Refresh")) { needFetch_ = true; }
     ImGui::SameLine();
@@ -470,6 +727,7 @@ void ItemsTab::Draw(sqlite3* db) {
             selected_ = i;
             editing_  = it;
             LoadItemAttributes(db, editing_);
+            LoadItemOverrides(db, editing_);
             dirty_    = false;
             showNew_  = false;
         }
@@ -503,6 +761,7 @@ void ItemsTab::Draw(sqlite3* db) {
         if (ImGui::Button("Revert")) {
             editing_ = items_[selected_];
             LoadItemAttributes(db, editing_);
+            LoadItemOverrides(db, editing_);
             dirty_ = false;
         }
         ImGui::SameLine();

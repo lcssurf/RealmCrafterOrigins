@@ -150,6 +150,19 @@ public:
         return y_offset + min_y;
     }
 
+    // Returns the bone's model-space world transform from the last Submit* call.
+    // Multiply by the actor's own model matrix to get world-space placement.
+    // See Model::GetBoneWorldTransform for the per-bone-sharing caveat.
+    bool GetBoneWorldTransform(const std::string& name, glm::mat4* out) const {
+        return model_ ? model_->GetBoneWorldTransform(name, out) : false;
+    }
+
+    // Returns all bone names in this actor's model (alphabetical order).
+    // Used by the GUE socket editor to populate bone dropdowns.
+    std::vector<std::string> BoneNames() const {
+        return model_ ? model_->BoneNames() : std::vector<std::string>{};
+    }
+
     // Read-only access to the wrapped Model — useful for callers that need
     // its clip metadata or submesh material names.
     const Model& model() const {

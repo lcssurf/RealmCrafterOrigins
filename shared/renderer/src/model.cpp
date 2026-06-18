@@ -286,6 +286,7 @@ void Model::Destroy() {
     bones_.clear();
     bone_map_.clear();
     clips_.clear();
+    bone_world_transforms_.clear();
     skinned_    = false;
     aabb_max_y_ = 0.f;
     aabb_min_   = glm::vec3( 1e30f);
@@ -529,7 +530,10 @@ void Model::ComputeBones(int clip_idx, float time_sec, int mesh_idx,
         global[ni] = (node.parent < 0) ? local : global[node.parent] * local;
 
         if (node.bone_idx >= 0 && node.bone_idx < max_out) {
-            out_mats[node.bone_idx] = global_inv_ * global[ni] * offsetFor(node.bone_idx);
+            glm::mat4 bone_world = global_inv_ * global[ni];
+            if (node.bone_idx < (int)bone_world_transforms_.size())
+                bone_world_transforms_[node.bone_idx] = bone_world;
+            out_mats[node.bone_idx] = bone_world * offsetFor(node.bone_idx);
         }
     }
 
@@ -641,9 +645,26 @@ void Model::ComputeBlendedBones(int clip_from, float t_from,
 
         global[ni] = (node.parent < 0) ? local : global[node.parent] * local;
 
-        if (node.bone_idx >= 0 && node.bone_idx < max_out)
-            out_mats[node.bone_idx] = global_inv_ * global[ni] * offsetFor(node.bone_idx);
+        if (node.bone_idx >= 0 && node.bone_idx < max_out) {
+            glm::mat4 bone_world = global_inv_ * global[ni];
+            if (node.bone_idx < (int)bone_world_transforms_.size())
+                bone_world_transforms_[node.bone_idx] = bone_world;
+            out_mats[node.bone_idx] = bone_world * offsetFor(node.bone_idx);
+        }
     }
+}
+
+// ---------------------------------------------------------------------------
+// GetBoneWorldTransform
+// ---------------------------------------------------------------------------
+
+bool Model::GetBoneWorldTransform(const std::string& name, glm::mat4* out) const {
+    auto it = bone_map_.find(name);
+    if (it == bone_map_.end()) return false;
+    int bidx = it->second;
+    if (bidx < 0 || bidx >= (int)bone_world_transforms_.size()) return false;
+    if (out) *out = bone_world_transforms_[bidx];
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1188,6 +1209,13 @@ bool Model::Load(const char* path, MaterialManager* mm) {
         if (!sm.skinned) continue;
         if (sm.bone_offsets.size() < bones_.size())
             sm.bone_offsets.resize(bones_.size(), glm::mat4(1.f));
+    }
+    bone_world_transforms_.assign(bones_.size(), glm::mat4(1.f));
+
+    if (log_bones) {
+        std::fprintf(stderr, "[model] bone_map (%d bones):\n", (int)bone_map_.size());
+        for (const auto& [name, idx] : bone_map_)
+            std::fprintf(stderr, "  [%2d] '%s'\n", idx, name.c_str());
     }
 
     // TESTE 2: log inverse-bind offset translation for key bones

@@ -1,5 +1,6 @@
 #include "combat_abilities.h"
 #include "util/ability_json_validator.h"
+#include "../ui_widgets.h"
 
 #include <imgui.h>
 
@@ -244,6 +245,26 @@ bool CombatAbilitiesTab::DrawAbilityFields(CombatAbilityTemplate& row) {
         changed = true;
     }
 
+    static const char* kDimensions[] = {"(inherit)", "melee", "ranged", "magic"};
+    static const char* kDimensionValues[] = {"", "melee", "ranged", "magic"};
+    int dimension_idx = 0;
+    for (int i = 0; i < static_cast<int>(sizeof(kDimensionValues) / sizeof(kDimensionValues[0])); ++i) {
+        if (row.dimension == kDimensionValues[i]) {
+            dimension_idx = i;
+            break;
+        }
+    }
+    if (ImGui::Combo("Dimension", &dimension_idx, kDimensions,
+                     static_cast<int>(sizeof(kDimensions) / sizeof(kDimensions[0])))) {
+        row.dimension = kDimensionValues[dimension_idx];
+        changed = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("(inherit) = uses the equipped weapon's dimension");
+    }
+
     static const char* kResourceTypes[] = {"none", "sp", "mp", "hp"};
     int resource_idx = 0;
     for (int i = 0; i < 4; ++i) {
@@ -367,24 +388,15 @@ bool CombatAbilitiesTab::DrawAbilityFields(CombatAbilityTemplate& row) {
 
     ImGui::Separator();
     ImGui::TextUnformatted("Actions");
-    char action_windup_buf[64] = {};
-    char action_impact_buf[64] = {};
-    char action_recover_buf[64] = {};
-    std::strncpy(action_windup_buf, row.action_windup.c_str(), sizeof(action_windup_buf) - 1);
-    std::strncpy(action_impact_buf, row.action_impact.c_str(), sizeof(action_impact_buf) - 1);
-    std::strncpy(action_recover_buf, row.action_recover.c_str(), sizeof(action_recover_buf) - 1);
-    if (ImGui::InputText("Action Windup", action_windup_buf, sizeof(action_windup_buf))) {
-        row.action_windup = action_windup_buf;
-        changed = true;
-    }
-    if (ImGui::InputText("Action Impact", action_impact_buf, sizeof(action_impact_buf))) {
-        row.action_impact = action_impact_buf;
-        changed = true;
-    }
-    if (ImGui::InputText("Action Recover", action_recover_buf, sizeof(action_recover_buf))) {
-        row.action_recover = action_recover_buf;
-        changed = true;
-    }
+    if (ui::SearchableComboString("Action Windup", row.action_windup, anim_vocab_names_, "(none)")) changed = true;
+    if (!row.action_windup.empty() && !VocabContains(row.action_windup))
+        ImGui::TextColored({1.0f, 0.8f, 0.2f, 1.f}, "(not in vocabulary)");
+    if (ui::SearchableComboString("Action Impact", row.action_impact, anim_vocab_names_, "(none)")) changed = true;
+    if (!row.action_impact.empty() && !VocabContains(row.action_impact))
+        ImGui::TextColored({1.0f, 0.8f, 0.2f, 1.f}, "(not in vocabulary)");
+    if (ui::SearchableComboString("Action Recover", row.action_recover, anim_vocab_names_, "(none)")) changed = true;
+    if (!row.action_recover.empty() && !VocabContains(row.action_recover))
+        ImGui::TextColored({1.0f, 0.8f, 0.2f, 1.f}, "(not in vocabulary)");
     if (ImGui::Checkbox("Allow Action Override", &row.allow_action_override)) changed = true;
 
     char tags_buf[512] = {};
@@ -607,6 +619,16 @@ void CombatAbilitiesTab::EnsureTables(sqlite3* db) {
         ")",
         nullptr, nullptr, nullptr);
 
+    // Animation vocabulary tree (Phase A.4). Same definition as SettingsTab /
+    // MediaTab; loaded independently so this tab works even if they haven't run.
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS anim_vocabulary ("
+        "  id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  name      TEXT NOT NULL UNIQUE,"
+        "  parent_id INTEGER NOT NULL DEFAULT 0"
+        ")",
+        nullptr, nullptr, nullptr);
+
     sqlite3_exec(db,
         "CREATE TABLE IF NOT EXISTS npc_ability_loadouts ("
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -728,6 +750,8 @@ void CombatAbilitiesTab::EnsureTables(sqlite3* db) {
         "description TEXT NOT NULL DEFAULT ''");
     add_column_if_missing("ability_templates", "category",
         "category TEXT NOT NULL DEFAULT 'damage'");
+    add_column_if_missing("ability_templates", "dimension",
+        "dimension TEXT NOT NULL DEFAULT ''");
     add_column_if_missing("ability_templates", "mastery_xp_per_use",
         "mastery_xp_per_use INTEGER NOT NULL DEFAULT 10");
     add_column_if_missing("ability_templates", "mastery_max_level",
@@ -844,7 +868,30 @@ void CombatAbilitiesTab::FetchActorDefs(sqlite3* db) {
     sqlite3_finalize(stmt);
 }
 
+void CombatAbilitiesTab::LoadAnimVocabNames(sqlite3* db) {
+    anim_vocab_names_.clear();
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT name FROM anim_vocabulary ORDER BY name",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        return;
+    }
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* t = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        if (t) anim_vocab_names_.push_back(t);
+    }
+    sqlite3_finalize(stmt);
+}
+
+bool CombatAbilitiesTab::VocabContains(const std::string& name) const {
+    for (const auto& n : anim_vocab_names_) {
+        if (n == name) return true;
+    }
+    return false;
+}
+
 void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
+    LoadAnimVocabNames(db);
     abilities_.clear();
     selected_ability_ = -1;
 
@@ -862,7 +909,7 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
         "       mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type, "
         "       mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity, "
         "       mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, "
-        "       enabled "
+        "       enabled, dimension "
         "FROM ability_templates ORDER BY id";
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -917,6 +964,7 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
         row.mastery_primary_bonus_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 42));
         row.mastery_cooldown_redux_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 43));
         row.enabled = sqlite3_column_int(stmt, 44) != 0;
+        if (const auto* text = sqlite3_column_text(stmt, 45)) row.dimension = reinterpret_cast<const char*>(text);
         abilities_.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
@@ -1289,6 +1337,7 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     row.description = TrimCopy(row.description);
     row.family = TrimCopy(row.family);
     row.category = ToLowerCopy(TrimCopy(row.category));
+    row.dimension = ToLowerCopy(TrimCopy(row.dimension));
     row.resource_type = TrimCopy(row.resource_type);
     row.telegraph_type = TrimCopy(row.telegraph_type);
     row.telegraph_color_rgba = TrimCopy(row.telegraph_color_rgba);
@@ -1305,6 +1354,9 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     row.mastery_xp_curve_type = ToLowerCopy(TrimCopy(row.mastery_xp_curve_type));
     if (row.family.empty()) row.family = "melee_special";
     if (!IsAllowedCategory(row.category)) row.category = "damage";
+    if (row.dimension != "melee" && row.dimension != "ranged" && row.dimension != "magic") {
+        row.dimension = ""; // unrecognized → inherit attacker's weapon dimension
+    }
     if (row.resource_type.empty()) row.resource_type = "none";
     if (row.telegraph_type.empty()) row.telegraph_type = "ring_close";
     if (row.telegraph_color_rgba.empty()) row.telegraph_color_rgba = "1,0.2,0.2,0.75";
@@ -1362,8 +1414,8 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
             "vfx_path_windup, vfx_path_impact, sfx_path_windup, sfx_path_impact, "
             "mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type, "
             "mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity, "
-            "mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, enabled"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+            "mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, enabled, dimension"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
             SetStatus("Ability create error: %s", sqlite3_errmsg(db));
@@ -1383,7 +1435,7 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
             "vfx_path_windup=?, vfx_path_impact=?, sfx_path_windup=?, sfx_path_impact=?, "
             "mastery_xp_per_use=?, mastery_max_level=?, mastery_xp_curve_type=?, "
             "mastery_xp_curve_base=?, mastery_xp_curve_exponent=?, mastery_xp_irregularity=?, "
-            "mastery_primary_bonus_per_lvl=?, mastery_cooldown_redux_per_lvl=?, enabled=? "
+            "mastery_primary_bonus_per_lvl=?, mastery_cooldown_redux_per_lvl=?, enabled=?, dimension=? "
             "WHERE id=?";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1436,8 +1488,9 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     sqlite3_bind_double(stmt, 42, row.mastery_primary_bonus_per_lvl);
     sqlite3_bind_double(stmt, 43, row.mastery_cooldown_redux_per_lvl);
     sqlite3_bind_int(stmt, 44, row.enabled ? 1 : 0);
+    sqlite3_bind_text(stmt, 45, row.dimension.c_str(), -1, SQLITE_TRANSIENT);
     if (!is_new) {
-        sqlite3_bind_int(stmt, 45, row.id);
+        sqlite3_bind_int(stmt, 46, row.id);
     }
 
     rc = sqlite3_step(stmt);

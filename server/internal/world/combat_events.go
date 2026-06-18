@@ -10,6 +10,11 @@ import (
 
 const logAnimateBroadcast = false
 
+// maxFallbackDepth caps the animation vocabulary fallback walk. The seed
+// tree's max depth is 3 (e.g. Attack->Shoot->BowDraw); 8 gives headroom while
+// bounding a misconfigured cycle (A->B->A) instead of looping forever.
+const maxFallbackDepth = 8
+
 // Combat event codes mirrored from protocol (avoids circular import).
 const (
 	combatEventGuardEnded     uint8 = 4
@@ -50,17 +55,31 @@ func BroadcastAnimate(area *Area, actor *Actor, actionName string) {
 	if actor.Appearance == nil || len(actor.Appearance.Anims) == 0 {
 		return
 	}
+	// Fallback cascade: try the requested action, then walk up the vocabulary tree
+	// (AnimFallbackParent) until a binding is found or we reach a root. The depth
+	// cap guards against a misconfigured cycle (A->B->A) in the vocabulary.
 	var actionID uint8 = 0xFF
-	for i, anim := range actor.Appearance.Anims {
-		if anim.Action == actionName {
-			actionID = uint8(i)
+	resolved := actionName
+	for i := 0; i < maxFallbackDepth; i++ {
+		for idx, anim := range actor.Appearance.Anims {
+			if anim.Action == resolved {
+				actionID = uint8(idx)
+				break
+			}
+		}
+		if actionID != 0xFF || resolved == "" {
 			break
 		}
+		resolved = AnimFallbackParent(resolved)
 	}
 	if actionID == 0xFF {
-		log.Printf("animate: warning actor=%d action=%q action_id=%d missing_action_binding=true",
-			actor.RuntimeID, actionName, -1)
+		log.Printf("animate: warning actor=%d action=%q missing_action_binding=true (fallback exhausted)",
+			actor.RuntimeID, actionName)
 		return
+	}
+	if resolved != actionName {
+		log.Printf("animate: actor=%d action=%q resolved via fallback to %q action_id=%d",
+			actor.RuntimeID, actionName, resolved, actionID)
 	}
 
 	// Suppress repeated locomotion broadcasts for the same state.

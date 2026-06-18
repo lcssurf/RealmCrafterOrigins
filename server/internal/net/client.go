@@ -425,7 +425,8 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	actor.HealthMax = char.HealthMax
 	actor.Energy = char.Energy       // MP
 	actor.EnergyMax = char.EnergyMax // MP max
-	actor.StaminaMax = 100
+	actor.ActorDefID = char.ActorDefID
+	actor.StaminaMax = world.StaminaMaxForLevel(actor.Level)
 	actor.Stamina = actor.StaminaMax
 	actor.XP = char.XP
 	actor.Gold = char.Gold
@@ -538,6 +539,7 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 
 		payload := append(w.Bytes(), world.AppearanceBytes(actor.Appearance)...)
 		payload = append(payload, extras.Bytes()...)
+		payload = append(payload, world.AppearanceSockets(actor.Appearance)...) // B3a: sockets last, after primary stats
 		if err := c.sendPacket(protocol.PStartGame, payload); err != nil {
 			return err
 		}
@@ -1185,6 +1187,11 @@ func (c *ClientConn) sendFullStats() {
 
 // sendInventory fetches all items for charID and sends PInventoryUpdate.
 func (c *ClientConn) sendInventory(ctx context.Context, charID string) error {
+	actorDefID := 0
+	if c != nil && c.actor != nil {
+		actorDefID = c.actor.ActorDefID
+	}
+
 	items, err := c.server.db.GetInventory(ctx, charID)
 	if err != nil {
 		return err
@@ -1192,6 +1199,18 @@ func (c *ClientConn) sendInventory(ctx context.Context, charID string) error {
 	var w Writer
 	w.WriteUint8(uint8(len(items)))
 	for _, ci := range items {
+		var ovr *db.ItemSocketOverride
+		if actorDefID > 0 && ci != nil && ci.ItemID > 0 {
+			found := false
+			ovrPtr, found, err := c.server.db.LoadItemSocketOverride(ctx, int(ci.ItemID), actorDefID)
+			if err != nil {
+				return err
+			}
+			if found {
+				ovr = ovrPtr
+			}
+		}
+
 		w.WriteUint8(ci.Slot)
 		w.WriteUint16(ci.ItemID)
 		w.WriteUint8(ci.Quantity)
@@ -1201,6 +1220,21 @@ func (c *ClientConn) sendInventory(ctx context.Context, charID string) error {
 		w.WriteUint8(ci.SlotType)
 		w.WriteUint16(uint16(ci.WeaponDamage))
 		w.WriteUint16(uint16(ci.ArmorLevel))
+		w.WriteString(ci.ModelPath)
+		w.WriteFloat32(ci.ModelScale)
+		w.WriteString(ci.SocketName)
+		if ovr == nil {
+			w.WriteUint8(0)
+		} else {
+			w.WriteUint8(1)
+			w.WriteFloat32(float32(ovr.OffsetPosX))
+			w.WriteFloat32(float32(ovr.OffsetPosY))
+			w.WriteFloat32(float32(ovr.OffsetPosZ))
+			w.WriteFloat32(float32(ovr.OffsetRotX))
+			w.WriteFloat32(float32(ovr.OffsetRotY))
+			w.WriteFloat32(float32(ovr.OffsetRotZ))
+			w.WriteFloat32(float32(ovr.OffsetScale))
+		}
 	}
 	return c.sendPacket(protocol.PInventoryUpdate, w.Bytes())
 }

@@ -16,6 +16,13 @@ struct InventoryItem {
     int16_t  weapon_damage = 0;
     int16_t  armor_level   = 0;
     std::string name;
+    std::string model_path;
+    float model_scale = 1.f;
+    std::string socket_name;
+    bool has_override = false;
+    float override_pos[3] = {0.f, 0.f, 0.f};
+    float override_rot[3] = {0.f, 0.f, 0.f};
+    float override_scale = 1.f;
 
     bool empty() const { return item_id == 0; }
 };
@@ -38,7 +45,11 @@ public:
 
     void SetSlot(uint8_t slot, uint16_t item_id, uint8_t qty, uint8_t dur,
                  const std::string& name, uint8_t item_type,
-                 uint8_t slot_type, int16_t weapon_damage, int16_t armor_level);
+                 uint8_t slot_type, int16_t weapon_damage, int16_t armor_level,
+                 const std::string& model_path, float model_scale,
+                 const std::string& socket_name, bool has_override,
+                 const float override_pos[3], const float override_rot[3],
+                 float override_scale);
     void Clear();
 
     // Renders both sub-windows (each checks its own visibility flag).

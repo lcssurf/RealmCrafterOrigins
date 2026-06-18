@@ -72,6 +72,21 @@ void SettingsTab::EnsureTables(sqlite3* db) {
         "  value TEXT NOT NULL DEFAULT ''"
         ")",
         nullptr, nullptr, nullptr);
+
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS anim_vocabulary ("
+        "  id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  name      TEXT NOT NULL UNIQUE,"
+        "  parent_id INTEGER NOT NULL DEFAULT 0"
+        ")",
+        nullptr, nullptr, nullptr);
+
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS socket_vocabulary ("
+        "  id   INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  name TEXT NOT NULL UNIQUE"
+        ")",
+        nullptr, nullptr, nullptr);
 }
 
 void SettingsTab::LoadModels(sqlite3* db) {
@@ -239,6 +254,26 @@ void SettingsTab::Draw(sqlite3* db) {
         need_fetch_ = false;
     }
 
+    if (ImGui::BeginTabBar("##settings_subtabs")) {
+        if (ImGui::BeginTabItem("General")) {
+            DrawGeneralSettings(db);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Animation Vocabulary")) {
+            EnsureTables(db);
+            DrawAnimVocabulary(db);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Sockets")) {
+            EnsureTables(db);
+            DrawSocketVocab(db);
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+}
+
+void SettingsTab::DrawGeneralSettings(sqlite3* db) {
     ImGui::Text("Global settings");
     ImGui::SameLine();
     if (ImGui::Button("Refresh")) {
@@ -307,6 +342,419 @@ void SettingsTab::Draw(sqlite3* db) {
         SaveSettings(db);
     }
     ImGui::EndDisabled();
+}
+
+// ---------------------------------------------------------------------------
+// Animation Vocabulary (Phase A.1)
+// ---------------------------------------------------------------------------
+
+void SettingsTab::LoadAnimVocabulary(sqlite3* db) {
+    anim_vocab_.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, name, parent_id FROM anim_vocabulary ORDER BY name",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_),
+                       "Load anim_vocabulary: %s", sqlite3_errmsg(db));
+        return;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        AnimVocabNode node;
+        node.id = sqlite3_column_int(stmt, 0);
+        node.name = ColText(stmt, 1);
+        node.parent_id = sqlite3_column_int(stmt, 2);
+        anim_vocab_.push_back(node);
+    }
+    sqlite3_finalize(stmt);
+
+    std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_),
+                   "Loaded %d animation action(s).", (int)anim_vocab_.size());
+}
+
+bool SettingsTab::AnimVocabNameExists(sqlite3* db, const std::string& name) {
+    (void)db;
+    for (const auto& n : anim_vocab_) {
+        if (n.name == name) return true;
+    }
+    return false;
+}
+
+bool SettingsTab::AnimVocabHasChildren(int id) const {
+    for (const auto& n : anim_vocab_) {
+        if (n.parent_id == id) return true;
+    }
+    return false;
+}
+
+void SettingsTab::AnimVocabAddNode(sqlite3* db, const std::string& name, int parent_id) {
+    if (name.empty()) {
+        std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_), "Name cannot be empty.");
+        return;
+    }
+    if (AnimVocabNameExists(db, name)) {
+        std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_),
+                       "An action named '%s' already exists.", name.c_str());
+        return;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "INSERT INTO anim_vocabulary (name, parent_id) VALUES (?, ?)",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_),
+                       "Insert error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, parent_id);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_),
+                       "Insert error: %s", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        return;
+    }
+    sqlite3_finalize(stmt);
+
+    std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_),
+                   "Added '%s'.", name.c_str());
+    anim_vocab_need_fetch_ = true;
+}
+
+void SettingsTab::AnimVocabRenameNode(sqlite3* db, int id, const std::string& new_name) {
+    if (new_name.empty()) {
+        std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_), "Name cannot be empty.");
+        return;
+    }
+    if (AnimVocabNameExists(db, new_name)) {
+        std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_),
+                       "An action named '%s' already exists.", new_name.c_str());
+        return;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "UPDATE anim_vocabulary SET name = ? WHERE id = ?",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_),
+                       "Rename error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    sqlite3_bind_text(stmt, 1, new_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, id);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_),
+                       "Rename error: %s", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        return;
+    }
+    sqlite3_finalize(stmt);
+
+    std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_), "Renamed to '%s'.", new_name.c_str());
+    anim_vocab_need_fetch_ = true;
+}
+
+void SettingsTab::AnimVocabDeleteNode(sqlite3* db, int id) {
+    if (AnimVocabHasChildren(id)) {
+        std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_),
+                       "Cannot delete: this action has children. Delete or move them first.");
+        return;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "DELETE FROM anim_vocabulary WHERE id = ?",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_),
+                       "Delete error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    sqlite3_bind_int(stmt, 1, id);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_),
+                       "Delete error: %s", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        return;
+    }
+    sqlite3_finalize(stmt);
+
+    std::snprintf(anim_vocab_status_, sizeof(anim_vocab_status_), "Deleted.");
+    anim_vocab_need_fetch_ = true;
+}
+
+void SettingsTab::DrawAnimVocabNode(sqlite3* db, const AnimVocabNode& node) {
+    ImGui::PushID(node.id);
+
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_DefaultOpen;
+    bool open = ImGui::TreeNodeEx((void*)(intptr_t)node.id, flags, "%s", node.name.c_str());
+
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Rename")) {
+        anim_vocab_rename_id_ = node.id;
+        std::snprintf(anim_vocab_rename_buf_, sizeof(anim_vocab_rename_buf_), "%s", node.name.c_str());
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Child")) {
+        AnimVocabAddNode(db, "NewAction", node.id);
+    }
+    ImGui::SameLine();
+    bool hasChildren = AnimVocabHasChildren(node.id);
+    ImGui::BeginDisabled(hasChildren);
+    if (ImGui::SmallButton("Delete")) {
+        AnimVocabDeleteNode(db, node.id);
+    }
+    ImGui::EndDisabled();
+    if (hasChildren) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(has children)");
+    }
+
+    if (anim_vocab_rename_id_ == node.id) {
+        ImGui::PushItemWidth(180);
+        ImGui::InputText("##rename", anim_vocab_rename_buf_, sizeof(anim_vocab_rename_buf_));
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Save##rename")) {
+            AnimVocabRenameNode(db, node.id, anim_vocab_rename_buf_);
+            anim_vocab_rename_id_ = 0;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Cancel##rename")) {
+            anim_vocab_rename_id_ = 0;
+        }
+    }
+
+    if (open) {
+        for (const auto& child : anim_vocab_) {
+            if (child.parent_id == node.id) {
+                DrawAnimVocabNode(db, child);
+            }
+        }
+        ImGui::TreePop();
+    }
+
+    ImGui::PopID();
+}
+
+void SettingsTab::DrawAnimVocabulary(sqlite3* db) {
+    if (anim_vocab_need_fetch_) {
+        LoadAnimVocabulary(db);
+        anim_vocab_need_fetch_ = false;
+    }
+
+    ImGui::TextWrapped(
+        "Tree of animation action names. A child's parent is its fallback "
+        "action (used when an actor has no animation bound for the child). "
+        "Root actions (no parent) have no fallback.");
+
+    if (ImGui::Button("Refresh")) {
+        anim_vocab_need_fetch_ = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", anim_vocab_status_);
+    ImGui::Separator();
+
+    ImGui::PushItemWidth(180);
+    ImGui::InputText("##new_root_name", anim_vocab_new_root_name_, sizeof(anim_vocab_new_root_name_));
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+    if (ImGui::Button("+ Add Root")) {
+        AnimVocabAddNode(db, anim_vocab_new_root_name_, 0);
+        anim_vocab_new_root_name_[0] = '\0';
+    }
+
+    ImGui::Separator();
+
+    for (const auto& node : anim_vocab_) {
+        if (node.parent_id == 0) {
+            DrawAnimVocabNode(db, node);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Socket Vocabulary (Arco B / B2)
+// ---------------------------------------------------------------------------
+
+void SettingsTab::LoadSocketVocab(sqlite3* db) {
+    socket_vocab_.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, name FROM socket_vocabulary ORDER BY name",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_),
+                      "Load socket_vocabulary: %s", sqlite3_errmsg(db));
+        return;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        SocketEntry e;
+        e.id   = sqlite3_column_int(stmt, 0);
+        e.name = ColText(stmt, 1);
+        socket_vocab_.push_back(e);
+    }
+    sqlite3_finalize(stmt);
+
+    std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_),
+                  "Loaded %d socket(s).", (int)socket_vocab_.size());
+}
+
+bool SettingsTab::SocketNameExists(const std::string& name) const {
+    for (const auto& e : socket_vocab_) {
+        if (e.name == name) return true;
+    }
+    return false;
+}
+
+void SettingsTab::SocketAdd(sqlite3* db, const std::string& name) {
+    if (name.empty()) {
+        std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_), "Name cannot be empty.");
+        return;
+    }
+    if (SocketNameExists(name)) {
+        std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_),
+                      "A socket named '%s' already exists.", name.c_str());
+        return;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "INSERT INTO socket_vocabulary (name) VALUES (?)",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_),
+                      "Insert error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_),
+                      "Insert error: %s", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        return;
+    }
+    sqlite3_finalize(stmt);
+
+    std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_), "Added '%s'.", name.c_str());
+    socket_vocab_need_fetch_ = true;
+}
+
+void SettingsTab::SocketRename(sqlite3* db, int id, const std::string& new_name) {
+    if (new_name.empty()) {
+        std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_), "Name cannot be empty.");
+        return;
+    }
+    if (SocketNameExists(new_name)) {
+        std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_),
+                      "A socket named '%s' already exists.", new_name.c_str());
+        return;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "UPDATE socket_vocabulary SET name = ? WHERE id = ?",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_),
+                      "Rename error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    sqlite3_bind_text(stmt, 1, new_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, id);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_),
+                      "Rename error: %s", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        return;
+    }
+    sqlite3_finalize(stmt);
+
+    std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_), "Renamed to '%s'.", new_name.c_str());
+    socket_vocab_need_fetch_ = true;
+}
+
+void SettingsTab::SocketDelete(sqlite3* db, int id) {
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "DELETE FROM socket_vocabulary WHERE id = ?",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_),
+                      "Delete error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    sqlite3_bind_int(stmt, 1, id);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_),
+                      "Delete error: %s", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        return;
+    }
+    sqlite3_finalize(stmt);
+
+    std::snprintf(socket_vocab_status_, sizeof(socket_vocab_status_), "Deleted.");
+    socket_vocab_need_fetch_ = true;
+}
+
+void SettingsTab::DrawSocketVocab(sqlite3* db) {
+    if (socket_vocab_need_fetch_) {
+        LoadSocketVocab(db);
+        socket_vocab_need_fetch_ = false;
+    }
+
+    ImGui::TextWrapped(
+        "Flat list of attachment socket names. Sockets are mapped to bones "
+        "per actor in B3. Items select a socket in B4.");
+
+    if (ImGui::Button("Refresh")) {
+        socket_vocab_need_fetch_ = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", socket_vocab_status_);
+    ImGui::Separator();
+
+    ImGui::PushItemWidth(200);
+    ImGui::InputText("##new_socket_name", socket_vocab_new_name_, sizeof(socket_vocab_new_name_));
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+    if (ImGui::Button("+ Add Socket")) {
+        SocketAdd(db, socket_vocab_new_name_);
+        socket_vocab_new_name_[0] = '\0';
+    }
+
+    ImGui::Separator();
+
+    for (const auto& e : socket_vocab_) {
+        ImGui::PushID(e.id);
+
+        ImGui::Text("%s", e.name.c_str());
+        ImGui::SameLine();
+
+        if (ImGui::SmallButton("Rename")) {
+            socket_vocab_rename_id_ = e.id;
+            std::snprintf(socket_vocab_rename_buf_, sizeof(socket_vocab_rename_buf_), "%s", e.name.c_str());
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Delete")) {
+            SocketDelete(db, e.id);
+        }
+
+        if (socket_vocab_rename_id_ == e.id) {
+            ImGui::PushItemWidth(200);
+            ImGui::InputText("##rename_socket", socket_vocab_rename_buf_, sizeof(socket_vocab_rename_buf_));
+            ImGui::PopItemWidth();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Save##rsock")) {
+                SocketRename(db, e.id, socket_vocab_rename_buf_);
+                socket_vocab_rename_id_ = 0;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Cancel##rsock")) {
+                socket_vocab_rename_id_ = 0;
+            }
+        }
+
+        ImGui::PopID();
+    }
 }
 
 } // namespace gue

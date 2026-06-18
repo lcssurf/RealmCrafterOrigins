@@ -122,15 +122,29 @@ type Actor struct {
 	done   chan struct{}
 }
 
+// SocketBinding maps one attachment socket name to a bone on the actor's model
+// plus a local-space pos/rot/scale offset. Built from actor_def_sockets at spawn
+// time. The client stores these and uses them in B5 to position attached items.
+// OffsetRot is euler XYZ in degrees (converted to matrix in B5 at render time).
+type SocketBinding struct {
+	SocketName  string
+	BoneName    string
+	OffsetPos   [3]float32 // local translation (world units) relative to bone
+	OffsetRot   [3]float32 // euler XYZ (degrees) relative to bone
+	OffsetScale float32    // uniform scale applied to the attached item
+}
+
 // Appearance bundles the visual composition of an actor: one or more mesh
-// slots (each with its own model + optional material override) and a mapping
+// slots (each with its own model + optional material override), a mapping
 // from high-level action names ("Idle", "Walk", …) to specific animation clip
-// files. Built once at spawn time from the Media registry in the DB.
+// files, and per-socket bone attachment data.
+// Built once at spawn time from the Media registry in the DB.
 type Appearance struct {
 	Meshes    []MeshSlot
 	Anims     []AnimBinding
-	YawOffset float32 // model-space Y rotation (degrees) applied before world yaw
-	YOffset   float32 // vertical offset (world units) added to position at render time
+	Sockets   []SocketBinding // B3a: per-socket bone + offset; used by client in B5
+	YawOffset float32         // model-space Y rotation (degrees) applied before world yaw
+	YOffset   float32         // vertical offset (world units) added to position at render time
 }
 
 // MeshSlot is one mesh attached to an actor. Slot values match the GUE:

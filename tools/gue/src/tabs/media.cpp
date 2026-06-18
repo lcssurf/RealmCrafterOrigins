@@ -1,6 +1,7 @@
 #include "media.h"
 #include "../file_import.h"
 #include "../asset_path.h"
+#include "../ui_widgets.h"
 
 #include <imgui.h>
 #include <cstring>
@@ -358,6 +359,37 @@ void MediaTab::EnsureTables(sqlite3* db) {
         "  payload    TEXT    NOT NULL DEFAULT '',"
         "  FOREIGN KEY(clip_id) REFERENCES media_anim_clips(id) ON DELETE CASCADE"
         ")",
+
+        // Animation vocabulary tree (Phase A.1). MediaTab reads this
+        // independently (same definition as SettingsTab) so the actor anim
+        // editor's action combo works even if Settings hasn't run yet.
+        "CREATE TABLE IF NOT EXISTS anim_vocabulary ("
+        "  id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  name      TEXT NOT NULL UNIQUE,"
+        "  parent_id INTEGER NOT NULL DEFAULT 0"
+        ")",
+
+        // Socket vocabulary (B2). Flat list; read independently here so the
+        // socket combo works without SettingsTab having run first.
+        "CREATE TABLE IF NOT EXISTS socket_vocabulary ("
+        "  id   INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  name TEXT NOT NULL UNIQUE"
+        ")",
+
+        // Actor def socket bindings (B3a).
+        "CREATE TABLE IF NOT EXISTS actor_def_sockets ("
+        "  id           INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  actor_def_id INTEGER NOT NULL,"
+        "  socket_name  TEXT    NOT NULL DEFAULT '',"
+        "  bone_name    TEXT    NOT NULL DEFAULT '',"
+        "  offset_pos_x REAL    NOT NULL DEFAULT 0.0,"
+        "  offset_pos_y REAL    NOT NULL DEFAULT 0.0,"
+        "  offset_pos_z REAL    NOT NULL DEFAULT 0.0,"
+        "  offset_rot_x REAL    NOT NULL DEFAULT 0.0,"
+        "  offset_rot_y REAL    NOT NULL DEFAULT 0.0,"
+        "  offset_rot_z REAL    NOT NULL DEFAULT 0.0,"
+        "  offset_scale REAL    NOT NULL DEFAULT 1.0"
+        ")",
     };
     for (const char* s : sql)
         sqlite3_exec(db, s, nullptr, nullptr, nullptr);
@@ -468,6 +500,43 @@ static std::string colText(sqlite3_stmt* stmt, int col) {
     return t ? std::string(t) : std::string();
 }
 
+void MediaTab::LoadAnimVocabNames(sqlite3* db) {
+    anim_vocab_names_.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT name FROM anim_vocabulary ORDER BY name",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        return;
+    }
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        anim_vocab_names_.push_back(colText(stmt, 0));
+    }
+    sqlite3_finalize(stmt);
+}
+
+bool MediaTab::VocabContains(const std::string& name) const {
+    for (const auto& n : anim_vocab_names_) {
+        if (n == name) return true;
+    }
+    return false;
+}
+
+void MediaTab::LoadSocketVocabNames(sqlite3* db) {
+    socket_vocab_names_.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT name FROM socket_vocabulary ORDER BY name",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        return;
+    }
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        socket_vocab_names_.push_back(colText(stmt, 0));
+    }
+    sqlite3_finalize(stmt);
+}
+
 void MediaTab::FetchAll(sqlite3* db) {
     EnsureTables(db);
 
@@ -475,6 +544,8 @@ void MediaTab::FetchAll(sqlite3* db) {
     materials_.clear();
     clips_.clear();
     actor_defs_.clear();
+
+    LoadAnimVocabNames(db);
 
     sqlite3_stmt* stmt = nullptr;
 
@@ -632,6 +703,35 @@ void MediaTab::FetchAll(sqlite3* db) {
         }
         sqlite3_finalize(stmt);
     }
+
+    // Actor socket bindings (B3a)
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, actor_def_id, socket_name, bone_name,"
+        "       offset_pos_x, offset_pos_y, offset_pos_z,"
+        "       offset_rot_x, offset_rot_y, offset_rot_z, offset_scale"
+        " FROM actor_def_sockets ORDER BY actor_def_id, id",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            ActorDefSocket s;
+            s.id           = sqlite3_column_int(stmt, 0);
+            s.actor_def_id = sqlite3_column_int(stmt, 1);
+            s.socket_name  = colText(stmt, 2);
+            s.bone_name    = colText(stmt, 3);
+            s.offset_pos_x = (float)sqlite3_column_double(stmt, 4);
+            s.offset_pos_y = (float)sqlite3_column_double(stmt, 5);
+            s.offset_pos_z = (float)sqlite3_column_double(stmt, 6);
+            s.offset_rot_x = (float)sqlite3_column_double(stmt, 7);
+            s.offset_rot_y = (float)sqlite3_column_double(stmt, 8);
+            s.offset_rot_z = (float)sqlite3_column_double(stmt, 9);
+            s.offset_scale = (float)sqlite3_column_double(stmt, 10);
+            for (auto& d : actor_defs_) {
+                if (d.id == s.actor_def_id) { d.socket_bindings.push_back(s); break; }
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    LoadSocketVocabNames(db);
 
     std::snprintf(statusMsg_, sizeof(statusMsg_),
                   "Loaded: %d models, %d materials, %d clips, %d actor defs",
@@ -1235,6 +1335,69 @@ void MediaTab::SaveAnimMap(sqlite3* db, ActorAnimMap& a) {
 void MediaTab::DeleteAnimMap(sqlite3* db, int id) {
     sqlite3_stmt* stmt = nullptr;
     sqlite3_prepare_v2(db, "DELETE FROM media_actor_anims WHERE id=?",
+                       -1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    needFetch_ = true;
+}
+
+// ---------------------------------------------------------------------------
+// Actor Def Socket CRUD (B3a)
+// ---------------------------------------------------------------------------
+
+void MediaTab::SaveActorDefSocket(sqlite3* db, ActorDefSocket& s) {
+    sqlite3_stmt* stmt = nullptr;
+    int rc;
+    if (s.id == 0) {
+        rc = sqlite3_prepare_v2(db,
+            "INSERT INTO actor_def_sockets"
+            " (actor_def_id, socket_name, bone_name,"
+            "  offset_pos_x, offset_pos_y, offset_pos_z,"
+            "  offset_rot_x, offset_rot_y, offset_rot_z, offset_scale)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            -1, &stmt, nullptr);
+    } else {
+        rc = sqlite3_prepare_v2(db,
+            "UPDATE actor_def_sockets SET"
+            "  socket_name=?, bone_name=?,"
+            "  offset_pos_x=?, offset_pos_y=?, offset_pos_z=?,"
+            "  offset_rot_x=?, offset_rot_y=?, offset_rot_z=?,"
+            "  offset_scale=?"
+            " WHERE id=?",
+            -1, &stmt, nullptr);
+    }
+    if (rc != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Save socket error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    int i = 1;
+    if (s.id == 0) sqlite3_bind_int(stmt, i++, s.actor_def_id);
+    sqlite3_bind_text  (stmt, i++, s.socket_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text  (stmt, i++, s.bone_name.c_str(),   -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, i++, s.offset_pos_x);
+    sqlite3_bind_double(stmt, i++, s.offset_pos_y);
+    sqlite3_bind_double(stmt, i++, s.offset_pos_z);
+    sqlite3_bind_double(stmt, i++, s.offset_rot_x);
+    sqlite3_bind_double(stmt, i++, s.offset_rot_y);
+    sqlite3_bind_double(stmt, i++, s.offset_rot_z);
+    sqlite3_bind_double(stmt, i++, s.offset_scale);
+    if (s.id != 0) sqlite3_bind_int(stmt, i++, s.id);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Save socket error: %s", sqlite3_errmsg(db));
+    } else {
+        if (s.id == 0) s.id = (int)sqlite3_last_insert_rowid(db);
+        needFetch_ = true;
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Saved socket.");
+    }
+    sqlite3_finalize(stmt);
+}
+
+void MediaTab::DeleteActorDefSocket(sqlite3* db, int id) {
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db, "DELETE FROM actor_def_sockets WHERE id=?",
                        -1, &stmt, nullptr);
     sqlite3_bind_int(stmt, 1, id);
     sqlite3_step(stmt);
@@ -2635,7 +2798,10 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
 
                 ImGui::TableNextColumn();
                 ImGui::SetNextItemWidth(-1);
-                InputString("##act", a.action, 64);
+                ui::SearchableComboString("##act", a.action, anim_vocab_names_, "(none)");
+                if (!a.action.empty() && !VocabContains(a.action)) {
+                    ImGui::TextColored({1.0f, 0.8f, 0.2f, 1.f}, "(not in vocabulary)");
+                }
 
                 ImGui::TableNextColumn();
                 PathField("##src", a.source_path, "Animation", "glb,fbx,dae,b3d", "anims");
@@ -2735,7 +2901,98 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         ImGui::SameLine();
         ImGui::TextDisabled("Leave Source empty for a clip embedded in the Body model.");
 
-        ImGui::EndChild();
+        ImGui::EndChild(); // end ##anims
+
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        // --- Socket Bindings section (B3a) ---
+        ImGui::TextColored({0.8f, 0.9f, 1.f, 1.f}, "Sockets");
+        ImGui::SameLine();
+        ImGui::TextDisabled("(socket → bone + offset. No preview: adjust numbers, test in-game)");
+        ImGui::BeginChild("##sockets", {0, 200}, true);
+
+        // Bone names from the currently loaded preview model (slot 0).
+        std::vector<std::string> bone_names;
+        if (preview_ && preview_init_ok_)
+            bone_names = preview_->GetModel().BoneNames();
+        if (bone_names.empty())
+            ImGui::TextDisabled("Bone list unavailable — ensure a mesh slot is loaded in the preview.");
+
+        if (ImGui::BeginTable("##sock_tbl", 7,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+            ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollX)) {
+            ImGui::TableSetupScrollFreeze(1, 1);
+            ImGui::TableSetupColumn("Socket",   ImGuiTableColumnFlags_WidthFixed, 120);
+            ImGui::TableSetupColumn("Bone",     ImGuiTableColumnFlags_WidthFixed, 130);
+            ImGui::TableSetupColumn("Pos X/Y/Z");
+            ImGui::TableSetupColumn("Rot X/Y/Z");
+            ImGui::TableSetupColumn("Scale",    ImGuiTableColumnFlags_WidthFixed, 60);
+            ImGui::TableSetupColumn("##sksave", ImGuiTableColumnFlags_WidthFixed, 45);
+            ImGui::TableSetupColumn("##skdel",  ImGuiTableColumnFlags_WidthFixed, 35);
+            ImGui::TableHeadersRow();
+
+            for (size_t i = 0; i < d.socket_bindings.size(); ++i) {
+                ActorDefSocket& s = d.socket_bindings[i];
+                ImGui::PushID((int)(i + 60000));
+                ImGui::TableNextRow();
+
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-1);
+                ui::SearchableComboString("##sksock", s.socket_name, socket_vocab_names_, "(none)");
+
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-1);
+                ui::SearchableComboString("##skbone", s.bone_name, bone_names, "(none)");
+
+                ImGui::TableNextColumn();
+                {
+                    float pos[3] = {s.offset_pos_x, s.offset_pos_y, s.offset_pos_z};
+                    ImGui::SetNextItemWidth(-1);
+                    if (ImGui::DragFloat3("##skpos", pos, 0.01f, -100.f, 100.f, "%.2f")) {
+                        s.offset_pos_x = pos[0]; s.offset_pos_y = pos[1]; s.offset_pos_z = pos[2];
+                    }
+                }
+
+                ImGui::TableNextColumn();
+                {
+                    float rot[3] = {s.offset_rot_x, s.offset_rot_y, s.offset_rot_z};
+                    ImGui::SetNextItemWidth(-1);
+                    if (ImGui::DragFloat3("##skrot", rot, 1.f, -180.f, 180.f, "%.0f")) {
+                        s.offset_rot_x = rot[0]; s.offset_rot_y = rot[1]; s.offset_rot_z = rot[2];
+                    }
+                }
+
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-1);
+                ImGui::DragFloat("##skscl", &s.offset_scale, 0.01f, 0.01f, 10.f, "%.2f");
+
+                ImGui::TableNextColumn();
+                if (ImGui::SmallButton("Save##sk")) {
+                    SaveActorDefSocket(db, s);
+                }
+
+                ImGui::TableNextColumn();
+                ImGui::PushStyleColor(ImGuiCol_Button, {0.55f, 0.1f, 0.1f, 1.f});
+                if (ImGui::SmallButton("Del##sk")) {
+                    DeleteActorDefSocket(db, s.id);
+                }
+                ImGui::PopStyleColor();
+
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+
+        ImGui::Spacing();
+        if (ImGui::Button("+ Add Socket")) {
+            ActorDefSocket s;
+            s.actor_def_id = d.id;
+            s.socket_name  = socket_vocab_names_.empty() ? "" : socket_vocab_names_.front();
+            SaveActorDefSocket(db, s);
+        }
+
+        ImGui::EndChild(); // end ##sockets
     } else {
         ImGui::TextDisabled("Select an actor def, or click \"New Actor Def\".");
     }

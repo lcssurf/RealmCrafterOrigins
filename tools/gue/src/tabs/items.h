@@ -11,6 +11,19 @@ struct ItemAttribute {
     double      value = 0.0;
 };
 
+struct ItemSocketOverride {
+    int   id = 0;
+    int   item_template_id = 0;
+    int   actor_def_id = 0;
+    float offset_pos_x = 0.f;
+    float offset_pos_y = 0.f;
+    float offset_pos_z = 0.f;
+    float offset_rot_x = 0.f;
+    float offset_rot_y = 0.f;
+    float offset_rot_z = 0.f;
+    float offset_scale = 1.f;
+};
+
 struct ItemTemplate {
     int         id            = 0;
     std::string name;
@@ -25,6 +38,10 @@ struct ItemTemplate {
     int         max_stack     = 1;
     int         item_value    = 0;
     bool        stackable     = false;
+    std::string model_path;
+    float       model_scale   = 1.f;
+    std::string socket_name;
+    std::vector<ItemSocketOverride> overrides;
     std::vector<ItemAttribute> attributes;
 };
 
@@ -45,6 +62,10 @@ private:
     bool Delete(sqlite3* db, int id);
     bool LoadItemAttributes(sqlite3* db, ItemTemplate& t);
     bool SaveItemAttributes(sqlite3* db, const ItemTemplate& t);
+    bool LoadItemOverrides(sqlite3* db, ItemTemplate& t);
+    bool SaveItemOverrides(sqlite3* db, const ItemTemplate& t);
+    bool LoadSocketVocabulary(sqlite3* db);
+    bool LoadActorDefs(sqlite3* db);
 
     std::vector<ItemTemplate> items_;
     std::vector<WeaponKitOption> weapon_kit_options_;
@@ -55,6 +76,8 @@ private:
     ItemTemplate editing_;
     ItemTemplate newItem_;
     bool         showNew_   = false;
+    std::vector<std::string> socketVocab_;
+    std::vector<std::pair<int, std::string>> actorDefOptions_;
 };
 
 } // namespace gue

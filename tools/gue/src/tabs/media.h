@@ -138,6 +138,22 @@ struct MediaAnimEvent {
     std::string payload;              // free JSON interpreted by the client handler
 };
 
+// Socket mapping for an actor def (Arco B / B3a).
+// socket_name and bone_name are TEXT (not FK) — renaming in the vocab doesn't break rows.
+struct ActorDefSocket {
+    int         id           = 0;
+    int         actor_def_id = 0;
+    std::string socket_name;          // from socket_vocabulary
+    std::string bone_name;            // literal bone name from the model
+    float       offset_pos_x = 0.f;
+    float       offset_pos_y = 0.f;
+    float       offset_pos_z = 0.f;
+    float       offset_rot_x = 0.f;  // euler degrees
+    float       offset_rot_y = 0.f;
+    float       offset_rot_z = 0.f;
+    float       offset_scale = 1.f;  // uniform
+};
+
 struct ActorDef {
     int         id = 0;
     std::string name;
@@ -170,8 +186,9 @@ struct ActorDef {
     bool        is_mountable   = false;
     bool        is_interactive = false;
 
-    std::vector<ActorMeshSlot> mesh_slots;
-    std::vector<ActorAnimMap>  anim_map;
+    std::vector<ActorMeshSlot>  mesh_slots;
+    std::vector<ActorAnimMap>   anim_map;
+    std::vector<ActorDefSocket> socket_bindings; // B3a
 };
 
 // ---------------------------------------------------------------------------
@@ -243,15 +260,28 @@ private:
     void DeleteMeshSlot (sqlite3* db, int id);
     void SaveAnimMap    (sqlite3* db, ActorAnimMap& a);
     void DeleteAnimMap  (sqlite3* db, int id);
+    void SaveActorDefSocket  (sqlite3* db, ActorDefSocket& s);
+    void DeleteActorDefSocket(sqlite3* db, int id);
     void LoadShapesForModel  (sqlite3* db, int model_id);
     void SaveModelShape      (sqlite3* db, ModelShape& s);
     void DeleteModelShape    (sqlite3* db, int id);
+
+    // Animation vocabulary (Phase A.1/A.2) — flat list of action names for
+    // the actor anim editor's strict combo. Loaded independently from
+    // SettingsTab (same anim_vocabulary table).
+    void LoadAnimVocabNames(sqlite3* db);
+    bool VocabContains(const std::string& name) const;
+
+    // Socket vocabulary (B2) — flat list for the socket combo in the socket editor.
+    void LoadSocketVocabNames(sqlite3* db);
 
     std::vector<MediaModel>    models_;
     std::vector<MediaMaterial> materials_;
     std::vector<MediaAnimClip> clips_;
     std::vector<ActorDef>      actor_defs_;
     std::vector<std::pair<int, std::string>> drop_list_options_;
+    std::vector<std::string>   anim_vocab_names_;
+    std::vector<std::string>   socket_vocab_names_; // B3a
 
     bool needFetch_        = true;
     char statusMsg_[256]   = {};

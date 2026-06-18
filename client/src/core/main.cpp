@@ -1011,6 +1011,16 @@ int main() {
         std::vector<AnimEvent> events;
     };
 
+    // Socket binding received in PNewActor/PStartGame (B3a).
+    // Not used until B5 (attachment rendering); stored here for when B5 is ready.
+    struct WorldSocket {
+        std::string socket_name;
+        std::string bone_name;
+        float pos[3]  = {0.f, 0.f, 0.f}; // local offset translation
+        float rot[3]  = {0.f, 0.f, 0.f}; // euler XYZ degrees
+        float scale   = 1.f;
+    };
+
     struct WorldActorEntry {
         // Smoothed/rendered transform used across client systems.
         float x = 0, y = 0, z = 0, yaw = 0;
@@ -1025,8 +1035,9 @@ int main() {
         float       anim_t     = 0.f;
 
         // Appearance from the Media Actor Def bound to this NPC (if any).
-        std::vector<WorldMesh> meshes;
-        std::vector<WorldAnim> anims;
+        std::vector<WorldMesh>   meshes;
+        std::vector<WorldAnim>   anims;
+        std::vector<WorldSocket> sockets; // B3a: attachment socket data; used in B5
 
         // Offsets from the Actor Def — corrects orientation/ground alignment.
         float yaw_offset = 0.f;
@@ -1237,8 +1248,11 @@ int main() {
     uint32_t player_gold = 0;
 
     // Local player appearance — populated from PNewActor when rid == player.runtimeId.
-    std::vector<WorldMesh> player_meshes;
-    std::vector<WorldAnim> player_anims;
+    std::vector<WorldMesh>   player_meshes;
+    std::vector<WorldAnim>   player_anims;
+    std::vector<WorldSocket> player_sockets; // B3a: not used until B5
+    std::unique_ptr<rco::renderer::Actor> player_weapon_actor;
+    std::string player_weapon_model_path;
 
     // Combat state
     uint32_t combat_target     = 0;
@@ -1568,6 +1582,8 @@ int main() {
                     std::fprintf(stderr, "[perf-world-enter] phase=pstart_received ms=%lld\n",
                                  static_cast<long long>(ms));
                 }
+                player_weapon_actor.reset();
+                player_weapon_model_path.clear();
                 player.runtimeId = r.ReadU32();
                 player.areaName  = r.ReadString();
                 player.x         = r.ReadF32();
@@ -1659,6 +1675,22 @@ int main() {
                     player.primary.PER = static_cast<int32_t>(r.ReadU16());
                     player.unspent_stat_points = static_cast<int32_t>(r.ReadU16());
                     if (!r.OK()) break;
+                }
+                // Socket bindings (B3a) — last field; !r.Done() is now genuine:
+                // old servers that don't send sockets will leave the reader Done().
+                player_sockets.clear();
+                if (!r.Done()) {
+                    uint8_t nsock = r.ReadU8();
+                    player_sockets.reserve(nsock);
+                    for (uint8_t si = 0; si < nsock && r.OK(); ++si) {
+                        WorldSocket ws;
+                        ws.socket_name = r.ReadString();
+                        ws.bone_name   = r.ReadString();
+                        ws.pos[0] = r.ReadF32(); ws.pos[1] = r.ReadF32(); ws.pos[2] = r.ReadF32();
+                        ws.rot[0] = r.ReadF32(); ws.rot[1] = r.ReadF32(); ws.rot[2] = r.ReadF32();
+                        ws.scale  = r.ReadF32();
+                        player_sockets.push_back(std::move(ws));
+                    }
                 }
                 // Bind player AnimController from PStartGame appearance data
                 {
@@ -1905,6 +1937,21 @@ int main() {
                 }
                 float actor_yaw_offset = r.ReadF32();
                 float actor_y_offset   = r.ReadF32();
+                // Socket bindings (B3a) — stored; not used until B5
+                std::vector<WorldSocket> actor_sockets;
+                if (!r.Done()) {
+                    uint8_t nsock = r.ReadU8();
+                    actor_sockets.reserve(nsock);
+                    for (uint8_t si = 0; si < nsock && r.OK(); ++si) {
+                        WorldSocket ws;
+                        ws.socket_name = r.ReadString();
+                        ws.bone_name   = r.ReadString();
+                        ws.pos[0] = r.ReadF32(); ws.pos[1] = r.ReadF32(); ws.pos[2] = r.ReadF32();
+                        ws.rot[0] = r.ReadF32(); ws.rot[1] = r.ReadF32(); ws.rot[2] = r.ReadF32();
+                        ws.scale  = r.ReadF32();
+                        actor_sockets.push_back(std::move(ws));
+                    }
+                }
                 if (!r.OK()) break;
 
                 // If this is the local player's own PNewActor, store the
@@ -1994,6 +2041,7 @@ int main() {
                     }
                     player_yaw_offset = actor_yaw_offset;
                     player_y_offset   = actor_y_offset;
+                    player_sockets    = actor_sockets; // B3a: store, unused until B5
                     // Re-init player_actor if renderer is already up.
                     if (renderer_ready && !player_meshes.empty()) {
                         const WorldMesh& body = player_meshes[0];
@@ -2105,6 +2153,7 @@ int main() {
                     }
                     e.anims.push_back(std::move(wa));
                 }
+                e.sockets = std::move(actor_sockets); // B3a: stored, unused until B5
                 // Bind AnimController for this actor
                 {
                     std::vector<rco::anim::AnimBinding> bindings;
@@ -2200,6 +2249,8 @@ int main() {
                 skill_loadout_screen.SetOpen(false);
                 dodge_roll_active = false;
                 dodge_roll_pending = false;
+                player_weapon_actor.reset();
+                player_weapon_model_path.clear();
                 special_parry_telegraphs.clear();
                 parry_judgements.clear();
                 renderer_ready = false;
@@ -2244,8 +2295,26 @@ int main() {
                     uint8_t     stype  = r.ReadU8();
                     int16_t     wdmg   = static_cast<int16_t>(r.ReadU16());
                     int16_t     armor  = static_cast<int16_t>(r.ReadU16());
+                    std::string model_path = r.ReadString();
+                    float      model_scale = r.ReadF32();
+                    std::string socket_name = r.ReadString();
+                    uint8_t has_override = r.ReadU8();
+                    float override_pos[3] = {0.f, 0.f, 0.f};
+                    float override_rot[3] = {0.f, 0.f, 0.f};
+                    float override_scale = 1.f;
+                    if (has_override != 0) {
+                        override_pos[0] = r.ReadF32();
+                        override_pos[1] = r.ReadF32();
+                        override_pos[2] = r.ReadF32();
+                        override_rot[0] = r.ReadF32();
+                        override_rot[1] = r.ReadF32();
+                        override_rot[2] = r.ReadF32();
+                        override_scale = r.ReadF32();
+                    }
                     if (!r.OK()) break;
-                    inventory.SetSlot(slot, iid, qty, dur, name, itype, stype, wdmg, armor);
+                    inventory.SetSlot(slot, iid, qty, dur, name, itype, stype, wdmg, armor,
+                                     model_path, model_scale, socket_name, has_override != 0,
+                                     override_pos, override_rot, override_scale);
                 }
                 break;
             }
@@ -4502,6 +4571,136 @@ int main() {
                     player_actor.position = {player.x, player.y, player.z};
                     player_actor.yaw      = player.yaw;
                     player_anim_ctrl.Submit(player_actor, *pipeline);
+
+                    // B5: render equipped weapon from slot 0 on the local player actor.
+                    // Render after animation submit so bone transforms are for the frame.
+                    {
+                        static bool b5_render_logged = false;
+                        static bool b5_socket_not_found_logged = false;
+                        static bool b5_bone_not_found_logged = false;
+
+                        const auto& equipped_item = inventory.GetSlot(0);
+                        const bool has_equipped_weapon =
+                            equipped_item.item_id != 0 && !equipped_item.model_path.empty();
+
+                        if (!has_equipped_weapon) {
+                            if (!player_weapon_model_path.empty()) {
+                                player_weapon_model_path.clear();
+                                player_weapon_actor.reset();
+                                b5_render_logged = false;
+                                b5_socket_not_found_logged = false;
+                                b5_bone_not_found_logged = false;
+                            }
+                        } else if (player_weapon_model_path != equipped_item.model_path) {
+                            player_weapon_actor = std::make_unique<rco::renderer::Actor>();
+                            player_weapon_actor->Init("shaders", equipped_item.model_path.c_str(),
+                                                     &engine.materials());
+                            player_weapon_actor->SetReadabilityProfile(
+                                rco::renderer::Actor::ReadabilityProfile::Character);
+                            engine.MarkMaterialsDirty();
+                            std::fprintf(stderr,
+                                         "[B5] loaded weapon mesh: %s (loaded=%s)\n",
+                                         equipped_item.model_path.c_str(),
+                                         player_weapon_actor->IsLoaded() ? "true" : "false");
+                            player_weapon_model_path = equipped_item.model_path;
+                            b5_render_logged = false;
+                            b5_socket_not_found_logged = false;
+                            b5_bone_not_found_logged = false;
+                        }
+
+                        if (player_weapon_actor && player_weapon_actor->IsLoaded()) {
+                            const WorldSocket* attach_socket = nullptr;
+                            for (const auto& ws : player_sockets) {
+                                if (ws.socket_name == equipped_item.socket_name) {
+                                    attach_socket = &ws;
+                                    break;
+                                }
+                            }
+                            if (!attach_socket) {
+                                if (!b5_socket_not_found_logged) {
+                                    std::fprintf(stderr,
+                                                 "[B5] item socket '%s' not found in player sockets\n",
+                                                 equipped_item.socket_name.empty() ? "(empty)" : equipped_item.socket_name.c_str());
+                                    b5_socket_not_found_logged = true;
+                                }
+                            } else {
+                                b5_socket_not_found_logged = false;
+                                glm::mat4 bone_world;
+                                if (!player_actor.GetBoneWorldTransform(attach_socket->bone_name, &bone_world)) {
+                                    if (!b5_bone_not_found_logged) {
+                                        std::fprintf(stderr, "[B5] bone '%s' not found\n",
+                                                     attach_socket->bone_name.c_str());
+                                        b5_bone_not_found_logged = true;
+                                    }
+                                } else {
+                                    b5_bone_not_found_logged = false;
+
+                                    glm::mat4 player_actor_matrix(1.f);
+                                    player_actor_matrix = glm::translate(
+                                        player_actor_matrix,
+                                        player_actor.position + glm::vec3(0.f, player_actor.y_offset, 0.f));
+                                    player_actor_matrix = glm::rotate(
+                                        player_actor_matrix,
+                                        glm::radians(player_actor.yaw),
+                                        glm::vec3(0.f, 1.f, 0.f));
+                                    if (player_actor.yaw_offset != 0.f) {
+                                        player_actor_matrix = glm::rotate(
+                                            player_actor_matrix,
+                                            glm::radians(player_actor.yaw_offset),
+                                            glm::vec3(0.f, 1.f, 0.f));
+                                    }
+                                    player_actor_matrix = glm::scale(
+                                        player_actor_matrix,
+                                        glm::vec3(player_actor.scale));
+
+                                    const auto build_socket_transform = [](const float pos[3],
+                                                                          const float rot_deg[3],
+                                                                          float scale) {
+                                        glm::mat4 m(1.f);
+                                        m = glm::translate(m, glm::vec3(pos[0], pos[1], pos[2]));
+                                        m = glm::rotate(m, glm::radians(rot_deg[0]), glm::vec3(1.f, 0.f, 0.f));
+                                        m = glm::rotate(m, glm::radians(rot_deg[1]), glm::vec3(0.f, 1.f, 0.f));
+                                        m = glm::rotate(m, glm::radians(rot_deg[2]), glm::vec3(0.f, 0.f, 1.f));
+                                        m = glm::scale(m, glm::vec3(scale));
+                                        return m;
+                                    };
+
+                                    const glm::mat4 socket_matrix = build_socket_transform(
+                                        attach_socket->pos, attach_socket->rot, attach_socket->scale);
+                                    glm::mat4 override_matrix(1.f);
+                                    if (equipped_item.has_override) {
+                                        override_matrix = build_socket_transform(
+                                            equipped_item.override_pos, equipped_item.override_rot,
+                                            equipped_item.override_scale);
+                                    }
+
+                                    const float mesh_scale =
+                                        equipped_item.model_scale > 0.f ? equipped_item.model_scale : 1.f;
+                                    const glm::mat4 item_world =
+                                        player_actor_matrix *
+                                        bone_world *
+                                        socket_matrix *
+                                        override_matrix *
+                                        glm::scale(glm::mat4(1.f), glm::vec3(mesh_scale));
+
+                                    player_weapon_actor->SubmitWithMatrix(*pipeline, item_world);
+                                    if (!b5_render_logged) {
+                                        const glm::vec3 p = glm::vec3(item_world[3]);
+                                        std::fprintf(stderr,
+                                                     "[B5] rendering weapon: path=%s bone=%s socket=%s has_override=%d\n",
+                                                     equipped_item.model_path.c_str(),
+                                                     attach_socket->bone_name.c_str(),
+                                                     equipped_item.socket_name.c_str(),
+                                                     equipped_item.has_override ? 1 : 0);
+                                        std::fprintf(stderr,
+                                                     "[B5] item_world pos=(%.3f,%.3f,%.3f)\n",
+                                                     p.x, p.y, p.z);
+                                        b5_render_logged = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // ── Frustum culling setup (Gribb-Hartmann) ──────────────────────────

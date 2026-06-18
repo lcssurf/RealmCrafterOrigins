@@ -150,6 +150,26 @@ public:
         return (i >= 0 && i < (int)clips_.size()) ? clips_[i].duration_sec : 0.f;
     }
 
+    // Returns the names of all bones in this model (sorted alphabetically by
+    // map iteration). Empty if the model has no skeletal data. Used by the GUE
+    // socket editor to populate the bone dropdown without querying the DB.
+    std::vector<std::string> BoneNames() const {
+        std::vector<std::string> out;
+        out.reserve(bone_map_.size());
+        for (const auto& [name, _] : bone_map_) out.push_back(name);
+        return out;
+    }
+
+    // Returns the bone's model-space world transform (global_inv_ * accumulated
+    // hierarchy, WITHOUT inverse-bind) from the last Compute*Bones call.
+    // Use this for attachment placement; the skinning matrix in out_mats has
+    // the inverse-bind baked in and must NOT be used to position child objects.
+    // Returns false — leaves *out untouched — if bone name is unknown.
+    // NOTE: bone_world_transforms_ lives on the shared Model; do not call this
+    // for the same model from two actors in the same frame (B4 will move this
+    // per-actor when needed).
+    bool GetBoneWorldTransform(const std::string& name, glm::mat4* out) const;
+
     // Fill out_mats[0..kMaxBones-1] with the final bone matrices for the
     // given clip at time_sec (loops). Upload to the bone SSBO before submit.
     // `mesh_idx` selects which submesh's bone_offsets[] to use — because in
@@ -221,6 +241,10 @@ private:
     std::vector<BoneInfo>      bones_;
     std::map<std::string,int>  bone_map_;
     std::vector<AnimClip>      clips_;
+    // World transform per bone (global_inv_ * global[ni], no inverse-bind).
+    // Sized to bones_.size() in Load; updated each Compute*Bones call.
+    // mutable: Compute*Bones are const but write this as a pose cache.
+    mutable std::vector<glm::mat4> bone_world_transforms_;
     glm::mat4                  global_inv_    = glm::mat4(1.f);
     glm::vec3                  hips_bind_pos_ = glm::vec3(0.f);
     bool                       skinned_       = false;

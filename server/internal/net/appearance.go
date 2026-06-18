@@ -81,6 +81,19 @@ func BuildAppearanceFromDef(ctx context.Context, database *db.DB, def *db.ActorD
 	out.YawOffset = float32(def.YawOffset)
 	out.YOffset   = float32(def.YOffset)
 
+	// Socket bindings (B3a)
+	if sockRows, err := database.LoadActorDefSockets(ctx, def.ID); err == nil {
+		for _, s := range sockRows {
+			out.Sockets = append(out.Sockets, world.SocketBinding{
+				SocketName:  s.SocketName,
+				BoneName:    s.BoneName,
+				OffsetPos:   [3]float32{float32(s.OffsetPosX), float32(s.OffsetPosY), float32(s.OffsetPosZ)},
+				OffsetRot:   [3]float32{float32(s.OffsetRotX), float32(s.OffsetRotY), float32(s.OffsetRotZ)},
+				OffsetScale: float32(s.OffsetScale),
+			})
+		}
+	}
+
 	for _, a := range def.Anims {
 		clip, _ := database.GetMediaAnimClip(ctx, a.ClipID)
 		if clip == nil {
