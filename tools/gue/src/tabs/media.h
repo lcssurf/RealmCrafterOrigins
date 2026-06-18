@@ -117,6 +117,8 @@ struct ActorAnimMap {
     // source_path means "embedded in the actor's Body model".
     std::string source_path;
     std::string clip_override;
+    int         start_frame = 0;   // 0 = start of clip (default, Mixamo behaviour unchanged)
+    int         end_frame   = -1;  // -1 = play to end of clip
 
     // Playback metadata
     bool        loop      = true;

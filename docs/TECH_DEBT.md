@@ -1007,6 +1007,28 @@ ajuste de balance disponível (a dimensão está acessível via resolveAbilityDi
   lista plana add/rename/delete + EnsureTables para sqlite local.
 - Próximo: B3 (actor_def mapeia socket→bone+offset).
 
+## 109. Feature: animação em timeline única (recorte por frames)
+
+- **Renderer** (`anim_controller.cpp`): `Submit` agora passa
+  `active_.time_sec + start_frame/fps` ao `SubmitAs`/`SubmitBlended`.
+  Clips sem recorte (`start_frame=0`) recebem offset zero — comportamento idêntico ao
+  anterior, nenhum modelo Mixamo atual é afetado.
+- **GUE** (`media.cpp` `DrawActorDefs`): tabela de animações ganhou colunas
+  "Start Fr" / "End Fr" (InputInt). `SaveAnimMap` persiste esses campos em
+  `media_anim_clips.start_frame` / `end_frame`.
+- **Preview scrubber** (`preview_viewport.cpp`): abaixo dos controles de clip,
+  slider de tempo (pausa ao arrastar) + display "Frame N  (X fps)" para achar
+  os pontos de corte visualmente.
+- **`AnimClip.fps`** (`model.h`, `model.cpp`): campo adicionado ao struct e
+  populado em `LoadAnimations` e `AppendAnimationsFrom` (tps do Assimp). Exposto
+  via `Model::ClipFps(i)`.
+- **Infra de dados/wire já existia**: `media_anim_clips.start_frame/end_frame/fps`,
+  protocolo server→client (`frame.go`), `AnimBinding` no cliente. Só faltava o
+  offset no render + a UI no GUE.
+- Botões "Set Start"/"Set End" no preview não implementados — o preview não tem
+  acesso ao row selecionado em DrawActorDefs (seria acoplamento cross-tab). O dev
+  lê o frame no display e digita nos campos.
+
 ## 108. Project Manager (rco_project_manager) — Gerenciador de Projetos
 - Renomeado de "launcher" → "project_manager" (tools/project_manager/,
   rco_project_manager.exe). "launcher" fica reservado para feature futura.

@@ -694,6 +694,8 @@ void MediaTab::FetchAll(sqlite3* db) {
                 if (c.id == a.clip_id) {
                     a.source_path   = c.source_path;
                     a.clip_override = c.clip_override;
+                    a.start_frame   = c.start_frame;
+                    a.end_frame     = c.end_frame;
                     break;
                 }
             }
@@ -1266,24 +1268,29 @@ void MediaTab::SaveAnimMap(sqlite3* db, ActorAnimMap& a) {
         sqlite3_stmt* cs = nullptr;
         if (a.clip_id == 0) {
             if (sqlite3_prepare_v2(db,
-                "INSERT INTO media_anim_clips (name, source_path, clip_override)"
-                " VALUES (?, ?, ?)",
+                "INSERT INTO media_anim_clips (name, source_path, clip_override, start_frame, end_frame)"
+                " VALUES (?, ?, ?, ?, ?)",
                 -1, &cs, nullptr) == SQLITE_OK) {
                 sqlite3_bind_text(cs, 1, a.action.c_str(),        -1, SQLITE_TRANSIENT);
                 sqlite3_bind_text(cs, 2, a.source_path.c_str(),   -1, SQLITE_TRANSIENT);
                 sqlite3_bind_text(cs, 3, a.clip_override.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int (cs, 4, a.start_frame);
+                sqlite3_bind_int (cs, 5, a.end_frame);
                 if (sqlite3_step(cs) == SQLITE_DONE)
                     a.clip_id = (int)sqlite3_last_insert_rowid(db);
                 sqlite3_finalize(cs);
             }
         } else {
             if (sqlite3_prepare_v2(db,
-                "UPDATE media_anim_clips SET name=?, source_path=?, clip_override=? WHERE id=?",
+                "UPDATE media_anim_clips SET name=?, source_path=?, clip_override=?,"
+                " start_frame=?, end_frame=? WHERE id=?",
                 -1, &cs, nullptr) == SQLITE_OK) {
                 sqlite3_bind_text(cs, 1, a.action.c_str(),        -1, SQLITE_TRANSIENT);
                 sqlite3_bind_text(cs, 2, a.source_path.c_str(),   -1, SQLITE_TRANSIENT);
                 sqlite3_bind_text(cs, 3, a.clip_override.c_str(), -1, SQLITE_TRANSIENT);
-                sqlite3_bind_int (cs, 4, a.clip_id);
+                sqlite3_bind_int (cs, 4, a.start_frame);
+                sqlite3_bind_int (cs, 5, a.end_frame);
+                sqlite3_bind_int (cs, 6, a.clip_id);
                 sqlite3_step(cs);
                 sqlite3_finalize(cs);
             }
@@ -2776,13 +2783,15 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         ImGui::TextColored({0.8f, 0.9f, 1.f, 1.f}, "Animations");
         ImGui::BeginChild("##anims", {0, 300}, true);
 
-        if (ImGui::BeginTable("##anim_tbl", 9,
+        if (ImGui::BeginTable("##anim_tbl", 11,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp |
             ImGuiTableFlags_ScrollX)) {
             ImGui::TableSetupScrollFreeze(1, 1);
             ImGui::TableSetupColumn("Action",    ImGuiTableColumnFlags_WidthFixed, 100);
             ImGui::TableSetupColumn("Source file");
             ImGui::TableSetupColumn("Clip name", ImGuiTableColumnFlags_WidthFixed, 110);
+            ImGui::TableSetupColumn("Start Fr",  ImGuiTableColumnFlags_WidthFixed,  60);
+            ImGui::TableSetupColumn("End Fr",    ImGuiTableColumnFlags_WidthFixed,  60);
             ImGui::TableSetupColumn("Loop",      ImGuiTableColumnFlags_WidthFixed,  40);
             ImGui::TableSetupColumn("Speed",     ImGuiTableColumnFlags_WidthFixed,  60);
             ImGui::TableSetupColumn("Blend In",  ImGuiTableColumnFlags_WidthFixed,  65);
@@ -2809,6 +2818,18 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                 ImGui::TableNextColumn();
                 ImGui::SetNextItemWidth(-1);
                 InputString("##co", a.clip_override, 64);
+
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputInt("##sf", &a.start_frame);
+                if (a.start_frame < 0) a.start_frame = 0;
+
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputInt("##ef", &a.end_frame);
+                if (a.end_frame < -1) a.end_frame = -1;
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("-1 = play to end of clip");
 
                 ImGui::TableNextColumn();
                 ImGui::Checkbox("##loop", &a.loop);

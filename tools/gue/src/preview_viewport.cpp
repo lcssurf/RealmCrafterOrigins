@@ -746,11 +746,21 @@ void PreviewViewport::DrawImGui() {
     DrawCollisionOverlay_(cursor_before, view_size);
 
     const auto& mdl = actor_.model();
+    // Resolve the current clip's duration and fps for the scrubber below.
+    float scrub_dur = 0.f;
+    float scrub_fps = 30.f;
     if (mdl.HasAnimations() && mdl.ClipCount() > 0) {
         ImGui::Checkbox("Play", &playing_);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(160);
         const std::string& cur = actor_.CurrentAnim();
+        for (int i = 0; i < mdl.ClipCount(); ++i) {
+            if (mdl.ClipName(i) == cur) {
+                scrub_dur = mdl.ClipDuration(i);
+                scrub_fps = mdl.ClipFps(i);
+                break;
+            }
+        }
         if (ImGui::BeginCombo("##clip", cur.empty() ? "(none)" : cur.c_str())) {
             for (int i = 0; i < mdl.ClipCount(); ++i) {
                 bool sel = (mdl.ClipName(i) == cur);
@@ -768,6 +778,17 @@ void PreviewViewport::DrawImGui() {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(120.f);
     ImGui::SliderFloat("Light", &sun_intensity_, 0.0f, 4.0f, "%.2f");
+
+    // Scrubber — drag to scrub through the clip and read the frame number.
+    // Useful for finding start_frame / end_frame for timeline-sliced clips.
+    if (scrub_dur > 0.f) {
+        ImGui::SetNextItemWidth(300.f);
+        if (ImGui::SliderFloat("##scrub", &anim_t_, 0.f, scrub_dur, "%.3f s"))
+            playing_ = false;  // pause on drag so the pose holds
+        ImGui::SameLine();
+        int cur_frame = static_cast<int>(anim_t_ * scrub_fps);
+        ImGui::Text("Frame %d  (%.1f fps)", cur_frame, scrub_fps);
+    }
 
     // UV transform diagnostic — visible only for static (non-skinned) meshes
     // since they use the simple preview shader.

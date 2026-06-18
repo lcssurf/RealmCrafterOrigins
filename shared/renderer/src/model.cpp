@@ -48,6 +48,7 @@ struct RawAnimChannel {
 struct RawAnimClip {
     std::string                 fbx_name;
     float                       duration_sec = 0.f;
+    float                       fps          = 30.f;
     std::vector<RawAnimChannel> channels;
 };
 struct AnimFileCache { std::vector<RawAnimClip> clips; };
@@ -420,6 +421,7 @@ void Model::LoadAnimations(const aiScene* scene) {
         clip.name = src->mName.C_Str();
         double tps = src->mTicksPerSecond > 0.0 ? src->mTicksPerSecond : 25.0;
         clip.duration_sec = float(src->mDuration / tps);
+        clip.fps          = float(tps);
 
         for (unsigned ci = 0; ci < src->mNumChannels; ++ci) {
             const aiNodeAnim* ch = src->mChannels[ci];
@@ -1339,6 +1341,7 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
                 raw.fbx_name = src->mName.C_Str();
                 double tps = src->mTicksPerSecond > 0.0 ? src->mTicksPerSecond : 25.0;
                 raw.duration_sec = float(src->mDuration / tps);
+                raw.fps          = float(tps);
 
                 for (unsigned ci = 0; ci < src->mNumChannels; ++ci) {
                     const aiNodeAnim* ch = src->mChannels[ci];
@@ -1387,6 +1390,7 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
         AnimClip clip;
         clip.name         = (name_override && name_override[0] != '\0') ? name_override : raw.fbx_name;
         clip.duration_sec = raw.duration_sec;
+        clip.fps          = raw.fps;
 
         for (const RawAnimChannel& rc : raw.channels) {
             // Skip channels absent from this body's skeleton (e.g. extra finger bones).

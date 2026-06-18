@@ -80,6 +80,7 @@ struct BoneChannel {
 struct AnimClip {
     std::string               name;
     float                     duration_sec = 0.f;
+    float                     fps          = 30.f;  // ticks-per-second from Assimp; default 30
     std::vector<BoneChannel>  channels;
     std::map<std::string,int> chan_map; // node name → channels[] index
 };
@@ -148,6 +149,9 @@ public:
     const std::string& ClipName(int i)     const { return clips_[i].name; }
     float ClipDuration(int i)   const {
         return (i >= 0 && i < (int)clips_.size()) ? clips_[i].duration_sec : 0.f;
+    }
+    float ClipFps(int i)        const {
+        return (i >= 0 && i < (int)clips_.size()) ? clips_[i].fps : 30.f;
     }
 
     // Returns the names of all bones in this model (sorted alphabetically by
