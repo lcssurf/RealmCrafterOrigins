@@ -109,6 +109,13 @@ bool AnimController::RequestStateImpl_(uint8_t new_id, bool force) {
     // Set up blend
     blend_.from_action = cb.action;
     blend_.from_time   = active_.time_sec;
+    // Capture the from-binding's start_frame offset so Submit can sample the
+    // correct point in the file during the crossfade, just like the to-clip.
+    blend_.from_start_offset_sec = 0.f;
+    if (active_.binding && active_.binding->start_frame > 0) {
+        float fps = active_.binding->fps > 0.f ? active_.binding->fps : 30.f;
+        blend_.from_start_offset_sec = active_.binding->start_frame / fps;
+    }
     blend_.elapsed     = 0.f;
     blend_.duration    = nb.blend_in;
     blend_.active      = (nb.blend_in > 0.001f);
@@ -258,14 +265,22 @@ void AnimController::Submit(rco::renderer::Actor& actor,
         actor.Submit(pipeline);
         return;
     }
+    // Offset active_.time_sec by start_frame/fps so ComputeBones samples the
+    // correct position in the file for timeline-sliced clips. When start_frame==0
+    // (all current Mixamo clips) the offset is 0 and behaviour is identical to before.
+    float to_offset = 0.f;
+    if (active_.binding && active_.binding->start_frame > 0) {
+        float fps = active_.binding->fps > 0.f ? active_.binding->fps : 30.f;
+        to_offset = active_.binding->start_frame / fps;
+    }
     if (IsBlending()) {
         actor.SubmitBlended(pipeline,
-            BlendFromAction(), BlendFromTime(),
-            CurrentAction(),   CurrentTime(),
+            BlendFromAction(), BlendFromTime() + blend_.from_start_offset_sec,
+            CurrentAction(),   CurrentTime()   + to_offset,
             BlendAlpha());
     } else {
         bool loop_flag = active_.binding ? active_.binding->loop : true;
-        actor.SubmitAs(CurrentAction(), CurrentTime(), loop_flag, pipeline);
+        actor.SubmitAs(CurrentAction(), CurrentTime() + to_offset, loop_flag, pipeline);
     }
 }
 

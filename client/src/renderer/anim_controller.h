@@ -45,10 +45,11 @@ struct ActiveAnim {
 
 struct BlendState {
     std::string from_action;   // action name being blended FROM
-    float       from_time = 0.f;
-    float       elapsed   = 0.f;
-    float       duration  = 0.f;
-    bool        active    = false;
+    float       from_time             = 0.f;
+    float       from_start_offset_sec = 0.f;  // start_frame/fps of the from-binding
+    float       elapsed               = 0.f;
+    float       duration              = 0.f;
+    bool        active                = false;
 };
 
 // ── AnimController ────────────────────────────────────────────────────────────
