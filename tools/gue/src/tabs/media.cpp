@@ -3103,25 +3103,34 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                 preview_->SetCollisionShapes({});
                 preview_->SetCollisionPreviewVisible(false);
 
-                // Build action entries from the live anim_map so the preview
-                // dropdown shows actions (Idle, Walk…) not raw clip names.
-                // p_start / p_end point into editActorDef_.anim_map[i] so
-                // Set Start / Set End write directly into the same struct that
-                // the table renders — dev clicks Save in the table row to persist.
+                // Build action entries so the preview dropdown lists actions
+                // (Idle, Walk…) not raw clip names. action_index carries the
+                // position in anim_map; callbacks resolve it at click time via
+                // editActorDef_ (stable member) — robust to any future realloc.
                 {
                     std::vector<AnimActionEntry> anim_entries;
                     anim_entries.reserve(editActorDef_.anim_map.size());
-                    for (auto& a : editActorDef_.anim_map) {
+                    for (int ai = 0; ai < (int)editActorDef_.anim_map.size(); ++ai) {
+                        const auto& a = editActorDef_.anim_map[ai];
                         AnimActionEntry e;
                         e.action        = a.action;
                         e.source_path   = a.source_path;
                         e.clip_override = a.clip_override;
                         e.loop          = a.loop;
-                        e.p_start       = &a.start_frame;
-                        e.p_end         = &a.end_frame;
+                        e.action_index  = ai;
                         anim_entries.push_back(std::move(e));
                     }
-                    preview_->SetAnimActions(std::move(anim_entries));
+                    preview_->SetAnimActions(
+                        std::move(anim_entries),
+                        [this](int idx, int frame) {
+                            if (idx >= 0 && idx < (int)editActorDef_.anim_map.size())
+                                editActorDef_.anim_map[idx].start_frame = frame;
+                        },
+                        [this](int idx, int frame) {
+                            if (idx >= 0 && idx < (int)editActorDef_.anim_map.size())
+                                editActorDef_.anim_map[idx].end_frame = frame;
+                        }
+                    );
                 }
 
                 preview_->DrawImGui();

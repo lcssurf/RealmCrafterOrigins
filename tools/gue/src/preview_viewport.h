@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <functional>
 
 struct ImVec2;
 
@@ -17,15 +18,15 @@ namespace gue {
 // Lightweight descriptor of one configured action from the actor def's anim map.
 // Passed each frame from DrawActorDefs so the preview dropdown lists actions
 // (Idle, Walk, Attack…) instead of raw clip names.
-// p_start / p_end are non-owning pointers into editActorDef_.anim_map[i] so
-// the Set Start / Set End buttons can write directly into the live anim_map.
+// action_index is the position of this entry in editActorDef_.anim_map; Set
+// Start / Set End resolve the write through callbacks at click time (not via
+// element pointers) so realloc of anim_map never produces dangling access.
 struct AnimActionEntry {
     std::string action;
     std::string source_path;   // "" = embedded in body; else separate anim file
     std::string clip_override; // "" = use action as clip name; else explicit name
-    bool        loop    = true;
-    int*        p_start = nullptr;  // → ActorAnimMap.start_frame
-    int*        p_end   = nullptr;  // → ActorAnimMap.end_frame
+    bool        loop         = true;
+    int         action_index = -1;  // index into editActorDef_.anim_map
 };
 
 // 3D preview panel rendered via the shared deferred renderer (Engine + Pipeline).
@@ -87,9 +88,13 @@ public:
 
     // Called each frame from DrawActorDefs before DrawImGui().
     // Replaces the raw clip dropdown with a dropdown of configured actions.
-    // Pointers p_start / p_end inside each entry must remain valid until the
-    // next SetAnimActions call (they point into editActorDef_.anim_map[i]).
-    void SetAnimActions(std::vector<AnimActionEntry> actions);
+    // on_set_start(action_index, frame) / on_set_end(action_index, frame) are
+    // called when the dev clicks Set Start / Set End; media.cpp provides lambdas
+    // that capture editActorDef_ by this-pointer and resolve [action_index] at
+    // click time — robust to any realloc of anim_map between frames.
+    void SetAnimActions(std::vector<AnimActionEntry> actions,
+                        std::function<void(int,int)>  on_set_start,
+                        std::function<void(int,int)>  on_set_end);
 
     void DrawImGui();
     void Clear();
@@ -150,9 +155,11 @@ private:
 
     // Configured actions from the actor def's anim map. Refreshed each frame
     // from DrawActorDefs via SetAnimActions().
-    std::vector<AnimActionEntry> anim_actions_;
-    int                          sel_action_      = -1;
-    std::string                  sel_action_name_;  // stable across SetAnimActions calls
+    std::vector<AnimActionEntry>  anim_actions_;
+    int                           sel_action_      = -1;
+    std::string                   sel_action_name_;  // stable across SetAnimActions calls
+    std::function<void(int,int)>  on_set_start_;     // (action_index, frame) → anim_map[idx].start_frame
+    std::function<void(int,int)>  on_set_end_;       // (action_index, frame) → anim_map[idx].end_frame
 
     // UV diagnostic — apply offset/scale on top of the VBO's UVs so the user
     // can confirm the right alignment when the import didn't pick up the

@@ -691,7 +691,11 @@ void PreviewViewport::EnsureCollisionMeshCache_() const {
     collision_mesh_cache_path_ = resolved;
 }
 
-void PreviewViewport::SetAnimActions(std::vector<AnimActionEntry> actions) {
+void PreviewViewport::SetAnimActions(std::vector<AnimActionEntry> actions,
+                                     std::function<void(int,int)>  on_set_start,
+                                     std::function<void(int,int)>  on_set_end) {
+    on_set_start_ = std::move(on_set_start);
+    on_set_end_   = std::move(on_set_end);
     bool was_empty = anim_actions_.empty();
     anim_actions_ = std::move(actions);
 
@@ -855,17 +859,17 @@ void PreviewViewport::DrawImGui() {
         int cur_frame = static_cast<int>(anim_t_ * scrub_fps);
         ImGui::Text("Frame %d  (%.1f fps)", cur_frame, scrub_fps);
 
-        // Write cur_frame directly into the selected action's start/end_frame
-        // (pointer into editActorDef_.anim_map[i]). Dev clicks Save in the
-        // table row to persist — no auto-save.
+        // Resolve action_index at click time via callbacks — robust to any
+        // realloc of editActorDef_.anim_map between frames. Dev clicks Save
+        // in the table row to persist — no auto-save.
         if (has_actions && sel_action_ >= 0 && sel_action_ < (int)anim_actions_.size()) {
-            const AnimActionEntry& ae = anim_actions_[sel_action_];
+            int idx = anim_actions_[sel_action_].action_index;
             ImGui::SameLine();
-            if (ImGui::SmallButton("Set Start") && ae.p_start)
-                *ae.p_start = cur_frame;
+            if (ImGui::SmallButton("Set Start") && on_set_start_)
+                on_set_start_(idx, cur_frame);
             ImGui::SameLine();
-            if (ImGui::SmallButton("Set End") && ae.p_end)
-                *ae.p_end = cur_frame;
+            if (ImGui::SmallButton("Set End") && on_set_end_)
+                on_set_end_(idx, cur_frame);
         }
     }
 
