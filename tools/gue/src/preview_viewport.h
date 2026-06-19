@@ -14,6 +14,20 @@ namespace rco::renderer { class Engine; class Pipeline; }
 
 namespace gue {
 
+// Lightweight descriptor of one configured action from the actor def's anim map.
+// Passed each frame from DrawActorDefs so the preview dropdown lists actions
+// (Idle, Walk, Attack…) instead of raw clip names.
+// p_start / p_end are non-owning pointers into editActorDef_.anim_map[i] so
+// the Set Start / Set End buttons can write directly into the live anim_map.
+struct AnimActionEntry {
+    std::string action;
+    std::string source_path;   // "" = embedded in body; else separate anim file
+    std::string clip_override; // "" = use action as clip name; else explicit name
+    bool        loop    = true;
+    int*        p_start = nullptr;  // → ActorAnimMap.start_frame
+    int*        p_end   = nullptr;  // → ActorAnimMap.end_frame
+};
+
 // 3D preview panel rendered via the shared deferred renderer (Engine + Pipeline).
 // Owns a single rco::renderer::Actor — the same class the client and Zone
 // editor use — so every fix to model loading, skinning, material mapping
@@ -71,6 +85,12 @@ public:
     };
     void ApplyMaterialsFromMedia(const std::vector<MaterialLookup>& mats);
 
+    // Called each frame from DrawActorDefs before DrawImGui().
+    // Replaces the raw clip dropdown with a dropdown of configured actions.
+    // Pointers p_start / p_end inside each entry must remain valid until the
+    // next SetAnimActions call (they point into editActorDef_.anim_map[i]).
+    void SetAnimActions(std::vector<AnimActionEntry> actions);
+
     void DrawImGui();
     void Clear();
     const std::string& CurrentPath() const { return current_path_; }
@@ -100,6 +120,8 @@ private:
     void RenderToEngineFrame_(int w, int h, float dt);
     void DrawCollisionOverlay_(const ImVec2& image_pos, const ImVec2& image_size) const;
     void EnsureCollisionMeshCache_() const;
+    // Resolve and play the clip for a configured action entry.
+    void PlayActionEntry_(const AnimActionEntry& e);
 
     rco::renderer::Engine*   engine_   = nullptr;
     rco::renderer::Pipeline* pipeline_ = nullptr;
@@ -125,6 +147,12 @@ private:
     bool  playing_       = true;
     float sun_intensity_ = 1.0f;
     float actor_scale_   = 1.0f;
+
+    // Configured actions from the actor def's anim map. Refreshed each frame
+    // from DrawActorDefs via SetAnimActions().
+    std::vector<AnimActionEntry> anim_actions_;
+    int                          sel_action_      = -1;
+    std::string                  sel_action_name_;  // stable across SetAnimActions calls
 
     // UV diagnostic — apply offset/scale on top of the VBO's UVs so the user
     // can confirm the right alignment when the import didn't pick up the

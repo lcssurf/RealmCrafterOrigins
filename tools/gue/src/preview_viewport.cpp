@@ -254,6 +254,9 @@ void PreviewViewport::Clear() {
     actor_.Destroy();
     current_path_.clear();
     anim_t_ = 0.f;
+    anim_actions_.clear();
+    sel_action_      = -1;
+    sel_action_name_.clear();
     collision_mesh_tris_.clear();
     collision_mesh_cache_path_.clear();
     collision_mesh_simplified_tris_.clear();
@@ -310,6 +313,10 @@ bool PreviewViewport::LoadModel(const std::string& path) {
     actor_.Destroy();
     current_path_ = path;
     anim_t_ = 0.f;
+    // Clear action state so SetAnimActions auto-selects on next call.
+    anim_actions_.clear();
+    sel_action_      = -1;
+    sel_action_name_.clear();
     collision_mesh_tris_.clear();
     collision_mesh_cache_path_.clear();
     collision_mesh_simplified_tris_.clear();
@@ -684,6 +691,38 @@ void PreviewViewport::EnsureCollisionMeshCache_() const {
     collision_mesh_cache_path_ = resolved;
 }
 
+void PreviewViewport::SetAnimActions(std::vector<AnimActionEntry> actions) {
+    bool was_empty = anim_actions_.empty();
+    anim_actions_ = std::move(actions);
+
+    // Re-find selected action by name so sel_action_ stays stable across
+    // frame-by-frame calls (pointers refresh but index/name stays the same).
+    int found = -1;
+    for (int i = 0; i < (int)anim_actions_.size(); ++i) {
+        if (anim_actions_[i].action == sel_action_name_) { found = i; break; }
+    }
+    sel_action_ = found;
+
+    // Auto-select and play the first action only when transitioning from empty
+    // (i.e. just after LoadModel cleared the list).
+    if (was_empty && !anim_actions_.empty()) {
+        sel_action_      = 0;
+        sel_action_name_ = anim_actions_[0].action;
+        PlayActionEntry_(anim_actions_[0]);
+    }
+}
+
+void PreviewViewport::PlayActionEntry_(const AnimActionEntry& e) {
+    const std::string clip_name = e.clip_override.empty() ? e.action : e.clip_override;
+    if (!e.source_path.empty()) {
+        std::string resolved = ResolveClientAsset(e.source_path);
+        actor_.LoadAnim(resolved.c_str(), clip_name.c_str());
+    }
+    actor_.PlayAnim(clip_name, e.loop);
+    anim_t_  = 0.f;
+    playing_ = true;
+}
+
 void PreviewViewport::DrawImGui() {
     if (!engine_ || !pipeline_) {
         ImGui::TextDisabled("Preview unavailable (engine/pipeline not initialized).");
@@ -746,48 +785,88 @@ void PreviewViewport::DrawImGui() {
     DrawCollisionOverlay_(cursor_before, view_size);
 
     const auto& mdl = actor_.model();
-    // Resolve the current clip's duration and fps for the scrubber below.
     float scrub_dur = 0.f;
     float scrub_fps = 30.f;
-    if (mdl.HasAnimations() && mdl.ClipCount() > 0) {
+
+    const bool has_actions   = !anim_actions_.empty();
+    const bool has_raw_clips = mdl.HasAnimations() && mdl.ClipCount() > 0;
+
+    if (has_actions || has_raw_clips) {
         ImGui::Checkbox("Play", &playing_);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(160);
-        const std::string& cur = actor_.CurrentAnim();
+
+        if (has_actions) {
+            // Dropdown lists configured ACTIONS (Idle, Walk, Attack…).
+            const char* sel_label = (sel_action_ >= 0 && sel_action_ < (int)anim_actions_.size())
+                ? anim_actions_[sel_action_].action.c_str() : "(none)";
+            if (ImGui::BeginCombo("##clip", sel_label)) {
+                for (int i = 0; i < (int)anim_actions_.size(); ++i) {
+                    bool is_sel = (i == sel_action_);
+                    if (ImGui::Selectable(anim_actions_[i].action.c_str(), is_sel)) {
+                        sel_action_      = i;
+                        sel_action_name_ = anim_actions_[i].action;
+                        PlayActionEntry_(anim_actions_[i]);
+                    }
+                    if (is_sel) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        } else {
+            // Fallback when no actions are configured: show raw clip names.
+            const std::string& cur = actor_.CurrentAnim();
+            if (ImGui::BeginCombo("##clip", cur.empty() ? "(none)" : cur.c_str())) {
+                for (int i = 0; i < mdl.ClipCount(); ++i) {
+                    bool is_sel = (mdl.ClipName(i) == cur);
+                    if (ImGui::Selectable(mdl.ClipName(i).c_str(), is_sel)) {
+                        actor_.PlayAnim(mdl.ClipName(i), true);
+                        anim_t_ = 0.f;
+                    }
+                    if (is_sel) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        // Resolve scrub duration from cur_name_ — works for both paths because
+        // PlayActionEntry_ sets cur_name_ to the actual clip name in clips_.
+        const std::string& cur_anim = actor_.CurrentAnim();
         for (int i = 0; i < mdl.ClipCount(); ++i) {
-            if (mdl.ClipName(i) == cur) {
+            if (mdl.ClipName(i) == cur_anim) {
                 scrub_dur = mdl.ClipDuration(i);
                 scrub_fps = mdl.ClipFps(i);
                 break;
             }
         }
-        if (ImGui::BeginCombo("##clip", cur.empty() ? "(none)" : cur.c_str())) {
-            for (int i = 0; i < mdl.ClipCount(); ++i) {
-                bool sel = (mdl.ClipName(i) == cur);
-                if (ImGui::Selectable(mdl.ClipName(i).c_str(), sel)) {
-                    actor_.PlayAnim(mdl.ClipName(i), true);
-                    anim_t_ = 0.f;
-                }
-                if (sel) ImGui::SetItemDefaultFocus();
-            }
-            ImGui::EndCombo();
-        }
         ImGui::SameLine();
     }
+
     if (ImGui::Button("Reset cam")) FitCameraToModel();
     ImGui::SameLine();
     ImGui::SetNextItemWidth(120.f);
     ImGui::SliderFloat("Light", &sun_intensity_, 0.0f, 4.0f, "%.2f");
 
-    // Scrubber — drag to scrub through the clip and read the frame number.
-    // Useful for finding start_frame / end_frame for timeline-sliced clips.
+    // Scrubber + Set Start / Set End frame markers.
     if (scrub_dur > 0.f) {
         ImGui::SetNextItemWidth(300.f);
         if (ImGui::SliderFloat("##scrub", &anim_t_, 0.f, scrub_dur, "%.3f s"))
-            playing_ = false;  // pause on drag so the pose holds
+            playing_ = false;
         ImGui::SameLine();
         int cur_frame = static_cast<int>(anim_t_ * scrub_fps);
         ImGui::Text("Frame %d  (%.1f fps)", cur_frame, scrub_fps);
+
+        // Write cur_frame directly into the selected action's start/end_frame
+        // (pointer into editActorDef_.anim_map[i]). Dev clicks Save in the
+        // table row to persist — no auto-save.
+        if (has_actions && sel_action_ >= 0 && sel_action_ < (int)anim_actions_.size()) {
+            const AnimActionEntry& ae = anim_actions_[sel_action_];
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Set Start") && ae.p_start)
+                *ae.p_start = cur_frame;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Set End") && ae.p_end)
+                *ae.p_end = cur_frame;
+        }
     }
 
     // UV transform diagnostic — visible only for static (non-skinned) meshes

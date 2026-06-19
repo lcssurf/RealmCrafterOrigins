@@ -19,8 +19,8 @@ void Actor::Init(const char* /*shader_dir*/, const char* model_path,
                  MaterialManager* mm) {
     model_ = ModelCacheGet(model_path, mm);
 
-    if (model_->HasAnimations())
-        PlayAnim("Idle", true);
+    if (model_->HasAnimations() && model_->ClipCount() > 0)
+        PlayAnim(model_->ClipName(0).c_str(), true);
 }
 
 void Actor::LoadAnim(const char* path, const char* name) {

@@ -1007,6 +1007,26 @@ ajuste de balance disponível (a dimensão está acessível via resolveAbilityDi
   lista plana add/rename/delete + EnsureTables para sqlite local.
 - Próximo: B3 (actor_def mapeia socket→bone+offset).
 
+## 110. GUE: link tabela↔preview de animação (dropdown de ações + scrubber + Set Start/End)
+
+- **Dropdown de ações** (`preview_viewport.cpp`): substituiu o dropdown de clips brutos
+  ("mixamo.com") por um dropdown que lista as AÇÕES configuradas do actor def (Idle,
+  Walk, Attack…) passadas via `PreviewViewport::SetAnimActions()`.
+- **Resolução ação→clip** (`PlayActionEntry_`): `source_path==""` → `PlayAnim(clip_override
+  ?: action, loop)`. `source_path!=""` → `LoadAnim(resolved, clip_name)` (usa o cache de
+  parse FBX em `AppendAnimationsFrom` — O(1) se já carregado) depois `PlayAnim(clip_name)`.
+- **Scrubber** (`preview_viewport.cpp`): com `PlayActionEntry_` setando `cur_name_` para o
+  nome real do clip, o loop `ClipName(i)==cur_name_` agora encontra `scrub_dur` e o scrubber
+  aparece.
+- **Botões Set Start / Set End**: escrevem o frame atual do scrubber diretamente em
+  `ActorAnimMap.start_frame/end_frame` via ponteiros não-proprietários (`p_start`, `p_end`
+  em `AnimActionEntry`). Sem auto-save — o dev salva via o botão Save da linha na tabela.
+- **Fix `Actor::Init`** (`actor.cpp`): `PlayAnim("Idle")` hardcoded substituído por
+  `PlayAnim(ClipName(0))` — `cur_name_` passa a ser honesto (nome real do clip). O jogo
+  toca o mesmo índice 0 que antes; só o nome interno muda.
+- **Acoplamento mínimo**: `AnimActionEntry` (struct leve em `preview_viewport.h`) carrega
+  apenas o que o preview precisa. Tabela de animações fica intacta no lugar atual.
+
 ## 109. Feature: animação em timeline única (recorte por frames)
 
 - **Renderer** (`anim_controller.cpp`): `Submit` agora passa

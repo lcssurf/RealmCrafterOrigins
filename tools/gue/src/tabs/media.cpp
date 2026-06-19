@@ -3102,6 +3102,28 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                 preview_->SetActorScale(editActorDef_.scale);
                 preview_->SetCollisionShapes({});
                 preview_->SetCollisionPreviewVisible(false);
+
+                // Build action entries from the live anim_map so the preview
+                // dropdown shows actions (Idle, Walk…) not raw clip names.
+                // p_start / p_end point into editActorDef_.anim_map[i] so
+                // Set Start / Set End write directly into the same struct that
+                // the table renders — dev clicks Save in the table row to persist.
+                {
+                    std::vector<PreviewViewport::AnimActionEntry> anim_entries;
+                    anim_entries.reserve(editActorDef_.anim_map.size());
+                    for (auto& a : editActorDef_.anim_map) {
+                        PreviewViewport::AnimActionEntry e;
+                        e.action        = a.action;
+                        e.source_path   = a.source_path;
+                        e.clip_override = a.clip_override;
+                        e.loop          = a.loop;
+                        e.p_start       = &a.start_frame;
+                        e.p_end         = &a.end_frame;
+                        anim_entries.push_back(std::move(e));
+                    }
+                    preview_->SetAnimActions(std::move(anim_entries));
+                }
+
                 preview_->DrawImGui();
             }
         }
