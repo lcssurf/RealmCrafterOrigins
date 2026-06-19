@@ -257,6 +257,9 @@ void PreviewViewport::Clear() {
     anim_actions_.clear();
     sel_action_      = -1;
     sel_action_name_.clear();
+    cur_clip_idx_   = -1;
+    clip_start_sec_ = 0.f;
+    clip_end_sec_   = 0.f;
     collision_mesh_tris_.clear();
     collision_mesh_cache_path_.clear();
     collision_mesh_simplified_tris_.clear();
@@ -317,6 +320,9 @@ bool PreviewViewport::LoadModel(const std::string& path) {
     anim_actions_.clear();
     sel_action_      = -1;
     sel_action_name_.clear();
+    cur_clip_idx_   = -1;
+    clip_start_sec_ = 0.f;
+    clip_end_sec_   = 0.f;
     collision_mesh_tris_.clear();
     collision_mesh_cache_path_.clear();
     collision_mesh_simplified_tris_.clear();
@@ -468,7 +474,17 @@ void PreviewViewport::RenderToEngineFrame_(int w, int h, float dt) {
                       glm::vec3(1.0f, 0.95f, 0.80f) * sun_intensity_);
 
     if (actor_.IsLoaded()) {
-        anim_t_ += playing_ ? dt : 0.f;
+        if (playing_) {
+            anim_t_ += dt;
+            // Loop within [clip_start_sec_, clip_end_sec_] when a range is set.
+            const float range = clip_end_sec_ - clip_start_sec_;
+            if (range > 0.001f) {
+                float local = anim_t_ - clip_start_sec_;
+                if (local < 0.f) local = 0.f;
+                local   = std::fmod(local, range);
+                anim_t_ = clip_start_sec_ + local;
+            }
+        }
         actor_.SubmitAs(actor_.CurrentAnim(), anim_t_, /*loop*/true, *pipeline_);
     }
 
@@ -723,7 +739,35 @@ void PreviewViewport::PlayActionEntry_(const AnimActionEntry& e) {
         actor_.LoadAnim(resolved.c_str(), clip_name.c_str());
     }
     actor_.PlayAnim(clip_name, e.loop);
-    anim_t_  = 0.f;
+
+    // Resolve the actual clip index by mirroring Actor::FindClip (exact match,
+    // then case-insensitive prefix match, then clip 0 fallback).  Stored so the
+    // scrubber can look up duration by index instead of by name (A1 fix).
+    const auto& mdl = actor_.model();
+    cur_clip_idx_ = -1;
+    for (int i = 0; i < mdl.ClipCount(); ++i)
+        if (mdl.ClipName(i) == clip_name) { cur_clip_idx_ = i; break; }
+    if (cur_clip_idx_ < 0) {
+        std::string low = clip_name;
+        for (auto& c : low) c = (char)std::tolower((unsigned char)c);
+        for (int i = 0; i < mdl.ClipCount(); ++i) {
+            std::string cn = mdl.ClipName(i);
+            for (auto& c : cn) c = (char)std::tolower((unsigned char)c);
+            if (cn.size() >= low.size() && cn.substr(0, low.size()) == low) {
+                cur_clip_idx_ = i; break;
+            }
+        }
+    }
+    if (cur_clip_idx_ < 0 && mdl.ClipCount() > 0) cur_clip_idx_ = 0;
+
+    // Compute playback range in seconds from start/end_frame (B2/B3 fix).
+    const float fps_raw  = (cur_clip_idx_ >= 0) ? mdl.ClipFps(cur_clip_idx_)      : 30.f;
+    const float fps      = fps_raw > 0.f ? fps_raw : 30.f;
+    const float total    = (cur_clip_idx_ >= 0) ? mdl.ClipDuration(cur_clip_idx_)  : 0.f;
+    clip_start_sec_ = e.start_frame > 0  ? e.start_frame / fps : 0.f;
+    clip_end_sec_   = e.end_frame   >= 0 ? e.end_frame   / fps : total;
+
+    anim_t_  = clip_start_sec_;
     playing_ = true;
 }
 
@@ -737,7 +781,7 @@ void PreviewViewport::DrawImGui() {
     if (region.x < 64.f) region.x = 64.f;
     if (region.y < 64.f) region.y = 64.f;
 
-    const float controls_h = 28.f;
+    const float controls_h = 56.f;  // two rows: Play/dropdown/Reset/Light + scrubber
     ImVec2 view_size = { region.x, std::max(64.f, region.y - controls_h - 4.f) };
 
     int w = (int)view_size.x;
@@ -832,17 +876,29 @@ void PreviewViewport::DrawImGui() {
             }
         }
 
-        // Resolve scrub duration from cur_name_ — works for both paths because
-        // PlayActionEntry_ sets cur_name_ to the actual clip name in clips_.
-        const std::string& cur_anim = actor_.CurrentAnim();
-        for (int i = 0; i < mdl.ClipCount(); ++i) {
-            if (mdl.ClipName(i) == cur_anim) {
-                scrub_dur = mdl.ClipDuration(i);
-                scrub_fps = mdl.ClipFps(i);
-                break;
-            }
+        // A1: resolve scrub duration by clip index (not name) so Mixamo models
+        // whose native clip name differs from the action name still show a scrubber.
+        if (cur_clip_idx_ >= 0 && cur_clip_idx_ < mdl.ClipCount()) {
+            scrub_dur = mdl.ClipDuration(cur_clip_idx_);
+            scrub_fps = mdl.ClipFps(cur_clip_idx_);
         }
         ImGui::SameLine();
+    }
+
+    // B4: refresh playback range every frame from the selected action's current
+    // start/end_frame values.  Entries are rebuilt each frame from anim_map so
+    // table edits propagate here without requiring a dropdown re-selection.
+    if (has_actions && sel_action_ >= 0 && sel_action_ < (int)anim_actions_.size()
+            && scrub_dur > 0.f) {
+        const AnimActionEntry& ae = anim_actions_[sel_action_];
+        const float fps_safe = scrub_fps > 0.f ? scrub_fps : 30.f;
+        clip_start_sec_ = ae.start_frame > 0  ? ae.start_frame / fps_safe : 0.f;
+        clip_end_sec_   = ae.end_frame   >= 0 ? ae.end_frame   / fps_safe : scrub_dur;
+        // If anim_t_ fell outside the (possibly tightened) range, snap to start.
+        if (clip_start_sec_ < clip_end_sec_
+                && (anim_t_ < clip_start_sec_ || anim_t_ >= clip_end_sec_)) {
+            anim_t_ = clip_start_sec_;
+        }
     }
 
     if (ImGui::Button("Reset cam")) FitCameraToModel();

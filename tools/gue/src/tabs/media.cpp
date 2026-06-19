@@ -3118,6 +3118,8 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                         e.clip_override = a.clip_override;
                         e.loop          = a.loop;
                         e.action_index  = ai;
+                        e.start_frame   = a.start_frame;
+                        e.end_frame     = a.end_frame;
                         anim_entries.push_back(std::move(e));
                     }
                     preview_->SetAnimActions(

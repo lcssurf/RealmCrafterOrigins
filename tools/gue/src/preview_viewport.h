@@ -21,12 +21,16 @@ namespace gue {
 // action_index is the position of this entry in editActorDef_.anim_map; Set
 // Start / Set End resolve the write through callbacks at click time (not via
 // element pointers) so realloc of anim_map never produces dangling access.
+// start_frame / end_frame are copied fresh each frame so table edits reach
+// the preview without requiring a dropdown re-selection.
 struct AnimActionEntry {
     std::string action;
     std::string source_path;   // "" = embedded in body; else separate anim file
     std::string clip_override; // "" = use action as clip name; else explicit name
     bool        loop         = true;
     int         action_index = -1;  // index into editActorDef_.anim_map
+    int         start_frame  = 0;   // first frame of the playback range (0 = clip start)
+    int         end_frame    = -1;  // last frame (-1 = play to end of clip)
 };
 
 // 3D preview panel rendered via the shared deferred renderer (Engine + Pipeline).
@@ -160,6 +164,12 @@ private:
     std::string                   sel_action_name_;  // stable across SetAnimActions calls
     std::function<void(int,int)>  on_set_start_;     // (action_index, frame) → anim_map[idx].start_frame
     std::function<void(int,int)>  on_set_end_;       // (action_index, frame) → anim_map[idx].end_frame
+
+    // Clip range state (A1, B2–B4). Resolved in PlayActionEntry_ and refreshed
+    // each frame from the selected AnimActionEntry so table edits propagate live.
+    int   cur_clip_idx_   = -1;   // actual clip index in model (not name-based)
+    float clip_start_sec_ = 0.f;  // start of playback range in seconds
+    float clip_end_sec_   = 0.f;  // end of playback range (0 if full clip)
 
     // UV diagnostic — apply offset/scale on top of the VBO's UVs so the user
     // can confirm the right alignment when the import didn't pick up the

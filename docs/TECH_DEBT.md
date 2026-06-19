@@ -1072,3 +1072,23 @@ ajuste de balance disponível (a dimensão está acessível via resolveAbilityDi
   Delete (fs::remove_all com confirmação obrigatória).
 - Links: rco_renderer (glad), glfw, imgui, shell32, ole32 (COM para folder picker).
 
+## 111. GUE: preview aplica recorte start_frame/end_frame e exibe scrubber corretamente
+
+- **B1** (`preview_viewport.h`): `AnimActionEntry` ganhou `start_frame` e `end_frame`.
+  `media.cpp` copia os valores de `anim_map[ai]` a cada frame, então edições na tabela
+  chegam ao preview sem exigir re-seleção no dropdown.
+- **A1** (`preview_viewport.cpp`): `PlayActionEntry_` resolve o índice real do clip
+  (exact match → prefix case-insensitive → fallback 0, espelhando `Actor::FindClip`).
+  `DrawImGui` usa `cur_clip_idx_` em vez de `ClipName(i) == cur_name_` para obter
+  `scrub_dur`/`scrub_fps` — resolve o bug onde clips Mixamo têm nome diferente da ação.
+- **A2** (`preview_viewport.cpp`): `controls_h` de 28 → 56 px (duas linhas); scrubber
+  não é mais cortado pelo child window de visualização.
+- **B2/B3** (`preview_viewport.cpp`): `PlayActionEntry_` calcula `clip_start_sec_` /
+  `clip_end_sec_` em segundos. `RenderToEngineFrame_` avança `anim_t_` e faz
+  `fmod(local, range)` para loopar dentro do intervalo; `SubmitAs` recebe `anim_t_`
+  que já está relocalizado (sem offset adicional, pois `anim_t_` parte de `clip_start_sec_`).
+- **B4** (`DrawImGui`, chamado cada frame): relê `ae.start_frame`/`ae.end_frame` do
+  entry ativo e atualiza `clip_start_sec_`/`clip_end_sec_` ao vivo; reposiciona
+  `anim_t_` para `clip_start_sec_` se o recorte foi apertado e o cursor ficou de fora.
+- Sem quebra em atores sem recorte: `start_frame=0, end_frame=-1` → range = total clip.
+
