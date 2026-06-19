@@ -3109,10 +3109,10 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                 // Set Start / Set End write directly into the same struct that
                 // the table renders — dev clicks Save in the table row to persist.
                 {
-                    std::vector<PreviewViewport::AnimActionEntry> anim_entries;
+                    std::vector<AnimActionEntry> anim_entries;
                     anim_entries.reserve(editActorDef_.anim_map.size());
                     for (auto& a : editActorDef_.anim_map) {
-                        PreviewViewport::AnimActionEntry e;
+                        AnimActionEntry e;
                         e.action        = a.action;
                         e.source_path   = a.source_path;
                         e.clip_override = a.clip_override;
