@@ -340,6 +340,18 @@ private:
     // --- Actor Defs sub-tab state ---
     int      selActorDef_   = -1;
     char     filterActorDef_[128] = {};
+
+    // Resizable layout — both are member state so they survive across frames
+    // (a local would reset to the computed default every frame while dragging).
+    // 0 means "not yet initialised"; set to the 40%-of-available fallback on
+    // the first frame once we know the actual window width.
+    float    ad_preview_w_  = 0.f;   // width of the right (preview) column
+    float    ad_anim_h_     = 300.f; // height of the Animations child window
+
+    // gue_prefs.txt — read once on first use, written when a splitter releases.
+    bool     prefs_loaded_  = false;
+    void     LoadPrefs_();
+    void     SavePrefs_() const;
     // Track the last (model, material) pair applied to preview_ so we don't
     // re-upload textures from disk every frame.
     int      preview_last_model_id_    = -1;

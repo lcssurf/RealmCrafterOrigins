@@ -114,7 +114,7 @@ int main() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.IniFilename = nullptr; // don't litter cwd with imgui.ini
+    io.IniFilename = "gue.ini"; // persist table column widths; windows are shielded below
     ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(win, true);
     ImGui_ImplOpenGL3_Init("#version 460");
@@ -209,9 +209,9 @@ int main() {
         ImGui::SetNextWindowPos(vp->Pos);
         ImGui::SetNextWindowSize(vp->Size);
         ImGui::Begin("##gue_root", nullptr,
-            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-            ImGuiWindowFlags_NoMove     | ImGuiWindowFlags_NoBringToFrontOnFocus |
-            ImGuiWindowFlags_MenuBar);
+            ImGuiWindowFlags_NoTitleBar       | ImGuiWindowFlags_NoResize  |
+            ImGuiWindowFlags_NoMove           | ImGuiWindowFlags_NoBringToFrontOnFocus |
+            ImGuiWindowFlags_MenuBar          | ImGuiWindowFlags_NoSavedSettings);
 
         // Menu bar
         if (ImGui::BeginMenuBar()) {
@@ -251,7 +251,8 @@ int main() {
                  vp->Pos.y + vp->Size.y*0.5f - 65.f},
                 ImGuiCond_Always);
             ImGui::Begin("Database path", nullptr,
-                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
+                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
+                ImGuiWindowFlags_NoSavedSettings);
             ImGui::TextUnformatted("Enter full path to rco.db:");
             ImGui::SetNextItemWidth(-1);
             bool enter = ImGui::InputText("##dbpath", dbPathBuf, sizeof(dbPathBuf),

@@ -2508,6 +2508,7 @@ static const char* lookupName(const std::vector<std::pair<int, std::string>>& v,
 }
 
 void MediaTab::DrawActorDefs(sqlite3* db) {
+    if (!prefs_loaded_) LoadPrefs_();
     EnsurePreview(preview_, preview_init_ok_, engine_, pipeline_);
     LoadDropListOptions(db);
 
@@ -2533,9 +2534,10 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         [&](int i) { editActorDef_ = actor_defs_[i]; dirtyActorDef_ = false; newActorDef_ = false; });
     ImGui::SameLine();
 
-    float ad_total_w   = ImGui::GetContentRegionAvail().x;
-    float ad_preview_w = std::max(280.f, ad_total_w * 0.40f);
-    float ad_props_w   = ad_total_w - ad_preview_w - 8.f;
+    float ad_total_w = ImGui::GetContentRegionAvail().x;
+    if (ad_preview_w_ <= 0.f)
+        ad_preview_w_ = std::max(280.f, ad_total_w * 0.40f);  // first-frame init
+    float ad_props_w = ad_total_w - ad_preview_w_ - 8.f;
 
     ImGui::BeginChild("##ad_edit", {ad_props_w, 0}, true);
 
@@ -2781,11 +2783,11 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         // full definition of the animation it needs.  Leave source_path
         // empty to use a clip embedded in the model.
         ImGui::TextColored({0.8f, 0.9f, 1.f, 1.f}, "Animations");
-        ImGui::BeginChild("##anims", {0, 300}, true);
+        ImGui::BeginChild("##anims", {0, ad_anim_h_}, true);
 
         if (ImGui::BeginTable("##anim_tbl", 11,
-            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp |
-            ImGuiTableFlags_ScrollX)) {
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit |
+            ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable)) {
             ImGui::TableSetupScrollFreeze(1, 1);
             ImGui::TableSetupColumn("Action",    ImGuiTableColumnFlags_WidthFixed, 100);
             ImGui::TableSetupColumn("Source file");
@@ -2924,6 +2926,16 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
 
         ImGui::EndChild(); // end ##anims
 
+        // Horizontal splitter — drag to resize the Animations table height.
+        ImGui::InvisibleButton("##anim_hsplit", {-1.f, 6.f});
+        if (ImGui::IsItemActive()) {
+            ad_anim_h_ += ImGui::GetIO().MouseDelta.y;
+            ad_anim_h_  = std::clamp(ad_anim_h_, 120.f, 800.f);
+        }
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        if (ImGui::IsItemDeactivatedAfterEdit()) SavePrefs_();
+
         ImGui::Spacing();
         ImGui::Separator();
 
@@ -3019,6 +3031,18 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
     }
 
     ImGui::EndChild();  // end of ##ad_edit
+
+    // Vertical splitter — drag to resize the props/preview split.
+    // {0,0} in BeginChild takes the full remaining height, so -1.f works here.
+    ImGui::SameLine();
+    ImGui::InvisibleButton("##vsplit", {8.f, -1.f});
+    if (ImGui::IsItemActive()) {
+        ad_preview_w_ -= ImGui::GetIO().MouseDelta.x;
+        ad_preview_w_  = std::clamp(ad_preview_w_, 280.f, ad_total_w - 200.f);
+    }
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    if (ImGui::IsItemDeactivatedAfterEdit()) SavePrefs_();
 
     // --- Right column: 3D preview of the composed actor ---
     ImGui::SameLine();
@@ -3325,6 +3349,37 @@ void MediaTab::Draw(sqlite3* db) {
         if (ImGui::BeginTabItem("Actor Defs")) { DrawActorDefs (db); ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
+}
+
+// ---------------------------------------------------------------------------
+// UI preference persistence (gue_prefs.txt, sibling to the exe in dist/tools/)
+// Format: two lines
+//   preview_w <float>
+//   anim_h    <float>
+// Missing keys or out-of-range values fall back to defaults quietly.
+// ---------------------------------------------------------------------------
+
+void MediaTab::LoadPrefs_() {
+    prefs_loaded_ = true;
+    FILE* f = std::fopen("gue_prefs.txt", "r");
+    if (!f) return;
+    char key[32];
+    float val;
+    while (std::fscanf(f, "%31s %f", key, &val) == 2) {
+        if (std::strcmp(key, "preview_w") == 0)
+            ad_preview_w_ = std::clamp(val, 280.f, 4000.f);
+        else if (std::strcmp(key, "anim_h") == 0)
+            ad_anim_h_ = std::clamp(val, 120.f, 800.f);
+    }
+    std::fclose(f);
+}
+
+void MediaTab::SavePrefs_() const {
+    FILE* f = std::fopen("gue_prefs.txt", "w");
+    if (!f) return;
+    std::fprintf(f, "preview_w %.2f\n", ad_preview_w_);
+    std::fprintf(f, "anim_h    %.2f\n", ad_anim_h_);
+    std::fclose(f);
 }
 
 } // namespace gue

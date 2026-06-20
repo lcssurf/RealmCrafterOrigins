@@ -1092,3 +1092,27 @@ ajuste de balance disponível (a dimensão está acessível via resolveAbilityDi
   `anim_t_` para `clip_start_sec_` se o recorte foi apertado e o cursor ficou de fora.
 - Sem quebra em atores sem recorte: `start_frame=0, end_frame=-1` → range = total clip.
 
+## 112. GUE: redimensionamentos na aba Actor Defs + persistência de UI
+
+- **Splitter centro↔preview** (`media.cpp`): `ad_preview_w_` virou membro de `MediaTab`
+  (não local — local resetaria pra 40% a cada frame). `InvisibleButton("##vsplit", {8, -1})`
+  entre `##ad_edit` e `##ad_preview`; `MouseDelta.x` ajusta `ad_preview_w_`; clamp
+  `[280, total_w - 200]`. O `##ad_preview` usa `{0,0}` (fill), então o aspect ratio do
+  viewport 3D acompanha automaticamente — o debounce de resize já existente absorve a
+  mudança sem distorcer. `IsItemDeactivatedAfterEdit` escreve `gue_prefs.txt`.
+- **Altura ajustável de Animations** (`media.cpp:2786`): `ad_anim_h_` membro, init 300 px.
+  `InvisibleButton("##anim_hsplit", {-1, 6})` logo após o `EndChild("##anims")`;
+  `MouseDelta.y` ajusta; clamp `[120, 800]`. `IsItemDeactivatedAfterEdit` escreve prefs.
+- **Colunas resizable** (`media.cpp:2788`): `SizingStretchProp` trocado por `SizingFixedFit`
+  (evita conflito com `Resizable`) + `ImGuiTableFlags_Resizable` adicionado. Larguras
+  persistem via `gue.ini` automaticamente por ID `"##anim_tbl"` — zero código extra.
+- **Persistência híbrida**:
+  - `gue.ini` reabilitado (`main.cpp:117`). `##gue_root` e `"Database path"` blindados
+    com `NoSavedSettings` — apenas as tabelas persistem colunas; janelas de layout fixo
+    ficam imunes.
+  - `gue_prefs.txt` (`dist/tools/`) lido uma vez no primeiro `DrawActorDefs` (via
+    `LoadPrefs_`), escrito só ao soltar os splitters (`SavePrefs_`). Formato: `key float`,
+    duas linhas. Clamp na leitura: `preview_w ∈ [280, 4000]`, `anim_h ∈ [120, 800]`.
+    Arquivo corrompido é ignorado silenciosamente (defaults prevalecem).
+- Aba Models intocada (`##mdl_*`). Nenhuma outra aba afetada.
+
