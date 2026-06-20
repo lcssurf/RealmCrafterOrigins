@@ -2934,7 +2934,7 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         }
         if (ImGui::IsItemHovered() || ImGui::IsItemActive())
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-        if (ImGui::IsItemDeactivatedAfterEdit()) SavePrefs_();
+        if (ImGui::IsItemDeactivated()) SavePrefs_();
 
         ImGui::Spacing();
         ImGui::Separator();
@@ -3042,7 +3042,7 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
     }
     if (ImGui::IsItemHovered() || ImGui::IsItemActive())
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-    if (ImGui::IsItemDeactivatedAfterEdit()) SavePrefs_();
+    if (ImGui::IsItemDeactivated()) SavePrefs_();
 
     // --- Right column: 3D preview of the composed actor ---
     ImGui::SameLine();
