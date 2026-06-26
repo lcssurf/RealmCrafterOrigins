@@ -290,7 +290,8 @@ void ZoneRenderer::SyncNpcModels(const std::unordered_map<int, ModelBind>& npcBi
                     ResolveClientAsset(bind.material_override.normal),
                     ResolveClientAsset(bind.material_override.orm),
                     bind.ovr_albedo_r, bind.ovr_albedo_g, bind.ovr_albedo_b,
-                    bind.ovr_roughness, bind.ovr_metallic);
+                    bind.ovr_roughness, bind.ovr_metallic,
+                    &mm);
                 need_rebuild = true;
             }
             (void)created;

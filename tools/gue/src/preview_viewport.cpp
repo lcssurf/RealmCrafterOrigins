@@ -373,12 +373,26 @@ void PreviewViewport::OverrideMaterial(const std::string& albedo,
                                        const std::string& orm,
                                        float ar, float ag, float ab,
                                        float roughness, float metallic) {
-    if (!actor_.IsLoaded()) return;
-    actor_.OverrideMaterial(
-        ResolveClientAsset(albedo),
-        ResolveClientAsset(normal),
-        ResolveClientAsset(orm),
-        ar, ag, ab, roughness, metallic);
+    if (!actor_.IsLoaded()) {
+        std::fprintf(stderr,
+            "[actor-mat] PreviewViewport::OverrideMaterial called but actor not loaded"
+            " (albedo='%s') -> no-op\n", albedo.c_str());
+        return;
+    }
+    std::string r_albedo = ResolveClientAsset(albedo);
+    std::string r_normal = ResolveClientAsset(normal);
+    std::string r_orm    = ResolveClientAsset(orm);
+    std::fprintf(stderr,
+        "[actor-mat] PreviewViewport::OverrideMaterial\n"
+        "  albedo  raw='%s'  resolved='%s'\n"
+        "  normal  raw='%s'  resolved='%s'\n"
+        "  orm     raw='%s'  resolved='%s'\n",
+        albedo.c_str(), r_albedo.c_str(),
+        normal.c_str(), r_normal.c_str(),
+        orm.c_str(),    r_orm.c_str());
+    actor_.OverrideMaterial(r_albedo, r_normal, r_orm, ar, ag, ab, roughness, metallic,
+                            engine_ ? &engine_->materials() : nullptr);
+    if (engine_) engine_->MarkMaterialsDirty();
 }
 
 void PreviewViewport::RenderToEngineFrame_(int w, int h, float dt) {

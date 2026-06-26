@@ -92,6 +92,31 @@ Reportar:
 - Confirmação que conteúdo bate exatamente com o pedido
 - Sem modificar outros arquivos
 
+## 12. Per-actor material SSBO entries nunca são liberados
+
+**Estado:** `Actor::OverrideMaterial(mm)` chama `mm->RegisterFromHandles("actor_override:<addr>#<i>", ...)`.
+O entry é atualizado in-place se chamado novamente no mesmo ator, mas **nunca removido** de
+`MaterialManager` quando o Actor é destruído (`Destroy()` limpa `mesh_material_overrides_` mas
+não notifica o manager).
+
+**Consequências:**
+- SSBO cresce monotonicamente enquanto actors com override forem criados e destruídos.
+- No GUE preview (um ator por preview, recriado ao trocar de actor def), o leak é 1 entry × 2
+  meshes por troca de actor def — na prática desprezível.
+- No client (atores em `unordered_map<uint32_t, Actor*>`, longos mapa de vida), o leak é
+  1 slot por ator que teve override, nunca compactado.
+
+**Plano proposto:**
+1. Adicionar `void MaterialManager::FreeSlotsByPrefix(const std::string& prefix)` que remove
+   todas as entries cujo nome começa com prefix da `insertionOrder_` e `nameToIndex_`.
+2. `Actor::Destroy()` chama `mm_->FreeSlotsByPrefix("actor_override:" + addr)` se `mm_` for
+   armazenado como membro (requer guardar ponteiro no actor).
+3. Alternativa mais simples: substituir o key scheme por um `uint32_t actor_id` global
+   (incrementado por Init) e permitir reset do manager em cenários de alta rotatividade.
+
+**Quando atacar:** quando houver cenário de alta rotatividade (dungeon instances, etc).
+Por ora o leak é aceitável.
+
 ## 11. Categorias de skill nao-damage sem runtime
 
 Schema de `ability_templates` suporta categories: `damage`, `heal`, `buff`, `debuff`, `mobility`, `utility`, `summon`.
@@ -1092,6 +1117,24 @@ ajuste de balance disponível (a dimensão está acessível via resolveAbilityDi
   `anim_t_` para `clip_start_sec_` se o recorte foi apertado e o cursor ficou de fora.
 - Sem quebra em atores sem recorte: `start_frame=0, end_frame=-1` → range = total clip.
 
+## 113. GUE: reorganização da importação de texturas/materiais
+
+- **Dois fluxos distintos**:
+  - `"Import PBR Material (folder)..."` → `assets/materials/<subdir>/` (nova pasta). Escaneia
+    a pasta por grupos PBR (Albedo+Normal+ORM), preserva estrutura interna de subpastas via
+    `fs::relative(file_parent, source_root)`. Registra no DB como `MediaMaterial` completo.
+  - `"Import Texture(s)..."` (novo, na aba Materials) → `assets/textures/<stem>/`. Aceita N
+    imagens soltas; cria `MediaMaterial` com apenas `albedo_path` preenchido. Sem ORM, sem
+    normal. Label clara: "simple texture (no normal/ORM)".
+- **Modal de aviso** quando `ScanTextureFolder` retorna 0 grupos: popup `"PBR Scan Failed"`
+  lista as keywords esperadas nos nomes de arquivo e sugere usar `"Import Texture(s)..."`.
+- **Botões do topo** renomeados para tornar claro que são model-only:
+  - `"Import files..."` → `"Import Model Files..."` (só modelos; extensões de imagem removidas
+    do filtro do picker).
+  - `"Import folder..."` → `"Import Models (folder)..."`.
+- **`texture_importer.cpp:284`**: `"assets/textures/"` → `"assets/materials/"` + campo
+  `source_root` em `TextureImportOptions` para preservação de estrutura.
+
 ## 112. GUE: redimensionamentos na aba Actor Defs + persistência de UI
 
 - **Splitter centro↔preview** (`media.cpp`): `ad_preview_w_` virou membro de `MediaTab`
@@ -1115,4 +1158,21 @@ ajuste de balance disponível (a dimensão está acessível via resolveAbilityDi
     duas linhas. Clamp na leitura: `preview_w ∈ [280, 4000]`, `anim_h ∈ [120, 800]`.
     Arquivo corrompido é ignorado silenciosamente (defaults prevalecem).
 - Aba Models intocada (`##mdl_*`). Nenhuma outra aba afetada.
+
+## 114. GUE: exclusão em massa por pasta (models + materials)
+
+- **Fluxo**: botão direito num nó de pasta na árvore → "Delete Folder" →
+  modal lista assets, separa deletáveis vs bloqueados (em uso). Só apaga não-usados.
+- **Referências checadas para models**: `media_actor_meshes.model_id` (actor defs),
+  `game_settings.default_drop_model_id` (drop padrão, ligado por STRING do id),
+  `item_templates.model_path` (itens, ligado por `file_path` STRING — não por id!).
+  Também limpa `media_model_shapes` órfãs (shapes ficam sem pai se não forem apagadas junto).
+- **Referências checadas para materials**: `media_actor_meshes.material_id` (única referência).
+- **Apaga DB + arquivo físico** com guard de containment: `fs::canonical` verifica que o
+  caminho resolvido está estritamente sob `dist/client/assets/` antes de `fs::remove`.
+  Arquivo por arquivo (não `remove_all` cego) — respeita bloqueio parcial.
+- **Arquivos envolvidos**: `media.cpp` (`DrawFolderList` + `OpenFolderDeleteModal_` +
+  `DrawFolderDeleteModal_` + helpers `ModelUsages`/`MaterialUsages`/`SafeRemoveAsset`),
+  `media.h` (`FolderDeleteEntry` + 2 membros + 2 declarações).
+- **Call sites clips/actor_defs**: intocados (passam `on_folder_context = nullptr`).
 

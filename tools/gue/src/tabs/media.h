@@ -232,10 +232,9 @@ private:
     void DrawAnimClips  (sqlite3* db);
     void DrawActorDefs  (sqlite3* db);
 
-    // Multi-file import: opens the native picker, classifies each file
-    // by extension (model vs texture), copies into the right assets/
-    // subfolder, and inserts a row in the matching DB table. Counts are
-    // reported in statusMsg_.
+    // Multi-file import (models only): opens the native picker, copies each
+    // model file into assets/models/<stem>/ and registers a MediaModel row.
+    // Reports counts in statusMsg_.
     void ImportFilesBatch(sqlite3* db);
 
     // Folder import: picks a folder via native dialog, copies the entire
@@ -244,6 +243,10 @@ private:
     // Textures are NOT registered separately — they stay alongside their
     // meshes so Assimp resolves them by directory_ + "/" + texname.
     void ImportFolderTree(sqlite3* db);
+
+    // Loose texture import: picks one or more image files and copies each into
+    // assets/textures/<stem>/, creating a minimal MediaMaterial (albedo only).
+    void ImportLooseTextures_(sqlite3* db);
 
     // CRUD helpers
     void SaveModel      (sqlite3* db, MediaModel& m);
@@ -321,13 +324,39 @@ private:
     bool          newMat_   = false;
     MediaMaterial pendingMat_;
     char          filterMat_[128] = {};
+    GLuint        preview_mat_tex_    = 0;   // 0 = none loaded
+    int           preview_mat_tex_id_ = -1;  // material.id whose tex is in preview_mat_tex_
 
     // --- Bulk texture folder import (Materials tab) ---
-    bool                        showImportDlg_ = false;
+    bool                        showImportDlg_       = false;
+    bool                        showPbrScanFailDlg_  = false;
     std::vector<TextureGroup>   importGroups_;
     TextureImportOptions        importOpts_;
     std::string                 importSourceFolder_;
     char                        importSubdir_[128] = {};
+
+    // --- Folder bulk-delete (Models + Materials) ---
+    // One entry per asset found under the selected folder.
+    struct FolderDeleteEntry {
+        int         id;
+        std::string name;
+        std::string file_path;    // models: the file on disk (e.g. "assets/models/...")
+        std::string albedo_path;  // materials: texture files
+        std::string normal_path;
+        std::string orm_path;
+        // Non-empty = asset is referenced somewhere; list human-readable descriptions.
+        // Empty = asset is safe to delete.
+        std::vector<std::string> used_by;
+    };
+    bool                           showFolderDeleteDlg_ = false;
+    std::string                    folderDeleteLabel_;    // folder path shown in modal title
+    std::vector<FolderDeleteEntry> folderDeleteItems_;
+    bool                           folderDeleteIsModel_  = true;
+
+    void OpenFolderDeleteModal_(sqlite3* db,
+                                const std::string& folder_path,
+                                bool is_model);
+    void DrawFolderDeleteModal_(sqlite3* db);
 
     // --- Anim Clips sub-tab state ---
     int           selClip_ = -1;

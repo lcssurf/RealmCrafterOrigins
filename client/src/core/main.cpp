@@ -4813,7 +4813,8 @@ int main() {
                             body->ar > 0.f || body->ag > 0.f || body->ab > 0.f) {
                             a->OverrideMaterial(body->albedo, body->normal, body->orm,
                                                 body->ar, body->ag, body->ab,
-                                                body->roughness, body->metallic);
+                                                body->roughness, body->metallic,
+                                                &engine.materials());
                         }
                         engine.MarkMaterialsDirty();
 

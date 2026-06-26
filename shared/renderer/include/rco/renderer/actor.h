@@ -6,6 +6,7 @@
 #include <memory>
 #include <unordered_map>
 #include <cstdint>
+#include <atomic>
 #include "rco/renderer/model.h"
 
 namespace rco::renderer {
@@ -49,17 +50,18 @@ public:
         if (model_) model_->AliasClip(native_name, action_name);
     }
 
-    // Override the model's material with external PBR textures. Passes through
-    // to Model::OverrideMaterial; safe to call any time after Init().
+    // Override the material of every submesh on this actor instance.
+    // Loads textures via model_->OverrideMaterial (updates SubMesh.tex_albedo
+    // etc.) then, if mm is provided, allocates per-actor SSBO entries in mm
+    // so this actor draws with its own material slot instead of the shared one.
+    // Caller must call mm->MarkMaterialsDirty() / FlushMaterialsBufferIfDirty()
+    // after all overrides for the frame are done.
     void OverrideMaterial(const std::string& albedo_path,
                           const std::string& normal_path,
                           const std::string& orm_path,
                           float albedo_r, float albedo_g, float albedo_b,
-                          float roughness, float metallic) {
-        if (model_) model_->OverrideMaterial(albedo_path, normal_path, orm_path,
-                                albedo_r, albedo_g, albedo_b,
-                                roughness, metallic);
-    }
+                          float roughness, float metallic,
+                          MaterialManager* mm = nullptr);
 
     // Apply per-aiMaterial-name textures (Substance-style "blinn1"/"ID01"
     // mapping). Delegates to Model::ApplyMaterialsByName and uses the passed
@@ -174,6 +176,9 @@ public:
     float blend_dur = 0.15f;
 
 private:
+    static std::atomic<uint64_t> s_next_actor_id_;
+    uint64_t instance_id_ = 0;  // unique per Init() call, never reused
+
     std::shared_ptr<Model> model_;
 
     std::string cur_name_;     // currently playing clip name
@@ -193,6 +198,10 @@ private:
     // all sample their SSBO at End(), so we can't reuse a single buffer
     // across multiple submissions in the same frame.
     std::vector<unsigned int> bone_ssbos_;   // sized to model_->meshes().size()
+    // Per-mesh override indices into the MaterialManager SSBO, allocated by
+    // OverrideMaterial(mm) for this actor instance.  -1 = use model's shared
+    // material_idx (the default; only populated after OverrideMaterial is called).
+    std::vector<int>          mesh_material_overrides_;
     ReadabilityProfile readability_profile_ = ReadabilityProfile::World;
 
     int  FindClip(const std::string& name) const;

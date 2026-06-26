@@ -67,9 +67,13 @@ struct TextureImportOptions {
     // When true (default), the importer writes out a flipped copy.
     bool flip_normal_dx = true;
 
-    // Subfolder under dist/client/assets/textures/ where output lands.
+    // Subfolder under dist/client/assets/materials/ where output lands.
     // If empty, uses the basename of the scanned folder.
     std::string target_subdir;
+
+    // When non-empty, folder structure relative to this path is preserved
+    // in the output (e.g. scanned subfolder "chest/" → materials/sub/chest/).
+    std::string source_root;
 };
 
 // Scan a folder (recursively) for PBR textures. Detects role by filename
@@ -78,7 +82,7 @@ struct TextureImportOptions {
 bool ScanTextureFolder(const std::string& folder,
                        std::vector<TextureGroup>& out_groups);
 
-// Import a scanned group into dist/client/assets/textures/<subdir>/.
+// Import a scanned group into dist/client/assets/materials/<subdir>/.
 // Copies files, optionally packs AO/Rough/Metal into a single ORM PNG,
 // and flips Normal_DirectX when requested. Writes relative output paths
 // back into the group (*_rel fields). Returns true on success.

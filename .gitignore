@@ -21,7 +21,8 @@ tools/project_manager/build/
 # dist/server/rco.db
 # dist/server/rco.db-shm
 # dist/server/rco.db-wal
-
+dist/
+dist - Clean/
 dist2/
 
 # ---------------------------------------------------------------------------

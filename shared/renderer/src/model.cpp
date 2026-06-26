@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <vector>
 
 namespace rco::renderer {
@@ -306,9 +307,33 @@ GLuint Model::LoadTex(const aiScene* scene, const std::string& path, bool srgb) 
     unsigned char* px = nullptr;
     int w = 0, h = 0;
 
-    if (!path.empty() && path[0] == '*') {
+    const bool verbose      = VerboseAssetLogsEnabled();
+    const bool is_embedded  = !path.empty() && path[0] == '*';
+
+    if (verbose) {
+        // Print CWD once per process so the caller can see what relative paths are anchored to.
+        static bool s_cwd_logged = false;
+        if (!s_cwd_logged) {
+            s_cwd_logged = true;
+            std::fprintf(stderr, "[tex-resolve] CWD='%s'\n",
+                         std::filesystem::current_path().generic_string().c_str());
+        }
+        std::fprintf(stderr,
+            "[tex-resolve] model='%s'\n"
+            "              model_dir='%s'\n"
+            "              raw='%s'  type=%s\n",
+            model_path_.c_str(), directory_.c_str(),
+            path.c_str(), is_embedded ? "EMBEDDED" : "external");
+    }
+
+    if (is_embedded) {
         int idx = std::stoi(path.substr(1));
-        if (idx < 0 || idx >= (int)scene->mNumTextures) return 0;
+        if (idx < 0 || idx >= (int)scene->mNumTextures) {
+            std::fprintf(stderr,
+                "[tex-resolve]   EMBEDDED idx=%d OUT OF RANGE (scene has %u textures)\n",
+                idx, scene->mNumTextures);
+            return 0;
+        }
         const aiTexture* t = scene->mTextures[idx];
         if (t->mHeight == 0) {
             int ch;
@@ -317,8 +342,12 @@ GLuint Model::LoadTex(const aiScene* scene, const std::string& path, bool srgb) 
                 static_cast<int>(t->mWidth), &w, &h, &ch, 4);
             if (!px)
                 std::fprintf(stderr,
-                    "[model] embedded tex '%s' fmt='%s' size=%u decode failed: %s\n",
-                    path.c_str(), t->achFormatHint, t->mWidth, stbi_failure_reason());
+                    "[tex-resolve]   EMBEDDED idx=%d fmt='%s' size=%u -> DECODE FAILED: %s\n",
+                    idx, t->achFormatHint, t->mWidth, stbi_failure_reason());
+            else if (verbose)
+                std::fprintf(stderr,
+                    "[tex-resolve]   EMBEDDED idx=%d fmt='%s' -> OK (%dx%d)\n",
+                    idx, t->achFormatHint, w, h);
         } else {
             w = t->mWidth; h = t->mHeight;
             px = new unsigned char[w * h * 4];
@@ -327,22 +356,25 @@ GLuint Model::LoadTex(const aiScene* scene, const std::string& path, bool srgb) 
                 px[i*4+0]=tx.r; px[i*4+1]=tx.g;
                 px[i*4+2]=tx.b; px[i*4+3]=tx.a;
             }
+            if (verbose)
+                std::fprintf(stderr,
+                    "[tex-resolve]   EMBEDDED idx=%d raw_pixels -> OK (%dx%d)\n",
+                    idx, w, h);
         }
     } else {
         int ch;
-        std::vector<std::string> tried;
         const auto candidates = BuildTextureCandidates(directory_, path);
         for (const auto& c : candidates) {
-            tried.push_back(c);
             px = stbi_load(c.c_str(), &w, &h, &ch, 4);
+            if (verbose)
+                std::fprintf(stderr, "[tex-resolve]   [%s] '%s'\n",
+                             px ? "OK  " : "FAIL", c.c_str());
             if (px) break;
         }
-        if (!px && VerboseAssetLogsEnabled()) {
-            std::fprintf(stderr, "[model] texture not found: source='%s' tried=%zu\n",
-                path.c_str(), tried.size());
-            for (const auto& t : tried)
-                std::fprintf(stderr, "  -> '%s'\n", t.c_str());
-        }
+        if (!px && verbose)
+            std::fprintf(stderr,
+                "[tex-resolve]   ALL %zu candidates FAILED -> model will have no texture\n",
+                candidates.size());
     }
     if (!px) return 0;
 
@@ -1133,7 +1165,8 @@ bool Model::Load(const char* path, MaterialManager* mm) {
 
     std::string p(path);
     size_t slash = p.find_last_of("/\\");
-    directory_ = (slash != std::string::npos) ? p.substr(0, slash) : ".";
+    directory_   = (slash != std::string::npos) ? p.substr(0, slash) : ".";
+    model_path_  = p;
 
     if (VerboseAssetLogsEnabled())
         std::fprintf(stderr, "[body-load] '%s' scene has %u animations\n", path, scene->mNumAnimations);
@@ -1453,9 +1486,19 @@ void Model::OverrideMaterial(const std::string& albedo_path,
                              const std::string& orm_path,
                              float albedo_r, float albedo_g, float albedo_b,
                              float roughness, float metallic) {
+    std::fprintf(stderr,
+        "[actor-mat] Model::OverrideMaterial paths received:\n"
+        "  albedo='%s'\n  normal='%s'\n  orm='%s'\n",
+        albedo_path.c_str(), normal_path.c_str(), orm_path.c_str());
+
     GLuint new_albedo = albedo_path.empty() ? 0 : LoadFileTexture(albedo_path.c_str(), true);
     GLuint new_normal = normal_path.empty() ? 0 : LoadFileTexture(normal_path.c_str(), false);
     GLuint new_orm    = orm_path.empty()    ? 0 : LoadFileTexture(orm_path.c_str(),    false);
+
+    std::fprintf(stderr,
+        "[actor-mat]   -> tex handles: albedo=%u normal=%u orm=%u  (0=failed/empty)\n"
+        "               meshes to override: %zu\n",
+        new_albedo, new_normal, new_orm, meshes_.size());
 
     // When an external albedo texture is supplied, don't tint it with the
     // submesh's default skin-tone factor — use white unless the server
@@ -1470,7 +1513,8 @@ void Model::OverrideMaterial(const std::string& albedo_path,
     // not by this model. Don't push into owned_textures_ or Destroy() would
     // delete handles shared by every other model using the same texture.
 
-    for (auto& m : meshes_) {
+    for (size_t i = 0; i < meshes_.size(); ++i) {
+        auto& m = meshes_[i];
         if (new_albedo) m.tex_albedo = new_albedo;
         if (new_normal) m.tex_normal = new_normal;
         if (new_orm) {
@@ -1480,7 +1524,19 @@ void Model::OverrideMaterial(const std::string& albedo_path,
         m.albedo_factor    = tint;
         m.roughness_factor = roughness;
         m.metallic_factor  = metallic;
+
+        // Diagnostic: show which field was written vs which field the draw reads.
+        // The deferred draw uses material_idx (SSBO slot), NOT tex_albedo.
+        std::fprintf(stderr,
+            "[actor-mat]   mesh[%zu] '%s' skinned=%d"
+            "  WROTE tex_albedo=%u tex_normal=%u tex_orm=%u"
+            "  DRAW READS material_idx=%d (SSBO — NOT updated here)\n",
+            i, m.material_name.c_str(), (int)m.skinned,
+            m.tex_albedo, m.tex_normal, m.tex_orm,
+            m.material_idx);
     }
+    // Arm the submit diagnostic so Actor::Submit logs the fields it actually uses.
+    diag_log_submits_remaining_ = 2;
 }
 
 // ---------------------------------------------------------------------------

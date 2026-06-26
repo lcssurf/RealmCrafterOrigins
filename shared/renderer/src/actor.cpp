@@ -1,14 +1,19 @@
 #include "rco/renderer/actor.h"
 #include "rco/renderer/model_cache.h"
+#include "rco/renderer/material.h"
 
 #include <glad/glad.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <cmath>
+#include <cstdio>
+#include <string>
 
 #include "rco/renderer/pipeline.h"
 
 namespace rco::renderer {
+
+std::atomic<uint64_t> Actor::s_next_actor_id_{1};
 
 
 // ---------------------------------------------------------------------------
@@ -17,7 +22,9 @@ namespace rco::renderer {
 
 void Actor::Init(const char* /*shader_dir*/, const char* model_path,
                  MaterialManager* mm) {
+    instance_id_ = s_next_actor_id_++;
     model_ = ModelCacheGet(model_path, mm);
+    mesh_material_overrides_.clear();
 
     if (model_->HasAnimations() && model_->ClipCount() > 0)
         PlayAnim(model_->ClipName(0).c_str(), true);
@@ -32,7 +39,44 @@ void Actor::Destroy() {
         if (id) { glDeleteBuffers(1, &id); id = 0; }
     }
     bone_ssbos_.clear();
+    mesh_material_overrides_.clear();
     model_.reset();
+}
+
+// ---------------------------------------------------------------------------
+// OverrideMaterial — per-actor SSBO entry allocation
+// ---------------------------------------------------------------------------
+
+void Actor::OverrideMaterial(const std::string& albedo_path,
+                             const std::string& normal_path,
+                             const std::string& orm_path,
+                             float albedo_r, float albedo_g, float albedo_b,
+                             float roughness, float metallic,
+                             MaterialManager* mm) {
+    if (!model_) return;
+    // Update shared SubMesh fields (tex_albedo, factors) + emit diag logs.
+    model_->OverrideMaterial(albedo_path, normal_path, orm_path,
+                             albedo_r, albedo_g, albedo_b,
+                             roughness, metallic);
+    if (!mm) return;
+
+    // Allocate per-actor SSBO entries. Key includes this pointer so two actors
+    // pointing to the same shared Model get independent slots.
+    const auto& meshes = model_->meshes();
+    mesh_material_overrides_.resize(meshes.size(), -1);
+    for (size_t i = 0; i < meshes.size(); ++i) {
+        const auto& m = meshes[i];
+        const std::string key = "actor_override:" + std::to_string(instance_id_) + "#" + std::to_string(i);
+        mesh_material_overrides_[i] = mm->RegisterFromHandles(
+            key,
+            m.tex_albedo, m.tex_normal, m.tex_orm,
+            m.tex_opacity, m.tex_ao,
+            m.orm_packed,
+            m.albedo_factor,
+            m.roughness_factor,
+            m.metallic_factor,
+            1.0f);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +201,11 @@ void Actor::Submit(Pipeline& pipeline) {
     if (!model_ || !model_->IsLoaded()) return;
 
     const auto& meshes = model_->meshes();
+    const bool diag    = model_->TakeSubmitDiagLog();
+
+    if (diag)
+        std::fprintf(stderr,
+            "[actor-mat] Actor::Submit: %zu meshes total\n", meshes.size());
 
     glm::mat4 model = glm::mat4(1.0f);
     model = glm::translate(model, position + glm::vec3(0.f, y_offset, 0.f));
@@ -171,6 +220,19 @@ void Actor::Submit(Pipeline& pipeline) {
     glm::mat4 bones[kMaxBones];
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
         const auto& m = meshes[mi];
+        const int mat_idx = (mi < mesh_material_overrides_.size() && mesh_material_overrides_[mi] >= 0)
+                            ? mesh_material_overrides_[mi] : m.material_idx;
+
+        if (diag)
+            std::fprintf(stderr,
+                "[actor-mat]   submit mesh[%zu] '%s' skinned=%d"
+                "  mat_idx=%d (override=%d model_idx=%d)"
+                "  tex_albedo=%u (override wrote this, DRAW IGNORES for deferred)\n",
+                mi, m.material_name.c_str(), (int)m.skinned,
+                mat_idx,
+                (mi < mesh_material_overrides_.size() ? mesh_material_overrides_[mi] : -1),
+                m.material_idx, m.tex_albedo);
+
         if (m.skinned) {
             if (blending)
                 FillBlendedBones_(from_clip_idx_, from_t_, clip_idx_, anim_t_,
@@ -182,7 +244,7 @@ void Actor::Submit(Pipeline& pipeline) {
             e.vao          = m.vao;
             e.ebo          = m.ebo;
             e.index_count  = m.idx_count;
-            e.material_idx = m.material_idx;
+            e.material_idx = mat_idx;
             e.model        = model;
             e.readability_mask = ReadabilityMask_();
             for (int b = 0; b < kMaxBones; ++b) e.bones[b] = bones[b];
@@ -193,7 +255,7 @@ void Actor::Submit(Pipeline& pipeline) {
             req.vbo          = m.vbo;
             req.ebo          = m.ebo;
             req.index_count  = m.idx_count;
-            req.material_idx = m.material_idx;
+            req.material_idx = mat_idx;
             req.tex_albedo   = m.tex_albedo;
             req.model        = model;
             req.readability_mask = ReadabilityMask_();
@@ -213,6 +275,8 @@ void Actor::SubmitWithMatrix(Pipeline& pipeline, const glm::mat4& model_matrix) 
     glm::mat4 bones[kMaxBones];
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
         const auto& m = meshes[mi];
+        const int mat_idx = (mi < mesh_material_overrides_.size() && mesh_material_overrides_[mi] >= 0)
+                            ? mesh_material_overrides_[mi] : m.material_idx;
         if (m.skinned) {
             if (blending)
                 FillBlendedBones_(from_clip_idx_, from_t_, clip_idx_, anim_t_,
@@ -224,7 +288,7 @@ void Actor::SubmitWithMatrix(Pipeline& pipeline, const glm::mat4& model_matrix) 
             e.vao          = m.vao;
             e.ebo          = m.ebo;
             e.index_count  = m.idx_count;
-            e.material_idx = m.material_idx;
+            e.material_idx = mat_idx;
             e.model        = model_matrix;
             e.readability_mask = ReadabilityMask_();
             for (int b = 0; b < kMaxBones; ++b) e.bones[b] = bones[b];
@@ -235,7 +299,7 @@ void Actor::SubmitWithMatrix(Pipeline& pipeline, const glm::mat4& model_matrix) 
             req.vbo          = m.vbo;
             req.ebo          = m.ebo;
             req.index_count  = m.idx_count;
-            req.material_idx = m.material_idx;
+            req.material_idx = mat_idx;
             req.tex_albedo   = m.tex_albedo;
             req.model        = model_matrix;
             req.readability_mask = ReadabilityMask_();
@@ -274,13 +338,15 @@ void Actor::SubmitAs(const std::string& anim_name, float anim_t, bool loop,
     glm::mat4 bones[kMaxBones];
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
         const auto& m = meshes[mi];
+        const int mat_idx = (mi < mesh_material_overrides_.size() && mesh_material_overrides_[mi] >= 0)
+                            ? mesh_material_overrides_[mi] : m.material_idx;
         if (m.skinned) {
             model_->ComputeBones(cidx, t, (int)mi, bones, kMaxBones);
             SkinnedInstancedEntry e{};
             e.vao          = m.vao;
             e.ebo          = m.ebo;
             e.index_count  = m.idx_count;
-            e.material_idx = m.material_idx;
+            e.material_idx = mat_idx;
             e.model        = model;
             e.readability_mask = ReadabilityMask_();
             for (int b = 0; b < kMaxBones; ++b) e.bones[b] = bones[b];
@@ -291,7 +357,7 @@ void Actor::SubmitAs(const std::string& anim_name, float anim_t, bool loop,
             req.vbo          = m.vbo;
             req.ebo          = m.ebo;
             req.index_count  = m.idx_count;
-            req.material_idx = m.material_idx;
+            req.material_idx = mat_idx;
             req.tex_albedo   = m.tex_albedo;
             req.model        = model;
             req.readability_mask = ReadabilityMask_();
@@ -340,6 +406,8 @@ void Actor::SubmitBlended(Pipeline& pipeline,
     glm::mat4 bones_b[kMaxBones];
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
         const auto& m = meshes[mi];
+        const int mat_idx = (mi < mesh_material_overrides_.size() && mesh_material_overrides_[mi] >= 0)
+                            ? mesh_material_overrides_[mi] : m.material_idx;
         if (m.skinned) {
             model_->ComputeBlendedBones(cidx_from, fa, cidx_to, ta,
                                         blend_alpha, (int)mi, bones_b, kMaxBones);
@@ -350,7 +418,7 @@ void Actor::SubmitBlended(Pipeline& pipeline,
         req.vbo         = m.vbo;
         req.ebo         = m.ebo;
         req.index_count = m.idx_count;
-        req.material_idx= m.material_idx;
+        req.material_idx= mat_idx;
         req.model       = model_matrix;
         req.bone_ssbo   = m.skinned ? bone_ssbos_[mi] : 0;
         req.bone_count  = kMaxBones;

@@ -4,11 +4,13 @@
 #include "../ui_widgets.h"
 
 #include <imgui.h>
+#include <stb_image.h>
 #include <cstring>
 #include <cstdio>
 #include <cctype>
 #include <algorithm>
 #include <functional>
+#include <numeric>
 #include <filesystem>
 #include <array>
 #include <cfloat>
@@ -20,7 +22,8 @@ namespace gue {
 
 // ---------------------------------------------------------------------------
 // Folder-list helper — arbitrary nesting via "A/B/C" name convention.
-// Items must be pre-sorted alphabetically (SQL ORDER BY name guarantees this).
+// When tree_key is provided, items are sorted by it internally so same-folder
+// items are always consecutive (required by the stack algorithm).
 // When filter is non-empty, falls back to a flat filtered list.
 // Returns true if the selection changed this frame.
 // ---------------------------------------------------------------------------
@@ -135,7 +138,9 @@ static bool DrawFolderList(
     const char* filter,
     const char* child_id,
     float width,
-    std::function<void(int)> on_select)
+    std::function<void(int)> on_select,
+    std::function<std::string(int)> tree_key = nullptr,
+    std::function<void(const std::string&)> on_folder_context = nullptr)
 {
     auto toLower = [](std::string s) {
         for (char& c : s) c = (char)std::tolower((unsigned char)c); return s;
@@ -156,12 +161,33 @@ static bool DrawFolderList(
             }
         }
     } else {
+        // When tree_key is provided, use it for hierarchy; otherwise fall back to name.
+        auto key_ = [&](int i) -> std::string {
+            return tree_key ? tree_key(i) : items[i].name;
+        };
+
+        // Build a sorted render order by tree_key so same-folder items are always
+        // consecutive. The stack algorithm requires this: if a folder appears
+        // non-consecutively it gets opened twice with the same ImGui ID → conflict.
+        // For callers without tree_key the items are already sorted by name (DB
+        // ORDER BY), so the identity permutation is used and cost is zero.
+        std::vector<int> order((int)items.size());
+        std::iota(order.begin(), order.end(), 0);
+        if (tree_key) {
+            std::vector<std::string> keys((int)items.size());
+            for (int i = 0; i < (int)items.size(); ++i) keys[i] = key_(i);
+            std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+                return keys[a] < keys[b];
+            });
+        }
+
         // Pre-compute the selected item's folder path so we can auto-open ancestors.
         std::string sel_folder;
         if (sel >= 0 && sel < (int)items.size()) {
-            size_t slash = items[sel].name.rfind('/');
+            std::string k = key_(sel);
+            size_t slash = k.rfind('/');
             if (slash != std::string::npos)
-                sel_folder = items[sel].name.substr(0, slash);
+                sel_folder = k.substr(0, slash);
         }
 
         // Stack-based traversal: cur_path tracks open folder segments; is_open
@@ -169,8 +195,9 @@ static bool DrawFolderList(
         std::vector<std::string> cur_path;
         std::vector<bool>        is_open;
 
-        for (int i = 0; i < (int)items.size(); ++i) {
-            auto segs = SplitPath(items[i].name);
+        for (int j = 0; j < (int)items.size(); ++j) {
+            int i = order[j];
+            auto segs = SplitPath(key_(i));
             // All but the last segment form the folder path; last is the item label.
             std::vector<std::string> item_folder(segs.begin(), segs.end() - 1);
             const std::string& item_base = segs.back();
@@ -189,6 +216,17 @@ static bool DrawFolderList(
 
             // Push new folder nodes.
             for (int d = common; d < (int)item_folder.size(); ++d) {
+                // If the immediate parent is closed, virtualize this level as closed
+                // without calling TreeNodeEx. The pop loop already guards with
+                // if(is_open[d]), so skipping the call keeps TreePop balanced.
+                // Propagates automatically: d+1 will see is_open[d]=false and also skip.
+                bool parent_open = (d == 0) || is_open[d - 1];
+                if (!parent_open) {
+                    cur_path.push_back(item_folder[d]);
+                    is_open.push_back(false);
+                    continue;
+                }
+
                 // Build the full path up to this depth for the ImGui ID.
                 std::string full_path;
                 for (int k = 0; k <= d; ++k) {
@@ -206,6 +244,21 @@ static bool DrawFolderList(
                               item_folder[d].c_str(), child_id, full_path.c_str());
                 ImGui::SetNextItemOpen(is_anc, ImGuiCond_Once);
                 bool open = ImGui::TreeNodeEx(node_id, ImGuiTreeNodeFlags_SpanFullWidth);
+                if (on_folder_context) {
+                    // Strip leading ## so the popup ID has no embedded separator.
+                    const char* cid = child_id;
+                    while (*cid == '#') ++cid;
+                    char popup_id[320];
+                    std::snprintf(popup_id, sizeof(popup_id),
+                                  "fctx_%s_%s", cid, full_path.c_str());
+                    if (ImGui::BeginPopupContextItem(popup_id)) {
+                        if (ImGui::MenuItem("Delete Folder")) {
+                            on_folder_context(full_path);
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::EndPopup();
+                    }
+                }
                 cur_path.push_back(item_folder[d]);
                 is_open.push_back(open);
             }
@@ -541,6 +594,8 @@ void MediaTab::FetchAll(sqlite3* db) {
     EnsureTables(db);
 
     models_.clear();
+    if (preview_mat_tex_) { glDeleteTextures(1, &preview_mat_tex_); preview_mat_tex_ = 0; }
+    preview_mat_tex_id_ = -1;
     materials_.clear();
     clips_.clear();
     actor_defs_.clear();
@@ -1242,11 +1297,22 @@ void MediaTab::SaveMeshSlot(sqlite3* db, ActorMeshSlot& s) {
         sqlite3_bind_int(stmt, 3, s.material_id);
         sqlite3_bind_int(stmt, 4, s.id);
     }
-    if (sqlite3_step(stmt) == SQLITE_DONE) {
+    bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
+    if (ok) {
         if (s.id == 0) s.id = (int)sqlite3_last_insert_rowid(db);
         needFetch_ = true;
     }
     sqlite3_finalize(stmt);
+
+    {
+        std::string mat_name = "(none/embedded)";
+        for (const auto& mm : materials_)
+            if (mm.id == s.material_id) { mat_name = mm.name + " albedo='" + mm.albedo_path + "'"; break; }
+        std::fprintf(stderr,
+            "[actor-mat] SaveMeshSlot: slot=%s model_id=%d material_id=%d (%s) -> %s\n",
+            ActorSlotName(s.slot), s.model_id, s.material_id,
+            mat_name.c_str(), ok ? "SAVED" : "DB ERROR");
+    }
 }
 
 void MediaTab::DeleteMeshSlot(sqlite3* db, int id) {
@@ -1625,6 +1691,10 @@ void MediaTab::DrawModels(sqlite3* db) {
         selModel_ = -1;
     }
     ImGui::SameLine();
+    if (ImGui::Button("Import Model Files..."))    ImportFilesBatch(db);
+    ImGui::SameLine();
+    if (ImGui::Button("Import Models (folder)...")) ImportFolderTree(db);
+    ImGui::SameLine();
     ImGui::TextDisabled("%s", statusMsg_);
     ImGui::Separator();
 
@@ -1632,7 +1702,9 @@ void MediaTab::DrawModels(sqlite3* db) {
     ImGui::InputText("##mdl_filter", filterModel_, sizeof(filterModel_));
     ImGui::SameLine(); ImGui::TextDisabled("filter");
     DrawFolderList(models_, selModel_, filterModel_, "##mdl_list", 240,
-        [&](int i) { editModel_ = models_[i]; dirtyModel_ = false; newModel_ = false; });
+        [&](int i) { editModel_ = models_[i]; dirtyModel_ = false; newModel_ = false; },
+        nullptr,
+        [&](const std::string& fp) { OpenFolderDeleteModal_(db, fp, true); });
     ImGui::SameLine();
 
     // Middle column: properties (fixed width).
@@ -2177,7 +2249,7 @@ void MediaTab::DrawMaterials(sqlite3* db) {
         selMat_  = -1;
     }
     ImGui::SameLine();
-    if (ImGui::Button("Import Texture Folder...")) {
+    if (ImGui::Button("Import PBR Material (folder)...")) {
         std::string folder = PickFolder("Pick a folder with PBR textures");
         if (!folder.empty()) {
             importGroups_.clear();
@@ -2192,28 +2264,59 @@ void MediaTab::DrawMaterials(sqlite3* db) {
                 importSubdir_[sizeof(importSubdir_) - 1] = 0;
                 showImportDlg_ = true;
             } else {
-                std::snprintf(statusMsg_, sizeof(statusMsg_),
-                              "No PBR texture groups found in '%s'.", folder.c_str());
+                showPbrScanFailDlg_ = true;
             }
         }
     }
     ImGui::SameLine();
+    if (ImGui::Button("Import Texture(s)...")) ImportLooseTextures_(db);
+    ImGui::SameLine();
     ImGui::TextDisabled("%s", statusMsg_);
     ImGui::Separator();
 
+    // ── PBR scan-failed warning modal ─────────────────────────────────────
+    if (showPbrScanFailDlg_) ImGui::OpenPopup("PBR Scan Failed");
+    {
+        ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, {0.5f, 0.5f});
+        ImGui::SetNextWindowSize({480.f, 0.f}, ImGuiCond_Appearing);
+    }
+    if (ImGui::BeginPopupModal("PBR Scan Failed", &showPbrScanFailDlg_,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextColored({1.f, 0.6f, 0.2f, 1.f}, "No PBR groups found in:");
+        ImGui::TextDisabled("  %s", importSourceFolder_.c_str());
+        ImGui::Spacing();
+        ImGui::TextUnformatted("The scanner looks for role keywords in filenames:");
+        ImGui::BulletText("Albedo / BaseColor / Base_color / Diffuse");
+        ImGui::BulletText("Normal / Normal_OpenGL / Normal_DirectX");
+        ImGui::BulletText("Roughness / Metalness / Metallic / AO / AmbientOcclusion");
+        ImGui::BulletText("Opacity / Alpha");
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Each group needs at least an Albedo file.");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextDisabled("For loose images without PBR roles, use \"Import Texture(s)...\" instead.");
+        ImGui::Spacing();
+        if (ImGui::Button("OK", {120.f, 0.f})) {
+            showPbrScanFailDlg_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     // ── Import-folder modal dialog ────────────────────────────────────────
-    if (showImportDlg_) ImGui::OpenPopup("Import Texture Folder");
+    if (showImportDlg_) ImGui::OpenPopup("Import PBR Material");
     {
         ImVec2 center = ImGui::GetMainViewport()->GetCenter();
         ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, {0.5f, 0.5f});
         ImGui::SetNextWindowSize({640.f, 0.f}, ImGuiCond_Appearing);
     }
-    if (ImGui::BeginPopupModal("Import Texture Folder", &showImportDlg_,
+    if (ImGui::BeginPopupModal("Import PBR Material", &showImportDlg_,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextDisabled("Source: %s", importSourceFolder_.c_str());
         ImGui::Spacing();
         ImGui::SetNextItemWidth(-1.f);
-        ImGui::InputText("Target subfolder (under assets/textures/)##ti",
+        ImGui::InputText("Target subfolder (under assets/materials/)##ti",
                          importSubdir_, sizeof(importSubdir_));
         ImGui::Checkbox("Pack AO+Rough+Metal into ORM (recommended)", &importOpts_.pack_orm);
         ImGui::Checkbox("Flip Y channel on Normal_DirectX",            &importOpts_.flip_normal_dx);
@@ -2268,8 +2371,13 @@ void MediaTab::DrawMaterials(sqlite3* db) {
         for (const auto& g : importGroups_) if (g.enabled) ++nEnabled;
         if (ImGui::Button("Import##ti")) {
             importOpts_.target_subdir = importSubdir_;
+            importOpts_.source_root   = importSourceFolder_;
+            std::fprintf(stderr, "[tex-import] starting: %zu group(s) src='%s' sub='%s'\n",
+                         importGroups_.size(), importSourceFolder_.c_str(), importSubdir_);
             int done = 0;
             for (auto& g : importGroups_) {
+                std::fprintf(stderr, "[tex-import] group '%s' enabled=%d albedo='%s'\n",
+                             g.material_name.c_str(), (int)g.enabled, g.albedo_src.c_str());
                 if (!g.enabled) continue;
                 if (!ImportTextureGroup(g, importOpts_)) continue;
                 MediaMaterial m;
@@ -2300,7 +2408,19 @@ void MediaTab::DrawMaterials(sqlite3* db) {
     ImGui::InputText("##mat_filter", filterMat_, sizeof(filterMat_));
     ImGui::SameLine(); ImGui::TextDisabled("filter");
     DrawFolderList(materials_, selMat_, filterMat_, "##mat_list", 260,
-        [&](int i) { editMat_ = materials_[i]; dirtyMat_ = false; newMat_ = false; });
+        [&](int i) { editMat_ = materials_[i]; dirtyMat_ = false; newMat_ = false; },
+        [&](int i) -> std::string {
+            const std::string& p = materials_[i].albedo_path;
+            if (p.empty()) return materials_[i].name;
+            std::string parent = std::filesystem::path(p).parent_path().generic_string();
+            static const std::string kTex = "assets/textures/";
+            static const std::string kMat = "assets/materials/";
+            if (parent.rfind(kTex, 0) == 0) parent = parent.substr(kTex.size());
+            else if (parent.rfind(kMat, 0) == 0) parent = parent.substr(kMat.size());
+            if (parent.empty()) return materials_[i].name;
+            return parent + "/" + materials_[i].name;
+        },
+        [&](const std::string& fp) { OpenFolderDeleteModal_(db, fp, false); });
     ImGui::SameLine();
 
     ImGui::BeginChild("##mat_edit", {0, 0}, true);
@@ -2316,6 +2436,34 @@ void MediaTab::DrawMaterials(sqlite3* db) {
         ImGui::Text("Editing: [id=%d] %s", editMat_.id, editMat_.name.c_str());
         ImGui::Separator();
         if (DrawMaterialFields(editMat_)) dirtyMat_ = true;
+        ImGui::Spacing();
+
+        // ── Albedo texture preview ─────────────────────────────────────────
+        if (editMat_.id != preview_mat_tex_id_) {
+            if (preview_mat_tex_) { glDeleteTextures(1, &preview_mat_tex_); preview_mat_tex_ = 0; }
+            preview_mat_tex_id_ = editMat_.id;
+            if (!editMat_.albedo_path.empty()) {
+                std::string abs = ResolveClientAsset(editMat_.albedo_path);
+                int w = 0, h = 0, ch = 0;
+                unsigned char* px = stbi_load(abs.c_str(), &w, &h, &ch, 4);
+                if (px) {
+                    glGenTextures(1, &preview_mat_tex_);
+                    glBindTexture(GL_TEXTURE_2D, preview_mat_tex_);
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
+                                 GL_RGBA, GL_UNSIGNED_BYTE, px);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    glBindTexture(GL_TEXTURE_2D, 0);
+                    stbi_image_free(px);
+                }
+            }
+        }
+        if (preview_mat_tex_)
+            ImGui::Image((ImTextureID)(intptr_t)preview_mat_tex_, ImVec2(256.f, 256.f));
+        else if (!editMat_.albedo_path.empty())
+            ImGui::TextDisabled("(preview load failed)");
+        else
+            ImGui::TextDisabled("(no albedo texture)");
         ImGui::Spacing();
 
         ImGui::BeginDisabled(!dirtyMat_);
@@ -3114,12 +3262,32 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                 const MediaMaterial* mat = nullptr;
                 for (auto& mm : materials_)
                     if (mm.id == body->material_id) { mat = &mm; break; }
+
+                // Log only when something changes (avoids per-frame spam).
+                const bool material_changed = (body->material_id != preview_last_material_id_);
+                if (material_changed) {
+                    std::fprintf(stderr,
+                        "[actor-mat] preview check: body->material_id=%d  preview_last=%d"
+                        "  mat=%s  albedo='%s'\n",
+                        body->material_id, preview_last_material_id_,
+                        mat ? mat->name.c_str() : "(NOT FOUND in materials_)",
+                        mat ? mat->albedo_path.c_str() : "");
+                }
+
                 if (mat && preview_last_material_id_ != mat->id) {
+                    std::fprintf(stderr,
+                        "[actor-mat] -> calling OverrideMaterial (id %d->%d)\n",
+                        preview_last_material_id_, mat->id);
                     preview_->OverrideMaterial(mat->albedo_path, mat->normal_path,
                                                mat->orm_path,
                                                mat->albedo_r, mat->albedo_g, mat->albedo_b,
                                                mat->roughness, mat->metallic);
                     preview_last_material_id_ = mat->id;
+                } else if (!mat && body->material_id != 0 && material_changed) {
+                    std::fprintf(stderr,
+                        "[actor-mat] -> material_id=%d NOT FOUND in materials_ list"
+                        " (list size=%zu, needFetch_=%d)\n",
+                        body->material_id, materials_.size(), (int)needFetch_);
                 }
                 // Live scale preview — cheap to set every frame; lets the
                 // user drag the Scale slider and see the result immediately.
@@ -3192,50 +3360,96 @@ static std::string LowerExt(const std::filesystem::path& p) {
 }
 
 void MediaTab::ImportFilesBatch(sqlite3* db) {
-    auto picks = gue::PickMultipleFiles("Assets",
-                                        "glb,fbx,obj,gltf,dae,b3d,"
-                                        "png,jpg,jpeg,tga,bmp,ktx,ktx2");
+    auto picks = gue::PickMultipleFiles("Models",
+                                        "glb,fbx,obj,gltf,dae,b3d");
     if (picks.empty()) return;
 
-    int nModels = 0, nTextures = 0, nSkipped = 0;
+    int nModels = 0, nSkipped = 0;
 
     for (const auto& abs : picks) {
         std::filesystem::path p(abs);
-        std::string ext   = LowerExt(p);
-        std::string base  = p.stem().string();                // no extension
+        std::string ext    = LowerExt(p);
+        std::string base   = p.stem().string();
         std::string folder = SafeFolderName(base);
         if (folder.empty()) folder = "asset";
 
         const char* kind = ClassifyAsset(ext);
-        if (!kind) { ++nSkipped; continue; }
+        if (!kind || std::strcmp(kind, "model") != 0) { ++nSkipped; continue; }
 
-        if (std::strcmp(kind, "model") == 0) {
-            std::string sub = "models/" + folder;
-            std::string rel = gue::ImportAbsolutePath(abs, sub.c_str());
-            if (rel.empty()) { ++nSkipped; continue; }
-            MediaModel m;
-            m.name      = base;
-            m.file_path = rel;
-            m.scale     = 1.f;
-            SaveModel(db, m);
-            ++nModels;
-        } else { // "texture"
-            std::string sub = "textures/" + folder;
-            std::string rel = gue::ImportAbsolutePath(abs, sub.c_str());
-            if (rel.empty()) { ++nSkipped; continue; }
-            MediaMaterial m;
-            m.name        = base;
-            m.albedo_path = rel;
-            SaveMaterial(db, m);
-            ++nTextures;
-        }
+        std::string sub = "models/" + folder;
+        std::string rel = gue::ImportAbsolutePath(abs, sub.c_str());
+        if (rel.empty()) { ++nSkipped; continue; }
+        MediaModel m;
+        m.name      = base;
+        m.file_path = rel;
+        m.scale     = 1.f;
+        SaveModel(db, m);
+        ++nModels;
     }
 
     ++media_revision_;
     needFetch_ = true;
     std::snprintf(statusMsg_, sizeof(statusMsg_),
-                  "Batch imported: %d model(s), %d texture(s), %d skipped.",
-                  nModels, nTextures, nSkipped);
+                  "Imported %d model(s)%s.",
+                  nModels, nSkipped ? " (some skipped)" : "");
+}
+
+void MediaTab::ImportLooseTextures_(sqlite3* db) {
+    namespace fs = std::filesystem;
+
+    std::string srcFolder = gue::PickFolder("Select texture folder to import");
+    if (srcFolder.empty()) return;
+
+    std::error_code ec;
+    fs::path src = fs::canonical(srcFolder, ec);
+    if (ec) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Texture import failed: invalid path.");
+        return;
+    }
+
+    std::string folderName = SafeFolderName(src.filename().string());
+    if (folderName.empty()) folderName = "textures";
+
+    fs::path cwd     = fs::current_path();
+    fs::path dstRoot = cwd.parent_path() / "client" / "assets" / "textures" / folderName;
+    const std::string relBase = "assets/textures/" + folderName + "/";
+
+    int done = 0, skipped = 0;
+    for (auto& entry : fs::recursive_directory_iterator(src, ec)) {
+        if (ec || !entry.is_regular_file()) { ec.clear(); continue; }
+
+        fs::path fp  = entry.path();
+        std::string ext = LowerExt(fp);
+        if (ext != "png" && ext != "jpg" && ext != "jpeg" &&
+            ext != "tga" && ext != "bmp") continue;
+
+        fs::path rel = fs::relative(fp, src, ec);
+        if (ec) { ec.clear(); ++skipped; continue; }
+
+        // guard against ".." escape (same as PBR import)
+        std::string rs = rel.generic_string();
+        if (rs.rfind("..", 0) == 0 || rs.find("/../") != std::string::npos) {
+            ++skipped; continue;
+        }
+
+        fs::path dst = dstRoot / rel;
+        fs::create_directories(dst.parent_path(), ec);
+        if (ec) { ec.clear(); ++skipped; continue; }
+        fs::copy_file(fp, dst, fs::copy_options::overwrite_existing, ec);
+        if (ec) { ec.clear(); ++skipped; continue; }
+
+        MediaMaterial m;
+        m.name        = fp.stem().string();
+        m.albedo_path = relBase + rs;
+        SaveMaterial(db, m);
+        ++done;
+    }
+
+    ++media_revision_;
+    needFetch_ = true;
+    std::snprintf(statusMsg_, sizeof(statusMsg_),
+                  "Imported %d texture(s) as simple material%s.",
+                  done, skipped ? " (some skipped)" : "");
 }
 
 void MediaTab::ImportFolderTree(sqlite3* db) {
@@ -3300,6 +3514,317 @@ void MediaTab::ImportFolderTree(sqlite3* db) {
                   folderName.c_str(), nModels, nCopied, nSkipped);
 }
 
+// ---------------------------------------------------------------------------
+// Folder bulk-delete — reference detection helpers (file-static)
+// ---------------------------------------------------------------------------
+
+// Returns human-readable descriptions of every place model (id, file_path) is used.
+// Checks: media_actor_meshes, game_settings.default_drop_model_id, item_templates.model_path.
+static std::vector<std::string> ModelUsages(sqlite3* db, int id,
+                                             const std::string& file_path)
+{
+    std::vector<std::string> uses;
+    sqlite3_stmt* stmt = nullptr;
+
+    // a) Actor def mesh slots
+    sqlite3_prepare_v2(db,
+        "SELECT ad.name, am.slot"
+        " FROM media_actor_meshes am"
+        " JOIN media_actor_defs ad ON ad.id = am.actor_def_id"
+        " WHERE am.model_id = ?",
+        -1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, id);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* n = (const char*)sqlite3_column_text(stmt, 0);
+        int slot = sqlite3_column_int(stmt, 1);
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "Actor Def '%s' (slot %s)",
+                      n ? n : "?", ActorSlotName(slot));
+        uses.push_back(buf);
+    }
+    sqlite3_finalize(stmt); stmt = nullptr;
+
+    // b) Global default drop model (stored as text in game_settings)
+    sqlite3_prepare_v2(db,
+        "SELECT value FROM game_settings WHERE key='default_drop_model_id'",
+        -1, &stmt, nullptr);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* v = (const char*)sqlite3_column_text(stmt, 0);
+        if (v && std::to_string(id) == v)
+            uses.push_back("Default Drop Model (Settings)");
+    }
+    sqlite3_finalize(stmt); stmt = nullptr;
+
+    // c) Items — linked by file_path string, NOT by model id
+    if (!file_path.empty()) {
+        sqlite3_prepare_v2(db,
+            "SELECT name FROM item_templates WHERE model_path = ?",
+            -1, &stmt, nullptr);
+        sqlite3_bind_text(stmt, 1, file_path.c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char* n = (const char*)sqlite3_column_text(stmt, 0);
+            char buf[128];
+            std::snprintf(buf, sizeof(buf), "Item '%s'", n ? n : "?");
+            uses.push_back(buf);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    return uses;
+}
+
+// Returns human-readable descriptions of every place material (id) is used.
+static std::vector<std::string> MaterialUsages(sqlite3* db, int id)
+{
+    std::vector<std::string> uses;
+    sqlite3_stmt* stmt = nullptr;
+
+    sqlite3_prepare_v2(db,
+        "SELECT ad.name, am.slot"
+        " FROM media_actor_meshes am"
+        " JOIN media_actor_defs ad ON ad.id = am.actor_def_id"
+        " WHERE am.material_id = ?",
+        -1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, id);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* n = (const char*)sqlite3_column_text(stmt, 0);
+        int slot = sqlite3_column_int(stmt, 1);
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "Actor Def '%s' (slot %s)",
+                      n ? n : "?", ActorSlotName(slot));
+        uses.push_back(buf);
+    }
+    sqlite3_finalize(stmt);
+
+    return uses;
+}
+
+// Removes a single file identified by its DB-relative path (e.g. "assets/models/...").
+// Resolves via ResolveClientAsset and verifies the canonical path is under assets/ before
+// removing. Returns true on success or when the file is already absent.
+static bool SafeRemoveAsset(const std::string& db_rel_path)
+{
+    if (db_rel_path.empty()) return true;
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    fs::path assets_root = fs::canonical(
+        fs::current_path().parent_path() / "client" / "assets", ec);
+    if (ec) {
+        std::fprintf(stderr, "[delete-folder] cannot resolve assets_root: %s\n",
+                     ec.message().c_str());
+        return false;
+    }
+
+    std::string resolved = ResolveClientAsset(db_rel_path); // "../client/assets/..."
+    fs::path target = fs::canonical(resolved, ec);
+    if (ec) return true; // file already absent — treat as success
+
+    // Containment guard: canonical target must be strictly under assets_root.
+    std::string root_s   = assets_root.generic_string();
+    std::string target_s = target.generic_string();
+    if (target_s.size() <= root_s.size() ||
+        target_s.rfind(root_s, 0) != 0 ||
+        target_s[root_s.size()] != '/') {
+        std::fprintf(stderr,
+                     "[delete-folder] GUARD blocked '%s' — not under assets/\n",
+                     target_s.c_str());
+        return false;
+    }
+
+    fs::remove(target, ec);
+    if (ec) {
+        std::fprintf(stderr, "[delete-folder] remove failed '%s': %s\n",
+                     target_s.c_str(), ec.message().c_str());
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Folder bulk-delete — MediaTab methods
+// ---------------------------------------------------------------------------
+
+void MediaTab::OpenFolderDeleteModal_(sqlite3* db,
+                                      const std::string& folder_path,
+                                      bool is_model)
+{
+    folderDeleteLabel_   = folder_path;
+    folderDeleteIsModel_ = is_model;
+    folderDeleteItems_.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+
+    if (is_model) {
+        // Model names embed their hierarchy (e.g. "Actors/Animals/Rat").
+        // folder_path is the folder prefix in name-space (e.g. "Actors/Animals").
+        std::string pattern = folder_path + "/%";
+        sqlite3_prepare_v2(db,
+            "SELECT id, name, file_path FROM media_models WHERE name LIKE ?",
+            -1, &stmt, nullptr);
+        sqlite3_bind_text(stmt, 1, pattern.c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            FolderDeleteEntry e;
+            e.id        = sqlite3_column_int(stmt, 0);
+            auto* n     = sqlite3_column_text(stmt, 1);
+            auto* fp    = sqlite3_column_text(stmt, 2);
+            e.name      = n  ? (const char*)n  : "";
+            e.file_path = fp ? (const char*)fp : "";
+            e.used_by   = ModelUsages(db, e.id, e.file_path);
+            folderDeleteItems_.push_back(std::move(e));
+        }
+        sqlite3_finalize(stmt);
+    } else {
+        // Material folder_path is the tree-key prefix after stripping the
+        // "assets/textures/" or "assets/materials/" prefix (e.g. "Mixing").
+        // Search both prefixes since imports may land under either one.
+        std::string pat_tex = "assets/textures/"  + folder_path + "/%";
+        std::string pat_mat = "assets/materials/" + folder_path + "/%";
+        sqlite3_prepare_v2(db,
+            "SELECT id, name, albedo_path, normal_path, orm_path"
+            " FROM media_materials"
+            " WHERE albedo_path LIKE ? OR albedo_path LIKE ?",
+            -1, &stmt, nullptr);
+        sqlite3_bind_text(stmt, 1, pat_tex.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, pat_mat.c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            FolderDeleteEntry e;
+            e.id          = sqlite3_column_int(stmt, 0);
+            auto* n       = sqlite3_column_text(stmt, 1);
+            auto* ap      = sqlite3_column_text(stmt, 2);
+            auto* np      = sqlite3_column_text(stmt, 3);
+            auto* op      = sqlite3_column_text(stmt, 4);
+            e.name        = n  ? (const char*)n  : "";
+            e.albedo_path = ap ? (const char*)ap : "";
+            e.normal_path = np ? (const char*)np : "";
+            e.orm_path    = op ? (const char*)op : "";
+            e.used_by     = MaterialUsages(db, e.id);
+            folderDeleteItems_.push_back(std::move(e));
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    showFolderDeleteDlg_ = true;
+    // ImGui::OpenPopup is called from DrawFolderDeleteModal_ (outside BeginChild scope).
+}
+
+void MediaTab::DrawFolderDeleteModal_(sqlite3* db)
+{
+    // Open the popup exactly once when the flag is set (pattern: flag → OpenPopup → clear).
+    // BeginPopupContextItem queues the flag while inside a BeginChild; we open the modal
+    // here, in the parent-window scope, one frame later.
+    if (showFolderDeleteDlg_) {
+        ImGui::OpenPopup("Delete Folder##fdlg");
+        showFolderDeleteDlg_ = false;
+    }
+
+    ImGui::SetNextWindowSize({540.f, 440.f}, ImGuiCond_Appearing);
+    bool modal_open = true;
+    if (!ImGui::BeginPopupModal("Delete Folder##fdlg", &modal_open,
+                                ImGuiWindowFlags_NoResize))
+        return;
+
+    int deletable = 0, blocked = 0;
+    for (const auto& e : folderDeleteItems_) {
+        if (e.used_by.empty()) ++deletable;
+        else                   ++blocked;
+    }
+
+    ImGui::TextColored({1.f, 0.7f, 0.2f, 1.f},
+                       "Folder: %s", folderDeleteLabel_.c_str());
+    ImGui::Text("%d asset(s) found.", (int)folderDeleteItems_.size());
+    ImGui::Separator();
+
+    // ── Deletable list ──────────────────────────────────────────────────────
+    if (deletable > 0) {
+        ImGui::TextColored({0.4f, 1.f, 0.4f, 1.f},
+                           "Will be deleted (%d, not in use):", deletable);
+        ImGui::BeginChild("##fdlg_del", {0.f, 100.f}, true);
+        for (const auto& e : folderDeleteItems_)
+            if (e.used_by.empty())
+                ImGui::TextUnformatted(e.name.c_str());
+        ImGui::EndChild();
+    } else {
+        ImGui::TextDisabled("(no deletable assets — all are in use)");
+    }
+
+    // ── Blocked list ────────────────────────────────────────────────────────
+    if (blocked > 0) {
+        ImGui::Spacing();
+        ImGui::TextColored({1.f, 0.4f, 0.2f, 1.f},
+                           "BLOCKED — in use, will NOT be deleted (%d):", blocked);
+        ImGui::BeginChild("##fdlg_blk", {0.f, 130.f}, true);
+        for (const auto& e : folderDeleteItems_) {
+            if (e.used_by.empty()) continue;
+            ImGui::TextUnformatted(e.name.c_str());
+            for (const auto& u : e.used_by)
+                ImGui::TextDisabled("  \xe2\x86\x92 %s", u.c_str()); // → arrow (UTF-8)
+        }
+        ImGui::EndChild();
+    }
+
+    ImGui::Separator();
+
+    // ── Confirm / Cancel ────────────────────────────────────────────────────
+    ImGui::BeginDisabled(deletable == 0);
+    char btn[64];
+    std::snprintf(btn, sizeof(btn), "Delete %d unused", deletable);
+    if (ImGui::Button(btn)) {
+        for (const auto& e : folderDeleteItems_) {
+            if (!e.used_by.empty()) continue; // blocked — never touched
+
+            if (folderDeleteIsModel_) {
+                // 1. Remove orphaned collision shapes
+                sqlite3_stmt* s = nullptr;
+                sqlite3_prepare_v2(db,
+                    "DELETE FROM media_model_shapes WHERE model_id=?",
+                    -1, &s, nullptr);
+                sqlite3_bind_int(s, 1, e.id);
+                sqlite3_step(s);
+                sqlite3_finalize(s);
+                // 2. Remove model row
+                s = nullptr;
+                sqlite3_prepare_v2(db,
+                    "DELETE FROM media_models WHERE id=?",
+                    -1, &s, nullptr);
+                sqlite3_bind_int(s, 1, e.id);
+                sqlite3_step(s);
+                sqlite3_finalize(s);
+                // 3. Remove physical file (with containment guard)
+                SafeRemoveAsset(e.file_path);
+            } else {
+                // 1. Remove material row
+                sqlite3_stmt* s = nullptr;
+                sqlite3_prepare_v2(db,
+                    "DELETE FROM media_materials WHERE id=?",
+                    -1, &s, nullptr);
+                sqlite3_bind_int(s, 1, e.id);
+                sqlite3_step(s);
+                sqlite3_finalize(s);
+                // 2. Remove each texture file individually (guard on each)
+                SafeRemoveAsset(e.albedo_path);
+                SafeRemoveAsset(e.normal_path);
+                SafeRemoveAsset(e.orm_path);
+            }
+        }
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Deleted %d asset(s) from '%s'. %d blocked (still in use).",
+                      deletable, folderDeleteLabel_.c_str(), blocked);
+        needFetch_                = true;
+        materialsDirtyForPreview_ = true;
+        ++media_revision_;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel"))
+        ImGui::CloseCurrentPopup();
+
+    ImGui::EndPopup();
+}
+
 void MediaTab::Draw(sqlite3* db) {
     if (needFetch_) {
         // Before refetch, remember which actor def is currently being edited
@@ -3325,21 +3850,6 @@ void MediaTab::Draw(sqlite3* db) {
         }
     }
 
-    // ── Top bar: cross-sub-tab actions ─────────────────────────────────
-    // "Import files..." opens a multi-select dialog and auto-sorts each
-    // file into Models or Materials by extension — the plug-and-play
-    // entry point for new assets.
-    ImGui::PushStyleColor(ImGuiCol_Button,        {0.20f, 0.50f, 0.20f, 1.f});
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.25f, 0.60f, 0.25f, 1.f});
-    if (ImGui::Button("Import files...")) ImportFilesBatch(db);
-    ImGui::SameLine();
-    if (ImGui::Button("Import folder...")) ImportFolderTree(db);
-    ImGui::PopStyleColor(2);
-    ImGui::SameLine();
-    ImGui::TextDisabled(
-        "files: pick N files individually | folder: copy whole tree into assets/models/<name>/");
-    ImGui::Separator();
-
     if (ImGui::BeginTabBar("##media_subtabs")) {
         if (ImGui::BeginTabItem("Models"))     { DrawModels    (db); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Materials"))  { DrawMaterials (db); ImGui::EndTabItem(); }
@@ -3349,6 +3859,10 @@ void MediaTab::Draw(sqlite3* db) {
         if (ImGui::BeginTabItem("Actor Defs")) { DrawActorDefs (db); ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
+    // Modal lives outside the tab bar so OpenPopup + BeginPopupModal share the
+    // same parent-window scope (BeginPopupContextItem inside BeginChild queues
+    // the flag; we open and render the popup here, one frame later).
+    DrawFolderDeleteModal_(db);
 }
 
 // ---------------------------------------------------------------------------

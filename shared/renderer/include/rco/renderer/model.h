@@ -144,6 +144,15 @@ public:
     // map each file-internal material to a user-created media_material.
     std::vector<std::string> MaterialNames() const;
 
+    // Diagnostic: called by Actor::Submit once per draw submission. Returns true
+    // (and decrements the counter) for the next N submits after OverrideMaterial
+    // ran, so the draw logs are emitted without spamming every frame.
+    bool TakeSubmitDiagLog() const {
+        if (diag_log_submits_remaining_ <= 0) return false;
+        --diag_log_submits_remaining_;
+        return true;
+    }
+
     bool  HasAnimations()       const { return !clips_.empty(); }
     int   ClipCount()           const { return (int)clips_.size(); }
     const std::string& ClipName(int i)     const { return clips_[i].name; }
@@ -236,6 +245,10 @@ public:
 private:
     std::vector<SubMesh>       meshes_;
     std::string                directory_;
+    std::string                model_path_; // full path passed to Load(); used in tex-resolve logs
+    // Set to N in OverrideMaterial; Actor::Submit reads and decrements to log the next N draw
+    // submissions without spamming every frame.
+    mutable int                diag_log_submits_remaining_ = 0;
     float                      aabb_max_y_ = 0.f;
     glm::vec3                  aabb_min_   = glm::vec3( 1e30f);
     glm::vec3                  aabb_max_   = glm::vec3(-1e30f);

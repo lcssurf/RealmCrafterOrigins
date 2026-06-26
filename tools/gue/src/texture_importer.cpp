@@ -191,9 +191,20 @@ bool ScanTextureFolder(const std::string& folder,
 // Copy a file byte-for-byte. Creates the parent directory if missing.
 static bool CopyFileTo(const std::string& src, const std::string& dst) {
     std::error_code ec;
-    fs::create_directories(fs::path(dst).parent_path(), ec);
+    fs::path dstParent = fs::path(dst).parent_path();
+    fs::create_directories(dstParent, ec);
+    if (ec) {
+        std::fprintf(stderr, "[tex-import] mkdir failed: '%s' — %s\n",
+                     dstParent.string().c_str(), ec.message().c_str());
+        return false;
+    }
     fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
-    return !ec;
+    if (ec) {
+        std::fprintf(stderr, "[tex-import] copy_file failed: src='%s' dst='%s' — %s\n",
+                     src.c_str(), dst.c_str(), ec.message().c_str());
+        return false;
+    }
+    return true;
 }
 
 // Load an 8-bit image. Caller frees with stbi_image_free.
@@ -281,15 +292,34 @@ BuildORM(const std::string& ao_src,
 bool ImportTextureGroup(TextureGroup& g, const TextureImportOptions& opts) {
     const std::string sub = opts.target_subdir.empty() ? std::string("imported")
                                                        : opts.target_subdir;
-    const std::string rel_base = "assets/textures/" + sub + "/";
+    const std::string rel_base = "assets/materials/" + sub + "/";
     // When run from dist/tools/, assets live under ../client/.
     const std::string abs_base = "../client/" + rel_base;
 
-    auto destPath = [&](const std::string& srcPath, const char* suffix,
+    // Preserve source folder structure relative to source_root when provided.
+    std::string rel_subdir;
+    if (!opts.source_root.empty() && !g.albedo_src.empty()) {
+        std::error_code ec;
+        fs::path parent = fs::path(g.albedo_src).parent_path();
+        fs::path relp   = fs::relative(parent, fs::path(opts.source_root), ec);
+        if (!ec) {
+            std::string rs = relp.generic_string();
+            bool escapes = rs.rfind("..", 0) == 0 ||
+                           rs.find("/../") != std::string::npos;
+            if (!rs.empty() && rs != "." && !escapes)
+                rel_subdir = rs + "/";
+            // escapes → rel_subdir stays "" → flat fallback, never leaks with ".."
+        }
+    }
+
+    std::fprintf(stderr, "[tex-import] group '%s': albedo='%s' dest_base='%s'\n",
+                 g.prefix.c_str(), g.albedo_src.c_str(), abs_base.c_str());
+
+    auto destPath = [&](const std::string& /*srcPath*/, const char* suffix,
                         const char* ext = ".png") -> std::pair<std::string,std::string> {
-        // Output filename: "<prefix>_<suffix>.<ext>"
+        // Output filename: "<prefix>_<suffix>.<ext>", optionally under a preserved subdir.
         std::string fname = g.prefix + "_" + suffix + ext;
-        return { abs_base + fname, rel_base + fname };
+        return { abs_base + rel_subdir + fname, rel_base + rel_subdir + fname };
     };
 
     // --- Albedo: straight copy (preserve format when possible) ---
@@ -297,8 +327,8 @@ bool ImportTextureGroup(TextureGroup& g, const TextureImportOptions& opts) {
         fs::path sp(g.albedo_src);
         std::string ext = sp.extension().string();
         auto [abs, rel] = destPath(g.albedo_src, "Albedo", ext.c_str());
+        std::fprintf(stderr, "[tex-import] albedo dst='%s'\n", abs.c_str());
         if (!CopyFileTo(g.albedo_src, abs)) {
-            std::fprintf(stderr, "[tex-import] copy failed: %s\n", g.albedo_src.c_str());
             return false;
         }
         g.albedo_rel = rel;
