@@ -135,8 +135,17 @@ if (HasMSVCTools) {
 $vsVersion = GetLatestVSInstallVersion
 if ($vsVersion -like "18.*" -and $cmake) {
     if ($cmakeMajor -lt 4 -or ($cmakeMajor -eq 4 -and $cmakeMinor -lt 2)) {
-        WARN "Visual Studio 2026 detectado; o gerador 'Visual Studio 18 2026' precisa de CMake 4.2+"
-        Write-Host "         Atualize o CMake ou instale Visual Studio 2022 Build Tools para usar o gerador VS 2022." -ForegroundColor DarkGray
+        if ($Install) {
+            Write-Host "  [INSTALL] Visual Studio 2026 detected - upgrading CMake for the VS 2026 generator..." -ForegroundColor Magenta
+            winget upgrade -e --id Kitware.CMake --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -ne 0) {
+                winget install -e --id Kitware.CMake --accept-source-agreements --accept-package-agreements
+            }
+            WARN "CMake upgrade attempted - open a new terminal and run check-prereqs.bat again"
+        } else {
+            WARN "Visual Studio 2026 detectado; o gerador 'Visual Studio 18 2026' precisa de CMake 4.2+"
+            Write-Host "         Atualize o CMake ou instale Visual Studio 2022 Build Tools para usar o gerador VS 2022." -ForegroundColor DarkGray
+        }
     }
 }
 
