@@ -273,22 +273,32 @@ function InstallMissingDlls($label, $dir, $missing) {
     }
 }
 
+function CheckBuiltOutput($label, $file) {
+    if (Test-Path $file) {
+        OK "$label built: $file"
+    } else {
+        WARN "$label not built yet: $file"
+    }
+}
+
+CheckBuiltOutput "client executable" "$distRoot\client\rco_client.exe"
 $missingClient = CheckDistFiles "dist/client" "$distRoot\client" @(
-    "rco_client.exe", "config.toml",
+    "config.toml",
     "assimp-vc143-mt.dll", "glfw3.dll", "kubazip.dll", "minizip.dll",
     "msquic.dll", "poly2tri.dll", "pugixml.dll", "zlib1.dll"
 )
 InstallMissingDlls "dist/client" "$distRoot\client" $missingClient
 
+CheckBuiltOutput "GUE executable" "$distRoot\tools\rco_gue.exe"
 $missingTools = CheckDistFiles "dist/tools (GUE)" "$distRoot\tools" @(
-    "rco_gue.exe",
     "assimp-vc143-mt.dll", "glfw3.dll", "kubazip.dll", "minizip.dll",
     "poly2tri.dll", "pugixml.dll", "sqlite3.dll", "zlib1.dll"
 )
 InstallMissingDlls "dist/tools (GUE)" "$distRoot\tools" $missingTools
 
+CheckBuiltOutput "server executable" "$distRoot\server\server.exe"
 CheckDistFiles "dist/server" "$distRoot\server" @(
-    "server.exe", "config.toml"
+    "config.toml"
 ) | Out-Null
 
 # Assets minimos para o cliente/GUE abrirem sem crashar (vem versionados em dist/ via git)

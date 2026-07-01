@@ -514,6 +514,20 @@ void MediaTab::EnsureTables(sqlite3* db) {
     for (const char* s : adefColumns)
         sqlite3_exec(db, s, nullptr, nullptr, nullptr);
 
+    // Player spawn points — also created by zone_scene.cpp EnsureTables, but
+    // must exist here too so FetchAll can query it before any zone is loaded.
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS player_spawns ("
+        "  id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  name      TEXT NOT NULL DEFAULT '',"
+        "  area_name TEXT NOT NULL DEFAULT '',"
+        "  x         REAL NOT NULL DEFAULT 0,"
+        "  y         REAL NOT NULL DEFAULT 0,"
+        "  z         REAL NOT NULL DEFAULT 0,"
+        "  yaw       REAL NOT NULL DEFAULT 0"
+        ")",
+        nullptr, nullptr, nullptr);
+
     // Collision shapes table (migrateV16-equivalent for the GUE).
     sqlite3_exec(db,
         "CREATE TABLE IF NOT EXISTS media_model_shapes ("
@@ -846,6 +860,23 @@ void MediaTab::FetchAll(sqlite3* db) {
                   "Loaded: %d models, %d materials, %d clips, %d actor defs",
                   (int)models_.size(), (int)materials_.size(),
                   (int)clips_.size(),  (int)actor_defs_.size());
+}
+
+void MediaTab::ReloadPlayerSpawns(sqlite3* db) {
+    player_spawns_.clear();
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, area_name, name FROM player_spawns ORDER BY area_name, name",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            PlayerSpawnOption ps;
+            ps.id        = sqlite3_column_int(stmt, 0);
+            ps.area_name = colText(stmt, 1);
+            ps.name      = colText(stmt, 2);
+            player_spawns_.push_back(std::move(ps));
+        }
+        sqlite3_finalize(stmt);
+    }
 }
 
 void MediaTab::LoadDropListOptions(sqlite3* db) {

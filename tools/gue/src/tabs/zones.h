@@ -335,6 +335,7 @@ private:
     // Spawn Points
     float spawnPtRadius_      = 5.f;
     int   spawnPtSelMob_      = -1;   // index into selected spawn point's mobs
+    bool  needsSpawnReload_   = false; // set when player_spawns table is mutated outside PlaceObject
 
     std::vector<std::string>  scriptList_;
     bool                      scriptListLoaded_ = false;

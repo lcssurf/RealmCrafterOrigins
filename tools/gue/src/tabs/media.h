@@ -227,6 +227,7 @@ public:
     // Public so other tabs (Actors) can build pickers without their own query.
     void EnsureTables(sqlite3* db);
     void FetchAll(sqlite3* db);
+    void ReloadPlayerSpawns(sqlite3* db);
     void LoadDropListOptions(sqlite3* db);
 
     const std::vector<MediaModel>&    Models()     const { return models_;     }

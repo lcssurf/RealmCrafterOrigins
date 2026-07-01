@@ -693,6 +693,7 @@ void ZonesTab::PlaceObject(const glm::vec3& wpos, sqlite3* db, MediaTab* media) 
             selectedID_   = ps.id;
             selectedType_ = kSelPlayerSpawn;
             PushUndo(kUndoCreate, kSelPlayerSpawn, ps.id);
+            media->ReloadPlayerSpawns(db);
             std::snprintf(statusMsg_, sizeof(statusMsg_),
                 "Placed player spawn #%d at (%.0f, %.0f).", ps.id, wpos.x, wpos.z);
         }
@@ -785,7 +786,7 @@ void ZonesTab::Undo(sqlite3* db) {
         case kSelEmitter:     rem(scene_.emitters);     break;
         case kSelWater:       rem(scene_.water);        break;
         case kSelScenery:     rem(scene_.scenery);      break;
-        case kSelPlayerSpawn: rem(scene_.playerSpawns); break;
+        case kSelPlayerSpawn: rem(scene_.playerSpawns); needsSpawnReload_ = true; break;
         }
         std::snprintf(statusMsg_, sizeof(statusMsg_), "Undo: removed id=%d.", e.objectId);
         break;
@@ -1402,6 +1403,7 @@ void ZonesTab::DeleteSelected(sqlite3* db) {
             std::remove_if(scene_.playerSpawns.begin(), scene_.playerSpawns.end(),
                            [&](auto& x){ return x.id == selectedID_; }),
             scene_.playerSpawns.end());
+        needsSpawnReload_ = true;
         std::snprintf(statusMsg_, sizeof(statusMsg_),
             "Deleted player spawn %d.", selectedID_);
         ClearSelection();
@@ -1464,6 +1466,10 @@ void ZonesTab::Draw(sqlite3* db, MediaTab* media) {
             SyncSceneryCache(media);
             terrainMatsLoaded_ = false;   // media_materials may have changed
             last_media_revision_ = rev;
+        }
+        if (needsSpawnReload_) {
+            media->ReloadPlayerSpawns(db);
+            needsSpawnReload_ = false;
         }
     }
 
