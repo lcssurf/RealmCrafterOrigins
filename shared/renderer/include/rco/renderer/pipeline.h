@@ -148,6 +148,9 @@ public:
     void SetDebugMode(int mode) { debugMode_ = mode; }
     int  DebugMode() const { return debugMode_; }
 
+    void  SetBlackCutoutThreshold(float t) { blackCutoutThreshold_ = t; }
+    float BlackCutoutThreshold() const     { return blackCutoutThreshold_; }
+
     struct FrameStats {
         int triangles  = 0;
         int draw_calls = 0;
@@ -228,7 +231,8 @@ private:
     int blurPasses_   = 1;
     int blurStrength_ = 5;
 
-    int debugMode_ = 0;
+    int   debugMode_             = 0;
+    float blackCutoutThreshold_ = 0.005f;
 
     FrameStats frame_stats_;
     FrameStats pending_stats_;

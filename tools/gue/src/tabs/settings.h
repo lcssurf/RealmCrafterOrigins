@@ -6,11 +6,15 @@
 #include <vector>
 #include <utility>
 
+namespace rco::renderer { class Pipeline; }
+
 namespace gue {
 
 class SettingsTab {
 public:
     void Draw(sqlite3* db);
+
+    void SetPipeline(rco::renderer::Pipeline* p) { pipeline_ = p; }
 
 private:
     void EnsureTables(sqlite3* db);
@@ -35,10 +39,13 @@ private:
     void AnimVocabDeleteNode(sqlite3* db, int id);
     bool AnimVocabHasChildren(int id) const;
 
+    rco::renderer::Pipeline* pipeline_ = nullptr;
+
     std::vector<std::pair<int, std::string>> media_models_;
     std::vector<std::string> blood_fx_keys_;
-    int  default_drop_model_id_ = 0;
+    int   default_drop_model_id_    = 0;
     float default_drop_model_scale_ = 1.f;
+    float black_cutout_threshold_   = 0.005f;
     std::string blood_fx_key_;
     std::string blood_fx_mode_ = "basic";
     bool need_fetch_ = true;

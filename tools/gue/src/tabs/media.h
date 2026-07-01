@@ -49,6 +49,7 @@ struct MediaModel {
     float uv_offset_y = 0.f;
     float uv_scale_x  = 1.f;
     float uv_scale_y  = 1.f;
+    bool  black_cutout = false;  // discard near-black pixels (hair, foliage, fences)
 };
 
 // Serialize / parse the per-model material map column.
@@ -67,6 +68,7 @@ struct MediaMaterial {
     float       roughness      = 0.5f;
     float       metallic       = 0.f;
     float       normal_strength = 2.5f;  // normal map intensity for terrain triplanar blend
+    bool        black_cutout   = false;  // discard near-black pixels (hair, foliage, fences)
 };
 
 struct MediaAnimClip {
@@ -103,6 +105,11 @@ struct ActorMeshSlot {
     int slot         = 0; // ActorSlot value
     int model_id     = 0;
     int material_id  = 0; // 0 = use model's embedded material
+
+    // Per-aiMaterial-name material overrides for this slot.
+    // key = material_name from the model file (e.g. "ID01", "Body_Mat")
+    // value = media_materials.id; 0 = no override (use model default)
+    std::unordered_map<std::string, int> submesh_materials;
 };
 
 struct ActorAnimMap {
@@ -385,6 +392,9 @@ private:
     // re-upload textures from disk every frame.
     int      preview_last_model_id_    = -1;
     int      preview_last_material_id_ = -1;
+    // Tracks the last submesh_materials map applied to the preview so that
+    // editing any per-part choice in the UI triggers a re-apply.
+    std::unordered_map<std::string, int> preview_last_submesh_materials_;
     // Set whenever materials_ changes — forces the Models preview to
     // re-resolve name-based material bindings next frame.
     bool     materialsDirtyForPreview_ = true;

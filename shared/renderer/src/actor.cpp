@@ -52,6 +52,7 @@ void Actor::OverrideMaterial(const std::string& albedo_path,
                              const std::string& orm_path,
                              float albedo_r, float albedo_g, float albedo_b,
                              float roughness, float metallic,
+                             bool blackCutout,
                              MaterialManager* mm) {
     if (!model_) return;
     // Update shared SubMesh fields (tex_albedo, factors) + emit diag logs.
@@ -75,7 +76,57 @@ void Actor::OverrideMaterial(const std::string& albedo_path,
             m.albedo_factor,
             m.roughness_factor,
             m.metallic_factor,
-            1.0f);
+            1.0f,
+            blackCutout);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OverrideMaterialsByName — per-submesh material override by aiMaterial name
+// ---------------------------------------------------------------------------
+
+void Actor::OverrideMaterialsByName(
+    const std::unordered_map<std::string, SubmeshMaterialData>& by_name,
+    MaterialManager* mm) {
+    if (!model_ || by_name.empty()) return;
+
+    // Build Model::MaterialPaths for ApplyMaterialsByName (paths only).
+    std::unordered_map<std::string, Model::MaterialPaths> paths;
+    paths.reserve(by_name.size());
+    for (const auto& [name, data] : by_name)
+        paths[name] = {data.albedo_path, data.normal_path, data.orm_path};
+
+    // Load textures into SubMesh.tex_* and update the shared model's material_idx
+    // for the named submeshes. Side-effect on the shared model is acceptable
+    // (same as the existing ApplyMaterialsByName path via zone_renderer/client).
+    if (mm) model_->ApplyMaterialsByName(*mm, paths);
+
+    // Allocate per-actor SSBO entries for overridden submeshes, leaving
+    // mesh_material_overrides_[i] == -1 for submeshes with no override so
+    // they continue to use the model's shared material_idx.
+    const auto& meshes = model_->meshes();
+    mesh_material_overrides_.assign(meshes.size(), -1);
+    if (!mm) return;
+    for (size_t i = 0; i < meshes.size(); ++i) {
+        const auto& m = meshes[i];
+        auto it = by_name.find(m.material_name);
+        if (it == by_name.end()) continue;
+
+        const SubmeshMaterialData& d = it->second;
+        const std::string key = "actor_override:" + std::to_string(instance_id_)
+                                + "#" + std::to_string(i);
+        // Use tex handles loaded by ApplyMaterialsByName above, but factors
+        // from the user-supplied override (not the model file's defaults).
+        mesh_material_overrides_[i] = mm->RegisterFromHandles(
+            key,
+            m.tex_albedo, m.tex_normal, m.tex_orm,
+            m.tex_opacity, m.tex_ao,
+            m.orm_packed,
+            d.albedo_factor,
+            d.roughness,
+            d.metallic,
+            1.0f,
+            d.black_cutout);
     }
 }
 

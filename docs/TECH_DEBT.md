@@ -117,6 +117,22 @@ não notifica o manager).
 **Quando atacar:** quando houver cenário de alta rotatividade (dungeon instances, etc).
 Por ora o leak é aceitável.
 
+## 13. Material por-submesh (por parte do modelo)
+
+**Estado:** `actor_def_submesh_materials` guarda um material por `ai_material_name` por slot de
+actor def. `BuildAppearance` lê dela com fallback para `model.MaterialMap` (actor defs sem
+per-parte não regridem). Render via `Actor::OverrideMaterialsByName` usa `mesh_material_overrides_`
+seletivo — partes sem override ficam com o `material_idx` do modelo.
+
+**Tech debt herdado da entrada #12:** entradas SSBO per-actor também não são liberadas aqui.
+Cada parte com override = uma entrada `"actor_override:<id>#<i>"` no `MaterialManager`, nunca
+removida na destruição do actor.
+
+**Limitação zone_renderer:** `ApplyMaterialsByName` (zona/cliente) ainda escreve no modelo
+compartilhado (`material_idx`). Dois actor defs diferentes apontando para o mesmo arquivo de
+modelo com per-submesh distintos se sobreporiam. Fixing isso requer `OverrideMaterialsByName`
+com per-actor entries no zone_renderer (análogo ao que existe para o preview do GUE).
+
 ## 11. Categorias de skill nao-damage sem runtime
 
 Schema de `ability_templates` suporta categories: `damage`, `heal`, `buff`, `debuff`, `mobility`, `utility`, `summon`.
@@ -1116,6 +1132,26 @@ ajuste de balance disponível (a dimensão está acessível via resolveAbilityDi
   entry ativo e atualiza `clip_start_sec_`/`clip_end_sec_` ao vivo; reposiciona
   `anim_t_` para `clip_start_sec_` se o recorte foi apertado e o cursor ficou de fora.
 - Sem quebra em atores sem recorte: `start_frame=0, end_frame=-1` → range = total clip.
+
+## 115. Black Cutout — implementado (Fase 1 + Fase 2)
+
+Fase 1: flag `black_cutout` no **material** → `albedoFactor.w` no SSBO → discard em
+`gBufferBindless.fs` quando `lum < u_blackCutoutThreshold`. Limiar global via slider no GUE Settings,
+persistido em `game_settings.black_cutout_threshold`.
+
+Fase 2: flag `black_cutout` no **modelo** — implementada.
+- `media_models.black_cutout` (DB), `MediaModel::black_cutout`, checkbox no editor de modelos.
+- `Model::ApplyBlackCutout(bool, MaterialManager*)` re-registra todas as submeshes com
+  `albedoFactor.w` atualizado; cobre statics no deferred gBuffer (via SSBO) sem shader extra.
+- `preview_static.fs` recebe `u_blackCutout` + `u_blackCutoutThreshold`; `PreviewViewport`
+  sincroniza via `SetStaticBlackCutout`.
+
+**Pendência restante:**
+
+1. **Derivação automática do canal alpha (B3D fx=16)**: quando Assimp reporta
+   `aiTextureType_OPACITY == albedo` (B3D `fx & 16` = masked), derivar a opacidade
+   automaticamente do canal alpha da textura albedo, sem exigir arquivo separado.
+   Log `[alpha-flag] assimp_opacity=equals_albedo` já identifica esses casos.
 
 ## 113. GUE: reorganização da importação de texturas/materiais
 

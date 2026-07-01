@@ -17,6 +17,7 @@
 #include <cmath>
 
 #include "rco/renderer/col_bake.h"
+#include "rco/renderer/pipeline.h"
 
 namespace gue {
 
@@ -542,6 +543,17 @@ void MediaTab::EnsureTables(sqlite3* db) {
     sqlite3_exec(db,
         "ALTER TABLE media_materials ADD COLUMN normal_strength REAL NOT NULL DEFAULT 2.5",
         nullptr, nullptr, nullptr);
+
+    // Black cutout flag (no-op when column already exists).
+    sqlite3_exec(db,
+        "ALTER TABLE media_materials ADD COLUMN black_cutout INTEGER NOT NULL DEFAULT 0",
+        nullptr, nullptr, nullptr);
+
+    // Black cutout flag per model — propagated to embedded submesh SSBO entries
+    // via Model::ApplyBlackCutout so the deferred pass discards near-black pixels.
+    sqlite3_exec(db,
+        "ALTER TABLE media_models ADD COLUMN black_cutout INTEGER NOT NULL DEFAULT 0",
+        nullptr, nullptr, nullptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -607,7 +619,7 @@ void MediaTab::FetchAll(sqlite3* db) {
     // Models
     if (sqlite3_prepare_v2(db,
         "SELECT id, name, file_path, scale, material_map,"
-        "       uv_offset_x, uv_offset_y, uv_scale_x, uv_scale_y"
+        "       uv_offset_x, uv_offset_y, uv_scale_x, uv_scale_y, black_cutout"
         "  FROM media_models ORDER BY name",
         -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -621,6 +633,7 @@ void MediaTab::FetchAll(sqlite3* db) {
             m.uv_offset_y  = (float)sqlite3_column_double(stmt, 6);
             m.uv_scale_x   = (float)sqlite3_column_double(stmt, 7);
             m.uv_scale_y   = (float)sqlite3_column_double(stmt, 8);
+            m.black_cutout = sqlite3_column_int(stmt, 9) != 0;
             models_.push_back(std::move(m));
         }
         sqlite3_finalize(stmt);
@@ -629,7 +642,7 @@ void MediaTab::FetchAll(sqlite3* db) {
     // Materials
     if (sqlite3_prepare_v2(db,
         "SELECT id, name, albedo_path, normal_path, orm_path,"
-        "       albedo_r, albedo_g, albedo_b, roughness, metallic, normal_strength"
+        "       albedo_r, albedo_g, albedo_b, roughness, metallic, normal_strength, black_cutout"
         " FROM media_materials ORDER BY name",
         -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -645,6 +658,7 @@ void MediaTab::FetchAll(sqlite3* db) {
             m.roughness       = (float)sqlite3_column_double(stmt, 8);
             m.metallic        = (float)sqlite3_column_double(stmt, 9);
             m.normal_strength = (float)sqlite3_column_double(stmt, 10);
+            m.black_cutout    = sqlite3_column_int(stmt, 11) != 0;
             materials_.push_back(std::move(m));
         }
         sqlite3_finalize(stmt);
@@ -720,6 +734,26 @@ void MediaTab::FetchAll(sqlite3* db) {
             for (auto& d : actor_defs_) {
                 if (d.id == s.actor_def_id) { d.mesh_slots.push_back(s); break; }
             }
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    // Per-submesh material overrides: attach to matching ActorMeshSlot entries.
+    if (sqlite3_prepare_v2(db,
+        "SELECT actor_mesh_id, ai_material_name, material_id"
+        " FROM actor_def_submesh_materials",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            int        mesh_id = sqlite3_column_int (stmt, 0);
+            const char* ai_nm  = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            int        mat_id  = sqlite3_column_int (stmt, 2);
+            for (auto& d : actor_defs_)
+                for (auto& s : d.mesh_slots)
+                    if (s.id == mesh_id) {
+                        s.submesh_materials[ai_nm ? ai_nm : ""] = mat_id;
+                        goto next_submesh_row;
+                    }
+            next_submesh_row:;
         }
         sqlite3_finalize(stmt);
     }
@@ -853,12 +887,14 @@ void MediaTab::SaveModel(sqlite3* db, MediaModel& m) {
     if (m.id == 0) {
         rc = sqlite3_prepare_v2(db,
             "INSERT INTO media_models (name, file_path, scale, material_map,"
-            "                          uv_offset_x, uv_offset_y, uv_scale_x, uv_scale_y)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, nullptr);
+            "                          uv_offset_x, uv_offset_y, uv_scale_x, uv_scale_y,"
+            "                          black_cutout)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
             "UPDATE media_models SET name=?, file_path=?, scale=?, material_map=?,"
-            "                        uv_offset_x=?, uv_offset_y=?, uv_scale_x=?, uv_scale_y=?"
+            "                        uv_offset_x=?, uv_offset_y=?, uv_scale_x=?, uv_scale_y=?,"
+            "                        black_cutout=?"
             " WHERE id=?", -1, &stmt, nullptr);
     }
     if (rc != SQLITE_OK) {
@@ -874,7 +910,8 @@ void MediaTab::SaveModel(sqlite3* db, MediaModel& m) {
     sqlite3_bind_double(stmt, 6, m.uv_offset_y);
     sqlite3_bind_double(stmt, 7, m.uv_scale_x);
     sqlite3_bind_double(stmt, 8, m.uv_scale_y);
-    if (m.id != 0) sqlite3_bind_int(stmt, 9, m.id);
+    sqlite3_bind_int   (stmt, 9, m.black_cutout ? 1 : 0);
+    if (m.id != 0) sqlite3_bind_int(stmt, 10, m.id);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         std::snprintf(statusMsg_, sizeof(statusMsg_),
@@ -1011,13 +1048,13 @@ void MediaTab::SaveMaterial(sqlite3* db, MediaMaterial& m) {
         rc = sqlite3_prepare_v2(db,
             "INSERT INTO media_materials"
             " (name, albedo_path, normal_path, orm_path,"
-            "  albedo_r, albedo_g, albedo_b, roughness, metallic, normal_strength)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr);
+            "  albedo_r, albedo_g, albedo_b, roughness, metallic, normal_strength, black_cutout)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
             "UPDATE media_materials SET"
             " name=?, albedo_path=?, normal_path=?, orm_path=?,"
-            " albedo_r=?, albedo_g=?, albedo_b=?, roughness=?, metallic=?, normal_strength=?"
+            " albedo_r=?, albedo_g=?, albedo_b=?, roughness=?, metallic=?, normal_strength=?, black_cutout=?"
             " WHERE id=?", -1, &stmt, nullptr);
     }
     if (rc != SQLITE_OK) {
@@ -1035,7 +1072,8 @@ void MediaTab::SaveMaterial(sqlite3* db, MediaMaterial& m) {
     sqlite3_bind_double(stmt,  8, m.roughness);
     sqlite3_bind_double(stmt,  9, m.metallic);
     sqlite3_bind_double(stmt, 10, m.normal_strength);
-    if (m.id != 0) sqlite3_bind_int(stmt, 11, m.id);
+    sqlite3_bind_int   (stmt, 11, m.black_cutout ? 1 : 0);
+    if (m.id != 0) sqlite3_bind_int(stmt, 12, m.id);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         std::snprintf(statusMsg_, sizeof(statusMsg_),
@@ -1312,6 +1350,31 @@ void MediaTab::SaveMeshSlot(sqlite3* db, ActorMeshSlot& s) {
             "[actor-mat] SaveMeshSlot: slot=%s model_id=%d material_id=%d (%s) -> %s\n",
             ActorSlotName(s.slot), s.model_id, s.material_id,
             mat_name.c_str(), ok ? "SAVED" : "DB ERROR");
+    }
+
+    // Replace per-submesh material overrides (DELETE + INSERT, idempotent).
+    if (s.id != 0) {
+        sqlite3_stmt* del = nullptr;
+        sqlite3_prepare_v2(db,
+            "DELETE FROM actor_def_submesh_materials WHERE actor_mesh_id=?",
+            -1, &del, nullptr);
+        sqlite3_bind_int(del, 1, s.id);
+        sqlite3_step(del);
+        sqlite3_finalize(del);
+
+        for (const auto& [ai_name, mat_id] : s.submesh_materials) {
+            if (mat_id == 0 || ai_name.empty()) continue;
+            sqlite3_stmt* ins = nullptr;
+            sqlite3_prepare_v2(db,
+                "INSERT OR REPLACE INTO actor_def_submesh_materials"
+                " (actor_mesh_id, ai_material_name, material_id) VALUES (?, ?, ?)",
+                -1, &ins, nullptr);
+            sqlite3_bind_int (ins, 1, s.id);
+            sqlite3_bind_text(ins, 2, ai_name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int (ins, 3, mat_id);
+            sqlite3_step(ins);
+            sqlite3_finalize(ins);
+        }
     }
 }
 
@@ -1750,6 +1813,10 @@ void MediaTab::DrawModels(sqlite3* db) {
         }
         if (ImGui::InputFloat("Scale", &editModel_.scale, 0.1f, 1.f, "%.2f"))
             dirtyModel_ = true;
+        if (ImGui::Checkbox("Black = transparent (cutout)##mc", &editModel_.black_cutout)) {
+            dirtyModel_ = true;
+            if (preview_) preview_->SetStaticBlackCutout(editModel_.black_cutout);
+        }
         ImGui::TextDisabled("[...] imports automatically into assets/models/<name>/ if needed.");
         ImGui::Spacing();
 
@@ -2034,6 +2101,7 @@ void MediaTab::DrawModels(sqlite3* db) {
             bool path_changed = preview_->CurrentPath() != show->file_path;
             if (path_changed) {
                 preview_->LoadModel(show->file_path);
+                preview_->SetStaticBlackCutout(show->black_cutout);
                 // Seed the in-memory mapping with whatever the DB persisted
                 // for this model so the preview comes back textured after
                 // reopening the GUE.
@@ -2235,6 +2303,15 @@ static bool DrawMaterialFields(MediaMaterial& m) {
             "Intensity of the normal map when this material is used on terrain.\n"
             "1.0 = physically correct. 2-3 = recommended for most assets.\n"
             "Higher values exaggerate bump detail; 0 = flat surface.");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Cutout");
+    if (ImGui::Checkbox("Black Cutout##bco", &m.black_cutout)) changed = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Discard pixels where the albedo luminance is near pure black.\n"
+            "Use for hair, foliage, or fences with a black alpha mask convention.\n"
+            "Adjust the global threshold slider at the top of the Materials tab.");
 
     ImGui::TextDisabled("ORM = Occlusion(R) / Roughness(G) / Metallic(B) packed texture.");
     return changed;
@@ -2862,7 +2939,92 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                 if (ImGui::BeginPopup("edit_slot")) {
                     ImGui::Combo("Slot", &s.slot, kSlotNames, kSlotCount);
                     ComboId("Model",    s.model_id,    modelList);
-                    ComboId("Material", s.material_id, matList, "(embedded)");
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("Global material (all parts):");
+                    ComboId("##mat_global", s.material_id, matList, "(embedded)");
+
+                    // Per-part (submesh) material section.
+                    // Uses material names from the preview when its model matches
+                    // this slot; otherwise shows only already-saved entries.
+                    std::vector<std::string> part_names;
+                    static int s_last_logged_slot_id = -1;
+                    const bool should_log_diag = (s_last_logged_slot_id != s.id);
+                    {
+                        const MediaModel* slot_mdl = nullptr;
+                        for (const auto& mm : models_)
+                            if (mm.id == s.model_id) { slot_mdl = &mm; break; }
+
+                        const bool has_slot_mdl   = slot_mdl != nullptr;
+                        const bool has_preview     = preview_ != nullptr;
+                        const bool path_nonempty   = has_slot_mdl && !slot_mdl->file_path.empty();
+                        const std::string cur_path = (has_preview && preview_)
+                                                     ? preview_->CurrentPath() : "(no preview)";
+                        const bool paths_match     = has_preview && path_nonempty &&
+                                                     cur_path == slot_mdl->file_path;
+
+                        // Log once per popup open (throttled by slot id change).
+                        if (should_log_diag) {
+                            s_last_logged_slot_id = s.id;
+                            std::fprintf(stderr,
+                                "[per-part-diag] popup open: slot_id=%d model_id=%d\n"
+                                "  slot_mdl found=%d  path='%s'\n"
+                                "  preview_=%p  preview.CurrentPath='%s'\n"
+                                "  path_nonempty=%d  paths_match=%d (decides branch)\n",
+                                s.id, s.model_id,
+                                (int)has_slot_mdl,
+                                slot_mdl ? slot_mdl->file_path.c_str() : "(null)",
+                                (void*)preview_.get(),
+                                cur_path.c_str(),
+                                (int)path_nonempty, (int)paths_match);
+                        }
+
+                        const bool preview_matches = paths_match;
+                        if (preview_matches) {
+                            part_names = preview_->MaterialNames();
+                            if (should_log_diag) {
+                                std::fprintf(stderr,
+                                    "[per-part-diag]   BRANCH=preview  MaterialNames count=%zu [",
+                                    part_names.size());
+                                for (size_t pi = 0; pi < part_names.size(); ++pi)
+                                    std::fprintf(stderr, "%s%s", pi ? ", " : "",
+                                                 part_names[pi].c_str());
+                                std::fprintf(stderr, "]\n");
+                            }
+                        } else {
+                            for (const auto& [nm, _] : s.submesh_materials)
+                                part_names.push_back(nm);
+                            if (should_log_diag) {
+                                std::fprintf(stderr,
+                                    "[per-part-diag]   BRANCH=saved_keys  saved entries=%zu [",
+                                    part_names.size());
+                                for (size_t pi = 0; pi < part_names.size(); ++pi)
+                                    std::fprintf(stderr, "%s%s", pi ? ", " : "",
+                                                 part_names[pi].c_str());
+                                std::fprintf(stderr, "]\n");
+                            }
+                        }
+                    }
+                    if (!part_names.empty()) {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Per-part materials:");
+                        for (const auto& part : part_names) {
+                            ImGui::PushID(part.c_str());
+                            int cur_id = 0;
+                            auto it = s.submesh_materials.find(part);
+                            if (it != s.submesh_materials.end()) cur_id = it->second;
+                            ImGui::SetNextItemWidth(160.f);
+                            if (ComboId(part.c_str(), cur_id, matList, "(model default)"))
+                                s.submesh_materials[part] = cur_id;
+                            ImGui::PopID();
+                        }
+                    } else {
+                        if (should_log_diag) {
+                            std::fprintf(stderr,
+                                "[per-part-diag]   SECTION=SKIPPED (part_names empty)\n");
+                        }
+                    }
+
+                    ImGui::Separator();
                     if (ImGui::Button("Save##es")) {
                         SaveMeshSlot(db, s);
                         ImGui::CloseCurrentPopup();
@@ -3229,65 +3391,96 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                 // correct textures. This only runs when the model or the
                 // materials list changes — OverrideMaterial below is
                 // deliberately gated the same way.
+                // FIX1: include per-part map changes in the re-apply condition.
                 const bool apply_map_needed =
-                    preview_last_model_id_ != mdl->id || materialsDirtyForPreview_;
-                if (apply_map_needed && !mdl->material_map.empty()) {
-                    std::unordered_map<std::string, const MediaMaterial*> byName;
-                    for (const auto& mm : materials_) byName[mm.name] = &mm;
-
-                    std::vector<PreviewViewport::MaterialLookup> lookups;
-                    for (const auto& ai_name : preview_->MaterialNames()) {
-                        auto mit = mdl->material_map.find(ai_name);
-                        const MediaMaterial* mm = nullptr;
-                        if (mit != mdl->material_map.end()) {
-                            auto nit = byName.find(mit->second);
-                            if (nit != byName.end()) mm = nit->second;
+                    preview_last_model_id_ != mdl->id || materialsDirtyForPreview_ ||
+                    body->submesh_materials != preview_last_submesh_materials_;
+                if (apply_map_needed) {
+                    // 1. Per-actor-def submesh materials (body slot) — highest priority.
+                    if (!body->submesh_materials.empty()) {
+                        std::vector<PreviewViewport::SubmeshMaterialEntry> entries;
+                        for (const auto& [ai_name, mat_id] : body->submesh_materials) {
+                            if (mat_id == 0) continue;
+                            const MediaMaterial* mm = nullptr;
+                            for (const auto& m : materials_)
+                                if (m.id == mat_id) { mm = &m; break; }
+                            if (!mm) continue;
+                            PreviewViewport::SubmeshMaterialEntry e;
+                            e.ai_name    = ai_name;
+                            e.albedo_rel = mm->albedo_path;
+                            e.normal_rel = mm->normal_path;
+                            e.orm_rel    = mm->orm_path;
+                            e.albedo_r   = mm->albedo_r;
+                            e.albedo_g   = mm->albedo_g;
+                            e.albedo_b   = mm->albedo_b;
+                            e.roughness    = mm->roughness;
+                            e.metallic     = mm->metallic;
+                            e.black_cutout = mm->black_cutout;
+                            entries.push_back(std::move(e));
                         }
-                        if (!mm) continue;
-                        PreviewViewport::MaterialLookup l;
-                        l.name       = ai_name;
-                        l.albedo_rel = mm->albedo_path;
-                        l.normal_rel = mm->normal_path;
-                        l.orm_rel    = mm->orm_path;
-                        lookups.push_back(std::move(l));
+                        std::fprintf(stderr, "[preview-mat] PATH=per-part  entries=%zu\n",
+                                     entries.size());
+                        for (const auto& e : entries)
+                            std::fprintf(stderr, "[preview-mat]   part='%s' albedo='%s'\n",
+                                         e.ai_name.c_str(), e.albedo_rel.c_str());
+                        preview_->OverrideMaterialsByName(entries);
+                    } else if (!mdl->material_map.empty()) {
+                        // 2. Fallback: model-level material_map (legacy).
+                        std::unordered_map<std::string, const MediaMaterial*> byName;
+                        for (const auto& mm : materials_) byName[mm.name] = &mm;
+
+                        std::vector<PreviewViewport::MaterialLookup> lookups;
+                        for (const auto& ai_name : preview_->MaterialNames()) {
+                            auto mit = mdl->material_map.find(ai_name);
+                            const MediaMaterial* mm = nullptr;
+                            if (mit != mdl->material_map.end()) {
+                                auto nit = byName.find(mit->second);
+                                if (nit != byName.end()) mm = nit->second;
+                            }
+                            if (!mm) continue;
+                            PreviewViewport::MaterialLookup l;
+                            l.name       = ai_name;
+                            l.albedo_rel = mm->albedo_path;
+                            l.normal_rel = mm->normal_path;
+                            l.orm_rel    = mm->orm_path;
+                            lookups.push_back(std::move(l));
+                        }
+                        preview_->ApplyMaterialsFromMedia(lookups);
                     }
-                    preview_->ApplyMaterialsFromMedia(lookups);
+                    preview_last_submesh_materials_ = body->submesh_materials;
                     materialsDirtyForPreview_ = false;
                 }
                 preview_last_model_id_ = mdl->id;
 
-                // Actor Def's own Body-slot material_id (if set) is applied
-                // ON TOP of the per-aiMaterial mapping — useful as a global
-                // override for single-material models where no map exists.
-                const MediaMaterial* mat = nullptr;
-                for (auto& mm : materials_)
-                    if (mm.id == body->material_id) { mat = &mm; break; }
+                // FIX2: global material_id override only applies when there are no
+                // per-part overrides — otherwise it would clobber the per-part work.
+                if (body->submesh_materials.empty()) {
+                    const MediaMaterial* mat = nullptr;
+                    for (auto& mm : materials_)
+                        if (mm.id == body->material_id) { mat = &mm; break; }
 
-                // Log only when something changes (avoids per-frame spam).
-                const bool material_changed = (body->material_id != preview_last_material_id_);
-                if (material_changed) {
-                    std::fprintf(stderr,
-                        "[actor-mat] preview check: body->material_id=%d  preview_last=%d"
-                        "  mat=%s  albedo='%s'\n",
-                        body->material_id, preview_last_material_id_,
-                        mat ? mat->name.c_str() : "(NOT FOUND in materials_)",
-                        mat ? mat->albedo_path.c_str() : "");
-                }
-
-                if (mat && preview_last_material_id_ != mat->id) {
-                    std::fprintf(stderr,
-                        "[actor-mat] -> calling OverrideMaterial (id %d->%d)\n",
-                        preview_last_material_id_, mat->id);
-                    preview_->OverrideMaterial(mat->albedo_path, mat->normal_path,
-                                               mat->orm_path,
-                                               mat->albedo_r, mat->albedo_g, mat->albedo_b,
-                                               mat->roughness, mat->metallic);
-                    preview_last_material_id_ = mat->id;
-                } else if (!mat && body->material_id != 0 && material_changed) {
-                    std::fprintf(stderr,
-                        "[actor-mat] -> material_id=%d NOT FOUND in materials_ list"
-                        " (list size=%zu, needFetch_=%d)\n",
-                        body->material_id, materials_.size(), (int)needFetch_);
+                    const bool material_changed = (body->material_id != preview_last_material_id_);
+                    if (mat && material_changed) {
+                        std::fprintf(stderr,
+                            "[preview-mat] PATH=global  calling OverrideMaterial (id %d->%d)"
+                            "  albedo='%s'\n",
+                            preview_last_material_id_, mat->id, mat->albedo_path.c_str());
+                        preview_->OverrideMaterial(mat->albedo_path, mat->normal_path,
+                                                   mat->orm_path,
+                                                   mat->albedo_r, mat->albedo_g, mat->albedo_b,
+                                                   mat->roughness, mat->metallic,
+                                                   mat->black_cutout);
+                        preview_last_material_id_ = mat->id;
+                    } else if (!mat && body->material_id != 0 && material_changed) {
+                        std::fprintf(stderr,
+                            "[preview-mat] PATH=global  material_id=%d NOT FOUND"
+                            " (list size=%zu)\n",
+                            body->material_id, materials_.size());
+                    }
+                } else {
+                    // Per-part active: keep preview_last_material_id_ in sync so
+                    // switching back to global mode doesn't use a stale baseline.
+                    preview_last_material_id_ = body->material_id;
                 }
                 // Live scale preview — cheap to set every frame; lets the
                 // user drag the Scale slider and see the result immediately.

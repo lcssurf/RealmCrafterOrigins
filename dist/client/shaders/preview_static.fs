@@ -13,6 +13,9 @@ uniform vec3  u_sunDir;             // world-space, normalised, pointing TO ligh
 uniform vec3  u_sunColor;           // sun RGB * intensity
 uniform float u_ambientStrength;    // ambient fill (0-1)
 
+uniform bool  u_blackCutout;
+uniform float u_blackCutoutThreshold;
+
 void main()
 {
     // Texture is stored as GL_SRGB8_ALPHA8: sampling returns linear values.
@@ -24,6 +27,11 @@ void main()
     float ndotl = max(dot(N, -normalize(u_sunDir)), 0.0);
 
     vec3 color = baseColor * (u_ambientStrength + ndotl * u_sunColor);
+
+    if (u_blackCutout) {
+        float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        if (lum < u_blackCutoutThreshold) discard;
+    }
 
     // Gamma-encode for sRGB display (FBO is GL_RGBA8, no automatic conversion).
     color = pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2));

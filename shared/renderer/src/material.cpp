@@ -94,7 +94,8 @@ int MaterialManager::RegisterFromHandles(const std::string& name,
                                           const glm::vec3& albedoFactor,
                                           float roughnessFactor,
                                           float metallicFactor,
-                                          float aoFactor) {
+                                          float aoFactor,
+                                          bool blackCutout) {
     uint64_t aH      = MakeResidentHandle_(albedo);
     uint64_t nH      = MakeResidentHandle_(normal);
     uint64_t ormH    = MakeResidentHandle_(orm);
@@ -104,7 +105,7 @@ int MaterialManager::RegisterFromHandles(const std::string& name,
         std::clamp(albedoFactor.r, 0.0f, 4.0f),
         std::clamp(albedoFactor.g, 0.0f, 4.0f),
         std::clamp(albedoFactor.b, 0.0f, 4.0f),
-        1.0f,
+        blackCutout ? 1.0f : 0.0f,
     };
     glm::vec4 pbrFactors{
         std::clamp(roughnessFactor, 0.0f, 1.0f),

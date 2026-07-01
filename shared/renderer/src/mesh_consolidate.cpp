@@ -285,16 +285,14 @@ ConsolidationResult ConsolidateMeshes(Model& model, const char* path) {
         any_merged = true;
     }
 
-    if (any_merged) {
-        model.meshes_ = std::move(new_meshes);
-        result.consolidated_submesh_count = (int)model.meshes_.size();
-        if (VerboseConsolidationLogsEnabled()) {
-            std::fprintf(stderr,
-                "[mesh-consolidate] '%s' consolidated %d -> %d submeshes\n",
-                path ? path : "",
-                result.original_submesh_count,
-                result.consolidated_submesh_count);
-        }
+    model.meshes_ = std::move(new_meshes);
+    result.consolidated_submesh_count = (int)model.meshes_.size();
+    if (any_merged && VerboseConsolidationLogsEnabled()) {
+        std::fprintf(stderr,
+            "[mesh-consolidate] '%s' consolidated %d -> %d submeshes\n",
+            path ? path : "",
+            result.original_submesh_count,
+            result.consolidated_submesh_count);
     }
 #endif // RCO_MESH_CONSOLIDATE == 1
 

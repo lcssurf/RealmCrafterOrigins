@@ -50,6 +50,25 @@ public:
         if (model_) model_->AliasClip(native_name, action_name);
     }
 
+    // Per-submesh material data for OverrideMaterialsByName.
+    struct SubmeshMaterialData {
+        std::string albedo_path;
+        std::string normal_path;
+        std::string orm_path;
+        glm::vec3   albedo_factor = {0.72f, 0.68f, 0.60f};
+        float       roughness     = 0.5f;
+        float       metallic      = 0.f;
+        bool        black_cutout  = false;
+    };
+
+    // Apply different materials to individual submeshes by aiMaterial name.
+    // Submeshes whose material_name is NOT in by_name keep the model's default.
+    // mm must be non-null for the deferred pipeline to see the change.
+    // Caller must call mm's MarkMaterialsDirty() afterwards.
+    void OverrideMaterialsByName(
+        const std::unordered_map<std::string, SubmeshMaterialData>& by_name,
+        MaterialManager* mm = nullptr);
+
     // Override the material of every submesh on this actor instance.
     // Loads textures via model_->OverrideMaterial (updates SubMesh.tex_albedo
     // etc.) then, if mm is provided, allocates per-actor SSBO entries in mm
@@ -61,6 +80,7 @@ public:
                           const std::string& orm_path,
                           float albedo_r, float albedo_g, float albedo_b,
                           float roughness, float metallic,
+                          bool blackCutout = false,
                           MaterialManager* mm = nullptr);
 
     // Apply per-aiMaterial-name textures (Substance-style "blinn1"/"ID01"

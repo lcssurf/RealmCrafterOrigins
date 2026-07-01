@@ -21,6 +21,7 @@ layout (location = 6) uniform float u_metalnessOverride;
 layout (location = 7) uniform bool u_AOoverride;
 layout (location = 8) uniform float u_ambientOcclusionOverride;
 layout (location = 9) uniform float u_characterMask;
+layout (location = 10) uniform float u_blackCutoutThreshold;
 
 layout (binding = 1, std430) readonly buffer Materials
 {
@@ -86,6 +87,14 @@ void main()
   const bool hasOpacity = (material.opacityHandle.x != 0 || material.opacityHandle.y != 0);
   if (hasOpacity) {
       if (texture(sampler2D(material.opacityHandle), vTexCoord).r < 0.1) discard;
+  }
+  // Black-cutout: discard pixels whose albedo luminance is below the threshold.
+  // Enabled per-material via albedoFactor.w > 0.5 (set by RegisterFromHandles when
+  // black_cutout=true). Threshold is a global uniform tuned in the GUE material editor.
+  const bool blackCutout = (material.albedoFactor.w > 0.5);
+  if (blackCutout) {
+      float lum = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+      if (lum < u_blackCutoutThreshold) discard;
   }
 
   gAlbedo.rgb = color.rgb;

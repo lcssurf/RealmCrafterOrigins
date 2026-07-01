@@ -242,6 +242,11 @@ public:
         MaterialManager& mm,
         const std::unordered_map<std::string, MaterialPaths>& by_name);
 
+    // Re-registers every embedded submesh in `mm` with blackCutout=enabled,
+    // updating albedoFactor.w in the SSBO so the deferred gBuffer pass discards
+    // near-black pixels (hair, foliage, fences). No-op if mm is null.
+    void ApplyBlackCutout(bool enabled, MaterialManager* mm);
+
 private:
     std::vector<SubMesh>       meshes_;
     std::string                directory_;

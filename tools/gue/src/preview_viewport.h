@@ -69,7 +69,24 @@ public:
                           const std::string& normal,
                           const std::string& orm,
                           float albedo_r, float albedo_g, float albedo_b,
-                          float roughness, float metallic);
+                          float roughness, float metallic,
+                          bool blackCutout = false);
+
+    // Per-part material override: apply a different material to each aiMaterial-
+    // named submesh. Parts absent from entries keep their current material.
+    struct SubmeshMaterialEntry {
+        std::string ai_name;
+        std::string albedo_rel;
+        std::string normal_rel;
+        std::string orm_rel;
+        float albedo_r    = 0.72f;
+        float albedo_g    = 0.68f;
+        float albedo_b    = 0.60f;
+        float roughness   = 0.5f;
+        float metallic    = 0.f;
+        bool  black_cutout = false;
+    };
+    void OverrideMaterialsByName(const std::vector<SubmeshMaterialEntry>& entries);
 
     // Actor-level scale multiplier. Multiplies each submesh's model scale
     // live — used by the Actor Def editor to preview size overrides
@@ -125,6 +142,8 @@ public:
     void SetCollisionPreviewVisible(bool v) { show_collision_preview_ = v; }
     bool CollisionPreviewVisible() const { return show_collision_preview_; }
 
+    void SetStaticBlackCutout(bool v) { static_black_cutout_ = v; }
+
 private:
     void RenderToEngineFrame_(int w, int h, float dt);
     void DrawCollisionOverlay_(const ImVec2& image_pos, const ImVec2& image_size) const;
@@ -176,6 +195,8 @@ private:
     // material's KHR_texture_transform.
     float uv_offset_[2] = {0.f, 0.f};
     float uv_scale_[2]  = {1.f, 1.f};
+
+    bool static_black_cutout_ = false;
 
     // Simple forward FBO used for non-skinned (static) actor preview.
     // Bypasses the bindless deferred pipeline entirely so plain sampler2D

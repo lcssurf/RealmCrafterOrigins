@@ -311,6 +311,7 @@ void Pipeline::gBufferPass_() {
         sh->SetFloat("u_AOoverride",               0.0f);
         sh->SetFloat("u_ambientOcclusionOverride", 1.0f);
         sh->SetFloat("u_characterMask",            0.0f);
+        sh->SetFloat("u_blackCutoutThreshold",     blackCutoutThreshold_);
         uniformBuffer.BindBase(GL_SHADER_STORAGE_BUFFER, 0);
         engine_->materialsBuffer_->BindBase(GL_SHADER_STORAGE_BUFFER, 1);
         engine_->drawIndirectBuffer_->Bind(GL_DRAW_INDIRECT_BUFFER);
@@ -330,6 +331,7 @@ void Pipeline::gBufferPass_() {
         auto& sh = Shader::shaders["gBufferBindless"];
         sh->Bind();
         sh->SetMat4("u_viewProj", viewProj_);
+        sh->SetFloat("u_blackCutoutThreshold", blackCutoutThreshold_);
         engine_->materialsBuffer_->BindBase(GL_SHADER_STORAGE_BUFFER, 1);
         for (const auto& r : dynamicDraws_) {
             sh->SetMat4("u_modelMatrix",  r.model);
@@ -354,6 +356,7 @@ void Pipeline::gBufferPass_() {
         auto& sh = Shader::shaders["gBufferSkinned"];
         sh->Bind();
         sh->SetMat4("u_viewProj", viewProj_);
+        sh->SetFloat("u_blackCutoutThreshold", blackCutoutThreshold_);
         engine_->materialsBuffer_->BindBase(GL_SHADER_STORAGE_BUFFER, 1);
         for (const auto& r : skinnedDraws_) {
             sh->SetMat4("u_modelMatrix",  r.model);
@@ -380,6 +383,7 @@ void Pipeline::gBufferPass_() {
         auto& sh = Shader::shaders["gBufferSkinnedInstanced"];
         sh->Bind();
         sh->SetMat4("u_viewProj", viewProj_);
+        sh->SetFloat("u_blackCutoutThreshold", blackCutoutThreshold_);
         engine_->materialsBuffer_->BindBase(GL_SHADER_STORAGE_BUFFER, 1);
 
         // Accumulate per-batch data. With only a handful of unique (vao,ebo)

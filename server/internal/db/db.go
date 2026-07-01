@@ -1,4 +1,4 @@
-package db
+﻿package db
 
 import (
 	"context"
@@ -490,6 +490,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV47(ctx)
 	d.migrateV48(ctx)
 	d.migrateV49(ctx)
+	d.migrateV50(ctx)
 
 	return d, nil
 }
@@ -2570,6 +2571,22 @@ func (d *DB) migrateV7(ctx context.Context) {
 		exec(`ALTER TABLE media_materials ADD COLUMN IF NOT EXISTS normal_strength REAL NOT NULL DEFAULT 2.5`)
 	} else {
 		exec(`ALTER TABLE media_materials ADD COLUMN normal_strength REAL NOT NULL DEFAULT 2.5`)
+	}
+
+	// Black cutout flag per material. albedoFactor.w in the SSBO carries this bit:
+	// 0 = normal rendering, 1 = discard pixels where lum < u_blackCutoutThreshold.
+	if d.driver == "postgres" {
+		exec(`ALTER TABLE media_materials ADD COLUMN IF NOT EXISTS black_cutout INTEGER NOT NULL DEFAULT 0`)
+	} else {
+		exec(`ALTER TABLE media_materials ADD COLUMN black_cutout INTEGER NOT NULL DEFAULT 0`)
+	}
+
+	// Black cutout flag per model. Propagated to embedded submesh SSBO entries
+	// via Model::ApplyBlackCutout so the deferred gBuffer pass discards near-black pixels.
+	if d.driver == "postgres" {
+		exec(`ALTER TABLE media_models ADD COLUMN IF NOT EXISTS black_cutout INTEGER NOT NULL DEFAULT 0`)
+	} else {
+		exec(`ALTER TABLE media_models ADD COLUMN black_cutout INTEGER NOT NULL DEFAULT 0`)
 	}
 
 	// migrateV8 Ã¢â‚¬â€ extend media_actor_defs with gameplay defaults so an actor
@@ -9333,6 +9350,58 @@ func (d *DB) migrateV49(ctx context.Context) {
 	if _, err := d.db.ExecContext(ctx, createTable); err != nil {
 		log.Printf("migrateV49: create item_socket_overrides failed: %v", err)
 	}
+}
+
+// migrateV50 — per-submesh material overrides per actor def mesh slot.
+// actor_def_submesh_materials lets each slot assign a different media_material
+// per aiMaterial-named submesh (e.g. "ID01" → body_mat, "ID02" → face_mat).
+// Fallback: if no rows exist for a slot, BuildAppearance uses the model-level
+// material_map (existing behaviour, no regression for old actor defs).
+func (d *DB) migrateV50(ctx context.Context) {
+	var createTable string
+	if d.driver == "postgres" {
+		createTable = `CREATE TABLE IF NOT EXISTS actor_def_submesh_materials (
+			id               SERIAL       PRIMARY KEY,
+			actor_mesh_id    INTEGER      NOT NULL,
+			ai_material_name VARCHAR(128) NOT NULL,
+			material_id      INTEGER      NOT NULL,
+			UNIQUE(actor_mesh_id, ai_material_name)
+		)`
+	} else {
+		createTable = `CREATE TABLE IF NOT EXISTS actor_def_submesh_materials (
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			actor_mesh_id    INTEGER NOT NULL,
+			ai_material_name TEXT    NOT NULL,
+			material_id      INTEGER NOT NULL,
+			UNIQUE(actor_mesh_id, ai_material_name)
+		)`
+	}
+	if _, err := d.db.ExecContext(ctx, createTable); err != nil {
+		log.Printf("migrateV50: create actor_def_submesh_materials failed: %v", err)
+	}
+}
+
+// LoadActorDefSubmeshMaterials returns the per-submesh material overrides for
+// one media_actor_meshes row (keyed by actor_mesh_id). Returns ai_material_name
+// → media_materials.id. Returns an empty (non-nil) map when no rows exist.
+func (d *DB) LoadActorDefSubmeshMaterials(ctx context.Context, actorMeshID int) (map[string]int, error) {
+	rows, err := d.db.QueryContext(ctx,
+		"SELECT ai_material_name, material_id FROM actor_def_submesh_materials WHERE actor_mesh_id = ?",
+		actorMeshID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var name string
+		var id int
+		if err := rows.Scan(&name, &id); err != nil {
+			return nil, err
+		}
+		out[name] = id
+	}
+	return out, rows.Err()
 }
 
 // ActorDefSocket mirrors one row in actor_def_sockets.

@@ -39,7 +39,7 @@ struct BindlessMaterial {
     uint64_t normalHandle           {};
     uint64_t ambientOcclusionHandle {};
     uint64_t opacityHandle          {};
-    glm::vec4 albedoFactor {1.0f, 1.0f, 1.0f, 1.0f};
+    glm::vec4 albedoFactor {1.0f, 1.0f, 1.0f, 0.0f};
     glm::vec4 pbrFactors   {1.0f, 0.0f, 1.0f, 0.0f};
 };
 
@@ -81,7 +81,8 @@ public:
                             const glm::vec3& albedoFactor = glm::vec3(1.0f),
                             float roughnessFactor = 1.0f,
                             float metallicFactor  = 0.0f,
-                            float aoFactor        = 1.0f);
+                            float aoFactor        = 1.0f,
+                            bool blackCutout      = false);
 
     // Name → index (-1 if unknown).
     int IndexOf(const std::string& name) const;

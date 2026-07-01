@@ -372,7 +372,8 @@ void PreviewViewport::OverrideMaterial(const std::string& albedo,
                                        const std::string& normal,
                                        const std::string& orm,
                                        float ar, float ag, float ab,
-                                       float roughness, float metallic) {
+                                       float roughness, float metallic,
+                                       bool blackCutout) {
     if (!actor_.IsLoaded()) {
         std::fprintf(stderr,
             "[actor-mat] PreviewViewport::OverrideMaterial called but actor not loaded"
@@ -391,7 +392,30 @@ void PreviewViewport::OverrideMaterial(const std::string& albedo,
         normal.c_str(), r_normal.c_str(),
         orm.c_str(),    r_orm.c_str());
     actor_.OverrideMaterial(r_albedo, r_normal, r_orm, ar, ag, ab, roughness, metallic,
+                            blackCutout,
                             engine_ ? &engine_->materials() : nullptr);
+    if (engine_) engine_->MarkMaterialsDirty();
+}
+
+void PreviewViewport::OverrideMaterialsByName(
+    const std::vector<SubmeshMaterialEntry>& entries) {
+    if (!actor_.IsLoaded() || entries.empty()) return;
+
+    std::unordered_map<std::string, rco::renderer::Actor::SubmeshMaterialData> by_name;
+    by_name.reserve(entries.size());
+    for (const auto& e : entries) {
+        rco::renderer::Actor::SubmeshMaterialData d;
+        d.albedo_path   = ResolveClientAsset(e.albedo_rel);
+        d.normal_path   = ResolveClientAsset(e.normal_rel);
+        d.orm_path      = ResolveClientAsset(e.orm_rel);
+        d.albedo_factor = {e.albedo_r, e.albedo_g, e.albedo_b};
+        d.roughness     = e.roughness;
+        d.metallic      = e.metallic;
+        d.black_cutout  = e.black_cutout;
+        by_name[e.ai_name] = std::move(d);
+    }
+    actor_.OverrideMaterialsByName(by_name,
+                                   engine_ ? &engine_->materials() : nullptr);
     if (engine_) engine_->MarkMaterialsDirty();
 }
 
@@ -454,6 +478,9 @@ void PreviewViewport::RenderToEngineFrame_(int w, int h, float dt) {
         sh->SetVec3("u_sunDir",   glm::normalize(glm::vec3(-0.4f, -1.0f, -0.3f)));
         sh->SetVec3("u_sunColor", glm::vec3(1.0f, 0.95f, 0.80f) * sun_intensity_);
         sh->SetFloat("u_ambientStrength", 0.25f);
+        sh->SetBool ("u_blackCutout", static_black_cutout_);
+        sh->SetFloat("u_blackCutoutThreshold",
+                     pipeline_ ? pipeline_->BlackCutoutThreshold() : 0.005f);
 
         for (const auto& m : actor_.model().meshes()) {
             if (!m.vao || m.idx_count == 0) continue;

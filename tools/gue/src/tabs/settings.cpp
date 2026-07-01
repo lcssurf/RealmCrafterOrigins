@@ -2,6 +2,7 @@
 
 #include <imgui.h>
 #include "../ui_widgets.h"
+#include "rco/renderer/pipeline.h"
 
 #include <cstdio>
 #include <string>
@@ -137,8 +138,9 @@ void SettingsTab::LoadBloodFXKeys(sqlite3* db) {
 }
 
 void SettingsTab::LoadSettings(sqlite3* db) {
-    default_drop_model_id_ = 0;
+    default_drop_model_id_  = 0;
     default_drop_model_scale_ = 1.f;
+    black_cutout_threshold_ = 0.005f;
     blood_fx_key_.clear();
     blood_fx_mode_ = "basic";
 
@@ -199,6 +201,14 @@ void SettingsTab::LoadSettings(sqlite3* db) {
         }
     }
 
+    if (LoadSetting(db, "black_cutout_threshold", value) && !value.empty()) {
+        try {
+            float parsed = std::stof(value);
+            if (parsed >= 0.f && parsed <= 0.1f) black_cutout_threshold_ = parsed;
+        } catch (...) {}
+    }
+    if (pipeline_) pipeline_->SetBlackCutoutThreshold(black_cutout_threshold_);
+
     if (status_msg_[0] == '\0') {
         std::snprintf(status_msg_, sizeof(status_msg_),
                       "Loaded settings.");
@@ -237,10 +247,21 @@ bool SettingsTab::SaveSettings(sqlite3* db) {
         return false;
     }
 
+    {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.6f", black_cutout_threshold_);
+        if (!SaveSetting(db, "black_cutout_threshold", buf)) {
+            std::snprintf(status_msg_, sizeof(status_msg_),
+                          "Save error: %s", sqlite3_errmsg(db));
+            return false;
+        }
+    }
+
     dirty_ = false;
     std::snprintf(status_msg_, sizeof(status_msg_),
-                  "Saved drop model id=%d, scale=%.2f, blood fx key=%s, mode=%s.",
-                  default_drop_model_id_, default_drop_model_scale_, blood_fx_key_.c_str(), blood_fx_mode_.c_str());
+                  "Saved drop model id=%d, scale=%.2f, blood fx key=%s, mode=%s, cutout threshold=%.4f.",
+                  default_drop_model_id_, default_drop_model_scale_,
+                  blood_fx_key_.c_str(), blood_fx_mode_.c_str(), black_cutout_threshold_);
     return true;
 }
 
@@ -329,6 +350,20 @@ void SettingsTab::DrawGeneralSettings(sqlite3* db) {
             dirty_ = true;
         }
     }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Text("Rendering");
+    ImGui::SetNextItemWidth(220);
+    if (ImGui::SliderFloat("Black cutout threshold", &black_cutout_threshold_, 0.f, 0.1f, "%.4f")) {
+        if (pipeline_) pipeline_->SetBlackCutoutThreshold(black_cutout_threshold_);
+        dirty_ = true;
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Global luminance threshold for materials with 'Black Cutout' enabled.\n"
+            "Pixels where lum < threshold are discarded (hair, foliage, fences).\n"
+            "0.005 = safe default (only cuts pure black + minor compression noise).");
 
     ImGui::Spacing();
     ImGui::TextWrapped(

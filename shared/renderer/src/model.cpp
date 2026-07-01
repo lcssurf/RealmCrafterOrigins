@@ -81,6 +81,25 @@ static GLuint LoadTexCached(const std::string& path, bool srgb) {
                      path.c_str(), stbi_failure_reason());
         return 0;
     }
+    // Alpha content analysis — log classification once per texture on load.
+    // ZERO render change: this only reads px and logs; no texture or state is modified.
+    {
+        const int total = w * h;
+        int low = 0, high = 0;
+        for (int i = 0; i < total; ++i) {
+            const uint8_t a = px[i * 4 + 3];
+            if (a <  16) low++;
+            if (a > 240) high++;
+        }
+        const float low_f  = total ? (float)low  / total : 0.f;
+        const float high_f = total ? (float)high / total : 0.f;
+        const float mid_f  = 1.f - low_f - high_f;
+        const bool is_cutout = (low_f > 0.02f) && (high_f > 0.30f);
+        std::fprintf(stderr,
+            "[alpha-detect] '%s'  low=%.1f%%  high=%.1f%%  mid=%.1f%%  -> %s\n",
+            path.c_str(), low_f * 100.f, high_f * 100.f, mid_f * 100.f,
+            is_cutout ? "CUTOUT" : "opaque");
+    }
     GLuint tex = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -950,12 +969,25 @@ SubMesh Model::ProcessMesh(aiMesh* mesh, const aiScene* scene,
             // channel from a dedicated grayscale opacity map, so feeding it the
             // base-color RGBA produces wrong discards (dark pixels disappear,
             // making the whole mesh black). Skip when paths match.
-            if (albedo_path_str != texPath.C_Str())
-                sm.tex_opacity = LoadTex(scene, texPath.C_Str(), false);
-            else if (VerboseAssetLogsEnabled())
+            if (albedo_path_str != texPath.C_Str()) {
                 std::fprintf(stderr,
-                    "[mat] '%s' opacity == albedo path; skipping (glTF MASK alpha mode)\n",
-                    sm.material_name.c_str());
+                    "[alpha-flag] material='%s'  assimp_opacity=separate  opacity_path='%s'\n",
+                    sm.material_name.c_str(), texPath.C_Str());
+                sm.tex_opacity = LoadTex(scene, texPath.C_Str(), false);
+            } else {
+                // equals_albedo: the file's masked flag (B3D fx=16 or glTF alphaMode=MASK)
+                // — the artist intended alpha cutout on this surface. Currently skipped
+                // because the shader reads .r from the opacity map (not albedo alpha).
+                // Phase 2 will create a derived opacity texture from the albedo's alpha.
+                std::fprintf(stderr,
+                    "[alpha-flag] material='%s'  assimp_opacity=equals_albedo"
+                    "  albedo='%s'  (SKIPPED — file says masked, not yet active)\n",
+                    sm.material_name.c_str(), albedo_path_str.c_str());
+            }
+        } else {
+            std::fprintf(stderr,
+                "[alpha-flag] material='%s'  assimp_opacity=none\n",
+                sm.material_name.c_str());
         }
         aiColor4D c;
         if (mat->Get(AI_MATKEY_BASE_COLOR, c) == AI_SUCCESS ||
@@ -1549,6 +1581,21 @@ std::vector<std::string> Model::MaterialNames() const {
         if (std::find(out.begin(), out.end(), m.material_name) == out.end())
             out.push_back(m.material_name);
     }
+    if (VerboseAssetLogsEnabled()) {
+        std::fprintf(stderr,
+            "[mat-names] MaterialNames called: model='%s' submesh_count=%zu\n",
+            model_path_.c_str(), meshes_.size());
+        for (size_t i = 0; i < meshes_.size(); ++i)
+            std::fprintf(stderr,
+                "[mat-names]   mesh[%zu] material_name='%s' (empty=%d)\n",
+                i, meshes_[i].material_name.c_str(),
+                (int)meshes_[i].material_name.empty());
+        std::fprintf(stderr,
+            "[mat-names]   distinct names=%zu [", out.size());
+        for (size_t i = 0; i < out.size(); ++i)
+            std::fprintf(stderr, "%s%s", i ? ", " : "", out[i].c_str());
+        std::fprintf(stderr, "]\n");
+    }
     return out;
 }
 
@@ -1622,6 +1669,19 @@ void Model::ApplyMaterialsByName(
         std::fprintf(stderr,
             "[model] ApplyMaterialsByName: %d submesh(es) matched to %zu material(s)\n",
             applied, cache.size());
+}
+
+void Model::ApplyBlackCutout(bool enabled, MaterialManager* mm) {
+    if (!mm) return;
+    for (size_t i = 0; i < meshes_.size(); ++i) {
+        auto& m = meshes_[i];
+        char key[512];
+        std::snprintf(key, sizeof(key), "%s#%zu", model_path_.c_str(), i);
+        m.material_idx = mm->RegisterFromHandles(
+            key, m.tex_albedo, m.tex_normal, m.tex_orm, m.tex_opacity, m.tex_ao,
+            m.orm_packed, m.albedo_factor, m.roughness_factor, m.metallic_factor,
+            1.0f, enabled);
+    }
 }
 
 } // namespace rco::renderer

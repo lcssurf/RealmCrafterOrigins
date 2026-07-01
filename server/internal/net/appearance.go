@@ -56,22 +56,48 @@ func BuildAppearanceFromDef(ctx context.Context, database *db.DB, def *db.ActorD
 			slot.Roughness  = mat.Roughness
 			slot.Metallic   = mat.Metallic
 		}
-		for aiName, matName := range model.MaterialMap {
-			mm := matsByName[matName]
-			if mm == nil {
-				continue
+		// Per-actor-def submesh materials take precedence over the model's global
+		// material_map. Fallback to model.MaterialMap when no rows exist so that
+		// existing actor defs (with no per-submesh assignments) are unaffected.
+		perActor, _ := database.LoadActorDefSubmeshMaterials(ctx, m.ID)
+		if len(perActor) > 0 {
+			for aiName, matID := range perActor {
+				mat, err := database.GetMediaMaterial(ctx, matID)
+				if err != nil || mat == nil {
+					continue
+				}
+				slot.MaterialMap = append(slot.MaterialMap, world.AiMaterial{
+					AiName:     aiName,
+					AlbedoPath: mat.AlbedoPath,
+					NormalPath: mat.NormalPath,
+					ORMPath:    mat.ORMPath,
+					AlbedoR:    mat.AlbedoR,
+					AlbedoG:    mat.AlbedoG,
+					AlbedoB:    mat.AlbedoB,
+					Roughness:  mat.Roughness,
+					Metallic:   mat.Metallic,
+				})
 			}
-			slot.MaterialMap = append(slot.MaterialMap, world.AiMaterial{
-				AiName:     aiName,
-				AlbedoPath: mm.AlbedoPath,
-				NormalPath: mm.NormalPath,
-				ORMPath:    mm.ORMPath,
-				AlbedoR:    mm.AlbedoR,
-				AlbedoG:    mm.AlbedoG,
-				AlbedoB:    mm.AlbedoB,
-				Roughness:  mm.Roughness,
-				Metallic:   mm.Metallic,
-			})
+		} else {
+			// Fallback: model-level material_map (shared across all actor defs
+			// using this model). Used by legacy actor defs with no per-part override.
+			for aiName, matName := range model.MaterialMap {
+				mm := matsByName[matName]
+				if mm == nil {
+					continue
+				}
+				slot.MaterialMap = append(slot.MaterialMap, world.AiMaterial{
+					AiName:     aiName,
+					AlbedoPath: mm.AlbedoPath,
+					NormalPath: mm.NormalPath,
+					ORMPath:    mm.ORMPath,
+					AlbedoR:    mm.AlbedoR,
+					AlbedoG:    mm.AlbedoG,
+					AlbedoB:    mm.AlbedoB,
+					Roughness:  mm.Roughness,
+					Metallic:   mm.Metallic,
+				})
+			}
 		}
 		out.Meshes = append(out.Meshes, slot)
 	}
