@@ -1672,35 +1672,12 @@ static bool PathField(const char* label, std::string& path,
 }
 
 // Combo for picking from a list of (id, name) pairs; value is the id.
-// Pass -1 as currentId to mean "none/unset" (selects first blank item).
+// Wraps ui::SearchableComboId so every picker in this file gets a
+// filter-as-you-type search box — essential for lists of 100+ items.
 static bool ComboId(const char* label, int& currentId,
                     const std::vector<std::pair<int, std::string>>& items,
                     const char* emptyLabel = "(none)") {
-    int curIdx = 0; // 0 = "(none)"
-    for (size_t i = 0; i < items.size(); ++i) {
-        if (items[i].first == currentId) { curIdx = (int)(i + 1); break; }
-    }
-
-    bool changed = false;
-    const std::string& curLabel =
-        curIdx == 0 ? std::string(emptyLabel) : items[curIdx - 1].second;
-
-    if (ImGui::BeginCombo(label, curLabel.c_str())) {
-        if (ImGui::Selectable(emptyLabel, curIdx == 0)) {
-            currentId = 0;
-            changed = true;
-        }
-        for (size_t i = 0; i < items.size(); ++i) {
-            bool sel = curIdx == (int)(i + 1);
-            if (ImGui::Selectable(items[i].second.c_str(), sel)) {
-                currentId = items[i].first;
-                changed = true;
-            }
-            if (sel) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-    return changed;
+    return ui::SearchableComboId(label, currentId, items, emptyLabel);
 }
 
 static std::vector<std::pair<int, std::string>>
@@ -2311,7 +2288,7 @@ static bool DrawMaterialFields(MediaMaterial& m) {
         ImGui::SetTooltip(
             "Discard pixels where the albedo luminance is near pure black.\n"
             "Use for hair, foliage, or fences with a black alpha mask convention.\n"
-            "Adjust the global threshold slider at the top of the Materials tab.");
+            "Adjust the global threshold in Settings \xe2\x86\x92 Rendering.");
 
     ImGui::TextDisabled("ORM = Occlusion(R) / Roughness(G) / Metallic(B) packed texture.");
     return changed;
@@ -2880,7 +2857,11 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
 
         ImGui::Spacing();
         ImGui::BeginDisabled(!dirtyActorDef_);
-        if (ImGui::Button("Save")) { SaveActorDef(db, d); dirtyActorDef_ = false; }
+        if (ImGui::Button("Save")) {
+            SaveActorDef(db, d);
+            for (auto& slot : d.mesh_slots) SaveMeshSlot(db, slot);
+            dirtyActorDef_ = false;
+        }
         ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::Button("Revert")) {
@@ -2937,11 +2918,14 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                     ImGui::OpenPopup("edit_slot");
                 }
                 if (ImGui::BeginPopup("edit_slot")) {
-                    ImGui::Combo("Slot", &s.slot, kSlotNames, kSlotCount);
-                    ComboId("Model",    s.model_id,    modelList);
+                    if (ImGui::Combo("Slot", &s.slot, kSlotNames, kSlotCount))
+                        dirtyActorDef_ = true;
+                    if (ComboId("Model", s.model_id, modelList))
+                        dirtyActorDef_ = true;
                     ImGui::Separator();
                     ImGui::TextUnformatted("Global material (all parts):");
-                    ComboId("##mat_global", s.material_id, matList, "(embedded)");
+                    if (ComboId("##mat_global", s.material_id, matList, "(embedded)"))
+                        dirtyActorDef_ = true;
 
                     // Per-part (submesh) material section.
                     // Uses material names from the preview when its model matches
@@ -3013,8 +2997,10 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                             auto it = s.submesh_materials.find(part);
                             if (it != s.submesh_materials.end()) cur_id = it->second;
                             ImGui::SetNextItemWidth(160.f);
-                            if (ComboId(part.c_str(), cur_id, matList, "(model default)"))
+                            if (ComboId(part.c_str(), cur_id, matList, "(model default)")) {
                                 s.submesh_materials[part] = cur_id;
+                                dirtyActorDef_ = true;
+                            }
                             ImGui::PopID();
                         }
                     } else {
