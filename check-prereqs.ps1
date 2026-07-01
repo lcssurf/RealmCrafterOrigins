@@ -209,14 +209,18 @@ if ($vcpkgExe) {
 }
 
 # ---------------------------------------------------------------------------
-Section "PACOTES VCPKG (Phase 1)"
+Section "PACOTES VCPKG (client/GUE)"
 
 $requiredPkgs = @(
     [PSCustomObject]@{ name = "glfw3";  desc = "janela e input" },
     [PSCustomObject]@{ name = "glad";   desc = "OpenGL loader"  },
     [PSCustomObject]@{ name = "glm";    desc = "math vetores/matrizes" },
     [PSCustomObject]@{ name = "imgui";  desc = "UI Dear ImGui" },
-    [PSCustomObject]@{ name = "msquic"; desc = "rede QUIC" }
+    [PSCustomObject]@{ name = "assimp"; desc = "modelos 3D" },
+    [PSCustomObject]@{ name = "stb";    desc = "image loading headers" },
+    [PSCustomObject]@{ name = "msquic"; desc = "rede QUIC" },
+    [PSCustomObject]@{ name = "miniaudio"; desc = "audio header" },
+    [PSCustomObject]@{ name = "sqlite3"; desc = "GUE SQLite / unofficial-sqlite3" }
 )
 
 if ($vcpkgExe) {
@@ -232,22 +236,31 @@ if ($vcpkgExe) {
         }
     }
 
-    $assimpMissing = -not ($installed -match "assimp:x64-windows")
-    if (-not $assimpMissing) {
-        OK "assimp:x64-windows  (Phase 2 - modelos 3D)"
-    } else {
-        Write-Host "  [INFO]  assimp:x64-windows  nao instalado (so necessario na Phase 2)" -ForegroundColor DarkGray
-    }
-
     if ($missingNames.Count -gt 0) {
         if ($Install) {
-            Write-Host "  [INSTALL] instalando pacotes vcpkg em falta: $($missingNames -join ', ')..." -ForegroundColor Magenta
-            & $vcpkgExe install @missingNames "imgui[glfw-binding,opengl3-binding]" --triplet x64-windows
+            $installNames = @()
+            foreach ($name in $missingNames) {
+                if ($name -eq "imgui") {
+                    $installNames += "imgui[glfw-binding,opengl3-binding]"
+                } else {
+                    $installNames += $name
+                }
+            }
+            Write-Host "  [INSTALL] instalando pacotes vcpkg em falta: $($installNames -join ', ')..." -ForegroundColor Magenta
+            & $vcpkgExe install @installNames --triplet x64-windows
         } else {
             Write-Host ""
             Write-Host "  Para instalar os pacotes em falta:" -ForegroundColor Yellow
-            $pkgList = $missingNames -join " "
-            Write-Host "  $vcpkgExe install $pkgList imgui[glfw-binding,opengl3-binding] --triplet x64-windows" -ForegroundColor Yellow
+            $installNames = @()
+            foreach ($name in $missingNames) {
+                if ($name -eq "imgui") {
+                    $installNames += "imgui[glfw-binding,opengl3-binding]"
+                } else {
+                    $installNames += $name
+                }
+            }
+            $pkgList = $installNames -join " "
+            Write-Host "  $vcpkgExe install $pkgList --triplet x64-windows" -ForegroundColor Yellow
         }
     }
 } else {
