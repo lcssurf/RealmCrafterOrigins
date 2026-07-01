@@ -92,8 +92,12 @@ public:
     // live — used by the Actor Def editor to preview size overrides
     // (filhote/pai grandão). Default 1.0.
     void SetActorScale(float s) {
-        actor_scale_ = s > 0.f ? s : 1.f;
-        actor_.scale = actor_scale_;
+        float ns = s > 0.f ? s : 1.f;
+        actor_.scale = ns;
+        if (std::abs(ns - actor_scale_) > 1e-6f) {
+            actor_scale_ = ns;
+            FitCameraToModel();
+        }
     }
 
     // After LoadModel, resolve each submesh's aiMaterial name against the
@@ -147,6 +151,7 @@ public:
 private:
     void RenderToEngineFrame_(int w, int h, float dt);
     void DrawCollisionOverlay_(const ImVec2& image_pos, const ImVec2& image_size) const;
+    void DrawScaleOverlay_   (const ImVec2& image_pos, const ImVec2& image_size) const;
     void EnsureCollisionMeshCache_() const;
     // Resolve and play the clip for a configured action entry.
     void PlayActionEntry_(const AnimActionEntry& e);
@@ -171,10 +176,10 @@ private:
     // Called automatically by LoadModel on success.
     void FitCameraToModel();
 
-    float anim_t_        = 0.f;
-    bool  playing_       = true;
-    float sun_intensity_ = 1.0f;
-    float actor_scale_   = 1.0f;
+    float anim_t_          = 0.f;
+    bool  playing_         = true;
+    float sun_intensity_   = 1.0f;
+    float actor_scale_     = 1.0f;
 
     // Configured actions from the actor def's anim map. Refreshed each frame
     // from DrawActorDefs via SetAnimActions().

@@ -271,13 +271,14 @@ void PreviewViewport::FitCameraToModel() {
     const auto& mdl = actor_.model();
     if (!mdl.IsLoaded()) return;
 
-    glm::vec3 bmin = mdl.BoundsMin();
-    glm::vec3 bmax = mdl.BoundsMax();
+    const float sc = actor_scale_ > 0.f ? actor_scale_ : 1.f;
+    glm::vec3 bmin = mdl.BoundsMin() * sc;
+    glm::vec3 bmax = mdl.BoundsMax() * sc;
 
     // Guard against degenerate / empty AABB (placeholder box or no verts).
     if (bmin.x > bmax.x) {
-        bmin = glm::vec3(-0.5f, 0.f, -0.5f);
-        bmax = glm::vec3( 0.5f, 1.f,  0.5f);
+        bmin = glm::vec3(-0.5f, 0.f, -0.5f) * sc;
+        bmax = glm::vec3( 0.5f, 1.f,  0.5f) * sc;
     }
 
     glm::vec3 center = (bmin + bmax) * 0.5f;
@@ -732,6 +733,102 @@ void PreviewViewport::DrawCollisionOverlay_(const ImVec2& image_pos, const ImVec
     }
 }
 
+void PreviewViewport::DrawScaleOverlay_(const ImVec2& image_pos, const ImVec2& image_size) const {
+    if (!actor_.IsLoaded()) return;
+    if (image_size.x <= 1.f || image_size.y <= 1.f) return;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (!dl) return;
+
+    // Recompute view/proj from orbit camera (same as DrawCollisionOverlay_).
+    float yaw   = glm::radians(cam_yaw_);
+    float pitch = glm::radians(cam_pitch_);
+    glm::vec3 offset = {
+        cam_dist_ * std::cos(pitch) * std::sin(yaw),
+        cam_dist_ * std::sin(pitch),
+        cam_dist_ * std::cos(pitch) * std::cos(yaw),
+    };
+    glm::vec3 eye  = cam_target_ + offset;
+    glm::mat4 view = glm::lookAt(eye, cam_target_, glm::vec3(0, 1, 0));
+    glm::mat4 proj = glm::perspective(glm::radians(55.0f),
+                                      image_size.x / image_size.y, cam_near_, cam_far_);
+
+    auto project = [&](const glm::vec3& p, ImVec2& out) -> bool {
+        glm::vec4 clip = proj * view * glm::vec4(p, 1.f);
+        if (clip.w <= 0.0001f) return false;
+        glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        if (!std::isfinite(ndc.x) || !std::isfinite(ndc.y) || !std::isfinite(ndc.z))
+            return false;
+        // Clip to ±1.5 NDC so lines approaching the frustum edge don't spike.
+        if (ndc.x < -1.5f || ndc.x > 1.5f || ndc.y < -1.5f || ndc.y > 1.5f)
+            return false;
+        out.x = image_pos.x + (ndc.x * 0.5f + 0.5f) * image_size.x;
+        out.y = image_pos.y + (-ndc.y * 0.5f + 0.5f) * image_size.y;
+        return true;
+    };
+
+    auto addLine3D = [&](const glm::vec3& a, const glm::vec3& b, ImU32 col, float thick) {
+        ImVec2 sa, sb;
+        if (project(a, sa) && project(b, sb))
+            dl->AddLine(sa, sb, col, thick);
+    };
+
+    const float sc = actor_scale_ > 0.f ? actor_scale_ : 1.f;
+    glm::vec3 bmin = actor_.model().BoundsMin() * sc;
+    glm::vec3 bmax = actor_.model().BoundsMax() * sc;
+
+    // ── Ground grid (y = 0 plane) ────────────────────────────────────────────
+    // Covers the model footprint + 2-unit margin, clamped to ±20 units.
+    float margin = 2.f;
+    int gmin = std::max(-20, (int)std::floor(std::min({bmin.x, bmin.z, -margin}) ));
+    int gmax = std::min( 20, (int)std::ceil (std::max({bmax.x, bmax.z,  margin}) ));
+
+    for (int i = gmin; i <= gmax; ++i) {
+        bool major = (i % 5 == 0);
+        ImU32 col  = major ? IM_COL32(170,170,170,110) : IM_COL32(110,110,110,75);
+        float thk  = major ? 1.2f : 0.7f;
+        // Lines parallel to Z
+        addLine3D({(float)i, 0.f, (float)gmin}, {(float)i, 0.f, (float)gmax}, col, thk);
+        // Lines parallel to X
+        addLine3D({(float)gmin, 0.f, (float)i}, {(float)gmax, 0.f, (float)i}, col, thk);
+    }
+    // Origin crosshair (bright)
+    addLine3D({(float)gmin, 0.f, 0.f}, {(float)gmax, 0.f, 0.f}, IM_COL32(200,200,200,140), 1.4f);
+    addLine3D({0.f, 0.f, (float)gmin}, {0.f, 0.f, (float)gmax}, IM_COL32(200,200,200,140), 1.4f);
+
+    // ── Vertical ruler ───────────────────────────────────────────────────────
+    // Placed 0.5 units to the right (+X) of the model's bounding box.
+    const float rx  = bmax.x + 0.5f;
+    const float ry0 = 0.f;               // ruler base at y=0 (ground)
+    const float ry1 = bmax.y;            // ruler top at model height
+    const ImU32 rCol = IM_COL32(255, 230, 100, 200);
+
+    // Vertical spine
+    addLine3D({rx, ry0, 0.f}, {rx, ry1, 0.f}, rCol, 1.5f);
+
+    // Tick marks and labels every 1 unit
+    int tickMin = 0;
+    int tickMax = (int)std::ceil(ry1);
+    for (int t = tickMin; t <= tickMax; ++t) {
+        float ty = (float)t;
+        bool  major = (t % 5 == 0);
+        float hw    = major ? 0.18f : 0.10f;  // half-width of tick
+        addLine3D({rx - hw, ty, 0.f}, {rx + hw, ty, 0.f}, rCol, major ? 1.5f : 1.0f);
+
+        // Text label on major ticks (0, 5, 10…) and the last tick
+        if (major || t == tickMax) {
+            ImVec2 labelPt;
+            if (project({rx + 0.22f, ty, 0.f}, labelPt)) {
+                char buf[8];
+                std::snprintf(buf, sizeof(buf), "%dm", t);
+                dl->AddText(labelPt, IM_COL32(255, 230, 100, 220), buf);
+            }
+        }
+    }
+    // Cap line at top
+    addLine3D({rx - 0.18f, ry1, 0.f}, {rx + 0.18f, ry1, 0.f}, rCol, 1.5f);
+}
+
 void PreviewViewport::EnsureCollisionMeshCache_() const {
     std::string resolved = ResolveClientAsset(current_path_);
     if (resolved == collision_mesh_cache_path_ && !collision_mesh_tris_.empty())
@@ -872,6 +969,7 @@ void PreviewViewport::DrawImGui() {
     ImVec2 uv1 = ImVec2(1.f, 0.f);
     ImGui::Image(img_id, view_size, uv0, uv1);
     DrawCollisionOverlay_(cursor_before, view_size);
+    DrawScaleOverlay_(cursor_before, view_size);
 
     const auto& mdl = actor_.model();
     float scrub_dur = 0.f;

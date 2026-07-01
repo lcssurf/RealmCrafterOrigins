@@ -1841,6 +1841,14 @@ void MediaTab::DrawModels(sqlite3* db) {
         }
         if (ImGui::InputFloat("Scale", &editModel_.scale, 0.1f, 1.f, "%.2f"))
             dirtyModel_ = true;
+        if (preview_ && preview_->CurrentPath() == editModel_.file_path) {
+            glm::vec3 bmin = preview_->GetModel().BoundsMin();
+            glm::vec3 bmax = preview_->GetModel().BoundsMax();
+            if (bmax.x > bmin.x) {
+                glm::vec3 sz = (bmax - bmin) * editModel_.scale;
+                ImGui::TextDisabled("Size: %.2f x %.2f x %.2f  (W x H x D)", sz.x, sz.y, sz.z);
+            }
+        }
         if (ImGui::Checkbox("Black = transparent (cutout)##mc", &editModel_.black_cutout)) {
             dirtyModel_ = true;
             if (preview_) preview_->SetStaticBlackCutout(editModel_.black_cutout);
@@ -2125,7 +2133,7 @@ void MediaTab::DrawModels(sqlite3* db) {
 
         if (show) {
             ImGui::Checkbox("Show Collision Overlay", &show_collision_preview_);
-            preview_->SetActorScale(1.f);
+            preview_->SetActorScale(show->scale);
             bool path_changed = preview_->CurrentPath() != show->file_path;
             if (path_changed) {
                 preview_->LoadModel(show->file_path);
