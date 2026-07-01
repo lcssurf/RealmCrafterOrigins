@@ -43,11 +43,17 @@ void AnimController::Bind(const std::vector<AnimBinding>& bindings) {
 
     // Diagnostic (player only — gated by log_enabled)
     if (log_enabled && !bindings_.empty()) {
-        const auto& first = bindings_[0];
         std::fprintf(stderr,
-            "[anim-bind] target=%p count=%zu first='%s' speed=%.3f blend=%.3f\n",
-            (void*)this, bindings_.size(),
-            first.action.c_str(), first.speed, first.blend_in);
+            "[anim-bind] target=%p count=%zu\n",
+            (void*)this, bindings_.size());
+        for (size_t i = 0; i < bindings_.size(); ++i) {
+            const auto& b = bindings_[i];
+            std::fprintf(stderr,
+                "[anim-bind]   [%zu] action='%s' clip='%s' start=%d end=%d fps=%.1f loop=%d speed=%.3f blend=%.3f return='%s'\n",
+                i, b.action.c_str(), b.source_path.c_str(),
+                b.start_frame, b.end_frame, b.fps,
+                (int)b.loop, b.speed, b.blend_in, b.return_to.c_str());
+        }
     }
 
     // Directly initialize active_ to bindings_[0]. Without this, RequestState(0) always
@@ -208,6 +214,21 @@ void AnimController::Update(float dt, float speed) {
     bool    frame_ended = (end_frame > 0 && cur_frame >= end_frame);
     bool    time_ended  = (!frame_ended && end_frame == -1 &&
                            b.duration_sec > 0.f && active_.time_sec >= b.duration_sec);
+    if (log_enabled) {
+        // Log once per second (approx) to avoid flooding
+        static float s_log_accum = 0.f;
+        s_log_accum += dt;
+        if (s_log_accum >= 1.f) {
+            s_log_accum = 0.f;
+            std::fprintf(stderr,
+                "[anim-frame] action='%s' time_sec=%.3f cur_frame=%d"
+                " start=%d end=%d fps=%.1f loop=%d"
+                " frame_ended=%d time_ended=%d dur_sec=%.3f\n",
+                b.action.c_str(), active_.time_sec, cur_frame,
+                b.start_frame, b.end_frame, effective_fps, (int)b.loop,
+                (int)frame_ended, (int)time_ended, b.duration_sec);
+        }
+    }
     if (frame_ended || time_ended) {
         if (b.loop) {
             active_.time_sec         = 0.f;

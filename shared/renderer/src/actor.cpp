@@ -26,6 +26,17 @@ void Actor::Init(const char* /*shader_dir*/, const char* model_path,
     model_ = ModelCacheGet(model_path, mm);
     mesh_material_overrides_.clear();
 
+    // Log all clips in the model so we can see what Assimp exposed from the file.
+    if (model_) {
+        int nc = model_->ClipCount();
+        std::fprintf(stderr, "[actor-init] path='%s' clip_count=%d has_anims=%d\n",
+            model_path, nc, (int)model_->HasAnimations());
+        for (int i = 0; i < nc; ++i) {
+            std::fprintf(stderr, "[actor-init]   clip[%d] name='%s' duration=%.3fs\n",
+                i, model_->ClipName(i).c_str(), model_->ClipDuration(i));
+        }
+    }
+
     if (model_->HasAnimations() && model_->ClipCount() > 0)
         PlayAnim(model_->ClipName(0).c_str(), true);
 }
@@ -370,7 +381,25 @@ void Actor::SubmitAs(const std::string& anim_name, float anim_t, bool loop,
     float t = 0.f;
     if (model_->HasAnimations()) {
         cidx = FindClip(anim_name);
+        bool fell_back = (cidx < 0);
         if (cidx < 0 && model_->ClipCount() > 0) cidx = 0;
+        // Log clip lookup result (throttled: once per second per anim_name change)
+        {
+            static std::string s_last_name;
+            static float s_log_t = 0.f;
+            s_log_t += 0.016f; // approx 60fps
+            if (anim_name != s_last_name || s_log_t >= 1.f) {
+                s_last_name = anim_name;
+                s_log_t = 0.f;
+                float dur = cidx >= 0 ? model_->ClipDuration(cidx) : 0.f;
+                std::fprintf(stderr,
+                    "[submit-as] requested='%s' cidx=%d fell_back=%d"
+                    " clip_name='%s' clip_dur=%.3fs anim_t=%.3f\n",
+                    anim_name.c_str(), cidx, (int)fell_back,
+                    (cidx >= 0 ? model_->ClipName(cidx).c_str() : "(none)"),
+                    dur, anim_t);
+            }
+        }
         if (cidx >= 0) {
             float dur = model_->ClipDuration(cidx);
             t = anim_t;

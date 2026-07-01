@@ -120,15 +120,23 @@ func BuildAppearanceFromDef(ctx context.Context, database *db.DB, def *db.ActorD
 		}
 	}
 
+	log.Printf("[appearance-anims] def_id=%d total_anim_entries=%d", def.ID, len(def.Anims))
 	for _, a := range def.Anims {
-		clip, _ := database.GetMediaAnimClip(ctx, a.ClipID)
-		if clip == nil {
+		if a.ClipID == 0 {
+			log.Printf("[appearance-anims]   SKIP action=%q clip_id=0 (not linked to a clip — set clip_id in GUE)", a.Action)
 			continue
 		}
+		clip, _ := database.GetMediaAnimClip(ctx, a.ClipID)
+		if clip == nil {
+			log.Printf("[appearance-anims]   SKIP action=%q clip_id=%d: GetMediaAnimClip returned nil (clip row missing?)", a.Action, a.ClipID)
+			continue
+		}
+		log.Printf("[appearance-anims]   clip action=%q clip_id=%d source_path=%q clip_override=%q start=%d end=%d fps=%.1f",
+			a.Action, a.ClipID, clip.SourcePath, clip.ClipOverride, clip.StartFrame, clip.EndFrame, clip.FPS)
 		// Skip bindings that have neither a source file nor an embedded clip alias —
 		// the client has nothing to load or alias, so the binding is truly empty.
 		if clip.SourcePath == "" && clip.ClipOverride == "" {
-			log.Printf("[appearance] skipping binding action=%q clip_id=%d: no source_path and no clip_override",
+			log.Printf("[appearance-anims]   SKIP action=%q clip_id=%d: source_path and clip_override both empty (fill 'Source file' in GUE anim table, or set Clip name for embedded clips)",
 				a.Action, a.ClipID)
 			continue
 		}
@@ -156,5 +164,6 @@ func BuildAppearanceFromDef(ctx context.Context, database *db.DB, def *db.ActorD
 			Events:       animEvents,
 		})
 	}
+	log.Printf("[appearance-anims]   RESULT: %d binding(s) built (out of %d configured)", len(out.Anims), len(def.Anims))
 	return out
 }

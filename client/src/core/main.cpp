@@ -1079,7 +1079,7 @@ int main() {
 
     // AnimController for the local player
     rco::anim::AnimController player_anim_ctrl;
-    player_anim_ctrl.log_enabled = false;
+    player_anim_ctrl.log_enabled = true;
     float player_yaw_offset = 0.f;
     float player_y_offset   = 0.f;
 
