@@ -46,7 +46,7 @@ void ZonesTab::DrawTopBar(sqlite3* db, MediaTab* media) {
     static const char* kModeLabels[kModeCount] = {
         "Scenery","Terrain","Emitters","Water","ColBox",
         "Sound","Trigger","Waypoint","Portal","NPC",
-        "Enviro","Other","SpawnPt","ColSphere"
+        "Enviro","Other","SpawnPt","ColSphere","PlayerSpawn"
     };
     ImGui::SetNextItemWidth(120.f);
     if (ImGui::BeginCombo("##zmode", kModeLabels[zoneMode_])) {
@@ -193,7 +193,8 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
     DrawGroup("O", "ColSpheres", scene_.colSpheres, kSelColSphere, {1.00f,0.45f,0.00f,1.f});
     DrawGroup("W", "Waypoints",  scene_.waypoints,  kSelWaypoint,  {0.20f,0.90f,1.00f,1.f});
     DrawGroup("N", "NPCs",       scene_.npcs,       kSelNpc,       {0.30f,0.95f,0.30f,1.f});
-    DrawGroup("G", "SpawnPts",   scene_.spawnPoints,kSelSpawnPoint,{0.10f,0.90f,0.40f,1.f});
+    DrawGroup("G", "SpawnPts",    scene_.spawnPoints,  kSelSpawnPoint,  {0.10f,0.90f,0.40f,1.f});
+    DrawGroup("@", "Player Spawns", scene_.playerSpawns, kSelPlayerSpawn, {1.00f,0.80f,0.10f,1.f});
     DrawGroup("~", "Water",      scene_.water,      kSelWater,     {0.10f,0.70f,1.00f,1.f});
     DrawGroup("E", "Emitters",   scene_.emitters,   kSelEmitter,   {0.80f,1.00f,0.20f,1.f});
     // Scenery: use model name instead of bare id.
@@ -267,7 +268,8 @@ void ZonesTab::DrawInspector(sqlite3* db, MediaTab* media) {
         case kSelColSphere: DrawPanelColSphere(db,        false); return;
         case kSelWaypoint:  DrawPanelWaypoint (db, media, false); return;
         case kSelNpc:        DrawPanelNPC       (db, media, false); return;
-        case kSelSpawnPoint: DrawPanelSpawnPoint(db, media, false); return;
+        case kSelSpawnPoint:  DrawPanelSpawnPoint(db, media, false); return;
+        case kSelPlayerSpawn: DrawPanelPlayerSpawn(db,       false); return;
         case kSelEmitter:   DrawPanelEmitters (db,        false); return;
         case kSelWater:     DrawPanelWater    (db,        false); return;
         case kSelScenery:   DrawPanelScenery  (db, media, false); return;
@@ -288,7 +290,8 @@ void ZonesTab::DrawInspector(sqlite3* db, MediaTab* media) {
     case kModeWaypoint:  DrawPanelWaypoint (db, media, true); break;
     case kModePortal:    DrawPanelPortal   (db,        true); break;
     case kModeNPC:        DrawPanelNPC       (db, media, true); break;
-    case kModeSpawnPoint: DrawPanelSpawnPoint(db, media, true); break;
+    case kModeSpawnPoint:  DrawPanelSpawnPoint(db, media, true); break;
+    case kModePlayerSpawn: DrawPanelPlayerSpawn(db,       true); break;
     case kModeEnviro:     DrawPanelEnviro   (db); break;
     case kModeOther:     DrawPanelOther    (db); break;
     default:

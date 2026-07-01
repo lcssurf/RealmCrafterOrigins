@@ -1487,4 +1487,49 @@ void ZonesTab::DrawPanelOther(sqlite3* db) {
     }
 }
 
+// ─── DrawPanelPlayerSpawn ─────────────────────────────────────────────────────
+
+void ZonesTab::DrawPanelPlayerSpawn(sqlite3* db, bool placement) {
+    if (scene_.areaName.empty()) { ImGui::TextDisabled("Load a zone first."); return; }
+
+    if (placement) {
+        ImGui::SeparatorText("New Player Spawn");
+        ImGui::TextWrapped("Right-click the viewport and choose\n"
+                           "'Player Spawn' to place a spawn point.\n"
+                           "Assign it to a playable actor def via\n"
+                           "Media > Actor Defs > Initial Spawn.");
+        return;
+    }
+
+    ZPlayerSpawn* ps = nullptr;
+    for (auto& p : scene_.playerSpawns) if (p.id == selectedID_) { ps = &p; break; }
+    if (!ps) { ImGui::TextDisabled("No player spawn selected."); return; }
+
+    ImGui::SeparatorText("Player Spawn");
+    {
+        char nameBuf[128];
+        std::strncpy(nameBuf, ps->name.c_str(), sizeof(nameBuf)-1);
+        nameBuf[sizeof(nameBuf)-1] = 0;
+        if (ImGui::InputText("Name##psp", nameBuf, sizeof(nameBuf))) {
+            ps->name = nameBuf;
+            sqlite3_stmt* s = nullptr;
+            sqlite3_prepare_v2(db, "UPDATE player_spawns SET name=? WHERE id=?", -1, &s, nullptr);
+            sqlite3_bind_text(s, 1, ps->name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int (s, 2, ps->id);
+            sqlite3_step(s); sqlite3_finalize(s);
+        }
+        if (ImGui::SliderFloat("Yaw##psp", &ps->yaw, -180.f, 180.f, "%.1f deg")) {
+            sqlite3_stmt* s = nullptr;
+            sqlite3_prepare_v2(db, "UPDATE player_spawns SET yaw=? WHERE id=?", -1, &s, nullptr);
+            sqlite3_bind_double(s, 1, ps->yaw);
+            sqlite3_bind_int   (s, 2, ps->id);
+            sqlite3_step(s); sqlite3_finalize(s);
+        }
+    }
+    ImGui::Text("Position: (%.1f, %.1f, %.1f)", ps->pos.x, ps->pos.y, ps->pos.z);
+    ImGui::Text("ID: %d", ps->id);
+    ImGui::Spacing();
+    ImGui::TextDisabled("Assign via Media > Actor Defs > Initial Spawn.");
+}
+
 } // namespace gue

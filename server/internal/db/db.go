@@ -491,6 +491,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV48(ctx)
 	d.migrateV49(ctx)
 	d.migrateV50(ctx)
+	d.migrateV51(ctx)
 
 	return d, nil
 }
@@ -899,7 +900,7 @@ func (d *DB) ListCharacters(ctx context.Context, accountID string) ([]*Character
 // Initial x/z put the character at the center of the default Starter Zone
 // (1024Ãƒâ€”1024 world units Ã¢â€ â€™ center is 512). Column defaults can't be relied
 // on across SQLite/Postgres for this Ã¢â‚¬â€ so we set them explicitly.
-func (d *DB) CreateCharacter(ctx context.Context, accountID string, slot int, name, race, className string, gender, faceTex, hair, beard, bodyTex, actorDefID int) (*Character, error) {
+func (d *DB) CreateCharacter(ctx context.Context, accountID string, slot int, name, race, className string, gender, faceTex, hair, beard, bodyTex, actorDefID int, spawnX, spawnY, spawnZ, spawnYaw float32, spawnArea string) (*Character, error) {
 	id := uuid.New().String()
 	cfg := world.GetCachedCharProgressionConfig()
 	initialStatValue := cfg.InitialStatValue
@@ -911,10 +912,11 @@ func (d *DB) CreateCharacter(ctx context.Context, accountID string, slot int, na
 		       (id, account_id, slot, name, race, class, gender, face_tex, hair, beard, body_tex, actor_def_id, created_at,
 		        primary_strength, primary_dexterity, primary_intelligence, primary_wisdom, primary_perception,
 		        unspent_stat_points, free_respecs_used,
-		        x, z)
-		     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 512, 512)`),
+		        area_name, x, y, z, yaw)
+		     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)`),
 		id, accountID, slot, name, race, className, gender, faceTex, hair, beard, bodyTex, actorDefID, now(),
 		initialStatValue, initialStatValue, initialStatValue, initialStatValue, initialStatValue,
+		spawnArea, spawnX, spawnY, spawnZ, spawnYaw,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("db: CreateCharacter: %w", err)
@@ -2963,6 +2965,7 @@ type ActorDef struct {
 	IsPlayable            bool
 	IsMountable           bool
 	IsInteractive         bool
+	InitialSpawnID        int
 
 	Meshes []ActorDefMesh
 	Anims  []ActorDefAnim
@@ -2982,14 +2985,14 @@ func (d *DB) LoadActorDef(ctx context.Context, id int) (*ActorDef, error) {
 		        default_level, default_hp, default_ep,
 		        default_aggressiveness, default_aggro_range, default_attack_range,
 		        default_respawn_ms, loot_table_id,
-		        is_playable, is_mountable, is_interactive
+		        is_playable, is_mountable, is_interactive, initial_spawn_id
 		 FROM media_actor_defs WHERE id = ?`), id).Scan(
 		&out.Name, &out.Scale, &out.YawOffset, &out.YOffset,
 		&out.DefaultName, &out.DefaultRace, &out.DefaultClass,
 		&out.DefaultLevel, &out.DefaultHP, &out.DefaultEP,
 		&out.DefaultAggressiveness, &out.DefaultAggroRange, &out.DefaultAttackRange,
 		&out.DefaultRespawnMs, &out.LootTableID,
-		&playable, &mountable, &interactive,
+		&playable, &mountable, &interactive, &out.InitialSpawnID,
 	)
 	if err != nil {
 		return nil, nil // missing / not found
@@ -9379,6 +9382,67 @@ func (d *DB) migrateV50(ctx context.Context) {
 	if _, err := d.db.ExecContext(ctx, createTable); err != nil {
 		log.Printf("migrateV50: create actor_def_submesh_materials failed: %v", err)
 	}
+}
+
+// migrateV51 creates player_spawns (player character spawn points placed in the
+// zone editor) and adds initial_spawn_id to media_actor_defs so a playable
+// actor def can reference its default spawn point.
+func (d *DB) migrateV51(ctx context.Context) {
+	var createSQL string
+	if d.driver == "postgres" {
+		createSQL = `CREATE TABLE IF NOT EXISTS player_spawns (
+			id        SERIAL PRIMARY KEY,
+			name      TEXT   NOT NULL DEFAULT '',
+			area_name TEXT   NOT NULL DEFAULT '',
+			x         REAL   NOT NULL DEFAULT 0,
+			y         REAL   NOT NULL DEFAULT 0,
+			z         REAL   NOT NULL DEFAULT 0,
+			yaw       REAL   NOT NULL DEFAULT 0
+		)`
+	} else {
+		createSQL = `CREATE TABLE IF NOT EXISTS player_spawns (
+			id        INTEGER PRIMARY KEY AUTOINCREMENT,
+			name      TEXT    NOT NULL DEFAULT '',
+			area_name TEXT    NOT NULL DEFAULT '',
+			x         REAL    NOT NULL DEFAULT 0,
+			y         REAL    NOT NULL DEFAULT 0,
+			z         REAL    NOT NULL DEFAULT 0,
+			yaw       REAL    NOT NULL DEFAULT 0
+		)`
+	}
+	if _, err := d.db.ExecContext(ctx, createSQL); err != nil {
+		log.Printf("migrateV51: create player_spawns failed: %v", err)
+	}
+	if d.driver == "postgres" {
+		d.db.ExecContext(ctx, `ALTER TABLE media_actor_defs ADD COLUMN IF NOT EXISTS initial_spawn_id INTEGER NOT NULL DEFAULT 0`)
+	} else {
+		d.db.ExecContext(ctx, `ALTER TABLE media_actor_defs ADD COLUMN initial_spawn_id INTEGER NOT NULL DEFAULT 0`)
+	}
+}
+
+// PlayerSpawn is a named world position where players spawn or respawn.
+type PlayerSpawn struct {
+	ID       int
+	Name     string
+	AreaName string
+	X, Y, Z  float32
+	Yaw      float32
+}
+
+// GetPlayerSpawnByID returns the player_spawns row with the given id, or nil if
+// not found. id <= 0 returns (nil, nil) immediately.
+func (d *DB) GetPlayerSpawnByID(ctx context.Context, id int) (*PlayerSpawn, error) {
+	if id <= 0 {
+		return nil, nil
+	}
+	ps := &PlayerSpawn{ID: id}
+	err := d.db.QueryRowContext(ctx,
+		d.q(`SELECT name, area_name, x, y, z, yaw FROM player_spawns WHERE id = ?`), id).Scan(
+		&ps.Name, &ps.AreaName, &ps.X, &ps.Y, &ps.Z, &ps.Yaw)
+	if err != nil {
+		return nil, nil
+	}
+	return ps, nil
 }
 
 // LoadActorDefSubmeshMaterials returns the per-submesh material overrides for

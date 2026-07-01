@@ -509,6 +509,7 @@ void MediaTab::EnsureTables(sqlite3* db) {
         "ALTER TABLE media_actor_defs ADD COLUMN is_mountable           INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE media_actor_defs ADD COLUMN is_interactive         INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE media_actor_defs ADD COLUMN loot_table_id          INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE media_actor_defs ADD COLUMN initial_spawn_id       INTEGER NOT NULL DEFAULT 0",
     };
     for (const char* s : adefColumns)
         sqlite3_exec(db, s, nullptr, nullptr, nullptr);
@@ -689,7 +690,8 @@ void MediaTab::FetchAll(sqlite3* db) {
         "       default_name, default_race, default_class,"
         "       default_level, default_hp, default_ep,"
         "       default_aggressiveness, default_aggro_range, default_attack_range,"
-        "       default_respawn_ms, is_playable, is_mountable, is_interactive, loot_table_id"
+        "       default_respawn_ms, is_playable, is_mountable, is_interactive, loot_table_id,"
+        "       initial_spawn_id"
         " FROM media_actor_defs ORDER BY name",
         -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -714,7 +716,23 @@ void MediaTab::FetchAll(sqlite3* db) {
             d.is_mountable            = sqlite3_column_int(stmt, 16) != 0;
             d.is_interactive          = sqlite3_column_int(stmt, 17) != 0;
             d.loot_table_id           = sqlite3_column_int(stmt, 18);
+            d.initial_spawn_id        = sqlite3_column_int(stmt, 19);
             actor_defs_.push_back(std::move(d));
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    // Player spawns list (for Initial Spawn combo on playable actor defs)
+    player_spawns_.clear();
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, area_name, name FROM player_spawns ORDER BY area_name, name",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            PlayerSpawnOption ps;
+            ps.id        = sqlite3_column_int(stmt, 0);
+            ps.area_name = colText(stmt, 1);
+            ps.name      = colText(stmt, 2);
+            player_spawns_.push_back(std::move(ps));
         }
         sqlite3_finalize(stmt);
     }
@@ -1168,8 +1186,9 @@ void MediaTab::SaveActorDef(sqlite3* db, ActorDef& d) {
             " (name, scale, yaw_offset, y_offset, default_name, default_race, default_class,"
             "  default_level, default_hp, default_ep,"
             "  default_aggressiveness, default_aggro_range, default_attack_range,"
-            "  default_respawn_ms, is_playable, is_mountable, is_interactive, loot_table_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  default_respawn_ms, is_playable, is_mountable, is_interactive, loot_table_id,"
+            "  initial_spawn_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
@@ -1179,7 +1198,7 @@ void MediaTab::SaveActorDef(sqlite3* db, ActorDef& d) {
             "  default_level=?, default_hp=?, default_ep=?,"
             "  default_aggressiveness=?, default_aggro_range=?, default_attack_range=?,"
             "  default_respawn_ms=?, is_playable=?, is_mountable=?, is_interactive=?,"
-            "  loot_table_id=?"
+            "  loot_table_id=?, initial_spawn_id=?"
             " WHERE id=?",
             -1, &stmt, nullptr);
     }
@@ -1207,6 +1226,7 @@ void MediaTab::SaveActorDef(sqlite3* db, ActorDef& d) {
     sqlite3_bind_int   (stmt, i++, d.is_mountable   ? 1 : 0);
     sqlite3_bind_int   (stmt, i++, d.is_interactive ? 1 : 0);
     sqlite3_bind_int   (stmt, i++, d.loot_table_id);
+    sqlite3_bind_int   (stmt, i++, d.initial_spawn_id);
     if (d.id != 0) sqlite3_bind_int(stmt, i++, d.id);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
@@ -2848,6 +2868,16 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
             if (ImGui::Checkbox("Mountable",  &d.is_mountable))   dirtyActorDef_ = true;
             ImGui::SameLine();
             if (ImGui::Checkbox("Has dialog", &d.is_interactive)) dirtyActorDef_ = true;
+
+            if (d.is_playable) {
+                std::vector<std::pair<int,std::string>> spawnList;
+                spawnList.reserve(player_spawns_.size());
+                for (auto& ps : player_spawns_)
+                    spawnList.emplace_back(ps.id, ps.area_name + " / " + ps.name);
+                if (ui::SearchableComboId("Initial Spawn##ispawn", d.initial_spawn_id,
+                                          spawnList, "(none - default spawn)"))
+                    dirtyActorDef_ = true;
+            }
 
             ImGui::Spacing();
             ImGui::SeparatorText("Loot");

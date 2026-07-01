@@ -94,7 +94,12 @@ if ($cmake) {
 
 $cl = Get-Command cl -ErrorAction SilentlyContinue
 if (HasMSVCTools) {
-    OK "MSVC (cl.exe): $($cl.Source)"
+    if ($cl) {
+        OK "MSVC cl.exe in PATH: $($cl.Source)"
+    } else {
+        OK "MSVC C++ Build Tools detected via Visual Studio Installer"
+        Write-Host "         cl.exe is not in this terminal PATH, but Visual Studio generator builds can still work." -ForegroundColor DarkGray
+    }
 } else {
     if ($Install) {
         Write-Host "  [INSTALL] MSVC ausente - instalando Visual Studio 2022 Build Tools..." -ForegroundColor Magenta

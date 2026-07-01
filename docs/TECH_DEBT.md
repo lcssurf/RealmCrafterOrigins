@@ -1212,3 +1212,28 @@ Fase 2: flag `black_cutout` no **modelo** — implementada.
   `media.h` (`FolderDeleteEntry` + 2 membros + 2 declarações).
 - **Call sites clips/actor_defs**: intocados (passam `on_folder_context = nullptr`).
 
+## 115. Spawn Fase 2: safe zones + respawn contextual (pendente)
+
+**Fase 1 implementada** (Fase 2 ainda não):
+- Tabela `player_spawns` criada; `media_actor_defs.initial_spawn_id` adicionado.
+- GUE Zone editor: Player Spawn como objeto plaçável (padrão zone_scenery).
+- GUE Actor Def: combo "Initial Spawn" visível só quando `is_playable=true`.
+- `CreateCharacter` usa o spawn configurado; fallback seguro para (512,0,512,'Starter Zone').
+- Bug do respawn pra (0,0,0) corrigido: `handleStartGame` agora seta `actor.SpawnX/Y/Z/Yaw`.
+
+**O que falta (Fase 2):**
+- **Tabela `safe_zones`**: rect/volume 2D ou AABB por área — define onde o player pode
+  respawnar com segurança (longe de mobs, fora de dungeons, etc.).
+- **Tracking de `last_safe_pos`**: servidor persiste a última posição do player dentro de
+  uma safe zone (coluna em `characters` ou tabela separada). Atualizado periodicamente
+  enquanto o player está dentro de uma safe zone.
+- **Respawn contextual**: `handleRespawnPlayer` escolhe ponto de respawn na seguinte ordem:
+  1. `last_safe_pos` (se dentro do mesmo mapa e válido)
+  2. `actor.SpawnX/Y/Z` (initial spawn configurado no actor def)
+  3. Fallback hardcode (512, 0, 512, 'Starter Zone')
+- **GUE Zone editor**: Safe Zone como objeto plaçável (AABB ou raio), seguindo o mesmo
+  padrão de Player Spawn implementado na Fase 1.
+- **Arquivos a tocar**: `zone_scene.h`, `zone_scene.cpp`, `zone_renderer.h/.cpp`,
+  `zones.h`, `zones.cpp`, `zones_panels.cpp`, `zones_sidebar.cpp`, `zones_viewport.cpp`,
+  `server/internal/db/db.go` (migrateV52+), `server/internal/net/client.go`.
+

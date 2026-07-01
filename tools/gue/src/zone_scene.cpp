@@ -366,6 +366,18 @@ void ZoneScene::EnsureTables(sqlite3* db) {
         "  z           REAL    NOT NULL DEFAULT 0"
         ")");
 
+    // ── Player spawn points ───────────────────────────────────────────────
+    Exec(db,
+        "CREATE TABLE IF NOT EXISTS player_spawns ("
+        "  id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  name      TEXT    NOT NULL DEFAULT '',"
+        "  area_name TEXT    NOT NULL DEFAULT '',"
+        "  x         REAL    NOT NULL DEFAULT 0,"
+        "  y         REAL    NOT NULL DEFAULT 0,"
+        "  z         REAL    NOT NULL DEFAULT 0,"
+        "  yaw       REAL    NOT NULL DEFAULT 0"
+        ")");
+
     // ── Scenery (props) ───────────────────────────────────────────────────
     Exec(db,
         "CREATE TABLE IF NOT EXISTS zone_scenery ("
@@ -705,6 +717,24 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
         }
         sqlite3_finalize(stmt);
     }
+    // ── Player spawn points ───────────────────────────────────────────────
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, name, x, y, z, yaw FROM player_spawns WHERE area_name=? ORDER BY id",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, area.c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            ZPlayerSpawn ps;
+            ps.id    = sqlite3_column_int(stmt, 0);
+            ps.name  = txt(stmt, 1);
+            ps.pos.x = (float)sqlite3_column_double(stmt, 2);
+            ps.pos.y = (float)sqlite3_column_double(stmt, 3);
+            ps.pos.z = (float)sqlite3_column_double(stmt, 4);
+            ps.yaw   = (float)sqlite3_column_double(stmt, 5);
+            playerSpawns.push_back(ps);
+        }
+        sqlite3_finalize(stmt);
+    }
+
     // Load mobs for each spawn point
     for (auto& sp : spawnPoints) {
         if (sqlite3_prepare_v2(db,

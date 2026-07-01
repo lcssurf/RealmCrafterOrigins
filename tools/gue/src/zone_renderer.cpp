@@ -694,6 +694,17 @@ void ZoneRenderer::DrawForwardOverlays_(const ZoneScene& scene, int selectedID,
         DrawSphere(sp.pos, 0.5f, colSphere, vp);
         DrawCircleXZ({sp.pos.x, sp.pos.z}, sp.radius, sp.pos.y + 0.1f, colCircle, vp);
     }
+    for (auto& ps : scene.playerSpawns) {
+        bool sel = (selectedType == kSelPlayerSpawn && selectedID == ps.id);
+        glm::vec4 col = sel ? glm::vec4(1.f, 0.95f, 0.1f, 1.0f)
+                            : glm::vec4(1.0f, 0.70f, 0.0f, 0.85f);
+        DrawSphere(ps.pos, 0.45f, col, vp);
+        // Arrow stub indicating facing direction
+        float dx = std::sin(glm::radians(ps.yaw)) * 0.8f;
+        float dz = std::cos(glm::radians(ps.yaw)) * 0.8f;
+        glm::vec3 tip = ps.pos + glm::vec3(dx, 0.f, dz);
+        DrawLine(ps.pos, tip, col, vp);
+    }
     for (auto& w : scene.waypoints) {
         bool sel = (selectedType == kSelWaypoint && selectedID == w.id);
         glm::vec4 col = sel ? glm::vec4(1.f, 0.2f, 0.2f, 0.9f)

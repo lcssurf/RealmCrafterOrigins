@@ -139,6 +139,13 @@ struct ZSpawnPoint {
     std::vector<ZSpawnPointMob> mobs;
 };
 
+struct ZPlayerSpawn {
+    int         id     = 0;
+    std::string name;
+    glm::vec3   pos    = {};
+    float       yaw    = 0.f;
+};
+
 struct ZEnvConfig {
     std::string name;
     int   musicTrack   = 1;
@@ -193,6 +200,7 @@ struct ZoneScene {
     std::vector<ZWaypoint>   waypoints;
     std::vector<ZNpcSpawn>    npcs;
     std::vector<ZSpawnPoint>  spawnPoints;
+    std::vector<ZPlayerSpawn> playerSpawns;
     bool dirty = false;
 
     // Pre-computed visualisation of per-scenery collision shapes.
@@ -206,6 +214,7 @@ struct ZoneScene {
         soundZones.clear(); colBoxes.clear(); colSpheres.clear(); water.clear();
         emitters.clear(); waypoints.clear(); npcs.clear();
         spawnPoints.clear();
+        playerSpawns.clear();
         env = {};
         dirty = false;
         colVis = {};

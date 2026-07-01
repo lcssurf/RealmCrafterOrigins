@@ -669,6 +669,35 @@ void ZonesTab::PlaceObject(const glm::vec3& wpos, sqlite3* db, MediaTab* media) 
         }
         break;
     }
+    case kModePlayerSpawn: {
+        ZPlayerSpawn ps;
+        ps.pos  = wpos;
+        ps.yaw  = 0.f;
+        ps.name = scene_.areaName + " Spawn";
+
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO player_spawns (name, area_name, x, y, z, yaw)"
+            " VALUES (?,?,?,?,?,?)",
+            -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text  (stmt, 1, ps.name.c_str(),         -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text  (stmt, 2, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 3, ps.pos.x);
+            sqlite3_bind_double(stmt, 4, ps.pos.y);
+            sqlite3_bind_double(stmt, 5, ps.pos.z);
+            sqlite3_bind_double(stmt, 6, ps.yaw);
+            sqlite3_step(stmt);
+            ps.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.playerSpawns.push_back(ps);
+            selectedID_   = ps.id;
+            selectedType_ = kSelPlayerSpawn;
+            PushUndo(kUndoCreate, kSelPlayerSpawn, ps.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                "Placed player spawn #%d at (%.0f, %.0f).", ps.id, wpos.x, wpos.z);
+        }
+        break;
+    }
     case kModeEmitters: {
         ZEmitter e;
         e.pos        = wpos;
@@ -729,8 +758,9 @@ void ZonesTab::Undo(sqlite3* db) {
         case kSelWaypoint:  table = "zone_waypoints";   break;
         case kSelNpc:       table = "npc_spawns";       break;
         case kSelEmitter:   table = "zone_emitters";    break;
-        case kSelWater:     table = "zone_water";       break;
-        case kSelScenery:   table = "zone_scenery";     break;
+        case kSelWater:       table = "zone_water";       break;
+        case kSelScenery:     table = "zone_scenery";     break;
+        case kSelPlayerSpawn: table = "player_spawns";    break;
         default: return;
         }
         char sql[128];
@@ -751,10 +781,11 @@ void ZonesTab::Undo(sqlite3* db) {
         case kSelColBox:    rem(scene_.colBoxes);    break;
         case kSelColSphere: rem(scene_.colSpheres); break;
         case kSelWaypoint:  rem(scene_.waypoints);  break;
-        case kSelNpc:       rem(scene_.npcs);       break;
-        case kSelEmitter:   rem(scene_.emitters);   break;
-        case kSelWater:     rem(scene_.water);      break;
-        case kSelScenery:   rem(scene_.scenery);    break;
+        case kSelNpc:         rem(scene_.npcs);         break;
+        case kSelEmitter:     rem(scene_.emitters);     break;
+        case kSelWater:       rem(scene_.water);        break;
+        case kSelScenery:     rem(scene_.scenery);      break;
+        case kSelPlayerSpawn: rem(scene_.playerSpawns); break;
         }
         std::snprintf(statusMsg_, sizeof(statusMsg_), "Undo: removed id=%d.", e.objectId);
         break;
@@ -1272,6 +1303,34 @@ void ZonesTab::DuplicateSelected(sqlite3* db, MediaTab* media) {
         }
         break;
     }
+    case kSelPlayerSpawn: {
+        auto it = std::find_if(scene_.playerSpawns.begin(), scene_.playerSpawns.end(),
+                               [&](auto& p){ return p.id == selectedID_; });
+        if (it == scene_.playerSpawns.end()) return;
+        ZPlayerSpawn ps = *it;
+        ps.id   = 0;
+        ps.pos += offset;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO player_spawns (name, area_name, x, y, z, yaw)"
+            " VALUES (?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text  (stmt, 1, ps.name.c_str(),         -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text  (stmt, 2, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 3, ps.pos.x);
+            sqlite3_bind_double(stmt, 4, ps.pos.y);
+            sqlite3_bind_double(stmt, 5, ps.pos.z);
+            sqlite3_bind_double(stmt, 6, ps.yaw);
+            sqlite3_step(stmt);
+            ps.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.playerSpawns.push_back(ps);
+            selectedID_   = ps.id;
+            selectedType_ = kSelPlayerSpawn;
+            PushUndo(kUndoCreate, kSelPlayerSpawn, ps.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated player spawn id=%d.", ps.id);
+        }
+        break;
+    }
     default:
         std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicate not supported for this object type.");
         break;
@@ -1334,6 +1393,20 @@ void ZonesTab::DeleteSelected(sqlite3* db) {
     }
     case kSelWater:     table = "zone_water";       break;
     case kSelScenery:   table = "zone_scenery";     break;
+    case kSelPlayerSpawn: {
+        char sql[128];
+        std::snprintf(sql, sizeof(sql),
+            "DELETE FROM player_spawns WHERE id=%d", selectedID_);
+        sqlite3_exec(db, sql, nullptr, nullptr, nullptr);
+        scene_.playerSpawns.erase(
+            std::remove_if(scene_.playerSpawns.begin(), scene_.playerSpawns.end(),
+                           [&](auto& x){ return x.id == selectedID_; }),
+            scene_.playerSpawns.end());
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+            "Deleted player spawn %d.", selectedID_);
+        ClearSelection();
+        return;
+    }
     default: return;
     }
     char sql[128];
@@ -1356,10 +1429,11 @@ void ZonesTab::DeleteSelected(sqlite3* db) {
     case kSelColBox:    del(scene_.colBoxes);    break;
     case kSelColSphere: del(scene_.colSpheres); break;
     case kSelWaypoint:  del(scene_.waypoints);  break;
-    case kSelNpc:       del(scene_.npcs);       break;
-    case kSelEmitter:   del(scene_.emitters);   break;
-    case kSelWater:     del(scene_.water);      break;
-    case kSelScenery:   del(scene_.scenery);    break;
+    case kSelNpc:         del(scene_.npcs);         break;
+    case kSelEmitter:     del(scene_.emitters);     break;
+    case kSelWater:       del(scene_.water);        break;
+    case kSelScenery:     del(scene_.scenery);      break;
+    case kSelPlayerSpawn: del(scene_.playerSpawns); break;
     }
     // Collision vis must be rebuilt whenever a scenery or col shape is removed.
     switch (selectedType_) {

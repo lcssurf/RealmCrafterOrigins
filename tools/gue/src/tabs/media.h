@@ -194,6 +194,7 @@ struct ActorDef {
     bool        is_playable    = false;
     bool        is_mountable   = false;
     bool        is_interactive = false;
+    int         initial_spawn_id = 0;  // FK → player_spawns.id (0 = use default)
 
     std::vector<ActorMeshSlot>  mesh_slots;
     std::vector<ActorAnimMap>   anim_map;
@@ -203,6 +204,13 @@ struct ActorDef {
 // ---------------------------------------------------------------------------
 // Media tab
 // ---------------------------------------------------------------------------
+
+// Lightweight entry from player_spawns — used by the Initial Spawn combo on playable actor defs.
+struct PlayerSpawnOption {
+    int         id = 0;
+    std::string area_name;
+    std::string name;
+};
 
 class MediaTab {
 public:
@@ -292,6 +300,7 @@ private:
     std::vector<MediaAnimClip> clips_;
     std::vector<ActorDef>      actor_defs_;
     std::vector<std::pair<int, std::string>> drop_list_options_;
+    std::vector<PlayerSpawnOption> player_spawns_;
     std::vector<std::string>   anim_vocab_names_;
     std::vector<std::string>   socket_vocab_names_; // B3a
 

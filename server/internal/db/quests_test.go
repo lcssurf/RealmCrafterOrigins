@@ -25,7 +25,7 @@ func createTestCharacter(t *testing.T, database *DB) string {
 	if err != nil {
 		t.Fatalf("create account: %v", err)
 	}
-	if _, err := database.CreateCharacter(ctx, accountID, 0, "QuestTester", "Human", "Warrior", 0, 0, 0, 0, 0, 0); err != nil {
+	if _, err := database.CreateCharacter(ctx, accountID, 0, "QuestTester", "Human", "Warrior", 0, 0, 0, 0, 0, 0, 512, 0, 512, 0, "Starter Zone"); err != nil {
 		t.Fatalf("create character: %v", err)
 	}
 	ch, err := database.GetCharacterBySlot(ctx, accountID, 0)

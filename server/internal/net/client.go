@@ -351,8 +351,10 @@ func (c *ClientConn) handleCreateCharacter(ctx context.Context, payload []byte) 
 
 	actorDefID := int(actorDefID16)
 
-	// Resolve race/class from the actor def so they're stored correctly.
+	// Resolve race/class and initial spawn from the actor def.
 	race, class := "Unknown", "Unknown"
+	spawnX, spawnY, spawnZ, spawnYaw := float32(512), float32(0), float32(512), float32(0)
+	spawnArea := "Starter Zone"
 	if actorDefID > 0 {
 		if def, defErr := c.server.db.LoadActorDef(ctx, actorDefID); defErr == nil && def != nil {
 			if def.DefaultRace != "" {
@@ -361,11 +363,17 @@ func (c *ClientConn) handleCreateCharacter(ctx context.Context, payload []byte) 
 			if def.DefaultClass != "" {
 				class = def.DefaultClass
 			}
+			if def.InitialSpawnID > 0 {
+				if spawn, spErr := c.server.db.GetPlayerSpawnByID(ctx, def.InitialSpawnID); spErr == nil && spawn != nil {
+					spawnX, spawnY, spawnZ, spawnYaw = spawn.X, spawn.Y, spawn.Z, spawn.Yaw
+					spawnArea = spawn.AreaName
+				}
+			}
 		}
 	}
 
 	_, createErr := c.server.db.CreateCharacter(ctx, c.account.ID, int(slot), name, race, class,
-		int(gender), 0, 0, 0, 0, actorDefID)
+		int(gender), 0, 0, 0, 0, actorDefID, spawnX, spawnY, spawnZ, spawnYaw, spawnArea)
 	if createErr != nil {
 		log.Printf("client: create character: %v", createErr)
 		return c.sendCreateCharResult(protocol.ResultCharExists, "Name already taken")
@@ -484,6 +492,21 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 		} else {
 			log.Printf("client: BuildAppearance returned nil for actor_def_id=%d", char.ActorDefID)
 		}
+	}
+
+	// Resolve spawn position from the actor def's initial_spawn_id so that
+	// handleRespawnPlayer never sends the player to (0,0,0) on death.
+	if char.ActorDefID > 0 {
+		if def, defErr := c.server.db.LoadActorDef(ctx, char.ActorDefID); defErr == nil && def != nil && def.InitialSpawnID > 0 {
+			if spawn, spErr := c.server.db.GetPlayerSpawnByID(ctx, def.InitialSpawnID); spErr == nil && spawn != nil {
+				actor.SpawnX, actor.SpawnY, actor.SpawnZ, actor.SpawnYaw = spawn.X, spawn.Y, spawn.Z, spawn.Yaw
+			}
+		}
+	}
+	// Ensure SpawnX/Z are always a sane fallback (never the 0,0,0 origin bug).
+	if actor.SpawnX == 0 && actor.SpawnZ == 0 {
+		actor.SpawnX = 512
+		actor.SpawnZ = 512
 	}
 
 	// Close the dummy actor created at connect time and swap in the real one.

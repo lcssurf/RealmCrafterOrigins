@@ -28,8 +28,9 @@ enum ZSelType {
     kSelEmitter    = 6,
     kSelWater      = 7,
     kSelScenery    = 8,
-    kSelSpawnPoint = 9,
-    kSelColSphere  = 10,
+    kSelSpawnPoint  = 9,
+    kSelColSphere   = 10,
+    kSelPlayerSpawn = 11,
 };
 
 // Off-screen FBO renderer for the zone editor viewport.

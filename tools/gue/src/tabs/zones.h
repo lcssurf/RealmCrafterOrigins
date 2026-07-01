@@ -31,9 +31,10 @@ enum ZoneMode {
     kModeNPC        = 9,
     kModeEnviro     = 10,
     kModeOther      = 11,
-    kModeSpawnPoint = 12,
-    kModeColSphere  = 13,
-    kModeCount      = 14,
+    kModeSpawnPoint  = 12,
+    kModeColSphere   = 13,
+    kModePlayerSpawn = 14,
+    kModeCount       = 15,
 };
 
 // ── Lightweight cache entry for the terrain material picker ─────────────────
@@ -100,6 +101,7 @@ private:
     void DrawPanelEnviro      (sqlite3*);
     void DrawPanelOther       (sqlite3*);
     void DrawPanelSpawnPoint  (sqlite3*, MediaTab*, bool placement);
+    void DrawPanelPlayerSpawn (sqlite3*, bool placement);
 
     // ── Undo ─────────────────────────────────────────────────────────────────
     enum UndoAction { kUndoCreate, kUndoDelete, kUndoMove, kUndoRotate, kUndoScale };

@@ -906,7 +906,8 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             pushVec(scene_.emitters,    kSelEmitter);
             pushVec(scene_.water,       kSelWater);
             pushVec(scene_.scenery,     kSelScenery);
-            pushVec(scene_.spawnPoints, kSelSpawnPoint);
+            pushVec(scene_.spawnPoints,  kSelSpawnPoint);
+            pushVec(scene_.playerSpawns, kSelPlayerSpawn);
             for (const auto& t : scene_.triggers) {
                 if (selectedType_ == kSelTrigger && t.id == selectedID_) continue;
                 consider(glm::vec3(t.x, 0.f, t.z));
@@ -986,6 +987,12 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                     outHalf = glm::vec3(std::max(0.05f, sp.radius), 0.75f, std::max(0.05f, sp.radius));
                     return true;
                 }
+            } else if (st == kSelPlayerSpawn) {
+                for (const auto& ps : scene_.playerSpawns) if (ps.id == id) {
+                    outPos  = ps.pos;
+                    outHalf = glm::vec3(0.4f, 0.75f, 0.4f);
+                    return true;
+                }
             }
             return false;
         };
@@ -1034,7 +1041,8 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             for (const auto& e : scene_.emitters)     testCandidate(kSelEmitter, e.id, e.pos, glm::vec3(0.4f, 0.75f, 0.4f));
             for (const auto& w : scene_.water)        testCandidate(kSelWater, w.id, w.pos, glm::vec3(std::max(0.05f, w.scale.x * 0.5f), 0.15f, std::max(0.05f, w.scale.y * 0.5f)));
             for (const auto& s : scene_.scenery)      testCandidate(kSelScenery, s.id, s.pos, glm::max(glm::abs(s.scale) * 0.5f, glm::vec3(0.05f)));
-            for (const auto& sp : scene_.spawnPoints) testCandidate(kSelSpawnPoint, sp.id, sp.pos, glm::vec3(std::max(0.05f, sp.radius), 0.75f, std::max(0.05f, sp.radius)));
+            for (const auto& sp : scene_.spawnPoints)  testCandidate(kSelSpawnPoint,  sp.id, sp.pos, glm::vec3(std::max(0.05f, sp.radius), 0.75f, std::max(0.05f, sp.radius)));
+            for (const auto& ps : scene_.playerSpawns) testCandidate(kSelPlayerSpawn, ps.id, ps.pos, glm::vec3(0.4f, 0.75f, 0.4f));
 
             if (!found || bestAxis < 0) return false;
             objPos[bestAxis] = bestCoord;
@@ -1648,7 +1656,8 @@ bool ZonesTab::SelectedPos(glm::vec3& out) const {
     if (tryVec(scene_.emitters,  kSelEmitter))  return true;
     if (tryVec(scene_.water,     kSelWater))    return true;
     if (tryVec(scene_.scenery,     kSelScenery))    return true;
-    if (tryVec(scene_.spawnPoints, kSelSpawnPoint)) return true;
+    if (tryVec(scene_.spawnPoints,  kSelSpawnPoint))  return true;
+    if (tryVec(scene_.playerSpawns, kSelPlayerSpawn)) return true;
     if (selectedType_ == kSelTrigger)
         for (auto& t : scene_.triggers) if (t.id == selectedID_) { out = {t.x, 0, t.z}; return true; }
     if (selectedType_ == kSelSoundZone)
@@ -1669,7 +1678,8 @@ void ZonesTab::SetSelectedPos(const glm::vec3& pos) {
     trySet(scene_.emitters,  kSelEmitter);
     trySet(scene_.water,     kSelWater);
     trySet(scene_.scenery,     kSelScenery);
-    trySet(scene_.spawnPoints, kSelSpawnPoint);
+    trySet(scene_.spawnPoints,  kSelSpawnPoint);
+    trySet(scene_.playerSpawns, kSelPlayerSpawn);
     if (selectedType_ == kSelTrigger)
         for (auto& t : scene_.triggers)
             if (t.id == selectedID_) { t.x = pos.x; t.z = pos.z; }
@@ -1695,7 +1705,8 @@ void ZonesTab::PersistSelectedPos(sqlite3* db) {
     case kSelEmitter:   sql = "UPDATE zone_emitters    SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelWater:     sql = "UPDATE zone_water       SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelScenery:    sql = "UPDATE zone_scenery  SET x=?,y=?,z=? WHERE id=?"; break;
-    case kSelSpawnPoint: sql = "UPDATE spawn_points  SET x=?,y=?,z=? WHERE id=?"; break;
+    case kSelSpawnPoint:  sql = "UPDATE spawn_points  SET x=?,y=?,z=? WHERE id=?"; break;
+    case kSelPlayerSpawn: sql = "UPDATE player_spawns SET x=?,y=?,z=? WHERE id=?"; break;
     default: return;
     }
 
