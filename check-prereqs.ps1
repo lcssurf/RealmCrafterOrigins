@@ -28,6 +28,14 @@ function HasMSVCTools() {
     return $false
 }
 
+function GetLatestVSInstallVersion() {
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere) {
+        return & $vswhere -latest -products * -property installationVersion 2>$null
+    }
+    return ""
+}
+
 function Section($title) {
     Write-Host ""
     Write-Host "--- $title ---" -ForegroundColor Cyan
@@ -72,12 +80,14 @@ if (Test-Path "$PSScriptRoot\server\go.mod") {
 Section "CLIENTE (C++)"
 
 $cmake = Get-Command cmake -ErrorAction SilentlyContinue
+$cmakeMajor = 0
+$cmakeMinor = 0
 if ($cmake) {
     $cmakeVerStr = (cmake --version | Select-Object -First 1) -replace "cmake version ", ""
     $parts = $cmakeVerStr -split "\."
-    $major = [int]$parts[0]
-    $minor = [int]$parts[1]
-    if ($major -gt 3 -or ($major -eq 3 -and $minor -ge 20)) {
+    $cmakeMajor = [int]$parts[0]
+    $cmakeMinor = [int]$parts[1]
+    if ($cmakeMajor -gt 3 -or ($cmakeMajor -eq 3 -and $cmakeMinor -ge 20)) {
         OK "CMake $cmakeVerStr"
     } else {
         WARN "CMake $cmakeVerStr instalado, mas precisa de 3.20+  ->  https://cmake.org/download/"
@@ -110,15 +120,23 @@ if (HasMSVCTools) {
                 OK "MSVC (cl.exe): $($cl.Source)"
             } else {
                 WARN "Build Tools instalado, mas cl.exe ainda nao entrou no PATH."
-                Write-Host "         Rode em 'Developer PowerShell for VS 2022' ou defina VCTools via VS Installer" -ForegroundColor DarkGray
+                Write-Host "         Rode em 'Developer PowerShell for Visual Studio' ou defina VCTools via VS Installer" -ForegroundColor DarkGray
             }
         } else {
             FAIL "Falha ao instalar Visual Studio Build Tools via winget"
         }
     } else {
         WARN "cl.exe nao encontrado no PATH"
-        Write-Host "         Abra o 'Developer PowerShell for VS 2022' e rode novamente" -ForegroundColor DarkGray
+        Write-Host "         Abra o 'Developer PowerShell for Visual Studio' e rode novamente" -ForegroundColor DarkGray
         Write-Host "         Ou instale: https://visualstudio.microsoft.com/" -ForegroundColor DarkGray
+    }
+}
+
+$vsVersion = GetLatestVSInstallVersion
+if ($vsVersion -like "18.*" -and $cmake) {
+    if ($cmakeMajor -lt 4 -or ($cmakeMajor -eq 4 -and $cmakeMinor -lt 2)) {
+        WARN "Visual Studio 2026 detectado; o gerador 'Visual Studio 18 2026' precisa de CMake 4.2+"
+        Write-Host "         Atualize o CMake ou instale Visual Studio 2022 Build Tools para usar o gerador VS 2022." -ForegroundColor DarkGray
     }
 }
 

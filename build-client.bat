@@ -45,6 +45,22 @@ if not defined VS_INSTALL if exist "%VSWHERE%" (
     for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationVersion 2^>nul`) do set "VS_VERSION=%%i"
 )
 
+if not defined VS_INSTALL if exist "%ProgramFiles%\Microsoft Visual Studio\2026\BuildTools" (
+    set "VS_INSTALL=%ProgramFiles%\Microsoft Visual Studio\2026\BuildTools"
+    set "VS_VERSION=18"
+)
+if not defined VS_INSTALL if exist "%ProgramFiles%\Microsoft Visual Studio\2026\Community" (
+    set "VS_INSTALL=%ProgramFiles%\Microsoft Visual Studio\2026\Community"
+    set "VS_VERSION=18"
+)
+if not defined VS_INSTALL if exist "%ProgramFiles%\Microsoft Visual Studio\2026\Professional" (
+    set "VS_INSTALL=%ProgramFiles%\Microsoft Visual Studio\2026\Professional"
+    set "VS_VERSION=18"
+)
+if not defined VS_INSTALL if exist "%ProgramFiles%\Microsoft Visual Studio\2026\Enterprise" (
+    set "VS_INSTALL=%ProgramFiles%\Microsoft Visual Studio\2026\Enterprise"
+    set "VS_VERSION=18"
+)
 if not defined VS_INSTALL if exist "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools" (
     set "VS_INSTALL=%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools"
     set "VS_VERSION=17"
@@ -75,11 +91,13 @@ if defined VS_INSTALL if exist "%VS_INSTALL%\VC\Auxiliary\Build\vcvars64.bat" (
 
 if "%VS_VERSION:~0,3%"=="17." set "CMAKE_GENERATOR_NAME=Visual Studio 17 2022"
 if "%VS_VERSION:~0,3%"=="16." set "CMAKE_GENERATOR_NAME=Visual Studio 16 2019"
+if "%VS_VERSION:~0,3%"=="18." set "CMAKE_GENERATOR_NAME=Visual Studio 18 2026"
 if "%VS_VERSION%"=="17" set "CMAKE_GENERATOR_NAME=Visual Studio 17 2022"
 if "%VS_VERSION%"=="16" set "CMAKE_GENERATOR_NAME=Visual Studio 16 2019"
+if "%VS_VERSION%"=="18" set "CMAKE_GENERATOR_NAME=Visual Studio 18 2026"
 
 if not defined CMAKE_GENERATOR_NAME (
-    echo [RCO] Visual Studio 2022/2019 was not found.
+    echo [RCO] Visual Studio 2026/2022/2019 was not found.
     if not exist "%VSWHERE%" echo [RCO] vswhere was not found at: %VSWHERE%
     echo [RCO] Checked common Visual Studio install folders and found no usable install.
     echo [RCO] Run check-prereqs.bat, confirm the Visual Studio Build Tools installer finishes, then open a new terminal.
@@ -94,6 +112,15 @@ if not defined VS_HAS_CPP_TOOLS (
 
 echo [RCO] Using Visual Studio: %VS_INSTALL%
 echo [RCO] Using CMake generator: %CMAKE_GENERATOR_NAME%
+if "%CMAKE_GENERATOR_NAME%"=="Visual Studio 18 2026" (
+    cmake --help | findstr /C:"Visual Studio 18 2026" >nul 2>&1
+    if errorlevel 1 (
+        echo [RCO] This CMake version does not support the Visual Studio 2026 generator.
+        echo [RCO] Install CMake 4.2+ or install Visual Studio 2022 Build Tools.
+        pause
+        exit /b 1
+    )
+)
 if exist "build\CMakeCache.txt" (
     findstr /I /C:"CMAKE_GENERATOR:INTERNAL=%CMAKE_GENERATOR_NAME%" "build\CMakeCache.txt" >nul 2>&1
     if errorlevel 1 (
