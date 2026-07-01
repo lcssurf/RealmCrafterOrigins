@@ -2,15 +2,16 @@
 setlocal
 
 set "INSTALL_ARG=%~1"
-if /I "%INSTALL_ARG%"=="-install" set "CHECK_INSTALL=-Install"
-if /I "%INSTALL_ARG%"=="-i" set "CHECK_INSTALL=-Install"
-if /I "%INSTALL_ARG%"=="install" set "CHECK_INSTALL=-Install"
+set "CHECK_INSTALL=-Install"
 
-echo [RCO] Verificando pre-requisitos...
+if /I "%INSTALL_ARG%"=="-check-only" set "CHECK_INSTALL="
+if /I "%INSTALL_ARG%"=="-check"     set "CHECK_INSTALL="
+if /I "%INSTALL_ARG%"=="-no-install" set "CHECK_INSTALL="
+
 if defined CHECK_INSTALL (
-    echo [RCO] Modo: instalacao de dependencias ausentes (se possivel)
+    echo [RCO] Verificando pre-requisitos e instalando o que faltar...
 ) else (
-    echo [RCO] Modo: apenas verificacao (sem instalar)
+    echo [RCO] Verificando apenas pre-requisitos (sem instalar)
 )
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-prereqs.ps1" %CHECK_INSTALL%

@@ -15,6 +15,19 @@ function OK($msg)   { Write-Host "  [OK]    $msg" -ForegroundColor Green;  $glob
 function WARN($msg) { Write-Host "  [AVISO] $msg" -ForegroundColor Yellow; $global:warn++ }
 function FAIL($msg) { Write-Host "  [FALTA] $msg" -ForegroundColor Red;    $global:fail++ }
 
+function HasMSVCTools() {
+    if (Get-Command cl -ErrorAction SilentlyContinue) {
+        return $true
+    }
+
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere) {
+        $vcPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+        return -not [string]::IsNullOrWhiteSpace($vcPath)
+    }
+    return $false
+}
+
 function Section($title) {
     Write-Host ""
     Write-Host "--- $title ---" -ForegroundColor Cyan
@@ -80,12 +93,28 @@ if ($cmake) {
 }
 
 $cl = Get-Command cl -ErrorAction SilentlyContinue
-if ($cl) {
+if (HasMSVCTools) {
     OK "MSVC (cl.exe): $($cl.Source)"
 } else {
-    WARN "cl.exe nao encontrado no PATH"
-    Write-Host "         Abra o 'Developer PowerShell for VS 2022' e rode novamente" -ForegroundColor DarkGray
-    Write-Host "         Ou instale: https://visualstudio.microsoft.com/" -ForegroundColor DarkGray
+    if ($Install) {
+        Write-Host "  [INSTALL] MSVC ausente - instalando Visual Studio 2022 Build Tools..." -ForegroundColor Magenta
+        winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--passive --norestart --wait --add Microsoft.VisualStudio.Workload.VCTools" --accept-source-agreements --accept-package-agreements
+        if (HasMSVCTools) {
+            $cl = Get-Command cl -ErrorAction SilentlyContinue
+            if ($cl) {
+                OK "MSVC (cl.exe): $($cl.Source)"
+            } else {
+                WARN "Build Tools instalado, mas cl.exe ainda nao entrou no PATH."
+                Write-Host "         Rode em 'Developer PowerShell for VS 2022' ou defina VCTools via VS Installer" -ForegroundColor DarkGray
+            }
+        } else {
+            FAIL "Falha ao instalar Visual Studio Build Tools via winget"
+        }
+    } else {
+        WARN "cl.exe nao encontrado no PATH"
+        Write-Host "         Abra o 'Developer PowerShell for VS 2022' e rode novamente" -ForegroundColor DarkGray
+        Write-Host "         Ou instale: https://visualstudio.microsoft.com/" -ForegroundColor DarkGray
+    }
 }
 
 $git = Get-Command git -ErrorAction SilentlyContinue
