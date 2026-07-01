@@ -22,11 +22,11 @@ find_package(glfw3                CONFIG REQUIRED)
 find_package(imgui                CONFIG REQUIRED)
 find_package(glm                  CONFIG REQUIRED)
 find_package(unofficial-sqlite3   CONFIG REQUIRED)
+find_package(nlohmann_json        CONFIG REQUIRED)
 find_package(Stb                  REQUIRED)
 
 target_include_directories(rco_gue PRIVATE
     "${CMAKE_SOURCE_DIR}/src"
-    "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
     ${Stb_INCLUDE_DIR}
 )
 
@@ -36,6 +36,7 @@ target_link_libraries(rco_gue PRIVATE
     glm::glm
     imgui::imgui
     unofficial::sqlite3::sqlite3
+    nlohmann_json::nlohmann_json
 )
 
 if (WIN32)

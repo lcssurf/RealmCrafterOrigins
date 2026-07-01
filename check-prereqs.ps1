@@ -220,7 +220,8 @@ $requiredPkgs = @(
     [PSCustomObject]@{ name = "stb";    desc = "image loading headers" },
     [PSCustomObject]@{ name = "msquic"; desc = "rede QUIC" },
     [PSCustomObject]@{ name = "miniaudio"; desc = "audio header" },
-    [PSCustomObject]@{ name = "sqlite3"; desc = "GUE SQLite / unofficial-sqlite3" }
+    [PSCustomObject]@{ name = "sqlite3"; desc = "GUE SQLite / unofficial-sqlite3" },
+    [PSCustomObject]@{ name = "nlohmann-json"; desc = "GUE JSON validation" }
 )
 
 if ($vcpkgExe) {
