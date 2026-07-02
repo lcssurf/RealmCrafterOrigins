@@ -41,21 +41,6 @@ void AnimController::Bind(const std::vector<AnimBinding>& bindings) {
         }
     }
 
-    // Diagnostic (player only — gated by log_enabled)
-    if (log_enabled && !bindings_.empty()) {
-        std::fprintf(stderr,
-            "[anim-bind] target=%p count=%zu\n",
-            (void*)this, bindings_.size());
-        for (size_t i = 0; i < bindings_.size(); ++i) {
-            const auto& b = bindings_[i];
-            std::fprintf(stderr,
-                "[anim-bind]   [%zu] action='%s' clip='%s' start=%d end=%d fps=%.1f loop=%d speed=%.3f blend=%.3f return='%s'\n",
-                i, b.action.c_str(), b.source_path.c_str(),
-                b.start_frame, b.end_frame, b.fps,
-                (int)b.loop, b.speed, b.blend_in, b.return_to.c_str());
-        }
-    }
-
     // Directly initialize active_ to bindings_[0]. Without this, RequestState(0) always
     // early-returns (new_id==current_id_==0 && !active_.finished), leaving binding=nullptr.
     active_.binding          = &bindings_[0];
@@ -69,12 +54,7 @@ void AnimController::Bind(const std::vector<AnimBinding>& bindings) {
     RequestStateByName("Idle");
 }
 
-// Public entry point — logs [request-external] so callers (server packets, input)
-// are visible in the trace. Delegates to the internal impl with force=false.
 bool AnimController::RequestState(uint8_t new_id) {
-    if (log_enabled && !bindings_.empty() && new_id < static_cast<uint8_t>(bindings_.size()))
-        std::fprintf(stderr, "[request-external] action_id=%u action='%s'\n",
-            (unsigned)new_id, bindings_[new_id].action.c_str());
     return RequestStateImpl_(new_id, /*force=*/false);
 }
 
@@ -84,9 +64,6 @@ bool AnimController::ForceState(uint8_t new_id) {
 
 bool AnimController::RequestStateImpl_(uint8_t new_id, bool force) {
     if (bindings_.empty() || new_id >= static_cast<uint8_t>(bindings_.size())) {
-        if (log_enabled)
-            std::fprintf(stderr, "[anim-request-result] new_id=%u cur_id=%u result=invalid_id\n",
-                (unsigned)new_id, (unsigned)current_id_);
         return false;
     }
 
@@ -103,12 +80,6 @@ bool AnimController::RequestStateImpl_(uint8_t new_id, bool force) {
     // to its return_to action regardless of priority.
     bool current_is_oneshot = !cb.loop;
     if (!force && current_is_oneshot && !active_.finished && nb.priority < cb.priority) {
-        if (log_enabled)
-            std::fprintf(stderr,
-                "[anim-request-result] new_id=%u cur_id=%u result=priority_block"
-                " new_prio=%u cur_prio=%u\n",
-                (unsigned)new_id, (unsigned)current_id_,
-                (unsigned)nb.priority, (unsigned)cb.priority);
         return false;
     }
 
@@ -134,64 +105,32 @@ bool AnimController::RequestStateImpl_(uint8_t new_id, bool force) {
 
     pending_return_ = nb.return_to_action_id;
     current_id_     = new_id;
-    if (log_enabled) {
-        std::fprintf(stderr, "[anim-request-result] new_id=%u cur_id=%u result=ok\n",
-            (unsigned)new_id, (unsigned)current_id_);
-        std::fprintf(stderr,
-            "[anim-request-ok] action='%s' speed=%.3f clip='%s'\n",
-            nb.action.c_str(), nb.speed, nb.source_path.c_str());
-    }
     return true;
 }
 
 bool AnimController::RequestStateByName(const std::string& action) {
     auto it = action_to_id_.find(action);
     if (it == action_to_id_.end()) return false;
-    if (bindings_[it->second].source_path.empty()) {
-        if (log_enabled)
-            std::fprintf(stderr,
-                "[anim-request-result] action='%s' id=%u result=no_clip\n",
-                action.c_str(), (unsigned)it->second);
-        return false;
-    }
+    if (!AnimBindingIsValid(bindings_[it->second])) return false;
     return RequestStateImpl_(it->second, /*force=*/false);
 }
 
 void AnimController::Update(float dt, float speed) {
     if (bindings_.empty() || !active_.binding) return;
 
-    // Log once whenever the active action changes (player only — gated by log_enabled).
-    if (log_enabled) {
-        static uint8_t s_last_id = 0xFF;
-        if (current_id_ != s_last_id) {
-            s_last_id = current_id_;
-            float active_speed = active_.binding ? active_.binding->speed : 0.f;
-            std::fprintf(stderr,
-                "[anim-update] target=%p action='%s' binding_speed=%.3f cur_id=%u\n",
-                (void*)this,
-                bindings_[current_id_].action.c_str(),
-                active_speed, (unsigned)current_id_);
-        }
-    }
-
     // 1. Auto-locomotion — pick the best available locomotion state for current speed
     {
         const std::string& cur = bindings_[current_id_].action;
         if (cur == "Idle" || cur == "Walk" || cur == "Run") {
+            bool hasWalk = HasAction("Walk");
+            bool hasRun  = HasAction("Run");
+
             const char* desired;
-            if      (speed > 3.0f  && HasAction("Run"))  desired = "Run";
-            else if (speed > 0.15f && HasAction("Walk")) desired = "Walk";
-            else                                          desired = "Idle";
+            if      (speed > 3.0f  && hasRun)  desired = "Run";
+            else if (speed > 0.15f && hasWalk) desired = "Walk";
+            else                                desired = "Idle";
 
             if (cur != desired) {
-                if (log_enabled) {
-                    static const char* s_last_target = nullptr;
-                    if (desired != s_last_target) {
-                        s_last_target = desired;
-                        std::fprintf(stderr, "[auto-loco] cur='%s' speed=%.3f -> '%s'\n",
-                            cur.c_str(), speed, desired);
-                    }
-                }
                 RequestStateByName(desired);
             }
         }
@@ -214,30 +153,11 @@ void AnimController::Update(float dt, float speed) {
     bool    frame_ended = (end_frame > 0 && cur_frame >= end_frame);
     bool    time_ended  = (!frame_ended && end_frame == -1 &&
                            b.duration_sec > 0.f && active_.time_sec >= b.duration_sec);
-    if (log_enabled) {
-        // Log once per second (approx) to avoid flooding
-        static float s_log_accum = 0.f;
-        s_log_accum += dt;
-        if (s_log_accum >= 1.f) {
-            s_log_accum = 0.f;
-            std::fprintf(stderr,
-                "[anim-frame] action='%s' time_sec=%.3f cur_frame=%d"
-                " start=%d end=%d fps=%.1f loop=%d"
-                " frame_ended=%d time_ended=%d dur_sec=%.3f\n",
-                b.action.c_str(), active_.time_sec, cur_frame,
-                b.start_frame, b.end_frame, effective_fps, (int)b.loop,
-                (int)frame_ended, (int)time_ended, b.duration_sec);
-        }
-    }
     if (frame_ended || time_ended) {
         if (b.loop) {
             active_.time_sec         = 0.f;
             active_.last_event_frame = b.start_frame - 1;
         } else {
-            if (log_enabled)
-                std::fprintf(stderr, "[anim-finished] action='%s' -> '%s'\n",
-                    b.action.c_str(),
-                    pending_return_ != 0xFF ? bindings_[pending_return_].action.c_str() : "(none)");
             if (pending_return_ != 0xFF) {
                 uint8_t ret     = pending_return_;
                 pending_return_ = 0xFF;

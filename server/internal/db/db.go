@@ -2854,6 +2854,10 @@ type MediaModel struct {
 	Name     string
 	FilePath string
 	Scale    float32
+	// BlackCutout mirrors the media_models.black_cutout column. When true the
+	// client calls Model::ApplyBlackCutout so near-black pixels are discarded
+	// in the deferred gBuffer pass (hair, foliage, fences, etc.).
+	BlackCutout bool
 
 	// MaterialMap maps an aiMaterial name (as it appears in the mesh file)
 	// to a media_materials.name. Built from the "k1=v1;k2=v2" persisted in
@@ -2863,16 +2867,17 @@ type MediaModel struct {
 
 // MediaMaterial mirrors one row in media_materials.
 type MediaMaterial struct {
-	ID         int
-	Name       string
-	AlbedoPath string
-	NormalPath string
-	ORMPath    string
-	AlbedoR    float32
-	AlbedoG    float32
-	AlbedoB    float32
-	Roughness  float32
-	Metallic   float32
+	ID          int
+	Name        string
+	AlbedoPath  string
+	NormalPath  string
+	ORMPath     string
+	AlbedoR     float32
+	AlbedoG     float32
+	AlbedoB     float32
+	Roughness   float32
+	Metallic    float32
+	BlackCutout bool
 }
 
 // MediaAnimClip mirrors one row in media_anim_clips.
@@ -3044,8 +3049,8 @@ func (d *DB) GetMediaModel(ctx context.Context, id int) (*MediaModel, error) {
 	m := &MediaModel{ID: id}
 	var matMap string
 	err := d.db.QueryRowContext(ctx,
-		d.q(`SELECT name, file_path, scale, material_map FROM media_models WHERE id = ?`), id,
-	).Scan(&m.Name, &m.FilePath, &m.Scale, &matMap)
+		d.q(`SELECT name, file_path, scale, black_cutout, material_map FROM media_models WHERE id = ?`), id,
+	).Scan(&m.Name, &m.FilePath, &m.Scale, &m.BlackCutout, &matMap)
 	if err != nil {
 		return nil, nil
 	}
@@ -3059,7 +3064,7 @@ func (d *DB) GetMediaModel(ctx context.Context, id int) (*MediaModel, error) {
 func (d *DB) ListMediaMaterials(ctx context.Context) (map[string]*MediaMaterial, error) {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, name, albedo_path, normal_path, orm_path,
-		        albedo_r, albedo_g, albedo_b, roughness, metallic
+		        albedo_r, albedo_g, albedo_b, roughness, metallic, black_cutout
 		   FROM media_materials`)
 	if err != nil {
 		return nil, err
@@ -3070,7 +3075,7 @@ func (d *DB) ListMediaMaterials(ctx context.Context) (map[string]*MediaMaterial,
 		var m MediaMaterial
 		if err := rows.Scan(&m.ID, &m.Name, &m.AlbedoPath, &m.NormalPath,
 			&m.ORMPath, &m.AlbedoR, &m.AlbedoG, &m.AlbedoB,
-			&m.Roughness, &m.Metallic); err == nil {
+			&m.Roughness, &m.Metallic, &m.BlackCutout); err == nil {
 			mm := m
 			out[mm.Name] = &mm
 		}
@@ -3128,10 +3133,10 @@ func (d *DB) GetMediaMaterial(ctx context.Context, id int) (*MediaMaterial, erro
 	m := &MediaMaterial{ID: id}
 	err := d.db.QueryRowContext(ctx,
 		d.q(`SELECT name, albedo_path, normal_path, orm_path,
-		            albedo_r, albedo_g, albedo_b, roughness, metallic
+		            albedo_r, albedo_g, albedo_b, roughness, metallic, black_cutout
 		     FROM media_materials WHERE id = ?`), id,
 	).Scan(&m.Name, &m.AlbedoPath, &m.NormalPath, &m.ORMPath,
-		&m.AlbedoR, &m.AlbedoG, &m.AlbedoB, &m.Roughness, &m.Metallic)
+		&m.AlbedoR, &m.AlbedoG, &m.AlbedoB, &m.Roughness, &m.Metallic, &m.BlackCutout)
 	if err != nil {
 		return nil, nil
 	}

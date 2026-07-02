@@ -146,6 +146,11 @@ func AppearanceBytes(app *Appearance) []byte {
 		p.f32(m.AlbedoB)
 		p.f32(m.Roughness)
 		p.f32(m.Metallic)
+		if m.BlackCutout {
+			p.u8(1)
+		} else {
+			p.u8(0)
+		}
 		nm := len(m.MaterialMap)
 		if nm > 255 {
 			nm = 255
@@ -162,6 +167,11 @@ func AppearanceBytes(app *Appearance) []byte {
 			p.f32(am.AlbedoB)
 			p.f32(am.Roughness)
 			p.f32(am.Metallic)
+			if am.BlackCutout {
+				p.u8(1)
+			} else {
+				p.u8(0)
+			}
 		}
 	}
 	appendAnimBindings(&p, app.Anims)
@@ -255,6 +265,11 @@ func NewActorPayload(a *Actor) []byte {
 		p.f32(m.AlbedoB)
 		p.f32(m.Roughness)
 		p.f32(m.Metallic)
+		if m.BlackCutout {
+			p.u8(1)
+		} else {
+			p.u8(0)
+		}
 
 		// Per-aiMaterial mapping — paint multi-material meshes correctly
 		// (e.g. Substance-named blinn slots). Capped at 255 entries.
@@ -274,6 +289,11 @@ func NewActorPayload(a *Actor) []byte {
 			p.f32(am.AlbedoB)
 			p.f32(am.Roughness)
 			p.f32(am.Metallic)
+			if am.BlackCutout {
+				p.u8(1)
+			} else {
+				p.u8(0)
+			}
 		}
 	}
 

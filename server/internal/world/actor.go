@@ -155,34 +155,39 @@ type MeshSlot struct {
 	Scale     float32
 
 	// Material overrides. Empty string = use model's embedded material.
-	AlbedoPath string
-	NormalPath string
-	ORMPath    string
-	AlbedoR    float32
-	AlbedoG    float32
-	AlbedoB    float32
-	Roughness  float32
-	Metallic   float32
+	AlbedoPath  string
+	NormalPath  string
+	ORMPath     string
+	AlbedoR     float32
+	AlbedoG     float32
+	AlbedoB     float32
+	Roughness   float32
+	Metallic    float32
+	// BlackCutout: model-level flag (OR of model.black_cutout | material.black_cutout).
+	// When true, client calls Model::ApplyBlackCutout so near-black pixels in
+	// every submesh are discarded in the deferred gBuffer pass.
+	BlackCutout bool
 
 	// Per-aiMaterial mapping (Substance-style "blinn1"/"ID01") resolved into
-	// concrete PBR paths. Used by the client to call Actor::ApplyMaterialsByName
+	// concrete PBR paths. Used by the client to call Actor::OverrideMaterialsByName
 	// after model load — every submesh that names one of these aiMaterials
-	// gets the corresponding media_material's textures.
+	// gets the corresponding media_material's textures + PBR factors.
 	MaterialMap []AiMaterial
 }
 
 // AiMaterial is one entry in MeshSlot.MaterialMap — the ai-material name as
-// it appears in the model file plus the resolved media_material PBR paths.
+// it appears in the model file plus the resolved media_material PBR paths and factors.
 type AiMaterial struct {
-	AiName     string
-	AlbedoPath string
-	NormalPath string
-	ORMPath    string
-	AlbedoR    float32
-	AlbedoG    float32
-	AlbedoB    float32
-	Roughness  float32
-	Metallic   float32
+	AiName      string
+	AlbedoPath  string
+	NormalPath  string
+	ORMPath     string
+	AlbedoR     float32
+	AlbedoG     float32
+	AlbedoB     float32
+	Roughness   float32
+	Metallic    float32
+	BlackCutout bool
 }
 
 // AnimEvent is a frame-marker inside a clip that triggers a gameplay callback

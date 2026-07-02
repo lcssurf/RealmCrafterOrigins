@@ -2,11 +2,20 @@ package net
 
 import (
 	"context"
-	"log"
 
 	"realm-crafter/server/internal/db"
 	"realm-crafter/server/internal/world"
 )
+
+// clipIsValid reports whether a clip row carries any animation data.
+// A clip is valid when it has at least one of: external source file, embedded
+// clip alias, or an explicit frame range (start or end non-zero).
+// Clips where all four fields are zero/empty are truly empty placeholders and
+// should be discarded before sending to the client.
+func clipIsValid(clip *db.MediaAnimClip) bool {
+	return clip.SourcePath != "" || clip.ClipOverride != "" ||
+		clip.StartFrame != 0 || clip.EndFrame != 0
+}
 
 // BuildAppearance resolves an actor_def_id into a fully concrete
 // world.Appearance by looking up each mesh slot's model + material and each
@@ -47,14 +56,17 @@ func BuildAppearanceFromDef(ctx context.Context, database *db.DB, def *db.ActorD
 			Scale:     model.Scale * actorScale,
 		}
 		if mat, _ := database.GetMediaMaterial(ctx, m.MaterialID); mat != nil {
-			slot.AlbedoPath = mat.AlbedoPath
-			slot.NormalPath = mat.NormalPath
-			slot.ORMPath    = mat.ORMPath
-			slot.AlbedoR    = mat.AlbedoR
-			slot.AlbedoG    = mat.AlbedoG
-			slot.AlbedoB    = mat.AlbedoB
-			slot.Roughness  = mat.Roughness
-			slot.Metallic   = mat.Metallic
+			slot.AlbedoPath  = mat.AlbedoPath
+			slot.NormalPath  = mat.NormalPath
+			slot.ORMPath     = mat.ORMPath
+			slot.AlbedoR     = mat.AlbedoR
+			slot.AlbedoG     = mat.AlbedoG
+			slot.AlbedoB     = mat.AlbedoB
+			slot.Roughness   = mat.Roughness
+			slot.Metallic    = mat.Metallic
+			slot.BlackCutout = model.BlackCutout || mat.BlackCutout
+		} else {
+			slot.BlackCutout = model.BlackCutout
 		}
 		// Per-actor-def submesh materials take precedence over the model's global
 		// material_map. Fallback to model.MaterialMap when no rows exist so that
@@ -67,15 +79,16 @@ func BuildAppearanceFromDef(ctx context.Context, database *db.DB, def *db.ActorD
 					continue
 				}
 				slot.MaterialMap = append(slot.MaterialMap, world.AiMaterial{
-					AiName:     aiName,
-					AlbedoPath: mat.AlbedoPath,
-					NormalPath: mat.NormalPath,
-					ORMPath:    mat.ORMPath,
-					AlbedoR:    mat.AlbedoR,
-					AlbedoG:    mat.AlbedoG,
-					AlbedoB:    mat.AlbedoB,
-					Roughness:  mat.Roughness,
-					Metallic:   mat.Metallic,
+					AiName:      aiName,
+					AlbedoPath:  mat.AlbedoPath,
+					NormalPath:  mat.NormalPath,
+					ORMPath:     mat.ORMPath,
+					AlbedoR:     mat.AlbedoR,
+					AlbedoG:     mat.AlbedoG,
+					AlbedoB:     mat.AlbedoB,
+					Roughness:   mat.Roughness,
+					Metallic:    mat.Metallic,
+					BlackCutout: mat.BlackCutout,
 				})
 			}
 		} else {
@@ -87,15 +100,16 @@ func BuildAppearanceFromDef(ctx context.Context, database *db.DB, def *db.ActorD
 					continue
 				}
 				slot.MaterialMap = append(slot.MaterialMap, world.AiMaterial{
-					AiName:     aiName,
-					AlbedoPath: mm.AlbedoPath,
-					NormalPath: mm.NormalPath,
-					ORMPath:    mm.ORMPath,
-					AlbedoR:    mm.AlbedoR,
-					AlbedoG:    mm.AlbedoG,
-					AlbedoB:    mm.AlbedoB,
-					Roughness:  mm.Roughness,
-					Metallic:   mm.Metallic,
+					AiName:      aiName,
+					AlbedoPath:  mm.AlbedoPath,
+					NormalPath:  mm.NormalPath,
+					ORMPath:     mm.ORMPath,
+					AlbedoR:     mm.AlbedoR,
+					AlbedoG:     mm.AlbedoG,
+					AlbedoB:     mm.AlbedoB,
+					Roughness:   mm.Roughness,
+					Metallic:    mm.Metallic,
+					BlackCutout: mm.BlackCutout,
 				})
 			}
 		}
@@ -120,24 +134,15 @@ func BuildAppearanceFromDef(ctx context.Context, database *db.DB, def *db.ActorD
 		}
 	}
 
-	log.Printf("[appearance-anims] def_id=%d total_anim_entries=%d", def.ID, len(def.Anims))
 	for _, a := range def.Anims {
 		if a.ClipID == 0 {
-			log.Printf("[appearance-anims]   SKIP action=%q clip_id=0 (not linked to a clip — set clip_id in GUE)", a.Action)
 			continue
 		}
 		clip, _ := database.GetMediaAnimClip(ctx, a.ClipID)
 		if clip == nil {
-			log.Printf("[appearance-anims]   SKIP action=%q clip_id=%d: GetMediaAnimClip returned nil (clip row missing?)", a.Action, a.ClipID)
 			continue
 		}
-		log.Printf("[appearance-anims]   clip action=%q clip_id=%d source_path=%q clip_override=%q start=%d end=%d fps=%.1f",
-			a.Action, a.ClipID, clip.SourcePath, clip.ClipOverride, clip.StartFrame, clip.EndFrame, clip.FPS)
-		// Skip bindings that have neither a source file nor an embedded clip alias —
-		// the client has nothing to load or alias, so the binding is truly empty.
-		if clip.SourcePath == "" && clip.ClipOverride == "" {
-			log.Printf("[appearance-anims]   SKIP action=%q clip_id=%d: source_path and clip_override both empty (fill 'Source file' in GUE anim table, or set Clip name for embedded clips)",
-				a.Action, a.ClipID)
+		if !clipIsValid(clip) {
 			continue
 		}
 		events, _ := database.LoadAnimEvents(ctx, a.ClipID)
@@ -164,6 +169,5 @@ func BuildAppearanceFromDef(ctx context.Context, database *db.DB, def *db.ActorD
 			Events:       animEvents,
 		})
 	}
-	log.Printf("[appearance-anims]   RESULT: %d binding(s) built (out of %d configured)", len(out.Anims), len(def.Anims))
 	return out
 }

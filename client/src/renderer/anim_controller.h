@@ -52,6 +52,13 @@ struct BlendState {
     bool        active                = false;
 };
 
+// Returns true when a binding has usable animation data.
+// Embedded clips (source_path empty) are always ready — data lives in the model file.
+// External file clips become ready once LoadAnim runs and SetClipDuration is called.
+inline bool AnimBindingIsValid(const AnimBinding& b) {
+    return b.source_path.empty() || b.duration_sec > 0.f;
+}
+
 // ── AnimController ────────────────────────────────────────────────────────────
 
 // Per-actor state machine. Manages which binding is active, blending,
@@ -90,7 +97,7 @@ public:
     bool HasAction(const std::string& action) const {
         auto it = action_to_id_.find(action);
         if (it == action_to_id_.end()) return false;
-        return !bindings_[it->second].source_path.empty();
+        return AnimBindingIsValid(bindings_[it->second]);
     }
     const std::string& CurrentAction() const {
         static const std::string empty;

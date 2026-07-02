@@ -983,6 +983,7 @@ int main() {
         std::string ai_name;
         std::string albedo, normal, orm;
         float       ar = 0, ag = 0, ab = 0, roughness = 0, metallic = 0;
+        bool        black_cutout = false;
     };
     struct WorldMesh {
         uint8_t     slot       = 0;
@@ -990,9 +991,10 @@ int main() {
         float       scale      = 1.f;
         std::string albedo, normal, orm;
         float       ar = 0, ag = 0, ab = 0, roughness = 0, metallic = 0;
+        bool        black_cutout = false;
         // Per-aiMaterial map — server resolves the model's "blinn1=ID01"
         // mapping into concrete texture paths. Applied on the client via
-        // Actor::ApplyMaterialsByName so multi-material meshes paint correctly.
+        // Actor::OverrideMaterialsByName so multi-material meshes paint correctly.
         std::vector<WorldAiMat> material_map;
     };
     struct WorldAnim {
@@ -1079,7 +1081,6 @@ int main() {
 
     // AnimController for the local player
     rco::anim::AnimController player_anim_ctrl;
-    player_anim_ctrl.log_enabled = true;
     float player_yaw_offset = 0.f;
     float player_y_offset   = 0.f;
 
@@ -1620,6 +1621,7 @@ int main() {
                         wm.ab         = r.ReadF32();
                         wm.roughness  = r.ReadF32();
                         wm.metallic   = r.ReadF32();
+                        wm.black_cutout = (r.ReadU8() != 0);
                         uint8_t nmm   = r.ReadU8();
                         for (uint8_t j = 0; j < nmm && r.OK(); ++j) {
                             WorldAiMat wam;
@@ -1632,6 +1634,7 @@ int main() {
                             wam.ab       = r.ReadF32();
                             wam.roughness= r.ReadF32();
                             wam.metallic = r.ReadF32();
+                            wam.black_cutout = (r.ReadU8() != 0);
                             wm.material_map.push_back(std::move(wam));
                         }
                         player_meshes.push_back(std::move(wm));
@@ -1857,6 +1860,7 @@ int main() {
                 struct IncomingAiMat {
                     std::string ai_name, albedo, normal, orm;
                     float       ar, ag, ab, roughness, metallic;
+                    bool        black_cutout = false;
                 };
                 struct IncomingMesh {
                     uint8_t     slot;
@@ -1864,6 +1868,7 @@ int main() {
                     float       scale;
                     std::string albedo, normal, orm;
                     float       ar, ag, ab, roughness, metallic;
+                    bool        black_cutout = false;
                     std::vector<IncomingAiMat> material_map;
                 };
                 struct IncomingAnim {
@@ -1890,6 +1895,7 @@ int main() {
                     m.ab         = r.ReadF32();
                     m.roughness  = r.ReadF32();
                     m.metallic   = r.ReadF32();
+                    m.black_cutout = (r.ReadU8() != 0);
                     uint8_t nmm  = r.ReadU8();
                     m.material_map.reserve(nmm);
                     for (uint8_t j = 0; j < nmm && r.OK(); ++j) {
@@ -1903,6 +1909,7 @@ int main() {
                         am.ab       = r.ReadF32();
                         am.roughness= r.ReadF32();
                         am.metallic = r.ReadF32();
+                        am.black_cutout = (r.ReadU8() != 0);
                         m.material_map.push_back(std::move(am));
                     }
                     meshes.push_back(std::move(m));
@@ -1957,32 +1964,31 @@ int main() {
                 // If this is the local player's own PNewActor, store the
                 // appearance data for use when initializing player_actor.
                 if (rid == player.runtimeId) {
-                    std::fprintf(stderr,
-                        "[PNewActor-self] intercepted rid=%u meshes=%u — storing player appearance\n",
-                        rid, (unsigned)meshes.size());
                     player_meshes.clear();
                     player_meshes.reserve(meshes.size());
                     for (auto& m : meshes) {
                         WorldMesh wm;
-                        wm.slot       = m.slot;
-                        wm.model_path = std::move(m.model_path);
-                        wm.scale      = m.scale;
-                        wm.albedo     = std::move(m.albedo);
-                        wm.normal     = std::move(m.normal);
-                        wm.orm        = std::move(m.orm);
+                        wm.slot         = m.slot;
+                        wm.model_path   = std::move(m.model_path);
+                        wm.scale        = m.scale;
+                        wm.albedo       = std::move(m.albedo);
+                        wm.normal       = std::move(m.normal);
+                        wm.orm          = std::move(m.orm);
                         wm.ar = m.ar; wm.ag = m.ag; wm.ab = m.ab;
-                        wm.roughness = m.roughness;
-                        wm.metallic  = m.metallic;
+                        wm.roughness    = m.roughness;
+                        wm.metallic     = m.metallic;
+                        wm.black_cutout = m.black_cutout;
                         wm.material_map.reserve(m.material_map.size());
                         for (auto& am : m.material_map) {
                             WorldAiMat wam;
-                            wam.ai_name = std::move(am.ai_name);
-                            wam.albedo  = std::move(am.albedo);
-                            wam.normal  = std::move(am.normal);
-                            wam.orm     = std::move(am.orm);
+                            wam.ai_name     = std::move(am.ai_name);
+                            wam.albedo      = std::move(am.albedo);
+                            wam.normal      = std::move(am.normal);
+                            wam.orm         = std::move(am.orm);
                             wam.ar = am.ar; wam.ag = am.ag; wam.ab = am.ab;
-                            wam.roughness = am.roughness;
-                            wam.metallic  = am.metallic;
+                            wam.roughness   = am.roughness;
+                            wam.metallic    = am.metallic;
+                            wam.black_cutout = am.black_cutout;
                             wm.material_map.push_back(std::move(wam));
                         }
                         player_meshes.push_back(std::move(wm));
@@ -2053,17 +2059,25 @@ int main() {
                         player_actor.scale      = body.scale > 0.f ? body.scale : 1.f;
                         player_actor.yaw_offset = player_yaw_offset;
                         player_actor.y_offset   = player_y_offset;
-                        if (player_actor.IsLoaded() && !body.material_map.empty()) {
-                            std::unordered_map<std::string,
-                                rco::renderer::Model::MaterialPaths> by_name;
-                            for (const auto& am : body.material_map) {
-                                rco::renderer::Model::MaterialPaths mp;
-                                mp.albedo = am.albedo;
-                                mp.normal = am.normal;
-                                mp.orm    = am.orm;
-                                by_name[am.ai_name] = std::move(mp);
+                        if (player_actor.IsLoaded()) {
+                            if (!body.material_map.empty()) {
+                                std::unordered_map<std::string,
+                                    rco::renderer::Actor::SubmeshMaterialData> by_name;
+                                for (const auto& am : body.material_map) {
+                                    rco::renderer::Actor::SubmeshMaterialData d;
+                                    d.albedo_path   = am.albedo;
+                                    d.normal_path   = am.normal;
+                                    d.orm_path      = am.orm;
+                                    d.albedo_factor = {am.ar, am.ag, am.ab};
+                                    d.roughness     = am.roughness;
+                                    d.metallic      = am.metallic;
+                                    d.black_cutout  = am.black_cutout;
+                                    by_name[am.ai_name] = std::move(d);
+                                }
+                                player_actor.OverrideMaterialsByName(by_name, &engine.materials());
                             }
-                            player_actor.ApplyMaterialsByName(engine.materials(), by_name);
+                            if (body.black_cutout)
+                                const_cast<rco::renderer::Model&>(player_actor.model()).ApplyBlackCutout(true, &engine.materials());
                         }
                         for (auto& wa : player_anims) {
                             if (!wa.source_path.empty()) {
@@ -2106,25 +2120,27 @@ int main() {
                 e.meshes.reserve(meshes.size());
                 for (auto& m : meshes) {
                     WorldMesh wm;
-                    wm.slot       = m.slot;
-                    wm.model_path = std::move(m.model_path);
-                    wm.scale      = m.scale;
-                    wm.albedo     = std::move(m.albedo);
-                    wm.normal     = std::move(m.normal);
-                    wm.orm        = std::move(m.orm);
+                    wm.slot         = m.slot;
+                    wm.model_path   = std::move(m.model_path);
+                    wm.scale        = m.scale;
+                    wm.albedo       = std::move(m.albedo);
+                    wm.normal       = std::move(m.normal);
+                    wm.orm          = std::move(m.orm);
                     wm.ar = m.ar; wm.ag = m.ag; wm.ab = m.ab;
-                    wm.roughness = m.roughness;
-                    wm.metallic  = m.metallic;
+                    wm.roughness    = m.roughness;
+                    wm.metallic     = m.metallic;
+                    wm.black_cutout = m.black_cutout;
                     wm.material_map.reserve(m.material_map.size());
                     for (auto& am : m.material_map) {
                         WorldAiMat wam;
-                        wam.ai_name = std::move(am.ai_name);
-                        wam.albedo  = std::move(am.albedo);
-                        wam.normal  = std::move(am.normal);
-                        wam.orm     = std::move(am.orm);
+                        wam.ai_name     = std::move(am.ai_name);
+                        wam.albedo      = std::move(am.albedo);
+                        wam.normal      = std::move(am.normal);
+                        wam.orm         = std::move(am.orm);
                         wam.ar = am.ar; wam.ag = am.ag; wam.ab = am.ab;
-                        wam.roughness = am.roughness;
-                        wam.metallic  = am.metallic;
+                        wam.roughness   = am.roughness;
+                        wam.metallic    = am.metallic;
+                        wam.black_cutout = am.black_cutout;
                         wm.material_map.push_back(std::move(wam));
                     }
                     e.meshes.push_back(std::move(wm));
@@ -3799,17 +3815,25 @@ int main() {
                         player_actor.scale      = body.scale > 0.f ? body.scale : 1.f;
                         player_actor.yaw_offset = player_yaw_offset;
                         player_actor.y_offset   = player_y_offset;
-                        if (player_actor.IsLoaded() && !body.material_map.empty()) {
-                            std::unordered_map<std::string,
-                                rco::renderer::Model::MaterialPaths> by_name;
-                            for (const auto& am : body.material_map) {
-                                rco::renderer::Model::MaterialPaths mp;
-                                mp.albedo = am.albedo;
-                                mp.normal = am.normal;
-                                mp.orm    = am.orm;
-                                by_name[am.ai_name] = std::move(mp);
+                        if (player_actor.IsLoaded()) {
+                            if (!body.material_map.empty()) {
+                                std::unordered_map<std::string,
+                                    rco::renderer::Actor::SubmeshMaterialData> by_name;
+                                for (const auto& am : body.material_map) {
+                                    rco::renderer::Actor::SubmeshMaterialData d;
+                                    d.albedo_path   = am.albedo;
+                                    d.normal_path   = am.normal;
+                                    d.orm_path      = am.orm;
+                                    d.albedo_factor = {am.ar, am.ag, am.ab};
+                                    d.roughness     = am.roughness;
+                                    d.metallic      = am.metallic;
+                                    d.black_cutout  = am.black_cutout;
+                                    by_name[am.ai_name] = std::move(d);
+                                }
+                                player_actor.OverrideMaterialsByName(by_name, &engine.materials());
                             }
-                            player_actor.ApplyMaterialsByName(engine.materials(), by_name);
+                            if (body.black_cutout)
+                                const_cast<rco::renderer::Model&>(player_actor.model()).ApplyBlackCutout(true, &engine.materials());
                         }
                     }
                     for (auto& wa : player_anims) {
@@ -4530,26 +4554,6 @@ int main() {
                     float player_speed = glm::length(glm::vec2(player.x - last_player_pos.x,
                                                                player.z - last_player_pos.y)) / dt;
 
-                    // One-shot diagnostic: log anim state on the first rendered frame
-                    {
-                        static bool s_anim_logged = false;
-                        if (!s_anim_logged) {
-                            s_anim_logged = true;
-                            if (SceneDebugLogsEnabled()) {
-                                std::fprintf(stderr,
-                                    "[anim-debug] IsReady=%d action='%s' time=%.3f "
-                                    "speed=%.2f clips=%d\n",
-                                    player_anim_ctrl.IsReady() ? 1 : 0,
-                                    player_anim_ctrl.IsReady()
-                                        ? player_anim_ctrl.CurrentAction().c_str() : "(none)",
-                                    player_anim_ctrl.IsReady()
-                                        ? player_anim_ctrl.CurrentTime() : 0.f,
-                                    player_speed,
-                                    player_actor.model().ClipCount());
-                            }
-                        }
-                    }
-
                     if (player_anim_ctrl.IsReady()) {
                         // AnimController handles Idle/Walk/Run transitions via Update()
                         if (player_dead) {
@@ -4787,19 +4791,27 @@ int main() {
 
                         // Per-aiMaterial mapping FIRST — paints multi-material
                         // meshes (Substance imports etc.) where each submesh
-                        // names a different material.
+                        // names a different material. Uses OverrideMaterialsByName
+                        // (not ApplyMaterialsByName) so albedo factors and
+                        // black_cutout reach the per-actor SSBO.
                         if (a->IsLoaded() && !body->material_map.empty()) {
                             std::unordered_map<std::string,
-                                rco::renderer::Model::MaterialPaths> by_name;
+                                rco::renderer::Actor::SubmeshMaterialData> by_name;
                             for (const auto& am : body->material_map) {
-                                rco::renderer::Model::MaterialPaths mp;
-                                mp.albedo = am.albedo;
-                                mp.normal = am.normal;
-                                mp.orm    = am.orm;
-                                by_name[am.ai_name] = std::move(mp);
+                                rco::renderer::Actor::SubmeshMaterialData d;
+                                d.albedo_path   = am.albedo;
+                                d.normal_path   = am.normal;
+                                d.orm_path      = am.orm;
+                                d.albedo_factor = {am.ar, am.ag, am.ab};
+                                d.roughness     = am.roughness;
+                                d.metallic      = am.metallic;
+                                d.black_cutout  = am.black_cutout;
+                                by_name[am.ai_name] = std::move(d);
                             }
-                            a->ApplyMaterialsByName(engine.materials(), by_name);
+                            a->OverrideMaterialsByName(by_name, &engine.materials());
                         }
+                        if (a->IsLoaded() && body->black_cutout)
+                            const_cast<rco::renderer::Model&>(a->model()).ApplyBlackCutout(true, &engine.materials());
 
                         // Per-slot global override (from Body.material_id) goes
                         // ON TOP of the per-aiMaterial map — same precedence as
@@ -4810,10 +4822,12 @@ int main() {
                             !body->orm.empty();
                         if (has_material ||
                             body->roughness > 0.f || body->metallic > 0.f ||
-                            body->ar > 0.f || body->ag > 0.f || body->ab > 0.f) {
+                            body->ar > 0.f || body->ag > 0.f || body->ab > 0.f ||
+                            body->black_cutout) {
                             a->OverrideMaterial(body->albedo, body->normal, body->orm,
                                                 body->ar, body->ag, body->ab,
                                                 body->roughness, body->metallic,
+                                                body->black_cutout,
                                                 &engine.materials());
                         }
                         engine.MarkMaterialsDirty();
