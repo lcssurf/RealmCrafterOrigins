@@ -35,6 +35,40 @@ static void InputScript(const char* label, char* scriptBuf, int sbLen,
     ImGui::InputTextWithHint(funcLabel, "function", funcBuf, fbLen);
 }
 
+// Small "..." button placed right after a folder InputText/InputTextWithHint
+// (same line) that opens a popup listing already-used scenery folders so the
+// user isn't stuck typing an exact name from memory. Selecting an entry
+// overwrites buf; "(root / ungrouped)" clears it. Returns true if buf changed.
+static bool FolderPickerButton(const char* popupId, char* buf, size_t bufSize,
+                               const std::vector<std::string>& existing) {
+    bool changed = false;
+    ImGui::SameLine(0, 4.f);
+    if (ImGui::SmallButton("...")) ImGui::OpenPopup(popupId);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pick from existing folders");
+    if (ImGui::BeginPopup(popupId)) {
+        if (ImGui::Selectable("(root / ungrouped)")) {
+            buf[0] = 0;
+            changed = true;
+            ImGui::CloseCurrentPopup();
+        }
+        if (existing.empty()) {
+            ImGui::TextDisabled("No folders yet — type a new name\nin the field, it's created on placement.");
+        } else {
+            ImGui::Separator();
+            for (const auto& f : existing) {
+                if (ImGui::Selectable(f.c_str())) {
+                    std::strncpy(buf, f.c_str(), bufSize - 1);
+                    buf[bufSize - 1] = 0;
+                    changed = true;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        }
+        ImGui::EndPopup();
+    }
+    return changed;
+}
+
 namespace gue {
 
 // ─── Right panel implementations ──────────────────────────────────────────────
@@ -775,12 +809,13 @@ void ZonesTab::DrawPanelScenery(sqlite3* db, MediaTab* media, bool placement) {
             }
         }
         ImGui::Checkbox("Align to ground##scnp", &scnAlignGround_);
-        ImGui::SetNextItemWidth(-1.f);
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 32.f);
         ImGui::InputTextWithHint("##scnfolder", "Folder (optional, e.g. \"Village Props\")",
                                  scnFolder_, sizeof(scnFolder_));
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("New placements are tagged with this folder for organization\n"
                               "(scene sidebar, bulk select/move/delete, Foliage Brush erase mask).");
+        FolderPickerButton("scnfolderpick", scnFolder_, sizeof(scnFolder_), DistinctSceneryFolders());
         ImGui::Spacing();
         ImGui::TextDisabled("RMB in viewport to place.");
         return;
@@ -828,6 +863,7 @@ void ZonesTab::DrawPanelScenery(sqlite3* db, MediaTab* media, bool placement) {
         char folderBuf[128];
         std::strncpy(folderBuf, s.folder.c_str(), sizeof(folderBuf) - 1);
         folderBuf[sizeof(folderBuf) - 1] = 0;
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 32.f);
         if (ImGui::InputText("Folder##scno", folderBuf, sizeof(folderBuf))) {
             s.folder = folderBuf;
             changed = true;
@@ -835,6 +871,10 @@ void ZonesTab::DrawPanelScenery(sqlite3* db, MediaTab* media, bool placement) {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Move this instance to a different organizational folder.\n"
                               "Empty = ungrouped/root. Use \"/\" to nest.");
+        if (FolderPickerButton("scnofolderpick", folderBuf, sizeof(folderBuf), DistinctSceneryFolders())) {
+            s.folder = folderBuf;
+            changed = true;
+        }
     }
 
     if (changed) {
@@ -859,6 +899,36 @@ void ZonesTab::DrawPanelScenery(sqlite3* db, MediaTab* media, bool placement) {
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Button,{0.65f,0.1f,0.1f,1.f});
     if (ImGui::Button("Delete##scno")) DeleteSelected(db);
+    ImGui::PopStyleColor();
+}
+
+// Shown instead of DrawPanelScenery when 2+ scenery are selected together
+// (e.g. clicking a folder header in the sidebar tree, or Ctrl/Shift-clicking
+// several). Answers "move everything I just selected into a folder" without
+// having to edit each instance's Folder field one at a time.
+void ZonesTab::DrawPanelSceneryBulk(sqlite3* db, MediaTab* media, const std::vector<SelectionRef>& sel) {
+    ImGui::TextColored({0.75f, 0.72f, 0.68f, 1.f}, "Scenery — %d selected", (int)sel.size());
+    ImGui::Separator();
+
+    static char bulkFolderBuf[128] = {};
+    ImGui::TextUnformatted("Move to folder:");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 32.f);
+    ImGui::InputTextWithHint("##scnbulkfolder", "e.g. \"Village Props\" (empty = root)",
+                             bulkFolderBuf, sizeof(bulkFolderBuf));
+    FolderPickerButton("scnbulkfolderpick", bulkFolderBuf, sizeof(bulkFolderBuf), DistinctSceneryFolders());
+    if (ImGui::Button("Move Selected##scnbulk", {-1.f, 0.f})) {
+        std::vector<int> ids;
+        ids.reserve(sel.size());
+        for (const auto& ref : sel) if (ref.type == kSelScenery) ids.push_back(ref.id);
+        MoveSceneryToFolder(db, ids, bulkFolderBuf);
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (ImGui::Button("Duplicate All##scnbulk")) DuplicateSelected(db, media);
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button, {0.65f, 0.1f, 0.1f, 1.f});
+    if (ImGui::Button("Delete All##scnbulk")) DeleteSelected(db);
     ImGui::PopStyleColor();
 }
 
@@ -963,26 +1033,40 @@ void ZonesTab::DrawPanelFoliage(sqlite3* db, MediaTab* media, bool placement) {
     ImGui::Spacing();
     ImGui::Separator();
 
-    ImGui::SetNextItemWidth(-1.f);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 32.f);
     ImGui::InputTextWithHint("##folfolder", "Folder (optional, e.g. \"Forest North\")",
                              foliageFolder_, sizeof(foliageFolder_));
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("New painted instances are tagged with this folder.\n"
                           "Also the erase mask target below.");
-    ImGui::Checkbox("Erase by folder##fol", &foliageEraseByFolder_);
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(
-            "Off: Shift+LMB erases only instances of the checked palette models.\n"
-            "On:  Shift+LMB erases ANY model whose folder matches the field above\n"
-            "(acts as a mask — e.g. clear everything in \"Forest North\" without\n"
-            "touching other folders, regardless of which models are in them).");
-    }
+    FolderPickerButton("folfolderpick", foliageFolder_, sizeof(foliageFolder_), DistinctSceneryFolders());
+
+    ImGui::TextUnformatted("Erase mask (Shift+LMB):");
+    ImGui::RadioButton("Palette##folerasemode", &foliageEraseMode_, kFoliageErasePalette);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Only erases instances of the checked palette models above.\n"
+                          "If nothing is checked, erase does nothing — switch mode instead.");
+    ImGui::SameLine();
+    ImGui::RadioButton("Folder##folerasemode", &foliageEraseMode_, kFoliageEraseFolder);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Erases ANY model whose folder matches the field above\n"
+                          "(acts as a mask, ignores the palette — e.g. clear everything\n"
+                          "in \"Forest North\" regardless of which models are in it).");
+    ImGui::SameLine();
+    ImGui::RadioButton("Any##folerasemode", &foliageEraseMode_, kFoliageEraseAny);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("No mask at all — erases every scenery instance in the brush\n"
+                          "radius, regardless of model or folder. Use this if Palette/Folder\n"
+                          "modes don't seem to do anything.");
     ImGui::Spacing();
     ImGui::Separator();
 
-    ImGui::TextDisabled(foliageEraseByFolder_
-        ? "LMB: paint    Shift+LMB: erase (folder mask, all models)"
-        : "LMB: paint    Shift+LMB: erase (checked palette models only)");
+    static const char* kEraseHint[3] = {
+        "LMB: paint    Shift+LMB: erase (checked palette models only)",
+        "LMB: paint    Shift+LMB: erase (folder mask, all models)",
+        "LMB: paint    Shift+LMB: erase (ANY scenery in radius)",
+    };
+    ImGui::TextDisabled("%s", kEraseHint[std::clamp(foliageEraseMode_, 0, 2)]);
     ImGui::TextDisabled("Ground snap is always on — instances sit on terrain.");
 }
 

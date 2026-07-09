@@ -207,6 +207,12 @@ struct ZoneScene {
     std::vector<ZNpcSpawn>    npcs;
     std::vector<ZSpawnPoint>  spawnPoints;
     std::vector<ZPlayerSpawn> playerSpawns;
+    // Registry of scenery organizational folders (zone_scenery_folders) —
+    // tracked independently of ZScenery::folder so a folder can exist (and
+    // show up in the scene sidebar) even with zero objects in it yet.
+    // Folders that only exist as a tag on some ZScenery (not in this list,
+    // e.g. legacy data) still work — the sidebar unions both sources.
+    std::vector<std::string> sceneryFolders;
     bool dirty = false;
 
     // Pre-computed visualisation of per-scenery collision shapes.
@@ -221,6 +227,7 @@ struct ZoneScene {
         emitters.clear(); waypoints.clear(); npcs.clear();
         spawnPoints.clear();
         playerSpawns.clear();
+        sceneryFolders.clear();
         env = {};
         dirty = false;
         colVis = {};

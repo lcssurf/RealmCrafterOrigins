@@ -738,19 +738,28 @@ void ZonesTab::PlaceObject(const glm::vec3& wpos, sqlite3* db, MediaTab* media) 
 void ZonesTab::ApplyFoliageBrush(sqlite3* db, MediaTab* media, const glm::vec3& hit,
                                  float dt, bool erase) {
     if (erase) {
-        // Two mask modes: by palette (only erase scenery whose model is
-        // currently checked in the palette — the original behaviour), or by
-        // folder (erase ANY model in foliageFolder_, "/"-prefix included —
-        // e.g. folder "Forest" also matches "Forest/Undergrowth"). Folder
-        // mode ignores the palette entirely, so it can clear a hand-placed
-        // tree too, not just brush-painted ones.
-        if (!foliageEraseByFolder_ && foliageModelIds_.empty()) return;
+        // Three mask modes (foliageEraseMode_): Palette = only scenery whose
+        // model is currently checked in the palette; Folder = ANY model
+        // whose folder matches foliageFolder_, "/"-prefix included (e.g.
+        // folder "Forest" also matches "Forest/Undergrowth"), ignoring the
+        // palette entirely; Any = no mask, erase everything in radius. Any
+        // mode exists because Palette mode silently erases nothing if the
+        // palette happens to be empty or doesn't include the model you're
+        // trying to clear — a common source of "erase doesn't work".
+        if (foliageEraseMode_ == kFoliageErasePalette && foliageModelIds_.empty()) {
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                "Foliage erase: palette is empty, nothing to match. "
+                "Check a model, or switch Erase mode to Folder/Any.");
+            return;
+        }
         const std::string eraseFolder = foliageFolder_;
         const std::string eraseFolderPrefix = eraseFolder + "/";
         std::vector<int> toRemove;
         for (auto& s : scene_.scenery) {
             bool matches;
-            if (foliageEraseByFolder_) {
+            if (foliageEraseMode_ == kFoliageEraseAny) {
+                matches = true;
+            } else if (foliageEraseMode_ == kFoliageEraseFolder) {
                 matches = eraseFolder.empty()
                     ? s.folder.empty()
                     : (s.folder == eraseFolder || s.folder.rfind(eraseFolderPrefix, 0) == 0);
@@ -763,7 +772,13 @@ void ZonesTab::ApplyFoliageBrush(sqlite3* db, MediaTab* media, const glm::vec3& 
             if (dx * dx + dz * dz <= foliageRadius_ * foliageRadius_)
                 toRemove.push_back(s.id);
         }
-        if (toRemove.empty()) return;
+        if (toRemove.empty()) {
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                "Foliage erase: no matching scenery in radius (mode=%s).",
+                foliageEraseMode_ == kFoliageEraseFolder ? "Folder" :
+                foliageEraseMode_ == kFoliageEraseAny    ? "Any"    : "Palette");
+            return;
+        }
 
         sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr);
         sqlite3_stmt* del = nullptr;
@@ -922,22 +937,56 @@ static bool InSceneryFolder(const std::string& objFolder, const std::string& fol
            objFolder[folder.size()] == '/';
 }
 
+void ZonesTab::CreateSceneryFolder(sqlite3* db, const std::string& name) {
+    if (name.empty()) return;
+    if (std::find(scene_.sceneryFolders.begin(), scene_.sceneryFolders.end(), name)
+            != scene_.sceneryFolders.end()) {
+        return;  // already registered — nothing to do
+    }
+    sqlite3_stmt* s = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR IGNORE INTO zone_scenery_folders (area_name, name) VALUES (?,?)",
+        -1, &s, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(s, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(s, 2, name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(s);
+        sqlite3_finalize(s);
+    }
+    scene_.sceneryFolders.push_back(name);
+    std::sort(scene_.sceneryFolders.begin(), scene_.sceneryFolders.end());
+    std::snprintf(statusMsg_, sizeof(statusMsg_), "Created folder '%s'.", name.c_str());
+}
+
 void ZonesTab::DeleteSceneryFolder(sqlite3* db, MediaTab* media, const std::string& folder) {
     if (folder.empty()) return;
     std::vector<int> toRemove;
     for (auto& s : scene_.scenery)
         if (InSceneryFolder(s.folder, folder)) toRemove.push_back(s.id);
-    if (toRemove.empty()) return;
 
     sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr);
-    sqlite3_stmt* del = nullptr;
-    if (sqlite3_prepare_v2(db, "DELETE FROM zone_scenery WHERE id=?", -1, &del, nullptr) == SQLITE_OK) {
-        for (int id : toRemove) {
-            sqlite3_bind_int(del, 1, id);
-            sqlite3_step(del);
-            sqlite3_reset(del);
+    if (!toRemove.empty()) {
+        sqlite3_stmt* del = nullptr;
+        if (sqlite3_prepare_v2(db, "DELETE FROM zone_scenery WHERE id=?", -1, &del, nullptr) == SQLITE_OK) {
+            for (int id : toRemove) {
+                sqlite3_bind_int(del, 1, id);
+                sqlite3_step(del);
+                sqlite3_reset(del);
+            }
+            sqlite3_finalize(del);
         }
-        sqlite3_finalize(del);
+    }
+    // Purge the folder (and any nested sub-folders) from the registry too —
+    // otherwise a now-empty folder would keep reappearing in the sidebar.
+    sqlite3_stmt* delReg = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "DELETE FROM zone_scenery_folders WHERE area_name=? AND (name=? OR name LIKE ?)",
+        -1, &delReg, nullptr) == SQLITE_OK) {
+        std::string likePattern = folder + "/%";
+        sqlite3_bind_text(delReg, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(delReg, 2, folder.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(delReg, 3, likePattern.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(delReg);
+        sqlite3_finalize(delReg);
     }
     sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
 
@@ -945,6 +994,8 @@ void ZonesTab::DeleteSceneryFolder(sqlite3* db, MediaTab* media, const std::stri
         [&](const ZScenery& s) {
             return std::find(toRemove.begin(), toRemove.end(), s.id) != toRemove.end();
         }), scene_.scenery.end());
+    scene_.sceneryFolders.erase(std::remove_if(scene_.sceneryFolders.begin(), scene_.sceneryFolders.end(),
+        [&](const std::string& f) { return InSceneryFolder(f, folder); }), scene_.sceneryFolders.end());
     if (selectedType_ == kSelScenery &&
         std::find(toRemove.begin(), toRemove.end(), selectedID_) != toRemove.end()) {
         ClearSelection();
@@ -982,14 +1033,88 @@ void ZonesTab::RenameSceneryFolder(sqlite3* db, MediaTab* media,
         ++renamed;
     }
     if (prepared) sqlite3_finalize(upd);
+
+    // Rename matching registry rows too (covers folders with 0 scenery).
+    sqlite3_stmt* updReg = nullptr;
+    bool preparedReg = sqlite3_prepare_v2(db,
+        "UPDATE OR IGNORE zone_scenery_folders SET name=? WHERE area_name=? AND name=?",
+        -1, &updReg, nullptr) == SQLITE_OK;
+    for (auto& f : scene_.sceneryFolders) {
+        if (!InSceneryFolder(f, folder)) continue;
+        std::string updated = (f == folder) ? newFolder : newFolder + f.substr(folder.size());
+        if (preparedReg) {
+            sqlite3_bind_text(updReg, 1, updated.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(updReg, 2, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(updReg, 3, f.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_step(updReg);
+            sqlite3_reset(updReg);
+            sqlite3_clear_bindings(updReg);
+        }
+        f = updated;
+    }
+    if (preparedReg) sqlite3_finalize(updReg);
+    std::sort(scene_.sceneryFolders.begin(), scene_.sceneryFolders.end());
+    scene_.sceneryFolders.erase(std::unique(scene_.sceneryFolders.begin(), scene_.sceneryFolders.end()),
+                                scene_.sceneryFolders.end());
+
     sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
 
     if (renamed > 0) {
         std::snprintf(statusMsg_, sizeof(statusMsg_),
                       "Renamed folder '%s' -> '%s' (%d instance(s)).",
                       folder.c_str(), newFolder.c_str(), renamed);
+    } else {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Renamed folder '%s' -> '%s'.", folder.c_str(), newFolder.c_str());
     }
     (void)media;  // rename doesn't change model bindings; no re-sync needed
+}
+
+void ZonesTab::MoveSceneryToFolder(sqlite3* db, const std::vector<int>& ids, const std::string& newFolder) {
+    if (ids.empty()) return;
+    // Registering the destination means it survives even if every instance
+    // in it later gets moved out or deleted individually.
+    if (!newFolder.empty()) CreateSceneryFolder(db, newFolder);
+
+    sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr);
+    sqlite3_stmt* upd = nullptr;
+    bool prepared = sqlite3_prepare_v2(db, "UPDATE zone_scenery SET folder=? WHERE id=?",
+                                       -1, &upd, nullptr) == SQLITE_OK;
+    int moved = 0;
+    for (int id : ids) {
+        for (auto& s : scene_.scenery) {
+            if (s.id != id) continue;
+            s.folder = newFolder;
+            if (prepared) {
+                sqlite3_bind_text(upd, 1, newFolder.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int(upd, 2, id);
+                sqlite3_step(upd);
+                sqlite3_reset(upd);
+                sqlite3_clear_bindings(upd);
+            }
+            ++moved;
+            break;
+        }
+    }
+    if (prepared) sqlite3_finalize(upd);
+    sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
+    if (moved > 0) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Moved %d instance(s) to folder '%s'.",
+                      moved, newFolder.empty() ? "(root)" : newFolder.c_str());
+    }
+}
+
+std::vector<std::string> ZonesTab::DistinctSceneryFolders() const {
+    std::vector<std::string> out = scene_.sceneryFolders;
+    for (auto& s : scene_.scenery) {
+        if (s.folder.empty()) continue;
+        if (std::find(out.begin(), out.end(), s.folder) == out.end())
+            out.push_back(s.folder);
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
 }
 
 // ─── Undo ─────────────────────────────────────────────────────────────────────

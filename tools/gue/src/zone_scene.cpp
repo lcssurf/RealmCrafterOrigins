@@ -408,6 +408,17 @@ void ZoneScene::EnsureTables(sqlite3* db) {
 
     // Scenery organizational folders (safe no-op on DBs that already have it).
     Exec(db, "ALTER TABLE zone_scenery ADD COLUMN folder TEXT NOT NULL DEFAULT ''");
+
+    // Folder registry — tracks a folder's existence independently of whether
+    // any scenery is currently tagged with it, so "New Folder" always leaves
+    // something visible in the sidebar even with zero contents.
+    Exec(db,
+        "CREATE TABLE IF NOT EXISTS zone_scenery_folders ("
+        "  id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  area_name TEXT NOT NULL DEFAULT '',"
+        "  name      TEXT NOT NULL DEFAULT '',"
+        "  UNIQUE(area_name, name)"
+        ")");
 }
 
 // ─── LoadFromDB ──────────────────────────────────────────────────────────────
@@ -704,6 +715,18 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
                 s.folder = f ? reinterpret_cast<const char*>(f) : "";
             }
             scenery.push_back(s);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    // ── Scenery folder registry ─────────────────────────────────────────────
+    if (sqlite3_prepare_v2(db,
+        "SELECT name FROM zone_scenery_folders WHERE area_name=? ORDER BY name",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, area.c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char* n = sqlite3_column_text(stmt, 0);
+            if (n) sceneryFolders.push_back(reinterpret_cast<const char*>(n));
         }
         sqlite3_finalize(stmt);
     }

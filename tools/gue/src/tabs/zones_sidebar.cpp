@@ -200,9 +200,13 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
     DrawGroup("E", "Emitters",   scene_.emitters,   kSelEmitter,   {0.80f,1.00f,0.20f,1.f});
     // Scenery: use model name instead of bare id, grouped by ZScenery::folder.
     // Root/ungrouped items (folder=="") render directly under "Scenery";
-    // named folders get their own sub-node with click-to-select-all and a
-    // right-click menu for bulk rename/delete.
+    // named folders get their own sub-node with click-to-select-all, a
+    // right-click menu for bulk rename/delete, and act as drag-drop targets
+    // so items can be dragged between folders.
     if (!scene_.scenery.empty()) {
+        const bool shiftSelect = ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
+        static const char* kSceneryDragType = "SCENERY_FOLDER_MOVE";
+
         // Build modelId → base name map from media.
         std::unordered_map<int, std::string> modelNames;
         if (media) {
@@ -212,6 +216,83 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
                 modelNames[m.id] = base ? base + 1 : m.name;
             }
         }
+
+        // Group indices by exact folder string (flat groups — "Forest" and
+        // "Forest/Undergrowth" are two distinct nodes here, not a nested
+        // tree; erase/delete/rename still treat "/" as nesting via prefix
+        // match, see InSceneryFolder in zones.cpp).
+        std::vector<std::string> folderOrder;
+        std::unordered_map<std::string, std::vector<int>> byFolder;
+        for (int i = 0; i < (int)scene_.scenery.size(); ++i) {
+            const std::string& f = scene_.scenery[i].folder;
+            auto fit = byFolder.find(f);
+            if (fit == byFolder.end()) { folderOrder.push_back(f); byFolder[f] = {i}; }
+            else fit->second.push_back(i);
+        }
+        // Registered-but-currently-empty folders (see CreateSceneryFolder) —
+        // included even with 0 items so they stay visible/droppable.
+        for (const auto& f : scene_.sceneryFolders) {
+            if (byFolder.find(f) == byFolder.end()) {
+                folderOrder.push_back(f);
+                byFolder[f] = {};
+            }
+        }
+        std::sort(folderOrder.begin(), folderOrder.end());
+
+        // Visual draw order (root items + every folder's items, in the exact
+        // sequence they'll render) — needed so Shift+click can select a
+        // contiguous range the same way the Models list does in media.cpp.
+        std::vector<int> visualOrderIds;
+        visualOrderIds.reserve(scene_.scenery.size());
+        for (const auto& folder : folderOrder)
+            for (int idx : byFolder[folder])
+                visualOrderIds.push_back(scene_.scenery[idx].id);
+
+        auto selectRangeOrToggle = [&](int clickedId) {
+            if (shiftSelect && sceneryMultiSelAnchorId_ >= 0) {
+                auto itA = std::find(visualOrderIds.begin(), visualOrderIds.end(), sceneryMultiSelAnchorId_);
+                auto itB = std::find(visualOrderIds.begin(), visualOrderIds.end(), clickedId);
+                if (itA != visualOrderIds.end() && itB != visualOrderIds.end()) {
+                    size_t posA = (size_t)(itA - visualOrderIds.begin());
+                    size_t posB = (size_t)(itB - visualOrderIds.begin());
+                    size_t lo = std::min(posA, posB);
+                    size_t hi = std::max(posA, posB);
+                    if (!ctrlSelect) ClearSelection();
+                    for (size_t k = lo; k <= hi; ++k)
+                        AddSelection(kSelScenery, visualOrderIds[k], k == hi);
+                    return;
+                }
+            }
+            if (ctrlSelect) {
+                ToggleSelection(kSelScenery, clickedId);
+                sceneryMultiSelAnchorId_ = clickedId;
+            } else {
+                SelectSingle(kSelScenery, clickedId);
+                sceneryMultiSelAnchorId_ = clickedId;
+            }
+        };
+
+        // Ids to move on a drag-drop: the whole active selection if the
+        // dragged item is part of it, otherwise just that one item.
+        auto dragIdsFor = [&](int itemId) -> std::vector<int> {
+            if (IsInSelection(kSelScenery, itemId)) {
+                std::vector<int> ids;
+                for (const auto& ref : ActiveSelection())
+                    if (ref.type == kSelScenery) ids.push_back(ref.id);
+                if (!ids.empty()) return ids;
+            }
+            return {itemId};
+        };
+
+        auto folderDropTarget = [&](const std::string& targetFolder) {
+            if (!ImGui::BeginDragDropTarget()) return;
+            if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(kSceneryDragType)) {
+                size_t n = pl->DataSize / sizeof(int);
+                const int* ids = static_cast<const int*>(pl->Data);
+                MoveSceneryToFolder(db, std::vector<int>(ids, ids + n), targetFolder);
+            }
+            ImGui::EndDragDropTarget();
+        };
 
         auto drawSceneryItem = [&](const ZScenery& obj) {
             bool sel = IsInSelection(kSelScenery, obj.id);
@@ -232,12 +313,62 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
             else
                 std::snprintf(lbl, sizeof(lbl), "model%d #%d",
                               obj.modelId, obj.id);
+            ImGui::PushID(obj.id);
             ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s", lbl);
             if (sel) ImGui::PopStyleColor();
+            // IsItemClicked() fires on mouse-DOWN, i.e. the very first frame
+            // of a potential drag gesture too. If we always collapsed the
+            // selection here, dragging any one item out of a multi-selection
+            // would immediately shrink the selection to just that item
+            // before BeginDragDropSource() below ever reads it — so the drag
+            // only ever moved one object. Skip the (re)select when clicking
+            // an item that's already part of the current selection with no
+            // modifier held; that click either starts a drag (selection must
+            // stay intact) or turns out to be a plain click-release (common
+            // tools keep the multi-selection in that case too).
             if (ImGui::IsItemClicked()) {
-                if (ctrlSelect) ToggleSelection(kSelScenery, obj.id);
-                else SelectSingle(kSelScenery, obj.id);
+                bool alreadySelected = IsInSelection(kSelScenery, obj.id);
+                if (!alreadySelected || ctrlSelect || shiftSelect)
+                    selectRangeOrToggle(obj.id);
             }
+
+            // Drag source: carries the whole selection if this item is part
+            // of one, so multi-selecting then dragging any of them moves all.
+            if (ImGui::BeginDragDropSource()) {
+                sceneryDragPayload_ = dragIdsFor(obj.id);
+                ImGui::SetDragDropPayload(kSceneryDragType, sceneryDragPayload_.data(),
+                                          sceneryDragPayload_.size() * sizeof(int));
+                ImGui::Text("Move %d scenery instance(s)", (int)sceneryDragPayload_.size());
+                ImGui::EndDragDropSource();
+            }
+
+            if (ImGui::BeginPopupContextItem()) {
+                if (ImGui::BeginMenu("Move to folder")) {
+                    if (ImGui::MenuItem("(root / ungrouped)"))
+                        MoveSceneryToFolder(db, dragIdsFor(obj.id), "");
+                    auto folders = DistinctSceneryFolders();
+                    if (!folders.empty()) ImGui::Separator();
+                    for (const auto& f : folders)
+                        if (ImGui::MenuItem(f.c_str()))
+                            MoveSceneryToFolder(db, dragIdsFor(obj.id), f);
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("New Folder...")) {
+                        sceneryFolderCreateBuf_[0] = 0;
+                        showSceneryFolderCreate_ = true;
+                        // Reuse rename-target as "who to assign once named" —
+                        // sceneryDragPayload_ already holds the right id set.
+                        sceneryDragPayload_ = dragIdsFor(obj.id);
+                    }
+                    ImGui::EndMenu();
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Delete")) {
+                    if (!IsInSelection(kSelScenery, obj.id)) SelectSingle(kSelScenery, obj.id);
+                    DeleteSelected(db);
+                }
+                ImGui::EndPopup();
+            }
+            ImGui::PopID();
         };
 
         ImVec4 col = {0.80f, 0.78f, 0.75f, 1.f};
@@ -248,21 +379,22 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
         bool open = ImGui::TreeNodeEx(hdr,
             ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanFullWidth);
         ImGui::PopStyleColor();
-        if (open) {
-            // Group indices by exact folder string (flat groups — "Forest"
-            // and "Forest/Undergrowth" are two distinct nodes here, not a
-            // nested tree; erase/delete/rename still treat "/" as nesting
-            // via prefix match, see InSceneryFolder in zones.cpp).
-            std::vector<std::string> folderOrder;
-            std::unordered_map<std::string, std::vector<int>> byFolder;
-            for (int i = 0; i < (int)scene_.scenery.size(); ++i) {
-                const std::string& f = scene_.scenery[i].folder;
-                auto fit = byFolder.find(f);
-                if (fit == byFolder.end()) { folderOrder.push_back(f); byFolder[f] = {i}; }
-                else fit->second.push_back(i);
+        // Root header is also a drop target — drag an item here to ungroup it.
+        folderDropTarget("");
+        if (ImGui::BeginPopupContextItem()) {
+            if (ImGui::MenuItem("New Folder...")) {
+                sceneryFolderCreateBuf_[0] = 0;
+                showSceneryFolderCreate_ = true;
+                // If something is already selected, offer to move it into
+                // the new folder too (matches the per-item "Move to folder ▸
+                // New Folder..." flow); otherwise it's just created empty.
+                sceneryDragPayload_.clear();
+                for (const auto& ref : ActiveSelection())
+                    if (ref.type == kSelScenery) sceneryDragPayload_.push_back(ref.id);
             }
-            std::sort(folderOrder.begin(), folderOrder.end());
-
+            ImGui::EndPopup();
+        }
+        if (open) {
             for (const auto& folder : folderOrder) {
                 auto& idxs = byFolder[folder];
                 if (folder.empty()) {
@@ -282,7 +414,9 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
                     ClearSelection();
                     for (size_t k = 0; k < idxs.size(); ++k)
                         AddSelection(kSelScenery, scene_.scenery[idxs[k]].id, k + 1 == idxs.size());
+                    if (!idxs.empty()) sceneryMultiSelAnchorId_ = scene_.scenery[idxs.back()].id;
                 }
+                folderDropTarget(folder);  // drag an item onto this header to move it here
                 if (ImGui::BeginPopupContextItem()) {
                     if (ImGui::MenuItem("Select All")) {
                         ClearSelection();
@@ -310,6 +444,51 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
             }
             ImGui::TreePop();
         }
+    }
+
+    // ── Folder create ─────────────────────────────────────────────────────
+    // Always registers the folder (CreateSceneryFolder) so it shows up in the
+    // sidebar immediately, with or without a selection. sceneryDragPayload_,
+    // if non-empty, additionally moves those ids into the new folder.
+    if (showSceneryFolderCreate_) ImGui::OpenPopup("New Scenery Folder");
+    {
+        ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, {0.5f, 0.5f});
+    }
+    if (ImGui::BeginPopupModal("New Scenery Folder", &showSceneryFolderCreate_,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Folder name:");
+        ImGui::SetNextItemWidth(280.f);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        bool enter = ImGui::InputText("##scnfoldnew", sceneryFolderCreateBuf_,
+                                      sizeof(sceneryFolderCreateBuf_),
+                                      ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::TextDisabled("Use \"/\" to nest (e.g. \"Forest/Rocks\").");
+        if (sceneryDragPayload_.empty()) {
+            ImGui::TextDisabled("Creates an empty folder — drag items onto it\n"
+                               "later, or it's pre-filled next time you place one.");
+        } else {
+            ImGui::TextDisabled("%d selected instance(s) will move into it.",
+                                (int)sceneryDragPayload_.size());
+        }
+        ImGui::Spacing();
+        if ((ImGui::Button("Create", {120.f, 0.f}) || enter) && sceneryFolderCreateBuf_[0]) {
+            CreateSceneryFolder(db, sceneryFolderCreateBuf_);
+            if (!sceneryDragPayload_.empty())
+                MoveSceneryToFolder(db, sceneryDragPayload_, sceneryFolderCreateBuf_);
+            std::strncpy(scnFolder_, sceneryFolderCreateBuf_, sizeof(scnFolder_) - 1);
+            scnFolder_[sizeof(scnFolder_) - 1] = 0;
+            std::strncpy(foliageFolder_, sceneryFolderCreateBuf_, sizeof(foliageFolder_) - 1);
+            foliageFolder_[sizeof(foliageFolder_) - 1] = 0;
+            showSceneryFolderCreate_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", {120.f, 0.f})) {
+            showSceneryFolderCreate_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 
     // ── Folder delete confirmation ──────────────────────────────────────────
@@ -386,6 +565,18 @@ void ZonesTab::DrawInspector(sqlite3* db, MediaTab* media) {
 
     // When an object is selected, dispatch to its panel (always "options" mode)
     if (selectedID_ >= 0) {
+        // 2+ scenery selected together (e.g. clicked a folder header) gets
+        // the bulk move/delete panel instead of the single-instance editor.
+        if (selectedType_ == kSelScenery) {
+            const auto activeSel = ActiveSelection();
+            bool allScenery = activeSel.size() > 1;
+            for (const auto& ref : activeSel)
+                if (ref.type != kSelScenery) { allScenery = false; break; }
+            if (allScenery) {
+                DrawPanelSceneryBulk(db, media, activeSel);
+                return;
+            }
+        }
         switch (selectedType_) {
         case kSelPortal:    DrawPanelPortal   (db,        false); return;
         case kSelTrigger:   DrawPanelTrigger  (db,        false); return;

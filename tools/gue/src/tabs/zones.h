@@ -148,6 +148,10 @@ private:
     void ToggleSelection (int type, int id);
     std::vector<SelectionRef> ActiveSelection() const;
 
+    // Shown instead of DrawPanelScenery when 2+ scenery are selected at once
+    // (e.g. via clicking a folder header) — bulk "move to folder" + delete.
+    void DrawPanelSceneryBulk(sqlite3*, MediaTab*, const std::vector<SelectionRef>& sel);
+
     // ── Selection transform helpers (used by gizmo) ──────────────────────────
     bool SelectedPos       (glm::vec3& out) const;
     void SetSelectedPos    (const glm::vec3& pos);
@@ -166,14 +170,24 @@ private:
     void PersistSelectedScale(sqlite3*);
 
     // ── Scenery folders ───────────────────────────────────────────────────────
+    // Registers `name` in zone_scenery_folders so it exists (and shows up in
+    // the sidebar tree) even before any scenery is tagged with it. Safe to
+    // call for an already-registered name (INSERT OR IGNORE, no-op).
+    void CreateSceneryFolder(sqlite3* db, const std::string& name);
     // Deletes every scenery whose folder equals `folder` or is nested under it
-    // ("folder/..."). Confirmed via a modal before calling (see zones_sidebar.cpp).
+    // ("folder/..."), plus the folder's own registry row(s). Confirmed via a
+    // modal before calling (see zones_sidebar.cpp).
     void DeleteSceneryFolder(sqlite3* db, MediaTab* media, const std::string& folder);
     // Renames `folder` to `newFolder` for every scenery in it or nested under
     // it, preserving the nested suffix (e.g. "Forest/Undergrowth" renaming
     // "Forest"->"Woods" becomes "Woods/Undergrowth").
     void RenameSceneryFolder(sqlite3* db, MediaTab* media,
                              const std::string& folder, const std::string& newFolder);
+    // Bulk-assigns `newFolder` to every scenery id in `ids` (used by the
+    // "Move N selected -> folder" action when 2+ scenery are selected).
+    void MoveSceneryToFolder(sqlite3* db, const std::vector<int>& ids, const std::string& newFolder);
+    // Distinct folder names currently in use, sorted, for the picker combos.
+    std::vector<std::string> DistinctSceneryFolders() const;
 
     // ── Zone management ───────────────────────────────────────────────────────
     void FetchAreaList(sqlite3*);
@@ -309,12 +323,21 @@ private:
     // ungrouped/root). Supports "/" nesting. See ZScenery::folder.
     char  scnFolder_[128] = {};
 
-    // Scenery folder tree (scene sidebar) — delete/rename modal state.
+    // Scenery folder tree (scene sidebar) — delete/rename/create modal state.
     bool        showSceneryFolderDelete_ = false;
     std::string sceneryFolderDeleteTarget_;
     bool        showSceneryFolderRename_ = false;
     std::string sceneryFolderRenameTarget_;
     char        sceneryFolderRenameBuf_[128] = {};
+    bool        showSceneryFolderCreate_ = false;
+    char        sceneryFolderCreateBuf_[128] = {};
+    // Shift+click range-select anchor for the sidebar Scenery tree (mirrors
+    // the Models list's Ctrl/Shift picker in media.cpp).
+    int         sceneryMultiSelAnchorId_ = -1;
+    // Transient buffer backing the current drag-drop payload (folder move by
+    // drag). Filled right before BeginDragDropSource; ImGui copies the bytes
+    // immediately so this only needs to be valid for that one call.
+    std::vector<int> sceneryDragPayload_;
     bool  scnSnapGrid_    = false;  // G key toggles grid snap
     float scnGridSize_    = 1.0f;   // grid step in world units
     float scnRotSnap_     = 45.f;   // rotation snap in degrees (0 = free)
@@ -362,9 +385,13 @@ private:
     float foliagePlaceAccum_ = 0.f;    // fractional-instance budget accumulator (frame-rate independent)
     // Organizational folder — new brush placements are tagged with this
     // (mirrors scnFolder_), and it also doubles as the erase mask target
-    // when foliageEraseByFolder_ is on (see ApplyFoliageBrush). "" = root.
+    // in kFoliageEraseFolder mode (see ApplyFoliageBrush). "" = root.
     char  foliageFolder_[128]     = {};
-    bool  foliageEraseByFolder_   = false;  // Shift+LMB erase mode: mask by foliageFolder_ instead of palette
+    // Shift+LMB erase mask. Palette = only checked models; Folder = any
+    // model whose folder matches foliageFolder_ (ignores palette); Any =
+    // erase every scenery in the brush radius, no mask at all.
+    enum FoliageEraseMode { kFoliageErasePalette = 0, kFoliageEraseFolder = 1, kFoliageEraseAny = 2 };
+    int   foliageEraseMode_ = kFoliageErasePalette;
     // The first time a given model_id is ever scattered, SyncSceneryCache ->
     // Actor::Init pays a one-time cost (disk load + texture decode + GL
     // upload for that mesh's whole material set). Placing several instances
