@@ -1,5 +1,8 @@
 #pragma once
 
+#include "../preview_viewport.h"
+
+#include <memory>
 #include <string>
 #include <vector>
 #include <sqlite3.h>
@@ -49,10 +52,27 @@ class ItemsTab {
 public:
     void Draw(sqlite3* db);
 
+    // Borrow the shared deferred renderer from GUE main. Must be called
+    // before the first Draw() that touches the item-on-socket preview.
+    void SetRenderer(::rco::renderer::Engine* engine,
+                     ::rco::renderer::Pipeline* pipeline) {
+        engine_   = engine;
+        pipeline_ = pipeline;
+    }
+
 private:
     struct WeaponKitOption {
         std::string kit_key;
         std::string display_name;
+    };
+
+    // Model picker entry (from media_models) — lets the item's "Model Path"
+    // field use the same searchable-by-name combo as the rest of the tool
+    // instead of a raw path InputText.
+    struct ModelOption {
+        int         id = 0;
+        std::string name;
+        std::string file_path;
     };
 
     void Fetch(sqlite3* db);
@@ -66,6 +86,24 @@ private:
     bool SaveItemOverrides(sqlite3* db, const ItemTemplate& t);
     bool LoadSocketVocabulary(sqlite3* db);
     bool LoadActorDefs(sqlite3* db);
+    bool LoadModelOptions(sqlite3* db);
+
+    // Resolves the actor def's Body model path and the bone bound to
+    // `socket_name` (plus that binding's own offset), used to compose the
+    // item-on-socket preview. Returns false if the actor def, its Body
+    // slot, or the socket binding can't be resolved.
+    struct SocketResolution {
+        std::string body_model_path;
+        std::string bone_name;
+        float offset_pos_x = 0.f, offset_pos_y = 0.f, offset_pos_z = 0.f;
+        float offset_rot_x = 0.f, offset_rot_y = 0.f, offset_rot_z = 0.f;
+        float offset_scale = 1.f;
+    };
+    bool ResolveActorDefSocket(sqlite3* db, int actor_def_id,
+                               const std::string& socket_name,
+                               SocketResolution& out);
+
+    void DrawItemPreview(sqlite3* db, ItemTemplate& t);
 
     std::vector<ItemTemplate> items_;
     std::vector<WeaponKitOption> weapon_kit_options_;
@@ -78,6 +116,16 @@ private:
     bool         showNew_   = false;
     std::vector<std::string> socketVocab_;
     std::vector<std::pair<int, std::string>> actorDefOptions_;
+    std::vector<ModelOption> modelOptions_;
+
+    // Which override row (index into t.overrides) is currently shown in the
+    // preview panel. -1 = no preview.
+    int previewOverrideIdx_ = -1;
+
+    ::rco::renderer::Engine*         engine_         = nullptr;
+    ::rco::renderer::Pipeline*       pipeline_       = nullptr;
+    std::unique_ptr<PreviewViewport> preview_;
+    bool                             preview_init_ok_ = false;
 };
 
 } // namespace gue

@@ -253,6 +253,7 @@ void PreviewViewport::Init(rco::renderer::Engine*   engine,
 void PreviewViewport::Clear() {
     actor_.Destroy();
     current_path_.clear();
+    force_full_pipeline_ = false;
     anim_t_ = 0.f;
     anim_actions_.clear();
     sel_action_      = -1;
@@ -312,6 +313,7 @@ void PreviewViewport::ReloadCurrent() {
 }
 
 bool PreviewViewport::LoadModel(const std::string& path) {
+    force_full_pipeline_ = false;
     if (path == current_path_) return true;
 
     actor_.Destroy();
@@ -344,6 +346,55 @@ bool PreviewViewport::LoadModel(const std::string& path) {
 
     FitCameraToModel();
     return actor_.IsLoaded();
+}
+
+bool PreviewViewport::LoadSpherePrimitive() {
+    force_full_pipeline_ = true;
+    if (current_path_ == rco::renderer::kSpherePrimitivePath) return true;
+
+    actor_.Destroy();
+    current_path_ = rco::renderer::kSpherePrimitivePath;
+    anim_t_ = 0.f;
+    anim_actions_.clear();
+    sel_action_      = -1;
+    sel_action_name_.clear();
+    cur_clip_idx_   = -1;
+    clip_start_sec_ = 0.f;
+    clip_end_sec_   = 0.f;
+    collision_mesh_tris_.clear();
+    collision_mesh_cache_path_.clear();
+    collision_mesh_simplified_tris_.clear();
+    collision_mesh_simplified_path_.clear();
+    collision_mesh_simplified_budget_ = -1.f;
+
+    rco::renderer::MaterialManager* mm = engine_ ? &engine_->materials() : nullptr;
+    actor_.Init("", rco::renderer::kSpherePrimitivePath, mm);
+    if (engine_) engine_->MarkMaterialsDirty();
+
+    FitCameraToModel();
+    return actor_.IsLoaded();
+}
+
+void PreviewViewport::SetAttachment(const AttachmentSpec& spec) {
+    if (spec.model_path != attachment_path_) {
+        attachment_.Destroy();
+        attachment_path_ = spec.model_path;
+        if (!attachment_path_.empty()) {
+            std::string resolved = ResolveClientAsset(attachment_path_);
+            rco::renderer::MaterialManager* mm = engine_ ? &engine_->materials() : nullptr;
+            attachment_.Init("", resolved.c_str(), mm);
+            if (engine_) engine_->MarkMaterialsDirty();
+        }
+    }
+    attachment_spec_ = spec;
+    has_attachment_  = !attachment_path_.empty() && attachment_.IsLoaded();
+}
+
+void PreviewViewport::ClearAttachment() {
+    attachment_.Destroy();
+    attachment_path_.clear();
+    attachment_spec_ = AttachmentSpec{};
+    has_attachment_  = false;
 }
 
 void PreviewViewport::ApplyMaterialsFromMedia(const std::vector<MaterialLookup>& mats) {
@@ -444,8 +495,13 @@ void PreviewViewport::RenderToEngineFrame_(int w, int h, float dt) {
 
     // Non-skinned static meshes use a dedicated simple forward shader instead
     // of the deferred bindless pipeline, so plain sampler2D textures work on
-    // every driver without GL_ARB_bindless_texture involvement.
-    const bool is_static = actor_.IsLoaded() && !actor_.model().HasAnimations()
+    // every driver without GL_ARB_bindless_texture involvement. That fast
+    // path only shades flat albedo though (no normal map, no PBR roughness/
+    // metallic) — force_full_pipeline_ (set by LoadSpherePrimitive) routes
+    // the material-preview sphere through the full deferred pipeline instead
+    // so it actually shows the material the way it renders in-game.
+    const bool is_static = actor_.IsLoaded() && !force_full_pipeline_
+                           && !actor_.model().HasAnimations()
                            && actor_.model().meshes().size() > 0
                            && !actor_.model().meshes()[0].skinned;
 
@@ -528,6 +584,27 @@ void PreviewViewport::RenderToEngineFrame_(int w, int h, float dt) {
             }
         }
         actor_.SubmitAs(actor_.CurrentAnim(), anim_t_, /*loop*/true, *pipeline_);
+    }
+
+    if (has_attachment_) {
+        glm::mat4 boneMat(1.0f);
+        bool haveBone = !attachment_spec_.bone_name.empty()
+            && actor_.GetBoneWorldTransform(attachment_spec_.bone_name, &boneMat);
+        if (!attachment_spec_.bone_name.empty() && !haveBone) {
+            // Unknown bone name (stale binding) — skip rather than draw at
+            // a misleading location.
+        } else {
+            glm::mat4 actorModel(1.0f);
+            actorModel = glm::translate(actorModel, actor_.position + glm::vec3(0.f, actor_.y_offset, 0.f));
+            actorModel = glm::rotate(actorModel, glm::radians(actor_.yaw), glm::vec3(0.f, 1.f, 0.f));
+            if (actor_.yaw_offset != 0.f)
+                actorModel = glm::rotate(actorModel, glm::radians(actor_.yaw_offset), glm::vec3(0.f, 1.f, 0.f));
+            actorModel = glm::scale(actorModel, glm::vec3(actor_.scale));
+
+            glm::mat4 world = actorModel * boneMat * attachment_spec_.local_transform;
+            attachment_.SubmitWithMatrix(*pipeline_, world);
+            attachment_world_ = world;
+        }
     }
 
     rco::renderer::Pipeline::EndConfig cfg{};
@@ -731,6 +808,148 @@ void PreviewViewport::DrawCollisionOverlay_(const ImVec2& image_pos, const ImVec
             meshDrawn = true;
         }
     }
+}
+
+void PreviewViewport::DrawSocketOverlay_(const ImVec2& image_pos, const ImVec2& image_size) const {
+    if (!show_socket_preview_ || socket_preview_.empty()) return;
+    if (!actor_.IsLoaded()) return;
+    if (image_size.x <= 1.f || image_size.y <= 1.f) return;
+
+    float yaw   = glm::radians(cam_yaw_);
+    float pitch = glm::radians(cam_pitch_);
+    glm::vec3 offset = {
+        cam_dist_ * std::cos(pitch) * std::sin(yaw),
+        cam_dist_ * std::sin(pitch),
+        cam_dist_ * std::cos(pitch) * std::cos(yaw),
+    };
+    glm::vec3 eye  = cam_target_ + offset;
+    glm::mat4 view = glm::lookAt(eye, cam_target_, glm::vec3(0, 1, 0));
+    glm::mat4 proj = glm::perspective(glm::radians(55.0f),
+                                      image_size.x / image_size.y, cam_near_, cam_far_);
+
+    auto project = [&](const glm::vec3& p, ImVec2& out) -> bool {
+        glm::vec4 clip = proj * view * glm::vec4(p, 1.f);
+        if (clip.w <= 0.0001f) return false;
+        glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        if (!std::isfinite(ndc.x) || !std::isfinite(ndc.y) || !std::isfinite(ndc.z))
+            return false;
+        out.x = image_pos.x + (ndc.x * 0.5f + 0.5f) * image_size.x;
+        out.y = image_pos.y + (-ndc.y * 0.5f + 0.5f) * image_size.y;
+        return true;
+    };
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (!dl) return;
+
+    auto addLine3D = [&](const glm::vec3& a, const glm::vec3& b, ImU32 col, float thick) {
+        ImVec2 sa, sb;
+        if (project(a, sa) && project(b, sb))
+            dl->AddLine(sa, sb, col, thick);
+    };
+
+    // Actor's object-to-world matrix — mirrors Actor::Submit/SubmitAs so bone
+    // world transforms (which are in model space) land in the same place the
+    // skinned mesh actually renders.
+    glm::mat4 actorModel = glm::mat4(1.0f);
+    actorModel = glm::translate(actorModel, actor_.position + glm::vec3(0.f, actor_.y_offset, 0.f));
+    actorModel = glm::rotate(actorModel, glm::radians(actor_.yaw), glm::vec3(0.f, 1.f, 0.f));
+    if (actor_.yaw_offset != 0.f)
+        actorModel = glm::rotate(actorModel, glm::radians(actor_.yaw_offset), glm::vec3(0.f, 1.f, 0.f));
+    actorModel = glm::scale(actorModel, glm::vec3(actor_.scale));
+
+    const float axisLen = 0.08f;
+    for (const auto& s : socket_preview_) {
+        if (s.bone_name.empty()) continue;
+        glm::mat4 boneMat;
+        if (!actor_.GetBoneWorldTransform(s.bone_name, &boneMat)) continue;
+
+        glm::mat4 offsetMat = glm::translate(glm::mat4(1.0f),
+            glm::vec3(s.offset_pos_x, s.offset_pos_y, s.offset_pos_z));
+        offsetMat = glm::rotate(offsetMat, glm::radians(s.offset_rot_x), glm::vec3(1, 0, 0));
+        offsetMat = glm::rotate(offsetMat, glm::radians(s.offset_rot_y), glm::vec3(0, 1, 0));
+        offsetMat = glm::rotate(offsetMat, glm::radians(s.offset_rot_z), glm::vec3(0, 0, 1));
+
+        glm::mat4 world = actorModel * boneMat * offsetMat;
+        glm::vec3 origin = glm::vec3(world[3]);
+        glm::vec3 xAxis  = origin + glm::vec3(world * glm::vec4(axisLen, 0, 0, 0));
+        glm::vec3 yAxis  = origin + glm::vec3(world * glm::vec4(0, axisLen, 0, 0));
+        glm::vec3 zAxis  = origin + glm::vec3(world * glm::vec4(0, 0, axisLen, 0));
+
+        addLine3D(origin, xAxis, IM_COL32(255, 70, 70, 255), 2.2f);
+        addLine3D(origin, yAxis, IM_COL32(70, 255, 70, 255), 2.2f);
+        addLine3D(origin, zAxis, IM_COL32(70, 140, 255, 255), 2.2f);
+
+        ImVec2 sp;
+        if (project(origin, sp)) {
+            dl->AddCircleFilled(sp, 4.f, IM_COL32(255, 220, 60, 255));
+            const std::string label = !s.socket_name.empty() ? s.socket_name : s.bone_name;
+            ImVec2 textPos = {sp.x + 6.f, sp.y - 8.f};
+            dl->AddText(textPos, IM_COL32(0, 0, 0, 255), label.c_str());
+            dl->AddText({textPos.x - 1.f, textPos.y - 1.f}, IM_COL32(255, 255, 0, 255), label.c_str());
+        }
+    }
+}
+
+// Draws the move/rotate axes at the item's current attach point (Items tab
+// preview) so dragging the pos/rot sliders has a visible frame of reference
+// instead of the item just silently jumping around.
+void PreviewViewport::DrawAttachmentGizmo_(const ImVec2& image_pos, const ImVec2& image_size) const {
+    if (!has_attachment_) return;
+    if (image_size.x <= 1.f || image_size.y <= 1.f) return;
+
+    float yaw   = glm::radians(cam_yaw_);
+    float pitch = glm::radians(cam_pitch_);
+    glm::vec3 offset = {
+        cam_dist_ * std::cos(pitch) * std::sin(yaw),
+        cam_dist_ * std::sin(pitch),
+        cam_dist_ * std::cos(pitch) * std::cos(yaw),
+    };
+    glm::vec3 eye  = cam_target_ + offset;
+    glm::mat4 view = glm::lookAt(eye, cam_target_, glm::vec3(0, 1, 0));
+    glm::mat4 proj = glm::perspective(glm::radians(55.0f),
+                                      image_size.x / image_size.y, cam_near_, cam_far_);
+
+    auto project = [&](const glm::vec3& p, ImVec2& out) -> bool {
+        glm::vec4 clip = proj * view * glm::vec4(p, 1.f);
+        if (clip.w <= 0.0001f) return false;
+        glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        if (!std::isfinite(ndc.x) || !std::isfinite(ndc.y) || !std::isfinite(ndc.z))
+            return false;
+        out.x = image_pos.x + (ndc.x * 0.5f + 0.5f) * image_size.x;
+        out.y = image_pos.y + (-ndc.y * 0.5f + 0.5f) * image_size.y;
+        return true;
+    };
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (!dl) return;
+
+    auto addLine3D = [&](const glm::vec3& a, const glm::vec3& b, ImU32 col, float thick) {
+        ImVec2 sa, sb;
+        if (project(a, sa) && project(b, sb))
+            dl->AddLine(sa, sb, col, thick);
+    };
+
+    const glm::mat4& world = attachment_world_;
+    glm::vec3 origin = glm::vec3(world[3]);
+    // Axis length scales with camera distance so the gizmo stays legible
+    // whether the dev is zoomed into a ring or framing the whole actor.
+    const float axisLen = std::max(0.05f, cam_dist_ * 0.12f);
+    glm::vec3 xTip = origin + glm::normalize(glm::vec3(world[0])) * axisLen;
+    glm::vec3 yTip = origin + glm::normalize(glm::vec3(world[1])) * axisLen;
+    glm::vec3 zTip = origin + glm::normalize(glm::vec3(world[2])) * axisLen;
+
+    addLine3D(origin, xTip, IM_COL32(255, 60, 60, 255), 3.0f);
+    addLine3D(origin, yTip, IM_COL32(60, 255, 60, 255), 3.0f);
+    addLine3D(origin, zTip, IM_COL32(70, 140, 255, 255), 3.0f);
+
+    ImVec2 sp;
+    if (project(origin, sp))
+        dl->AddCircleFilled(sp, 5.f, IM_COL32(255, 255, 255, 230));
+
+    ImVec2 sx, sy, sz;
+    if (project(xTip, sx)) dl->AddText(sx, IM_COL32(255, 120, 120, 255), "X");
+    if (project(yTip, sy)) dl->AddText(sy, IM_COL32(120, 255, 120, 255), "Y");
+    if (project(zTip, sz)) dl->AddText(sz, IM_COL32(140, 180, 255, 255), "Z");
 }
 
 void PreviewViewport::DrawScaleOverlay_(const ImVec2& image_pos, const ImVec2& image_size) const {
@@ -970,6 +1189,8 @@ void PreviewViewport::DrawImGui() {
     ImGui::Image(img_id, view_size, uv0, uv1);
     DrawCollisionOverlay_(cursor_before, view_size);
     DrawScaleOverlay_(cursor_before, view_size);
+    DrawSocketOverlay_(cursor_before, view_size);
+    DrawAttachmentGizmo_(cursor_before, view_size);
 
     const auto& mdl = actor_.model();
     float scrub_dur = 0.f;
@@ -1050,6 +1271,20 @@ void PreviewViewport::DrawImGui() {
         ImGui::SetNextItemWidth(300.f);
         if (ImGui::SliderFloat("##scrub", &anim_t_, 0.f, scrub_dur, "%.3f s"))
             playing_ = false;
+        ImGui::SameLine();
+
+        const float fps_step = scrub_fps > 0.f ? scrub_fps : 30.f;
+        if (ImGui::ArrowButton("##frame_prev", ImGuiDir_Left)) {
+            playing_ = false;
+            anim_t_ -= 1.f / fps_step;
+            if (anim_t_ < 0.f) anim_t_ = 0.f;
+        }
+        ImGui::SameLine();
+        if (ImGui::ArrowButton("##frame_next", ImGuiDir_Right)) {
+            playing_ = false;
+            anim_t_ += 1.f / fps_step;
+            if (anim_t_ > scrub_dur) anim_t_ = scrub_dur;
+        }
         ImGui::SameLine();
         int cur_frame = static_cast<int>(anim_t_ * scrub_fps);
         ImGui::Text("Frame %d  (%.1f fps)", cur_frame, scrub_fps);

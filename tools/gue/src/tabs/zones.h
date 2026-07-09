@@ -11,6 +11,7 @@ struct GLFWwindow;
 #include <glm/glm.hpp>
 #include <string>
 #include <vector>
+#include <unordered_set>
 
 namespace rco::renderer { class Engine; class Pipeline; }
 
@@ -34,7 +35,8 @@ enum ZoneMode {
     kModeSpawnPoint  = 12,
     kModeColSphere   = 13,
     kModePlayerSpawn = 14,
-    kModeCount       = 15,
+    kModeFoliage     = 15,
+    kModeCount       = 16,
 };
 
 // ── Lightweight cache entry for the terrain material picker ─────────────────
@@ -102,6 +104,7 @@ private:
     void DrawPanelOther       (sqlite3*);
     void DrawPanelSpawnPoint  (sqlite3*, MediaTab*, bool placement);
     void DrawPanelPlayerSpawn (sqlite3*, bool placement);
+    void DrawPanelFoliage     (sqlite3*, MediaTab*, bool placement);
 
     // ── Undo ─────────────────────────────────────────────────────────────────
     enum UndoAction { kUndoCreate, kUndoDelete, kUndoMove, kUndoRotate, kUndoScale };
@@ -118,6 +121,13 @@ private:
 
     // ── Actions ───────────────────────────────────────────────────────────────
     void PlaceObject      (const glm::vec3& worldPos, sqlite3*, MediaTab*);
+    // Scatters (erase=false) or removes (erase=true) foliage instances within
+    // foliageRadius_ of `hit`. Called every frame the LMB is held in Foliage
+    // mode — reuses the zone_scenery table/ZScenery pipeline, so painted
+    // instances are ordinary scenery (selectable, editable, deletable via the
+    // normal Scenery panel/gizmo).
+    void ApplyFoliageBrush(sqlite3* db, MediaTab* media, const glm::vec3& hit,
+                           float dt, bool erase);
     void DeleteSelected   (sqlite3*);
     void DuplicateSelected(sqlite3*, MediaTab*);
     void CopySelected     ();
@@ -154,6 +164,16 @@ private:
     bool SelectedScale       (glm::vec3& out) const;
     void SetSelectedScale    (const glm::vec3& s);
     void PersistSelectedScale(sqlite3*);
+
+    // ── Scenery folders ───────────────────────────────────────────────────────
+    // Deletes every scenery whose folder equals `folder` or is nested under it
+    // ("folder/..."). Confirmed via a modal before calling (see zones_sidebar.cpp).
+    void DeleteSceneryFolder(sqlite3* db, MediaTab* media, const std::string& folder);
+    // Renames `folder` to `newFolder` for every scenery in it or nested under
+    // it, preserving the nested suffix (e.g. "Forest/Undergrowth" renaming
+    // "Forest"->"Woods" becomes "Woods/Undergrowth").
+    void RenameSceneryFolder(sqlite3* db, MediaTab* media,
+                             const std::string& folder, const std::string& newFolder);
 
     // ── Zone management ───────────────────────────────────────────────────────
     void FetchAreaList(sqlite3*);
@@ -285,6 +305,16 @@ private:
     int   scnMaterialId_  = 0;
     bool  scnAlignGround_ = true;   // default on — ground snap expected
     char  scnFilter_[128] = {};     // asset browser search filter
+    // Organizational folder new scenery placements are tagged with ("" =
+    // ungrouped/root). Supports "/" nesting. See ZScenery::folder.
+    char  scnFolder_[128] = {};
+
+    // Scenery folder tree (scene sidebar) — delete/rename modal state.
+    bool        showSceneryFolderDelete_ = false;
+    std::string sceneryFolderDeleteTarget_;
+    bool        showSceneryFolderRename_ = false;
+    std::string sceneryFolderRenameTarget_;
+    char        sceneryFolderRenameBuf_[128] = {};
     bool  scnSnapGrid_    = false;  // G key toggles grid snap
     float scnGridSize_    = 1.0f;   // grid step in world units
     float scnRotSnap_     = 45.f;   // rotation snap in degrees (0 = free)
@@ -315,6 +345,34 @@ private:
     int   slopeRockLayer_ = 2;
     float slopeMinDeg_    = 20.f;
     float slopeMaxDeg_    = 40.f;
+
+    // Foliage brush state (scatter-paint trees/bushes/rocks as zone_scenery).
+    // Candidate models are toggled on/off in the Asset Browser tiles while
+    // this mode is active (see DrawTile in zones.cpp) instead of the single
+    // scnModelId_ used by plain Scenery placement.
+    std::vector<int> foliageModelIds_;
+    char             foliageFilter_[128] = {};  // search filter for the in-panel model picker
+    float foliageRadius_     = 8.f;    // paint circle radius, world units
+    float foliageDensity_    = 0.35f;  // target instances per m² per second while held
+    float foliageMinSpacing_ = 1.0f;   // reject a candidate closer than this to existing scenery
+    float foliageMinScale_   = 0.85f;  // random per-instance scale jitter, multiplies the
+    float foliageMaxScale_   = 1.25f;  // model's own default scale (media_models.scale)
+    bool  foliageRandomYaw_  = true;
+    bool  foliageActive_     = false;  // true while LMB held in Foliage mode
+    float foliagePlaceAccum_ = 0.f;    // fractional-instance budget accumulator (frame-rate independent)
+    // Organizational folder — new brush placements are tagged with this
+    // (mirrors scnFolder_), and it also doubles as the erase mask target
+    // when foliageEraseByFolder_ is on (see ApplyFoliageBrush). "" = root.
+    char  foliageFolder_[128]     = {};
+    bool  foliageEraseByFolder_   = false;  // Shift+LMB erase mode: mask by foliageFolder_ instead of palette
+    // The first time a given model_id is ever scattered, SyncSceneryCache ->
+    // Actor::Init pays a one-time cost (disk load + texture decode + GL
+    // upload for that mesh's whole material set). Placing several instances
+    // of a brand-new mesh in one tick would stack that cost inside a single
+    // frame. ApplyFoliageBrush caps the per-tick budget to 1 as long as the
+    // palette still has a model not yet in this set, then adds it once
+    // placed — so cold loads are spread one-per-frame instead of bursting.
+    std::unordered_set<int> foliageWarmModelIds_;
 
     // Terrain undo/redo — one snapshot captured per brush stroke (not per frame)
     struct TerrainSnapshot {

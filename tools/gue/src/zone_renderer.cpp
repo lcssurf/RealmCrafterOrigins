@@ -191,6 +191,12 @@ void ZoneRenderer::SyncSceneryModels(const std::vector<ZScenery>& scenery,
             a->Init("", resolved.c_str(), &mm);
             if (a->IsLoaded() && !bit->second.material_map.empty())
                 a->ApplyMaterialsByName(mm, bit->second.material_map);
+            // Same one-directional pattern the client uses for world objects/
+            // actors: only ever turns cutout ON (mirrors media_models.black_cutout).
+            // model() is the shared ModelCacheGet instance, so this applies to
+            // every actor referencing this model_id, same as the game.
+            if (a->IsLoaded() && bit->second.black_cutout)
+                const_cast<rco::renderer::Model&>(a->model()).ApplyBlackCutout(true, &mm);
             sceneryActors_[s.id] = std::move(a);
             sceneryActorModelId_[s.id] = s.modelId;
             need_rebuild = true;

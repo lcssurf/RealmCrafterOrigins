@@ -178,6 +178,7 @@ int main() {
     gue::InputMapsTab    inputMapsTab;
     gue::SpawnPointsTab  spawnPointsTab;
     mediaTab.SetRenderer(&engine, pipeline.get());
+    itemsTab.SetRenderer(&engine, pipeline.get());
     zonesTab.SetRenderer(&engine, pipeline.get());
     settingsTab.SetPipeline(pipeline.get());
     zonesTab.SetWindow(win);  // shared GL context for background thumbnail rendering

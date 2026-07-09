@@ -30,6 +30,11 @@ type WorldObject struct {
 	Scale     float32
 	X, Y, Z   float32
 	Yaw       float32
+	// BlackCutout: OR of media_models.black_cutout | the scenery's override
+	// material's black_cutout (mirrors the same flag on actor mesh slots —
+	// see appearance.go). When true the client discards near-black pixels
+	// in the deferred gBuffer pass (foliage/leaf cutout).
+	BlackCutout bool
 }
 
 // Trigger is a script-activated zone volume (XZ cylinder).

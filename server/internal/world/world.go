@@ -15,6 +15,16 @@ type World struct {
 	areas  map[string]*Area
 	mu     sync.RWMutex
 	nextID uint32
+
+	// heightmapBasePath is set by LoadHeightmaps() and reused by
+	// GetOrCreateArea() so areas created afterwards (e.g. when the first
+	// NPC/waypoint/spawn-point for that area is loaded) also get their
+	// heightmap attached immediately, instead of only areas that already
+	// existed at the time LoadHeightmaps() ran once. Without this, NPCs
+	// spawned into a not-yet-created area had Area.Heightmap == nil at
+	// spawn time and kept their raw (un-snapped) spawn Y forever, until
+	// AI movement re-sampled it — see SpawnNPC() below.
+	heightmapBasePath string
 }
 
 // New creates a World with a default "Starter Zone" area.
@@ -46,6 +56,9 @@ func (w *World) StartRegen(ctx context.Context) {
 }
 
 // GetOrCreateArea returns an existing area by name, creating it if absent.
+// Newly created areas get their heightmap loaded immediately (if
+// LoadHeightmaps() has already run and recorded a base path), so any actor
+// spawned into this area right after creation can snap to terrain Y.
 func (w *World) GetOrCreateArea(name string) *Area {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -53,6 +66,12 @@ func (w *World) GetOrCreateArea(name string) *Area {
 		return area
 	}
 	area := NewArea(name)
+	if w.heightmapBasePath != "" {
+		if hm, err := loadHeightmapForArea(w.heightmapBasePath, name); err == nil {
+			area.Heightmap = hm
+			log.Printf("world: loaded heightmap for %q (lazy, on area creation)", name)
+		}
+	}
 	w.areas[name] = area
 	return area
 }
@@ -77,6 +96,19 @@ func (w *World) NextRuntimeID() uint32 {
 
 // SpawnNPC creates a static NPC actor and registers it in the given area.
 func (w *World) SpawnNPC(area *Area, name, race, class string, level int, x, y, z, yaw float32) *Actor {
+	// Snap the authored spawn Y to terrain height, same as AI movement does
+	// every tick (see moveNPCToPoint / AIWander / AIPatrol in area.go, which
+	// all call area.Heightmap.SampleWorld). Without this, NPCs spawn at the
+	// flat Y stored in npc_spawns/spawn_points and only "land" once they
+	// first move or fight — this fixes both cases so terrain-irregular spawns
+	// (e.g. mountains) start grounded. The x/z themselves are left untouched;
+	// only y is corrected. Ground-only for now — there is no
+	// flying/aquatic movement-type flag on NPCs anywhere in the codebase, so
+	// every current NPC is expected to stand on terrain.
+	if area.Heightmap != nil {
+		y = area.Heightmap.SampleWorld(x, z)
+	}
+
 	npc := NewActor()
 	npc.RuntimeID     = w.NextRuntimeID()
 	npc.Name          = name
@@ -134,24 +166,33 @@ func (w *World) CheckPortal(actor *Actor, area *Area) *Portal {
 	return nil
 }
 
-// LoadHeightmaps tries to load heightmap.bin for every known area.
-// basePath is the directory that contains the per-area subdirs
-// (e.g. "../client/data/areas").  Missing files are silently skipped.
+// loadHeightmapForArea resolves and loads heightmap.bin for one area name.
+// Tries the area name with spaces replaced by underscores first (the usual
+// folder convention), then the exact area name as a fallback.
+func loadHeightmapForArea(basePath, areaName string) (*Heightmap, error) {
+	folder := strings.ReplaceAll(areaName, " ", "_")
+	path := filepath.Join(basePath, folder, "heightmap.bin")
+	hm, err := LoadHeightmap(path)
+	if err != nil {
+		path2 := filepath.Join(basePath, areaName, "heightmap.bin")
+		hm, err = LoadHeightmap(path2)
+	}
+	return hm, err
+}
+
+// LoadHeightmaps tries to load heightmap.bin for every known area, and
+// records basePath so GetOrCreateArea() can load heightmaps for areas
+// created afterwards (NPC spawns / waypoints / spawn points can each
+// GetOrCreateArea a brand-new area after this runs). Call this once, early,
+// right after world.New() and before any spawning — see main.go.
+// Missing files are silently skipped (NPCs in that area keep fixed Y).
 func (w *World) LoadHeightmaps(basePath string) {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.heightmapBasePath = basePath
 	for name, area := range w.areas {
-		// Folder name = area name with spaces replaced by underscores.
-		folder := strings.ReplaceAll(name, " ", "_")
-		path := filepath.Join(basePath, folder, "heightmap.bin")
-		hm, err := LoadHeightmap(path)
+		hm, err := loadHeightmapForArea(basePath, name)
 		if err != nil {
-			// Try exact area name as folder (no substitution).
-			path2 := filepath.Join(basePath, name, "heightmap.bin")
-			hm, err = LoadHeightmap(path2)
-		}
-		if err != nil {
-			// No heightmap for this area — NPCs keep fixed Y.
 			continue
 		}
 		area.Heightmap = hm

@@ -9,6 +9,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -444,6 +445,98 @@ void Model::GeneratePlaceholder() {
     glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, stride, (void*)32); glEnableVertexAttribArray(3);
     glBindVertexArray((GLuint)prev_vao_ph);
     meshes_.push_back(m);
+}
+
+// ---------------------------------------------------------------------------
+// Procedural UV sphere — used by the GUE Materials tab preview so a material
+// can be shown applied to real geometry without shipping a sphere asset.
+// Vertex layout matches ProcessMesh's (pos3|norm3|uv2|tan3) so the resulting
+// submesh works with OverrideMaterial/ApplyMaterialsByName unmodified.
+// ---------------------------------------------------------------------------
+void Model::GenerateSpherePrimitive(float radius, int rings, int slices) {
+    EnsureDefaults();
+    meshes_.clear();
+
+    if (rings < 2) rings = 2;
+    if (slices < 3) slices = 3;
+    if (radius <= 0.f) radius = 0.5f;
+
+    constexpr float kPi = 3.14159265358979323846f;
+    std::vector<float> verts;
+    verts.reserve((size_t)(rings + 1) * (slices + 1) * 11);
+
+    for (int r = 0; r <= rings; ++r) {
+        float theta    = (float)r / (float)rings * kPi;       // 0 (top) .. PI (bottom)
+        float sinTheta = std::sin(theta);
+        float cosTheta = std::cos(theta);
+        for (int s = 0; s <= slices; ++s) {
+            float phi    = (float)s / (float)slices * 2.f * kPi;
+            float sinPhi = std::sin(phi);
+            float cosPhi = std::cos(phi);
+
+            glm::vec3 n(sinTheta * cosPhi, cosTheta, sinTheta * sinPhi);
+            glm::vec3 pos = n * radius;
+            glm::vec2 uv((float)s / (float)slices, (float)r / (float)rings);
+            // Tangent = d(pos)/d(phi), normalized — matches the UV's U axis.
+            glm::vec3 tan(-sinPhi, 0.f, cosPhi);
+
+            verts.insert(verts.end(), {
+                pos.x, pos.y, pos.z,
+                n.x,   n.y,   n.z,
+                uv.x,  uv.y,
+                tan.x, tan.y, tan.z,
+            });
+        }
+    }
+
+    std::vector<unsigned> indices;
+    indices.reserve((size_t)rings * slices * 6);
+    int rowStride = slices + 1;
+    for (int r = 0; r < rings; ++r) {
+        for (int s = 0; s < slices; ++s) {
+            unsigned i0 = (unsigned)(r * rowStride + s);
+            unsigned i1 = (unsigned)(i0 + rowStride);
+            unsigned i2 = (unsigned)(i0 + 1);
+            unsigned i3 = (unsigned)(i1 + 1);
+            // Winding: this phi parameterization (n = sinTheta*cosPhi, cosTheta,
+            // sinTheta*sinPhi) increases phi clockwise when viewed from +Y, so
+            // (i0,i1,i2)/(i2,i1,i3) came out CW from outside — back-facing under
+            // the engine's GL_CCW front-face + GL_BACK cull convention (pipeline.cpp
+            // glFrontFace(GL_CCW)/glCullFace(GL_BACK)). That got the outer shell
+            // culled, leaving only the (still outward-normaled) inside faces
+            // visible — looking like the camera was inside the sphere. Reversed
+            // to (i0,i2,i1)/(i2,i3,i1) so the winding is CCW from outside.
+            indices.insert(indices.end(), {i0, i2, i1, i2, i3, i1});
+        }
+    }
+
+    SubMesh m;
+    m.albedo_factor    = {0.72f, 0.68f, 0.60f};
+    m.roughness_factor = 0.5f;
+    m.metallic_factor  = 0.f;
+    m.idx_count         = (int)indices.size();
+
+    GLint prev_vao_sp = 0;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao_sp);
+    glGenVertexArrays(1, &m.vao);
+    glGenBuffers(1, &m.vbo);
+    glGenBuffers(1, &m.ebo);
+    glBindVertexArray(m.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned), indices.data(), GL_STATIC_DRAW);
+    constexpr int stride = 11 * sizeof(float);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);  glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)12); glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)24); glEnableVertexAttribArray(2);
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, stride, (void*)32); glEnableVertexAttribArray(3);
+    glBindVertexArray((GLuint)prev_vao_sp);
+    meshes_.push_back(m);
+
+    aabb_min_   = glm::vec3(-radius, -radius, -radius);
+    aabb_max_   = glm::vec3( radius,  radius,  radius);
+    aabb_max_y_ = radius * 2.f;
 }
 
 // ---------------------------------------------------------------------------

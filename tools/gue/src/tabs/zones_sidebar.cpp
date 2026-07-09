@@ -46,7 +46,8 @@ void ZonesTab::DrawTopBar(sqlite3* db, MediaTab* media) {
     static const char* kModeLabels[kModeCount] = {
         "Scenery","Terrain","Emitters","Water","ColBox",
         "Sound","Trigger","Waypoint","Portal","NPC",
-        "Enviro","Other","SpawnPt","ColSphere","PlayerSpawn"
+        "Enviro","Other","SpawnPt","ColSphere","PlayerSpawn",
+        "Foliage"
     };
     ImGui::SetNextItemWidth(120.f);
     if (ImGui::BeginCombo("##zmode", kModeLabels[zoneMode_])) {
@@ -197,7 +198,10 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
     DrawGroup("@", "Player Spawns", scene_.playerSpawns, kSelPlayerSpawn, {1.00f,0.80f,0.10f,1.f});
     DrawGroup("~", "Water",      scene_.water,      kSelWater,     {0.10f,0.70f,1.00f,1.f});
     DrawGroup("E", "Emitters",   scene_.emitters,   kSelEmitter,   {0.80f,1.00f,0.20f,1.f});
-    // Scenery: use model name instead of bare id.
+    // Scenery: use model name instead of bare id, grouped by ZScenery::folder.
+    // Root/ungrouped items (folder=="") render directly under "Scenery";
+    // named folders get their own sub-node with click-to-select-all and a
+    // right-click menu for bulk rename/delete.
     if (!scene_.scenery.empty()) {
         // Build modelId → base name map from media.
         std::unordered_map<int, std::string> modelNames;
@@ -209,6 +213,33 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
             }
         }
 
+        auto drawSceneryItem = [&](const ZScenery& obj) {
+            bool sel = IsInSelection(kSelScenery, obj.id);
+            ImGuiTreeNodeFlags flags =
+                ImGuiTreeNodeFlags_Leaf |
+                ImGuiTreeNodeFlags_NoTreePushOnOpen |
+                ImGuiTreeNodeFlags_SpanFullWidth;
+            if (sel) {
+                flags |= ImGuiTreeNodeFlags_Selected;
+                ImGui::PushStyleColor(ImGuiCol_Header,
+                                     {0.25f, 0.55f, 0.90f, 0.60f});
+            }
+            char lbl[96];
+            auto it = modelNames.find(obj.modelId);
+            if (it != modelNames.end())
+                std::snprintf(lbl, sizeof(lbl), "%s #%d",
+                              it->second.c_str(), obj.id);
+            else
+                std::snprintf(lbl, sizeof(lbl), "model%d #%d",
+                              obj.modelId, obj.id);
+            ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s", lbl);
+            if (sel) ImGui::PopStyleColor();
+            if (ImGui::IsItemClicked()) {
+                if (ctrlSelect) ToggleSelection(kSelScenery, obj.id);
+                else SelectSingle(kSelScenery, obj.id);
+            }
+        };
+
         ImVec4 col = {0.80f, 0.78f, 0.75f, 1.f};
         ImGui::PushStyleColor(ImGuiCol_Text, col);
         char hdr[64];
@@ -218,34 +249,129 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
             ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanFullWidth);
         ImGui::PopStyleColor();
         if (open) {
-            for (const auto& obj : scene_.scenery) {
-                bool sel = IsInSelection(kSelScenery, obj.id);
-                ImGuiTreeNodeFlags flags =
-                    ImGuiTreeNodeFlags_Leaf |
-                    ImGuiTreeNodeFlags_NoTreePushOnOpen |
-                    ImGuiTreeNodeFlags_SpanFullWidth;
-                if (sel) {
-                    flags |= ImGuiTreeNodeFlags_Selected;
-                    ImGui::PushStyleColor(ImGuiCol_Header,
-                                         {0.25f, 0.55f, 0.90f, 0.60f});
+            // Group indices by exact folder string (flat groups — "Forest"
+            // and "Forest/Undergrowth" are two distinct nodes here, not a
+            // nested tree; erase/delete/rename still treat "/" as nesting
+            // via prefix match, see InSceneryFolder in zones.cpp).
+            std::vector<std::string> folderOrder;
+            std::unordered_map<std::string, std::vector<int>> byFolder;
+            for (int i = 0; i < (int)scene_.scenery.size(); ++i) {
+                const std::string& f = scene_.scenery[i].folder;
+                auto fit = byFolder.find(f);
+                if (fit == byFolder.end()) { folderOrder.push_back(f); byFolder[f] = {i}; }
+                else fit->second.push_back(i);
+            }
+            std::sort(folderOrder.begin(), folderOrder.end());
+
+            for (const auto& folder : folderOrder) {
+                auto& idxs = byFolder[folder];
+                if (folder.empty()) {
+                    for (int idx : idxs) drawSceneryItem(scene_.scenery[idx]);
+                    continue;
                 }
-                char lbl[96];
-                auto it = modelNames.find(obj.modelId);
-                if (it != modelNames.end())
-                    std::snprintf(lbl, sizeof(lbl), "%s #%d",
-                                  it->second.c_str(), obj.id);
-                else
-                    std::snprintf(lbl, sizeof(lbl), "model%d #%d",
-                                  obj.modelId, obj.id);
-                ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s", lbl);
-                if (sel) ImGui::PopStyleColor();
-                if (ImGui::IsItemClicked()) {
-                    if (ctrlSelect) ToggleSelection(kSelScenery, obj.id);
-                    else SelectSingle(kSelScenery, obj.id);
+                ImGui::PushID(folder.c_str());
+                char fhdr[160];
+                std::snprintf(fhdr, sizeof(fhdr), "[ ] %s (%d)", folder.c_str(), (int)idxs.size());
+                bool fopen = ImGui::TreeNodeEx(fhdr,
+                    ImGuiTreeNodeFlags_SpanFullWidth |
+                    ImGuiTreeNodeFlags_OpenOnArrow |
+                    ImGuiTreeNodeFlags_OpenOnDoubleClick);
+                // Click the label itself (not the arrow) selects every item
+                // in the folder — matches DrawGroup's "click = select" habit.
+                if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+                    ClearSelection();
+                    for (size_t k = 0; k < idxs.size(); ++k)
+                        AddSelection(kSelScenery, scene_.scenery[idxs[k]].id, k + 1 == idxs.size());
                 }
+                if (ImGui::BeginPopupContextItem()) {
+                    if (ImGui::MenuItem("Select All")) {
+                        ClearSelection();
+                        for (size_t k = 0; k < idxs.size(); ++k)
+                            AddSelection(kSelScenery, scene_.scenery[idxs[k]].id, k + 1 == idxs.size());
+                    }
+                    if (ImGui::MenuItem("Rename / Move Folder...")) {
+                        sceneryFolderRenameTarget_ = folder;
+                        std::strncpy(sceneryFolderRenameBuf_, folder.c_str(), sizeof(sceneryFolderRenameBuf_) - 1);
+                        sceneryFolderRenameBuf_[sizeof(sceneryFolderRenameBuf_) - 1] = 0;
+                        showSceneryFolderRename_ = true;
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Delete Folder (all contents)")) {
+                        sceneryFolderDeleteTarget_ = folder;
+                        showSceneryFolderDelete_ = true;
+                    }
+                    ImGui::EndPopup();
+                }
+                if (fopen) {
+                    for (int idx : idxs) drawSceneryItem(scene_.scenery[idx]);
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
             }
             ImGui::TreePop();
         }
+    }
+
+    // ── Folder delete confirmation ──────────────────────────────────────────
+    if (showSceneryFolderDelete_) ImGui::OpenPopup("Delete Scenery Folder");
+    {
+        ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, {0.5f, 0.5f});
+    }
+    if (ImGui::BeginPopupModal("Delete Scenery Folder", &showSceneryFolderDelete_,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        int count = 0;
+        for (auto& s : scene_.scenery)
+            if (s.folder == sceneryFolderDeleteTarget_ ||
+                (s.folder.size() > sceneryFolderDeleteTarget_.size() &&
+                 s.folder.compare(0, sceneryFolderDeleteTarget_.size(), sceneryFolderDeleteTarget_) == 0 &&
+                 s.folder[sceneryFolderDeleteTarget_.size()] == '/'))
+                ++count;
+        ImGui::TextColored({1.f, 0.6f, 0.2f, 1.f}, "Delete folder \"%s\"?",
+                           sceneryFolderDeleteTarget_.c_str());
+        ImGui::Text("This permanently deletes %d scenery instance(s)\n(including any nested sub-folders).", count);
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Button, {0.65f, 0.1f, 0.1f, 1.f});
+        if (ImGui::Button("Delete", {120.f, 0.f})) {
+            DeleteSceneryFolder(db, media, sceneryFolderDeleteTarget_);
+            showSceneryFolderDelete_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", {120.f, 0.f})) {
+            showSceneryFolderDelete_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    // ── Folder rename / move ────────────────────────────────────────────────
+    if (showSceneryFolderRename_) ImGui::OpenPopup("Rename Scenery Folder");
+    {
+        ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, {0.5f, 0.5f});
+    }
+    if (ImGui::BeginPopupModal("Rename Scenery Folder", &showSceneryFolderRename_,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Rename/move \"%s\" to:", sceneryFolderRenameTarget_.c_str());
+        ImGui::SetNextItemWidth(280.f);
+        bool enter = ImGui::InputText("##scnfoldren", sceneryFolderRenameBuf_,
+                                      sizeof(sceneryFolderRenameBuf_),
+                                      ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::TextDisabled("Use \"/\" to nest under another folder (e.g. \"Forest/Rocks\").");
+        ImGui::Spacing();
+        if ((ImGui::Button("Rename", {120.f, 0.f}) || enter) && sceneryFolderRenameBuf_[0]) {
+            RenameSceneryFolder(db, media, sceneryFolderRenameTarget_, sceneryFolderRenameBuf_);
+            showSceneryFolderRename_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", {120.f, 0.f})) {
+            showSceneryFolderRename_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 }
 
@@ -292,6 +418,7 @@ void ZonesTab::DrawInspector(sqlite3* db, MediaTab* media) {
     case kModeNPC:        DrawPanelNPC       (db, media, true); break;
     case kModeSpawnPoint:  DrawPanelSpawnPoint(db, media, true); break;
     case kModePlayerSpawn: DrawPanelPlayerSpawn(db,       true); break;
+    case kModeFoliage:    DrawPanelFoliage  (db, media, true); break;
     case kModeEnviro:     DrawPanelEnviro   (db); break;
     case kModeOther:     DrawPanelOther    (db); break;
     default:

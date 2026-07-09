@@ -15,7 +15,11 @@ std::shared_ptr<Model> ModelCacheGet(const std::string& path, MaterialManager* m
         return it->second;
     }
     auto m = std::make_shared<Model>();
-    m->Load(path.c_str(), mm);
+    if (path == kSpherePrimitivePath) {
+        m->GenerateSpherePrimitive();
+    } else {
+        m->Load(path.c_str(), mm);
+    }
     s_cache[path] = m;
     if (s_observer) s_observer(path.c_str(), false, s_context);
     return m;

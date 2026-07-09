@@ -177,8 +177,10 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
     vpOrigin_  = ImGui::GetItemRectMin();   // screen-space top-left of the image
     vpHovered_ = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 
-    // ── Terrain brush cursor: hover raycast + circle overlay ─────────────
-    if (zoneMode_ == kModeTerrain && renderer_.terrain().Loaded()) {
+    // ── Terrain / Foliage brush cursor: hover raycast + circle overlay ────
+    const bool foliageBrushMode = (zoneMode_ == kModeFoliage);
+    if ((zoneMode_ == kModeTerrain || foliageBrushMode) && renderer_.terrain().Loaded()) {
+        const float curBrushRadius = foliageBrushMode ? foliageRadius_ : brushRadius_;
         float aspect = vpSize_.x / std::max(vpSize_.y, 1.f);
         ImVec2 mp = ImGui::GetMousePos();
         float vpX = mp.x - vpOrigin_.x;
@@ -202,6 +204,8 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         if (brushHoverValid_) {
             glm::mat4 vpMat = cam_.Proj(aspect) * cam_.View();
             ImDrawList* dl  = ImGui::GetWindowDrawList();
+            const bool foliageEraseHint = foliageBrushMode &&
+                (ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift));
 
             // Project a world-space ring onto screen space
             static constexpr int kSeg = 48;
@@ -211,9 +215,9 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             for (int i = 0; i <= kSeg; ++i) {
                 float a = (float)i / kSeg * kPi2;
                 glm::vec4 wp = {
-                    brushHitPos_.x + std::cos(a) * brushRadius_,
+                    brushHitPos_.x + std::cos(a) * curBrushRadius,
                     brushHitPos_.y + 0.25f,   // slight lift to avoid z-fighting
-                    brushHitPos_.z + std::sin(a) * brushRadius_,
+                    brushHitPos_.z + std::sin(a) * curBrushRadius,
                     1.0f
                 };
                 glm::vec4 clip = vpMat * wp;
@@ -227,9 +231,13 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             if (ptCount > 2) {
                 // Dark outline for contrast, then coloured ring
                 dl->AddPolyline(pts, ptCount, IM_COL32(0, 0, 0, 140), ImDrawFlags_None, 3.5f);
-                ImU32 ringCol = (brushMode_ == 4)
-                    ? IM_COL32(255, 215, 50, 230)   // yellow for paint
-                    : IM_COL32(255, 255, 255, 230);  // white for sculpt
+                ImU32 ringCol = foliageEraseHint
+                    ? IM_COL32(255, 80, 80, 230)    // red = foliage erase (Shift held)
+                    : foliageBrushMode
+                        ? IM_COL32(110, 235, 120, 230)  // green = foliage paint
+                        : (brushMode_ == 4)
+                            ? IM_COL32(255, 215, 50, 230)   // yellow for terrain paint
+                            : IM_COL32(255, 255, 255, 230); // white for terrain sculpt
                 dl->AddPolyline(pts, ptCount, ringCol, ImDrawFlags_None, 1.5f);
             }
 
@@ -242,7 +250,11 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                 float cs = 4.f;
                 dl->AddLine({cx - cs, cy}, {cx + cs, cy}, IM_COL32(0,0,0,140), 2.5f);
                 dl->AddLine({cx, cy - cs}, {cx, cy + cs}, IM_COL32(0,0,0,140), 2.5f);
-                ImU32 dotCol = (brushMode_ == 4) ? IM_COL32(255,215,50,230) : IM_COL32(255,255,255,230);
+                ImU32 dotCol = foliageEraseHint
+                    ? IM_COL32(255, 80, 80, 230)
+                    : foliageBrushMode
+                        ? IM_COL32(110, 235, 120, 230)
+                        : (brushMode_ == 4) ? IM_COL32(255,215,50,230) : IM_COL32(255,255,255,230);
                 dl->AddLine({cx - cs, cy}, {cx + cs, cy}, dotCol, 1.5f);
                 dl->AddLine({cx, cy - cs}, {cx, cy + cs}, dotCol, 1.5f);
             }
@@ -297,7 +309,8 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         (!scnArmedIntent &&
          zoneMode_ != kModeEnviro &&
          zoneMode_ != kModeOther &&
-         zoneMode_ != kModeTerrain);
+         zoneMode_ != kModeTerrain &&
+         zoneMode_ != kModeFoliage);
     bool rmbClickAction = false;
     ImVec2 rmbClickPos = ImGui::GetMousePos();
 
@@ -632,6 +645,32 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         if (vpHovered_) {
             if (ImGui::IsKeyPressed(ImGuiKey_LeftBracket, true))  brushRadius_ = std::max(1.f,  brushRadius_ - 2.f);
             if (ImGui::IsKeyPressed(ImGuiKey_RightBracket, true)) brushRadius_ = std::min(80.f, brushRadius_ + 2.f);
+        }
+    }
+
+    // ── Foliage brush (LMB-drag in Foliage mode; Shift+LMB erases) ────────
+    if (zoneMode_ == kModeFoliage && !mouseLook_ && renderer_.terrain().Loaded()) {
+        if (vpHovered_ && ImGui::IsMouseDown(0)) {
+            ImVec2 mp  = ImGui::GetMousePos();
+            float  vpX = mp.x - vpOrigin_.x;
+            float  vpY = mp.y - vpOrigin_.y;
+            float ndcX =  (vpX / vpSize_.x) * 2.f - 1.f;
+            float ndcY = -((vpY / vpSize_.y) * 2.f - 1.f);
+            float aspect = vpSize_.x / std::max(vpSize_.y, 1.f);
+            glm::vec3 hit;
+            if (renderer_.terrain().Raycast(cam_.pos, cam_.NDCRay(ndcX, ndcY, aspect), hit)) {
+                bool erase = ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
+                ApplyFoliageBrush(db, media, hit, dt, erase);
+                foliageActive_ = true;
+            }
+        } else if (ImGui::IsMouseReleased(0)) {
+            foliageActive_ = false;
+            foliagePlaceAccum_ = 0.f;  // don't carry a stale budget into the next stroke
+        }
+        // Radius shortcuts (same keys as terrain brush)
+        if (vpHovered_) {
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftBracket, true))  foliageRadius_ = std::max(1.f,  foliageRadius_ - 1.f);
+            if (ImGui::IsKeyPressed(ImGuiKey_RightBracket, true)) foliageRadius_ = std::min(60.f, foliageRadius_ + 1.f);
         }
     }
 

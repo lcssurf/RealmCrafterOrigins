@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <cctype>
 #include <algorithm>
 #include <unordered_map>
 
@@ -662,8 +663,14 @@ void ZonesTab::SyncSceneryCache(MediaTab* media) {
 
     std::unordered_map<int, const MediaModel*> modelById;
     for (const auto& m : media->Models()) modelById[m.id] = &m;
+    std::unordered_map<int, const MediaMaterial*> matByIdForCutout;
+    for (const auto& mm : media->Materials()) matByIdForCutout[mm.id] = &mm;
 
     // Scenery: build ModelBind (path + material_map) per model_id in use.
+    // black_cutout mirrors the server's LoadWorldObjects rule (model OR the
+    // scenery instance's override material) — see db.go. ModelBind is keyed
+    // per model_id though, so this uses the first scenery instance found for
+    // that model, same limitation buildMapping already has for material_map.
     std::unordered_map<int, ZoneRenderer::ModelBind> sceneryBinds;
     for (const auto& s : scene_.scenery) {
         if (sceneryBinds.count(s.modelId)) continue;
@@ -672,6 +679,12 @@ void ZonesTab::SyncSceneryCache(MediaTab* media) {
         ZoneRenderer::ModelBind b;
         b.file_path    = it->second->file_path;
         b.material_map = buildMapping(*it->second);
+        b.black_cutout = it->second->black_cutout;
+        if (s.materialId != 0) {
+            auto mit = matByIdForCutout.find(s.materialId);
+            if (mit != matByIdForCutout.end() && mit->second->black_cutout)
+                b.black_cutout = true;
+        }
         sceneryBinds[s.modelId] = std::move(b);
     }
     renderer_.SyncSceneryModels(scene_.scenery, sceneryBinds);
@@ -762,6 +775,12 @@ void ZonesTab::DrawPanelScenery(sqlite3* db, MediaTab* media, bool placement) {
             }
         }
         ImGui::Checkbox("Align to ground##scnp", &scnAlignGround_);
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::InputTextWithHint("##scnfolder", "Folder (optional, e.g. \"Village Props\")",
+                                 scnFolder_, sizeof(scnFolder_));
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("New placements are tagged with this folder for organization\n"
+                              "(scene sidebar, bulk select/move/delete, Foliage Brush erase mask).");
         ImGui::Spacing();
         ImGui::TextDisabled("RMB in viewport to place.");
         return;
@@ -804,19 +823,34 @@ void ZonesTab::DrawPanelScenery(sqlite3* db, MediaTab* media, bool placement) {
     if (ImGui::InputInt("Inventory slots##scno", &s.invSize)) { if(s.invSize<0)s.invSize=0; changed=true; }
     if (ImGui::Checkbox("Ownable##scno", &s.ownable)) changed=true;
     if (ImGui::Checkbox("Locked##scno",  &s.locked))  changed=true;
+    ImGui::Separator();
+    {
+        char folderBuf[128];
+        std::strncpy(folderBuf, s.folder.c_str(), sizeof(folderBuf) - 1);
+        folderBuf[sizeof(folderBuf) - 1] = 0;
+        if (ImGui::InputText("Folder##scno", folderBuf, sizeof(folderBuf))) {
+            s.folder = folderBuf;
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Move this instance to a different organizational folder.\n"
+                              "Empty = ungrouped/root. Use \"/\" to nest.");
+    }
 
     if (changed) {
         sqlite3_stmt* stmt = nullptr;
         sqlite3_prepare_v2(db,
             "UPDATE zone_scenery SET x=?,y=?,z=?,pitch=?,yaw=?,roll=?,"
-            "sx=?,sy=?,sz=?,collision=?,anim_mode=?,inv_size=?,ownable=?,locked=? WHERE id=?",
+            "sx=?,sy=?,sz=?,collision=?,anim_mode=?,inv_size=?,ownable=?,locked=?,folder=? WHERE id=?",
             -1, &stmt, nullptr);
         sqlite3_bind_double(stmt,1,s.pos.x);   sqlite3_bind_double(stmt,2,s.pos.y);   sqlite3_bind_double(stmt,3,s.pos.z);
         sqlite3_bind_double(stmt,4,s.rot.x);   sqlite3_bind_double(stmt,5,s.rot.y);   sqlite3_bind_double(stmt,6,s.rot.z);
         sqlite3_bind_double(stmt,7,s.scale.x); sqlite3_bind_double(stmt,8,s.scale.y); sqlite3_bind_double(stmt,9,s.scale.z);
         sqlite3_bind_int(stmt,10,s.collision); sqlite3_bind_int(stmt,11,s.animMode);
         sqlite3_bind_int(stmt,12,s.invSize);   sqlite3_bind_int(stmt,13,s.ownable?1:0);
-        sqlite3_bind_int(stmt,14,s.locked?1:0); sqlite3_bind_int(stmt,15,s.id);
+        sqlite3_bind_int(stmt,14,s.locked?1:0);
+        sqlite3_bind_text(stmt,15,s.folder.c_str(),-1,SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt,16,s.id);
         sqlite3_step(stmt); sqlite3_finalize(stmt);
         scene_.colVisDirty = true;
     }
@@ -826,6 +860,130 @@ void ZonesTab::DrawPanelScenery(sqlite3* db, MediaTab* media, bool placement) {
     ImGui::PushStyleColor(ImGuiCol_Button,{0.65f,0.1f,0.1f,1.f});
     if (ImGui::Button("Delete##scno")) DeleteSelected(db);
     ImGui::PopStyleColor();
+}
+
+// ─── Foliage brush panel ─────────────────────────────────────────────────────
+// Scatter-paints trees/bushes/rocks as ordinary zone_scenery rows. The model
+// palette (the "set" of models the brush picks randomly from, for variation)
+// can be built two ways: the searchable checklist right here, or by clicking
+// tiles in the Asset Browser at the bottom of the Zones tab while this mode
+// is active (see the DrawTile lambda in zones.cpp) — both write/read the same
+// foliageModelIds_ vector. Painted instances are regular ZScenery, so they're
+// selectable/editable/deletable via the normal Scenery panel + gizmo.
+void ZonesTab::DrawPanelFoliage(sqlite3* db, MediaTab* media, bool placement) {
+    (void)db;
+    if (!placement) return;
+
+    ImGui::TextColored({0.55f, 0.85f, 0.40f, 1.f}, "Foliage Brush");
+    ImGui::Separator();
+
+    ImGui::Text("Palette (%d model%s)", (int)foliageModelIds_.size(),
+                foliageModelIds_.size() == 1 ? "" : "s");
+    if (!foliageModelIds_.empty()) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear##folpal")) foliageModelIds_.clear();
+    }
+
+    // Current palette — one row per model with a quick remove button, so the
+    // "set of meshes for variation" is visible without leaving this panel.
+    if (media && !foliageModelIds_.empty()) {
+        const auto& models = media->Models();
+        ImGui::BeginChild("##folpalette", {0.f, std::min(90.f, foliageModelIds_.size() * 22.f + 4.f)}, true);
+        int removeId = -1;
+        for (int id : foliageModelIds_) {
+            const char* name = "(unknown)";
+            for (auto& m : models) if (m.id == id) { name = m.name.c_str(); break; }
+            ImGui::PushID(id);
+            if (ImGui::SmallButton("x")) removeId = id;
+            ImGui::SameLine();
+            ImGui::TextUnformatted(name);
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+        if (removeId >= 0) {
+            foliageModelIds_.erase(std::remove(foliageModelIds_.begin(), foliageModelIds_.end(), removeId),
+                                   foliageModelIds_.end());
+        }
+    } else if (foliageModelIds_.empty()) {
+        ImGui::TextColored({1.f, 0.65f, 0.3f, 1.f}, "No models selected.");
+    }
+    ImGui::Spacing();
+
+    // Searchable add-list — click a name to toggle it in/out of the palette.
+    ImGui::SetNextItemWidth(-1.f);
+    ImGui::InputTextWithHint("##folfilt", "Search models to add...",
+                             foliageFilter_, sizeof(foliageFilter_));
+    if (media) {
+        const auto& models = media->Models();
+        std::string filt = foliageFilter_;
+        for (char& c : filt) c = (char)std::tolower((unsigned char)c);
+
+        ImGui::BeginChild("##folpick", {0.f, 150.f}, true);
+        for (auto& m : models) {
+            if (!filt.empty()) {
+                std::string nm = m.name;
+                for (char& c : nm) c = (char)std::tolower((unsigned char)c);
+                if (nm.find(filt) == std::string::npos) continue;
+            }
+            bool sel = std::find(foliageModelIds_.begin(), foliageModelIds_.end(), m.id)
+                       != foliageModelIds_.end();
+            ImGui::PushID(m.id);
+            if (ImGui::Checkbox("##folchk", &sel)) {
+                if (sel) foliageModelIds_.push_back(m.id);
+                else foliageModelIds_.erase(
+                    std::remove(foliageModelIds_.begin(), foliageModelIds_.end(), m.id),
+                    foliageModelIds_.end());
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted(m.name.c_str());
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+    }
+    ImGui::TextDisabled("Tip: tiles in the Asset Browser below also toggle the palette.");
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    ImGui::SliderFloat("Radius##fol",       &foliageRadius_,     1.f,  60.f, "%.1f");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Paint circle radius. [ and ] also resize while hovering the viewport.");
+    ImGui::SliderFloat("Density##fol",      &foliageDensity_,    0.02f, 3.f,  "%.2f /m²/s");
+    ImGui::SliderFloat("Min Spacing##fol",  &foliageMinSpacing_, 0.1f, 10.f, "%.2f");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reject a new instance if closer than this to any existing scenery.");
+    ImGui::Spacing();
+
+    float pw = (ImGui::GetContentRegionAvail().x - 8) * 0.5f;
+    ImGui::SetNextItemWidth(pw);
+    ImGui::DragFloat("Min Scale##fol", &foliageMinScale_, 0.01f, 0.05f, foliageMaxScale_, "%.2f");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1);
+    ImGui::DragFloat("Max Scale##fol", &foliageMaxScale_, 0.01f, foliageMinScale_, 5.f, "%.2f");
+    if (foliageMinScale_ > foliageMaxScale_) foliageMinScale_ = foliageMaxScale_;
+
+    ImGui::Checkbox("Random yaw##fol", &foliageRandomYaw_);
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    ImGui::SetNextItemWidth(-1.f);
+    ImGui::InputTextWithHint("##folfolder", "Folder (optional, e.g. \"Forest North\")",
+                             foliageFolder_, sizeof(foliageFolder_));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("New painted instances are tagged with this folder.\n"
+                          "Also the erase mask target below.");
+    ImGui::Checkbox("Erase by folder##fol", &foliageEraseByFolder_);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Off: Shift+LMB erases only instances of the checked palette models.\n"
+            "On:  Shift+LMB erases ANY model whose folder matches the field above\n"
+            "(acts as a mask — e.g. clear everything in \"Forest North\" without\n"
+            "touching other folders, regardless of which models are in them).");
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    ImGui::TextDisabled(foliageEraseByFolder_
+        ? "LMB: paint    Shift+LMB: erase (folder mask, all models)"
+        : "LMB: paint    Shift+LMB: erase (checked palette models only)");
+    ImGui::TextDisabled("Ground snap is always on — instances sit on terrain.");
 }
 
 // ─── Terrain mode panel ──────────────────────────────────────────────────────

@@ -1196,6 +1196,7 @@ int main() {
         std::string model_path;
         float scale = 1.f;
         float x = 0.f, y = 0.f, z = 0.f, yaw = 0.f;
+        bool  black_cutout = false;
         std::unique_ptr<rco::renderer::Actor> actor;
         WorldObjectEntry() = default;
         WorldObjectEntry(WorldObjectEntry&&) = default;
@@ -1422,6 +1423,9 @@ int main() {
             bindings.push_back(std::move(ab));
         }
         player_anim_ctrl.Bind(bindings);
+        // TEMP DIAGNOSTIC (Attack/return_to stuck-on-full-timeline bug) — remove
+        // once root cause is found. See [anim-diag] tags in anim_controller.cpp.
+        player_anim_ctrl.log_enabled = true;
         return player_anim_ctrl.RequestStateByName("Idle");
     };
 
@@ -1721,6 +1725,7 @@ int main() {
                         bindings.push_back(std::move(ab));
                     }
                     player_anim_ctrl.Bind(bindings);
+                    player_anim_ctrl.log_enabled = true;  // TEMP DIAGNOSTIC — see anim_controller.cpp
                     player_anim_ctrl.RequestStateByName("Idle");
                 }
                 std::fprintf(stderr,
@@ -2043,6 +2048,7 @@ int main() {
                             bindings.push_back(std::move(ab));
                         }
                         player_anim_ctrl.Bind(bindings);
+                        player_anim_ctrl.log_enabled = true;  // TEMP DIAGNOSTIC — see anim_controller.cpp
                         player_anim_ctrl.RequestStateByName("Idle");
                     }
                     player_yaw_offset = actor_yaw_offset;
@@ -2716,6 +2722,15 @@ int main() {
                             [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                         is_death_action = (act == "death");
                     }
+                    // TEMP DIAGNOSTIC (item 1) — confirm the raw packet: which
+                    // action_id arrived and what it resolves to in player_anims
+                    // (should be "Attack" with start=75 end=130 when the player attacks).
+                    std::fprintf(stderr,
+                        "[anim-diag][NET] kPAnimateActor rid=%u action_id=%u resolved='%s' "
+                        "player_dead=%d is_death_action=%d\n",
+                        rid, static_cast<unsigned>(action_id),
+                        action_id < player_anims.size() ? player_anims[action_id].action.c_str() : "<out-of-range>",
+                        (int)player_dead, (int)is_death_action);
                     if (!player_dead && is_death_action) {
                         break; // stale death packet after respawn
                     }
@@ -2925,12 +2940,13 @@ int main() {
                 unique_models.reserve(obj_count);
                 for (uint16_t oi = 0; oi < obj_count && r.OK(); ++oi) {
                     WorldObjectEntry e;
-                    e.model_path = r.ReadString();
-                    e.scale      = r.ReadF32();
-                    e.x          = r.ReadF32();
-                    e.y          = r.ReadF32();
-                    e.z          = r.ReadF32();
-                    e.yaw        = r.ReadF32();
+                    e.model_path   = r.ReadString();
+                    e.scale        = r.ReadF32();
+                    e.x            = r.ReadF32();
+                    e.y            = r.ReadF32();
+                    e.z            = r.ReadF32();
+                    e.yaw          = r.ReadF32();
+                    e.black_cutout = (r.ReadU8() != 0);
                     if (!r.OK() || e.model_path.empty()) break;
                     unique_models.insert(e.model_path);
                     ++model_counts[e.model_path];
@@ -4011,6 +4027,8 @@ int main() {
                         obj.actor->position = {obj.x, obj.y, obj.z};
                         obj.actor->yaw      = obj.yaw;
                         obj.actor->scale    = obj.scale;
+                        if (obj.black_cutout)
+                            const_cast<rco::renderer::Model&>(obj.actor->model()).ApplyBlackCutout(true, &engine.materials());
                         if (!warm_cached) ++cold_loads;
                         ++initialized;
                     }
@@ -4076,6 +4094,8 @@ int main() {
                                 obj.actor->position = {obj.x, obj.y, obj.z};
                                 obj.actor->yaw      = obj.yaw;
                                 obj.actor->scale    = obj.scale;
+                                if (obj.black_cutout)
+                                    const_cast<rco::renderer::Model&>(obj.actor->model()).ApplyBlackCutout(true, &engine.materials());
                                 if (!warm_cached) ++cold_loads;
                                 ++global_inits;
                             }
@@ -4257,6 +4277,8 @@ int main() {
                             obj.actor->position = {obj.x, obj.y, obj.z};
                             obj.actor->yaw      = obj.yaw;
                             obj.actor->scale    = obj.scale;
+                            if (obj.black_cutout)
+                                const_cast<rco::renderer::Model&>(obj.actor->model()).ApplyBlackCutout(true, &engine.materials());
                             if (!warm_cached) miss_used_this_frame = true;
                             budget_ms_remaining -= static_cast<double>(init_us) / 1000.0;
                             ++initialized;

@@ -398,12 +398,16 @@ void ZoneScene::EnsureTables(sqlite3* db) {
         "  anim_mode    INTEGER NOT NULL DEFAULT 0,"
         "  inv_size     INTEGER NOT NULL DEFAULT 0,"
         "  ownable      INTEGER NOT NULL DEFAULT 0,"
-        "  locked       INTEGER NOT NULL DEFAULT 0"
+        "  locked       INTEGER NOT NULL DEFAULT 0,"
+        "  folder       TEXT    NOT NULL DEFAULT ''"
         ")");
 
     // media_model_shapes extra LOD params (safe no-op if missing/already exists).
     Exec(db, "ALTER TABLE media_model_shapes ADD COLUMN detail_a REAL NOT NULL DEFAULT 0");
     Exec(db, "ALTER TABLE media_model_shapes ADD COLUMN detail_b REAL NOT NULL DEFAULT 0");
+
+    // Scenery organizational folders (safe no-op on DBs that already have it).
+    Exec(db, "ALTER TABLE zone_scenery ADD COLUMN folder TEXT NOT NULL DEFAULT ''");
 }
 
 // ─── LoadFromDB ──────────────────────────────────────────────────────────────
@@ -672,7 +676,7 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
     if (sqlite3_prepare_v2(db,
         "SELECT id, model_id, material_id,"
         "       x, y, z, pitch, yaw, roll, sx, sy, sz,"
-        "       collision, anim_mode, inv_size, ownable, locked"
+        "       collision, anim_mode, inv_size, ownable, locked, folder"
         " FROM zone_scenery WHERE area_name=? ORDER BY id",
         -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, area.c_str(), -1, SQLITE_TRANSIENT);
@@ -695,6 +699,10 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
             s.invSize    = sqlite3_column_int(stmt, 14);
             s.ownable    = sqlite3_column_int(stmt, 15) != 0;
             s.locked     = sqlite3_column_int(stmt, 16) != 0;
+            {
+                const unsigned char* f = sqlite3_column_text(stmt, 17);
+                s.folder = f ? reinterpret_cast<const char*>(f) : "";
+            }
             scenery.push_back(s);
         }
         sqlite3_finalize(stmt);

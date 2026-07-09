@@ -324,9 +324,25 @@ private:
     MediaModel pendingModel_;
     char       filterModel_[128] = {};
 
+    // Multi-select bulk edit — Ctrl+click a row in the model list to toggle
+    // it in/out of modelMultiSel_ (holds MediaModel::id, not vector indices,
+    // so it survives a Refresh/refetch without desyncing). Shift+click
+    // selects the contiguous range from modelMultiSelAnchor_ to the clicked
+    // row (Shift+Ctrl+click adds that range to the existing selection
+    // instead of replacing it). When 2+ are selected, DrawModels shows a
+    // "Bulk Edit" panel to apply the same Scale and/or Black Cutout to every
+    // selected model in one go.
+    std::vector<int> modelMultiSel_;
+    int   modelMultiSelAnchor_  = -1;  // index (in models_) of the last plain/Ctrl click
+    bool  bulkApplyScale_       = false;
+    float bulkScaleValue_       = 1.f;
+    bool  bulkApplyBlackCutout_ = false;
+    bool  bulkBlackCutoutValue_ = false;
+
     // Collision shapes for the selected model.
     std::vector<ModelShape> model_shapes_;
     bool       show_collision_preview_ = true;
+    bool       show_socket_preview_    = true;  // Actor Defs socket gizmo overlay
     int        sel_shape_            = -1;
     int        shapes_model_id_      = -1; // model_id whose shapes are loaded
     ModelShape edit_shape_;

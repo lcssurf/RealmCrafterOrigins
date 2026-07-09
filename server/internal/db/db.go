@@ -2313,12 +2313,13 @@ type NpcSpawn struct {
 // WorldObject is one placed static model instance in a zone.
 // ModelPath is the resolved file_path from media_models (relative to dist/client/).
 type WorldObject struct {
-	ID        int
-	AreaName  string
-	ModelPath string
-	Scale     float32
-	X, Y, Z   float32
-	Yaw       float32
+	ID          int
+	AreaName    string
+	ModelPath   string
+	Scale       float32
+	X, Y, Z     float32
+	Yaw         float32
+	BlackCutout bool
 }
 
 // Waypoint mirrors one row in area_waypoints.
@@ -9734,11 +9735,17 @@ func (d *DB) seedDefaultFXTemplates(ctx context.Context) {
 }
 
 // LoadWorldObjects returns all placed static world objects from zone_scenery with resolved model paths.
+// BlackCutout is the OR of the model's own flag and the scenery's override
+// material's flag (zs.material_id=0 means "no override" — the LEFT JOIN then
+// yields NULL, which COALESCEs to 0/false), mirroring the same combination
+// rule used for actor mesh slots in appearance.go.
 func (d *DB) LoadWorldObjects(ctx context.Context) ([]*WorldObject, error) {
 	rows, err := d.db.QueryContext(ctx, d.q(
-		`SELECT zs.id, zs.area_name, COALESCE(mm.file_path,''), zs.sx, zs.x, zs.y, zs.z, zs.yaw
+		`SELECT zs.id, zs.area_name, COALESCE(mm.file_path,''), zs.sx, zs.x, zs.y, zs.z, zs.yaw,
+		        COALESCE(mm.black_cutout,0), COALESCE(mat.black_cutout,0)
 		 FROM zone_scenery zs
 		 LEFT JOIN media_models mm ON mm.id = zs.model_id
+		 LEFT JOIN media_materials mat ON mat.id = zs.material_id
 		 ORDER BY zs.area_name, zs.id`))
 	if err != nil {
 		return nil, fmt.Errorf("db: LoadWorldObjects: %w", err)
@@ -9748,12 +9755,14 @@ func (d *DB) LoadWorldObjects(ctx context.Context) ([]*WorldObject, error) {
 	for rows.Next() {
 		w := &WorldObject{}
 		var scale, x, y, z, yaw float64
+		var modelCutout, matCutout bool
 		if err := rows.Scan(&w.ID, &w.AreaName, &w.ModelPath,
-			&scale, &x, &y, &z, &yaw); err != nil {
+			&scale, &x, &y, &z, &yaw, &modelCutout, &matCutout); err != nil {
 			return nil, fmt.Errorf("db: LoadWorldObjects scan: %w", err)
 		}
 		w.Scale = float32(scale)
 		w.X, w.Y, w.Z, w.Yaw = float32(x), float32(y), float32(z), float32(yaw)
+		w.BlackCutout = modelCutout || matCutout
 		out = append(out, w)
 	}
 	return out, rows.Err()

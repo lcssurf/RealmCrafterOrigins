@@ -141,7 +141,13 @@ static bool DrawFolderList(
     float width,
     std::function<void(int)> on_select,
     std::function<std::string(int)> tree_key = nullptr,
-    std::function<void(const std::string&)> on_folder_context = nullptr)
+    std::function<void(const std::string&)> on_folder_context = nullptr,
+    // Optional: additional rows to highlight besides `sel` (e.g. a
+    // Ctrl+click multi-selection the caller tracks itself). Returns true if
+    // item i should render as selected. Callers that don't need this pass
+    // nothing — nullptr is checked below, existing single-select behaviour
+    // is unchanged.
+    std::function<bool(int)> extra_highlight = nullptr)
 {
     auto toLower = [](std::string s) {
         for (char& c : s) c = (char)std::tolower((unsigned char)c); return s;
@@ -157,7 +163,8 @@ static bool DrawFolderList(
             if (toLower(items[i].name).find(filt_lo) == std::string::npos) continue;
             char label[256];
             std::snprintf(label, sizeof(label), "%s##%s%d", items[i].name.c_str(), child_id, i);
-            if (ImGui::Selectable(label, sel == i)) {
+            bool row_sel = (sel == i) || (extra_highlight && extra_highlight(i));
+            if (ImGui::Selectable(label, row_sel)) {
                 sel = i; on_select(i); changed = true;
             }
         }
@@ -270,7 +277,8 @@ static bool DrawFolderList(
             if (all_open) {
                 char label[256];
                 std::snprintf(label, sizeof(label), "%s##%s%d", item_base.c_str(), child_id, i);
-                if (ImGui::Selectable(label, sel == i)) {
+                bool row_sel = (sel == i) || (extra_highlight && extra_highlight(i));
+                if (ImGui::Selectable(label, row_sel)) {
                     sel = i; on_select(i); changed = true;
                 }
             }
@@ -1780,6 +1788,8 @@ void MediaTab::DrawModels(sqlite3* db) {
         pendingModel_ = {};
         newModel_ = true;
         selModel_ = -1;
+        modelMultiSel_.clear();
+        modelMultiSelAnchor_ = -1;
     }
     ImGui::SameLine();
     if (ImGui::Button("Import Model Files..."))    ImportFilesBatch(db);
@@ -1792,10 +1802,53 @@ void MediaTab::DrawModels(sqlite3* db) {
     ImGui::SetNextItemWidth(240);
     ImGui::InputText("##mdl_filter", filterModel_, sizeof(filterModel_));
     ImGui::SameLine(); ImGui::TextDisabled("filter");
+    ImGui::TextDisabled("Ctrl+click: toggle   Shift+click: range");
     DrawFolderList(models_, selModel_, filterModel_, "##mdl_list", 240,
-        [&](int i) { editModel_ = models_[i]; dirtyModel_ = false; newModel_ = false; },
+        [&](int i) {
+            ImGuiIO& io = ImGui::GetIO();
+            if (io.KeyShift && modelMultiSelAnchor_ >= 0) {
+                // Range-select from the anchor to i, inclusive. Skips rows
+                // hidden by the current filter so the range matches what's
+                // actually visible in the list. Plain Shift replaces the
+                // selection with the range; Shift+Ctrl adds it to whatever
+                // was already selected.
+                if (!io.KeyCtrl) modelMultiSel_.clear();
+                auto matchesFilter = [&](const MediaModel& m) {
+                    if (!filterModel_[0]) return true;
+                    std::string nm = m.name, filt = filterModel_;
+                    for (char& c : nm)   c = (char)std::tolower((unsigned char)c);
+                    for (char& c : filt) c = (char)std::tolower((unsigned char)c);
+                    return nm.find(filt) != std::string::npos;
+                };
+                int lo = std::min(modelMultiSelAnchor_, i);
+                int hi = std::max(modelMultiSelAnchor_, i);
+                for (int k = lo; k <= hi; ++k) {
+                    if (k < 0 || k >= (int)models_.size() || !matchesFilter(models_[k])) continue;
+                    int id = models_[k].id;
+                    if (std::find(modelMultiSel_.begin(), modelMultiSel_.end(), id) == modelMultiSel_.end())
+                        modelMultiSel_.push_back(id);
+                }
+                // Anchor intentionally not moved — a further Shift+click keeps
+                // extending/re-drawing the range from the original anchor.
+            } else if (io.KeyCtrl) {
+                int id = models_[i].id;
+                auto it = std::find(modelMultiSel_.begin(), modelMultiSel_.end(), id);
+                if (it != modelMultiSel_.end()) modelMultiSel_.erase(it);
+                else modelMultiSel_.push_back(id);
+                modelMultiSelAnchor_ = i;
+            } else {
+                modelMultiSel_.clear();
+                modelMultiSel_.push_back(models_[i].id);
+                modelMultiSelAnchor_ = i;
+            }
+            editModel_ = models_[i]; dirtyModel_ = false; newModel_ = false;
+        },
         nullptr,
-        [&](const std::string& fp) { OpenFolderDeleteModal_(db, fp, true); });
+        [&](const std::string& fp) { OpenFolderDeleteModal_(db, fp, true); },
+        [&](int i) {
+            return std::find(modelMultiSel_.begin(), modelMultiSel_.end(), models_[i].id)
+                   != modelMultiSel_.end();
+        });
     ImGui::SameLine();
 
     // Middle column: properties (fixed width).
@@ -1813,7 +1866,58 @@ void MediaTab::DrawModels(sqlite3* db) {
                          : std::string("models/") + f;
     };
 
-    if (newModel_) {
+    if (modelMultiSel_.size() > 1) {
+        ImGui::TextColored({0.4f, 0.75f, 1.f, 1.f},
+                           "Bulk Edit — %d models selected", (int)modelMultiSel_.size());
+        ImGui::Separator();
+
+        ImGui::BeginChild("##mdl_bulk_list", {0.f, std::min(120.f, modelMultiSel_.size() * 20.f + 6.f)}, true);
+        for (int id : modelMultiSel_) {
+            for (auto& m : models_) {
+                if (m.id == id) { ImGui::BulletText("%s", m.name.c_str()); break; }
+            }
+        }
+        ImGui::EndChild();
+        ImGui::Spacing();
+
+        ImGui::Checkbox("Set Scale##bulk", &bulkApplyScale_);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!bulkApplyScale_);
+        ImGui::SetNextItemWidth(120.f);
+        ImGui::InputFloat("##bulkscaleval", &bulkScaleValue_, 0.1f, 1.f, "%.2f");
+        ImGui::EndDisabled();
+
+        ImGui::Checkbox("Set Black Cutout##bulk", &bulkApplyBlackCutout_);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!bulkApplyBlackCutout_);
+        ImGui::Checkbox("##bulkcutoutval", &bulkBlackCutoutValue_);
+        ImGui::SameLine();
+        ImGui::TextDisabled(bulkBlackCutoutValue_ ? "(on)" : "(off)");
+        ImGui::EndDisabled();
+
+        ImGui::Spacing();
+        ImGui::BeginDisabled(!bulkApplyScale_ && !bulkApplyBlackCutout_);
+        if (ImGui::Button("Apply to selected")) {
+            int applied = 0;
+            for (int id : modelMultiSel_) {
+                for (auto& m : models_) {
+                    if (m.id != id) continue;
+                    if (bulkApplyScale_)       m.scale        = bulkScaleValue_;
+                    if (bulkApplyBlackCutout_) m.black_cutout = bulkBlackCutoutValue_;
+                    SaveModel(db, m);
+                    ++applied;
+                    break;
+                }
+            }
+            std::snprintf(statusMsg_, sizeof(statusMsg_),
+                          "Bulk-updated %d model(s).", applied);
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Clear selection##bulk")) { modelMultiSel_.clear(); modelMultiSelAnchor_ = -1; }
+
+        ImGui::TextDisabled("Ctrl+click a model in the list to add/remove it from this set.");
+    } else if (newModel_) {
         ImGui::TextColored({0.4f, 1.f, 0.4f, 1.f}, "New Model");
         ImGui::Separator();
         InputString("Name", pendingModel_.name);
@@ -2134,10 +2238,14 @@ void MediaTab::DrawModels(sqlite3* db) {
         if (show) {
             ImGui::Checkbox("Show Collision Overlay", &show_collision_preview_);
             preview_->SetActorScale(show->scale);
+            // Live every frame, same as scale — not just on path_changed/on
+            // checkbox-toggle, so a value changed elsewhere (e.g. the Models
+            // bulk-edit "Set Black Cutout" apply) shows up immediately even
+            // though this is still the same model/path already loaded.
+            preview_->SetStaticBlackCutout(show->black_cutout);
             bool path_changed = preview_->CurrentPath() != show->file_path;
             if (path_changed) {
                 preview_->LoadModel(show->file_path);
-                preview_->SetStaticBlackCutout(show->black_cutout);
                 // Seed the in-memory mapping with whatever the DB persisted
                 // for this model so the preview comes back textured after
                 // reopening the GUE.
@@ -2577,6 +2685,25 @@ void MediaTab::DrawMaterials(sqlite3* db) {
             ImGui::TextDisabled("(preview load failed)");
         else
             ImGui::TextDisabled("(no albedo texture)");
+
+        // ── 3D sphere preview — the material actually applied (full PBR:
+        // normal map, roughness, metallic, lit), same viewport used by the
+        // Models / Actor Defs previews, unlike the flat albedo thumbnail above.
+        ImGui::SameLine();
+        ImGui::BeginChild("##mat_sphere_preview", {340.f, 300.f}, true);
+        EnsurePreview(preview_, preview_init_ok_, engine_, pipeline_);
+        if (!preview_init_ok_) {
+            ImGui::TextDisabled("Preview unavailable (shader load failed).");
+        } else {
+            preview_->LoadSpherePrimitive();
+            preview_->OverrideMaterial(editMat_.albedo_path, editMat_.normal_path,
+                                       editMat_.orm_path,
+                                       editMat_.albedo_r, editMat_.albedo_g, editMat_.albedo_b,
+                                       editMat_.roughness, editMat_.metallic,
+                                       editMat_.black_cutout);
+            preview_->DrawImGui();
+        }
+        ImGui::EndChild();
         ImGui::Spacing();
 
         ImGui::BeginDisabled(!dirtyMat_);
@@ -3307,7 +3434,9 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         // --- Socket Bindings section (B3a) ---
         ImGui::TextColored({0.8f, 0.9f, 1.f, 1.f}, "Sockets");
         ImGui::SameLine();
-        ImGui::TextDisabled("(socket → bone + offset. No preview: adjust numbers, test in-game)");
+        ImGui::Checkbox("Show in preview", &show_socket_preview_);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(socket -> bone + offset; gizmo + label render on the preview when enabled)");
         ImGui::BeginChild("##sockets", {0, 200}, true);
 
         // Bone names from the currently loaded preview model (slot 0).
@@ -3542,6 +3671,29 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                 preview_->SetActorScale(editActorDef_.scale);
                 preview_->SetCollisionShapes({});
                 preview_->SetCollisionPreviewVisible(false);
+
+                // Socket debug overlay — lets the dev confirm bone choice and
+                // offsets visually instead of only testing in-game.
+                {
+                    std::vector<PreviewViewport::SocketPreviewEntry> sockEntries;
+                    sockEntries.reserve(editActorDef_.socket_bindings.size());
+                    for (const auto& s : editActorDef_.socket_bindings) {
+                        if (s.bone_name.empty()) continue;
+                        PreviewViewport::SocketPreviewEntry e;
+                        e.socket_name  = s.socket_name;
+                        e.bone_name    = s.bone_name;
+                        e.offset_pos_x = s.offset_pos_x;
+                        e.offset_pos_y = s.offset_pos_y;
+                        e.offset_pos_z = s.offset_pos_z;
+                        e.offset_rot_x = s.offset_rot_x;
+                        e.offset_rot_y = s.offset_rot_y;
+                        e.offset_rot_z = s.offset_rot_z;
+                        e.offset_scale = s.offset_scale;
+                        sockEntries.push_back(std::move(e));
+                    }
+                    preview_->SetSocketPreview(std::move(sockEntries));
+                    preview_->SetSocketPreviewVisible(show_socket_preview_);
+                }
 
                 // Build action entries so the preview dropdown lists actions
                 // (Idle, Walk…) not raw clip names. action_index carries the

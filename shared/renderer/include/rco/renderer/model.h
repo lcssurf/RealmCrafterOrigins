@@ -108,6 +108,12 @@ class MaterialManager;
 struct ConsolidationResult;
 ConsolidationResult ConsolidateMeshes(class Model& model, const char* path);
 
+// Sentinel "path" recognized by ModelCacheGet() to build a procedural UV
+// sphere instead of loading a file — used by tool previews (e.g. the GUE
+// Materials tab) that need to show a PBR material applied to real geometry
+// without shipping a dedicated sphere asset.
+inline constexpr const char* kSpherePrimitivePath = "__primitive_sphere__";
+
 class Model {
 public:
     ~Model();
@@ -119,6 +125,13 @@ public:
     // is written back so the submesh can be drawn via the deferred pipeline
     // without a hardcoded material slot.
     bool Load(const char* path, MaterialManager* mm = nullptr);
+
+    // Builds a procedural UV sphere (unit-ish, radius in world units) in place
+    // of loading a file — used for the material-preview sphere in the GUE.
+    // Vertex layout matches ProcessMesh's (pos3|norm3|uv2|tan3), so the result
+    // works with OverrideMaterial/ApplyMaterialsByName like any loaded model.
+    void GenerateSpherePrimitive(float radius = 0.5f, int rings = 24, int slices = 32);
+
     void Destroy();
     bool IsLoaded()      const { return !meshes_.empty(); }
     const std::vector<SubMesh>& meshes() const { return meshes_; }

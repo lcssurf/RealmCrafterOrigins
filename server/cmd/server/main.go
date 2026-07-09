@@ -149,6 +149,15 @@ func main() {
 	gameWorld := world.New()
 	world.SetAbilityRuntimeEnabled(cfg.Features.CombatAbilityRuntime)
 
+	// Load heightmaps BEFORE any NPC spawning below. LoadHeightmaps() also
+	// records the base path so GetOrCreateArea() can load the heightmap for
+	// any area created after this point (npc_spawns/spawn_points/waypoints
+	// each lazily create their area on first reference) — without this,
+	// areas created during the spawn loops below would have Heightmap==nil
+	// and newly-spawned NPCs would float on irregular terrain until they
+	// first moved. See world.SpawnNPC() for where spawn Y gets snapped.
+	gameWorld.LoadHeightmaps("../client/data/areas")
+
 	// Seed starter item templates (idempotent).
 	if err := database.SeedDefaultItems(ctx); err != nil {
 		log.Fatalf("main: seed items: %v", err)
@@ -572,7 +581,8 @@ func main() {
 				ModelPath: wo.ModelPath,
 				Scale:     wo.Scale,
 				X:         wo.X, Y: wo.Y, Z: wo.Z,
-				Yaw: wo.Yaw,
+				Yaw:         wo.Yaw,
+				BlackCutout: wo.BlackCutout,
 			})
 			area.Mu.Unlock()
 		}
@@ -657,8 +667,9 @@ func main() {
 		log.Printf("main: loaded %d portals from database", len(areaPortals))
 	}
 
-	// Load heightmaps so NPCs follow terrain Y when moving.
-	gameWorld.LoadHeightmaps("../client/data/areas")
+	// Heightmaps are loaded earlier now (right after gameWorld := world.New()),
+	// before any NPC spawning, so spawn Y can be snapped to terrain — see the
+	// gameWorld.LoadHeightmaps(...) call above.
 
 	// Start NPC AI and regen goroutines.
 	gameWorld.StartAI(ctx)

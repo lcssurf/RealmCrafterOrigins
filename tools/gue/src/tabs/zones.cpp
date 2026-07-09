@@ -4,6 +4,7 @@
 #include <imgui.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -622,15 +623,17 @@ void ZonesTab::PlaceObject(const glm::vec3& wpos, sqlite3* db, MediaTab* media) 
         s.materialId = scnMaterialId_;
         s.pos        = p;
         s.scale      = {defaultScale, defaultScale, defaultScale};
+        s.folder     = scnFolder_;
 
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
-            "INSERT INTO zone_scenery (area_name, model_id, material_id, x, y, z, sx, sy, sz)"
-            " VALUES (?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            "INSERT INTO zone_scenery (area_name, model_id, material_id, x, y, z, sx, sy, sz, folder)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt,1,scene_.areaName.c_str(),-1,SQLITE_TRANSIENT);
             sqlite3_bind_int(stmt,2,s.modelId); sqlite3_bind_int(stmt,3,s.materialId);
             sqlite3_bind_double(stmt,4,s.pos.x); sqlite3_bind_double(stmt,5,s.pos.y); sqlite3_bind_double(stmt,6,s.pos.z);
             sqlite3_bind_double(stmt,7,defaultScale); sqlite3_bind_double(stmt,8,defaultScale); sqlite3_bind_double(stmt,9,defaultScale);
+            sqlite3_bind_text(stmt,10,s.folder.c_str(),-1,SQLITE_TRANSIENT);
             sqlite3_step(stmt);
             s.id = (int)sqlite3_last_insert_rowid(db);
             sqlite3_finalize(stmt);
@@ -723,6 +726,270 @@ void ZonesTab::PlaceObject(const glm::vec3& wpos, sqlite3* db, MediaTab* media) 
     }
     default: break;
     }
+}
+
+// ─── Foliage brush ──────────────────────────────────────────────────────────
+// Called every frame the LMB is held in Foliage mode (zones_viewport.cpp).
+// Scatters new zone_scenery instances within foliageRadius_ of `hit` (erase=
+// false), or removes existing ones whose model is in the current palette
+// (erase=true, Shift+LMB). Painted instances are ordinary ZScenery rows —
+// same table/renderer path as manually-placed scenery — so no new rendering
+// or persistence plumbing was needed, just batched placement.
+void ZonesTab::ApplyFoliageBrush(sqlite3* db, MediaTab* media, const glm::vec3& hit,
+                                 float dt, bool erase) {
+    if (erase) {
+        // Two mask modes: by palette (only erase scenery whose model is
+        // currently checked in the palette — the original behaviour), or by
+        // folder (erase ANY model in foliageFolder_, "/"-prefix included —
+        // e.g. folder "Forest" also matches "Forest/Undergrowth"). Folder
+        // mode ignores the palette entirely, so it can clear a hand-placed
+        // tree too, not just brush-painted ones.
+        if (!foliageEraseByFolder_ && foliageModelIds_.empty()) return;
+        const std::string eraseFolder = foliageFolder_;
+        const std::string eraseFolderPrefix = eraseFolder + "/";
+        std::vector<int> toRemove;
+        for (auto& s : scene_.scenery) {
+            bool matches;
+            if (foliageEraseByFolder_) {
+                matches = eraseFolder.empty()
+                    ? s.folder.empty()
+                    : (s.folder == eraseFolder || s.folder.rfind(eraseFolderPrefix, 0) == 0);
+            } else {
+                matches = std::find(foliageModelIds_.begin(), foliageModelIds_.end(), s.modelId)
+                          != foliageModelIds_.end();
+            }
+            if (!matches) continue;
+            float dx = s.pos.x - hit.x, dz = s.pos.z - hit.z;
+            if (dx * dx + dz * dz <= foliageRadius_ * foliageRadius_)
+                toRemove.push_back(s.id);
+        }
+        if (toRemove.empty()) return;
+
+        sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr);
+        sqlite3_stmt* del = nullptr;
+        if (sqlite3_prepare_v2(db, "DELETE FROM zone_scenery WHERE id=?", -1, &del, nullptr) == SQLITE_OK) {
+            for (int id : toRemove) {
+                sqlite3_bind_int(del, 1, id);
+                sqlite3_step(del);
+                sqlite3_reset(del);
+            }
+            sqlite3_finalize(del);
+        }
+        sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
+
+        scene_.scenery.erase(std::remove_if(scene_.scenery.begin(), scene_.scenery.end(),
+            [&](const ZScenery& s) {
+                return std::find(toRemove.begin(), toRemove.end(), s.id) != toRemove.end();
+            }), scene_.scenery.end());
+        if (selectedType_ == kSelScenery &&
+            std::find(toRemove.begin(), toRemove.end(), selectedID_) != toRemove.end()) {
+            ClearSelection();
+        }
+        if (media) SyncSceneryCache(media);
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Foliage: erased %d instance(s).", (int)toRemove.size());
+        return;
+    }
+
+    if (foliageModelIds_.empty() || !renderer_.terrain().Loaded()) return;
+
+    // Frame-rate independent density: accumulate a fractional instance
+    // "budget" from area × density × dt and only spend whole units, so a
+    // slow frame and a fast frame scatter the same average density instead
+    // of one placing more instances just because dt was larger.
+    float area = 3.14159265f * foliageRadius_ * foliageRadius_;
+    foliagePlaceAccum_ += area * foliageDensity_ * dt;
+    int budget = (int)foliagePlaceAccum_;
+    if (budget <= 0) return;
+    foliagePlaceAccum_ -= (float)budget;
+    // Hard cap per tick — a huge radius+density combo shouldn't spike a frame
+    // with hundreds of inserts; the brush just needs more strokes/time instead.
+    budget = std::min(budget, 12);
+    // If any palette model has never appeared in the scene yet (this brush or
+    // otherwise), this tick may be the one that pays its one-time load cost —
+    // keep it to a single instance (see foliageWarmModelIds_ comment in zones.h).
+    for (int mid : foliageModelIds_) {
+        bool warm = foliageWarmModelIds_.count(mid) != 0;
+        if (!warm) {
+            for (auto& s : scene_.scenery) if (s.modelId == mid) { warm = true; break; }
+        }
+        if (!warm) { budget = std::min(budget, 1); break; }
+    }
+
+    sqlite3_stmt* ins = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "INSERT INTO zone_scenery"
+        " (area_name, model_id, material_id, x, y, z, pitch, yaw, roll, sx, sy, sz, folder)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &ins, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Foliage: insert prepare failed: %s", sqlite3_errmsg(db));
+        return;
+    }
+
+    // Model default scale is looked up once per stroke-tick per distinct
+    // model actually rolled, not per candidate point.
+    std::unordered_map<int, float> defaultScaleCache;
+    auto defaultScaleFor = [&](int modelId) -> float {
+        auto it = defaultScaleCache.find(modelId);
+        if (it != defaultScaleCache.end()) return it->second;
+        float s = 1.f;
+        sqlite3_stmt* sc = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT scale FROM media_models WHERE id=?", -1, &sc, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int(sc, 1, modelId);
+            if (sqlite3_step(sc) == SQLITE_ROW) s = (float)sqlite3_column_double(sc, 0);
+            sqlite3_finalize(sc);
+        }
+        if (s <= 0.f) s = 1.f;
+        defaultScaleCache[modelId] = s;
+        return s;
+    };
+
+    int placed = 0;
+    const int maxAttempts = budget * 8;
+    for (int attempt = 0; attempt < maxAttempts && placed < budget; ++attempt) {
+        // Uniform random point inside the brush disk.
+        float rr  = std::sqrt((float)std::rand() / (float)RAND_MAX) * foliageRadius_;
+        float ang = ((float)std::rand() / (float)RAND_MAX) * 6.2831853f;
+        glm::vec3 p = hit + glm::vec3(std::cos(ang) * rr, 0.f, std::sin(ang) * rr);
+
+        bool tooClose = false;
+        for (auto& s : scene_.scenery) {
+            float dx = s.pos.x - p.x, dz = s.pos.z - p.z;
+            if (dx * dx + dz * dz < foliageMinSpacing_ * foliageMinSpacing_) { tooClose = true; break; }
+        }
+        if (tooClose) continue;
+
+        p.y = renderer_.terrain().heightmap().SampleWorld(p.x, p.z);
+
+        int modelId = foliageModelIds_[(size_t)std::rand() % foliageModelIds_.size()];
+        float jitter = foliageMinScale_ +
+            ((float)std::rand() / (float)RAND_MAX) * (foliageMaxScale_ - foliageMinScale_);
+        float finalScale = defaultScaleFor(modelId) * jitter;
+        float yaw = foliageRandomYaw_ ? ((float)std::rand() / (float)RAND_MAX) * 360.f : 0.f;
+
+        ZScenery s;
+        s.modelId    = modelId;
+        s.materialId = 0;
+        s.pos        = p;
+        s.rot        = {0.f, yaw, 0.f};
+        s.scale      = {finalScale, finalScale, finalScale};
+        s.folder     = foliageFolder_;
+
+        sqlite3_bind_text(ins, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(ins, 2, s.modelId);
+        sqlite3_bind_int(ins, 3, s.materialId);
+        sqlite3_bind_double(ins, 4, s.pos.x);
+        sqlite3_bind_double(ins, 5, s.pos.y);
+        sqlite3_bind_double(ins, 6, s.pos.z);
+        sqlite3_bind_double(ins, 7, s.rot.x);
+        sqlite3_bind_double(ins, 8, s.rot.y);
+        sqlite3_bind_double(ins, 9, s.rot.z);
+        sqlite3_bind_double(ins, 10, s.scale.x);
+        sqlite3_bind_double(ins, 11, s.scale.y);
+        sqlite3_bind_double(ins, 12, s.scale.z);
+        sqlite3_bind_text(ins, 13, s.folder.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(ins);
+        s.id = (int)sqlite3_last_insert_rowid(db);
+        sqlite3_reset(ins);
+        sqlite3_clear_bindings(ins);
+
+        scene_.scenery.push_back(s);
+        foliageWarmModelIds_.insert(modelId);
+        // Per-instance undo, same as any other placement. A stroke that
+        // paints more than kMaxUndo (50) instances will only let you undo
+        // the most recent 50 — acceptable for a scatter brush; Shift+LMB
+        // erase is the practical way to clean up a bad stroke.
+        PushUndo(kUndoCreate, kSelScenery, s.id);
+        ++placed;
+    }
+    sqlite3_finalize(ins);
+
+    if (placed > 0) {
+        if (media) SyncSceneryCache(media);
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Foliage: painted %d instance(s).", placed);
+    }
+}
+
+// ─── Scenery folders ────────────────────────────────────────────────────────
+// Folder membership test shared by delete/rename: exact match or nested
+// under it ("folder/..."). folder=="" (root/ungrouped) is intentionally not
+// supported here — there's nothing to bulk-delete/rename about "no folder".
+
+static bool InSceneryFolder(const std::string& objFolder, const std::string& folder) {
+    if (objFolder == folder) return true;
+    return objFolder.size() > folder.size() &&
+           objFolder.compare(0, folder.size(), folder) == 0 &&
+           objFolder[folder.size()] == '/';
+}
+
+void ZonesTab::DeleteSceneryFolder(sqlite3* db, MediaTab* media, const std::string& folder) {
+    if (folder.empty()) return;
+    std::vector<int> toRemove;
+    for (auto& s : scene_.scenery)
+        if (InSceneryFolder(s.folder, folder)) toRemove.push_back(s.id);
+    if (toRemove.empty()) return;
+
+    sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr);
+    sqlite3_stmt* del = nullptr;
+    if (sqlite3_prepare_v2(db, "DELETE FROM zone_scenery WHERE id=?", -1, &del, nullptr) == SQLITE_OK) {
+        for (int id : toRemove) {
+            sqlite3_bind_int(del, 1, id);
+            sqlite3_step(del);
+            sqlite3_reset(del);
+        }
+        sqlite3_finalize(del);
+    }
+    sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
+
+    scene_.scenery.erase(std::remove_if(scene_.scenery.begin(), scene_.scenery.end(),
+        [&](const ZScenery& s) {
+            return std::find(toRemove.begin(), toRemove.end(), s.id) != toRemove.end();
+        }), scene_.scenery.end());
+    if (selectedType_ == kSelScenery &&
+        std::find(toRemove.begin(), toRemove.end(), selectedID_) != toRemove.end()) {
+        ClearSelection();
+    }
+    if (media) SyncSceneryCache(media);
+    std::snprintf(statusMsg_, sizeof(statusMsg_),
+                  "Deleted folder '%s' (%d instance(s)).", folder.c_str(), (int)toRemove.size());
+}
+
+void ZonesTab::RenameSceneryFolder(sqlite3* db, MediaTab* media,
+                                   const std::string& folder, const std::string& newFolder) {
+    if (folder.empty() || folder == newFolder) return;
+
+    sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr);
+    sqlite3_stmt* upd = nullptr;
+    bool prepared = sqlite3_prepare_v2(db, "UPDATE zone_scenery SET folder=? WHERE id=?",
+                                       -1, &upd, nullptr) == SQLITE_OK;
+    int renamed = 0;
+    for (auto& s : scene_.scenery) {
+        if (!InSceneryFolder(s.folder, folder)) continue;
+        // Preserve the nested suffix: "Forest/Undergrowth" renaming
+        // "Forest"->"Woods" becomes "Woods/Undergrowth"; an exact match just
+        // becomes newFolder outright.
+        std::string updated = (s.folder == folder)
+            ? newFolder
+            : newFolder + s.folder.substr(folder.size());
+        s.folder = updated;
+        if (prepared) {
+            sqlite3_bind_text(upd, 1, updated.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(upd, 2, s.id);
+            sqlite3_step(upd);
+            sqlite3_reset(upd);
+            sqlite3_clear_bindings(upd);
+        }
+        ++renamed;
+    }
+    if (prepared) sqlite3_finalize(upd);
+    sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
+
+    if (renamed > 0) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                      "Renamed folder '%s' -> '%s' (%d instance(s)).",
+                      folder.c_str(), newFolder.c_str(), renamed);
+    }
+    (void)media;  // rename doesn't change model bindings; no re-sync needed
 }
 
 // ─── Undo ─────────────────────────────────────────────────────────────────────
@@ -1283,8 +1550,8 @@ void ZonesTab::DuplicateSelected(sqlite3* db, MediaTab* media) {
         s.id = 0; s.pos += offset;
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
-            "INSERT INTO zone_scenery (area_name, model_id, material_id, x, y, z, pitch, yaw, roll, sx, sy, sz, collision, anim_mode, inv_size, ownable, locked)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            "INSERT INTO zone_scenery (area_name, model_id, material_id, x, y, z, pitch, yaw, roll, sx, sy, sz, collision, anim_mode, inv_size, ownable, locked, folder)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt,1,scene_.areaName.c_str(),-1,SQLITE_TRANSIENT);
             sqlite3_bind_int(stmt,2,s.modelId); sqlite3_bind_int(stmt,3,s.materialId);
             sqlite3_bind_double(stmt,4,s.pos.x); sqlite3_bind_double(stmt,5,s.pos.y); sqlite3_bind_double(stmt,6,s.pos.z);
@@ -1292,6 +1559,7 @@ void ZonesTab::DuplicateSelected(sqlite3* db, MediaTab* media) {
             sqlite3_bind_double(stmt,10,s.scale.x); sqlite3_bind_double(stmt,11,s.scale.y); sqlite3_bind_double(stmt,12,s.scale.z);
             sqlite3_bind_int(stmt,13,s.collision); sqlite3_bind_int(stmt,14,s.animMode);
             sqlite3_bind_int(stmt,15,s.invSize); sqlite3_bind_int(stmt,16,s.ownable?1:0); sqlite3_bind_int(stmt,17,s.locked?1:0);
+            sqlite3_bind_text(stmt,18,s.folder.c_str(),-1,SQLITE_TRANSIENT);
             sqlite3_step(stmt);
             s.id = (int)sqlite3_last_insert_rowid(db);
             sqlite3_finalize(stmt);
@@ -1703,7 +1971,14 @@ void ZonesTab::Draw(sqlite3* db, MediaTab* media) {
         // Helper: draw one model tile (thumbnail + label + drag source).
         // Returns true if clicked.
         auto DrawTile = [&](const MediaModel& m, int col_idx) {
-            bool    sel     = (m.id == scnModelId_);
+            // In Foliage mode, tiles are a multi-select palette (toggle in/out
+            // of foliageModelIds_) instead of the single-object scnModelId_
+            // used by plain Scenery placement.
+            const bool foliageMode = (zoneMode_ == kModeFoliage);
+            bool sel = foliageMode
+                ? (std::find(foliageModelIds_.begin(), foliageModelIds_.end(), m.id)
+                       != foliageModelIds_.end())
+                : (m.id == scnModelId_);
             ImVec2  tilePos = ImGui::GetCursorScreenPos();
 
             ImVec2 winMin = ImGui::GetWindowPos();
@@ -1714,7 +1989,8 @@ void ZonesTab::Draw(sqlite3* db, MediaTab* media) {
             GLuint thumb = visible ? thumbs_.Get(m.id, m.file_path) : 0;
 
             ImDrawList* dl = ImGui::GetWindowDrawList();
-            ImVec4 bgCol = sel ? ImVec4{0.18f,0.44f,0.80f,1.f}
+            ImVec4 bgCol = sel ? (foliageMode ? ImVec4{0.20f,0.55f,0.25f,1.f}
+                                              : ImVec4{0.18f,0.44f,0.80f,1.f})
                                : ImVec4{0.14f,0.14f,0.17f,1.f};
             dl->AddRectFilled(tilePos,
                 {tilePos.x+kTileW, tilePos.y+kTileH},
@@ -1724,12 +2000,20 @@ void ZonesTab::Draw(sqlite3* db, MediaTab* media) {
             ImGui::InvisibleButton(bid, {kTileW, kTileH});
             bool hov = ImGui::IsItemHovered();
             if (ImGui::IsItemClicked(0)) {
-                scnModelId_ = m.id; zoneMode_ = kModeScenery;
+                if (foliageMode) {
+                    auto fit = std::find(foliageModelIds_.begin(), foliageModelIds_.end(), m.id);
+                    if (fit != foliageModelIds_.end()) foliageModelIds_.erase(fit);
+                    else foliageModelIds_.push_back(m.id);
+                } else {
+                    scnModelId_ = m.id; zoneMode_ = kModeScenery;
+                }
             }
             if (hov) {
                 dl->AddRect(tilePos, {tilePos.x+kTileW, tilePos.y+kTileH},
                     IM_COL32(100,180,255,200), 4.f, 0, 1.5f);
-                ImGui::SetTooltip("%s\nid=%d\n%s\nDrag to viewport to place",
+                ImGui::SetTooltip(foliageMode
+                    ? "%s\nid=%d\n%s\nClick to add/remove from foliage palette"
+                    : "%s\nid=%d\n%s\nDrag to viewport to place",
                     m.name.c_str(), m.id, m.file_path.c_str());
             }
             if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {

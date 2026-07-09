@@ -22,6 +22,12 @@ struct ZScenery {
     int       invSize     = 0;
     bool      ownable     = false;
     bool      locked      = false;
+    // Free-text organizational group ("" = ungrouped/root). Purely an
+    // editor-side concept — not read by the server/client, just lets the
+    // dev group placed scenery (e.g. "Forest North", "Village Props") for
+    // bulk select/move/delete and Foliage Brush erase masking. Supports
+    // "/" nesting the same way media asset names do.
+    std::string folder;
 };
 
 struct ZPortal {

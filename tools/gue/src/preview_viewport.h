@@ -54,6 +54,14 @@ public:
 
     bool LoadModel(const std::string& path);
 
+    // Loads a procedural sphere instead of a file — used by the Materials tab
+    // to preview a material applied to real geometry (full PBR: normal map,
+    // roughness, metallic), unlike the flat 2D texture thumbnail. Forces the
+    // full deferred pipeline even though the sphere is a static, non-skinned
+    // mesh (RenderToEngineFrame_'s "is_static" fast path only supports flat
+    // albedo, no normal/ORM, which would defeat the purpose of this preview).
+    bool LoadSpherePrimitive();
+
     // Drop any cached version of `path` and reload from disk. Used after the
     // user edits the per-model UV transform so the sidecar is re-read.
     void ReloadCurrent();
@@ -146,12 +154,43 @@ public:
     void SetCollisionPreviewVisible(bool v) { show_collision_preview_ = v; }
     bool CollisionPreviewVisible() const { return show_collision_preview_; }
 
+    // Socket debug overlay (B3a follow-up): draw a gizmo + label at each
+    // socket's resolved bone position so the dev can confirm the bone
+    // choice and offsets without alt-tabbing into the client.
+    struct SocketPreviewEntry {
+        std::string socket_name;
+        std::string bone_name;
+        float offset_pos_x = 0.f, offset_pos_y = 0.f, offset_pos_z = 0.f;
+        float offset_rot_x = 0.f, offset_rot_y = 0.f, offset_rot_z = 0.f;
+        float offset_scale = 1.f;
+    };
+    void SetSocketPreview(std::vector<SocketPreviewEntry> entries) {
+        socket_preview_ = std::move(entries);
+    }
+    void SetSocketPreviewVisible(bool v) { show_socket_preview_ = v; }
+    bool SocketPreviewVisible() const { return show_socket_preview_; }
+
+    // Attaches a second model (e.g. an item) to a bone of the primary actor
+    // for the Items tab "Per-actor Overrides" preview. local_transform is
+    // applied after the bone's resolved world transform — the caller
+    // composes socket-binding offset * item-override offset * item scale
+    // into a single matrix so this class stays agnostic of that stacking.
+    struct AttachmentSpec {
+        std::string model_path;
+        std::string bone_name;     // "" = attach at the actor's own origin
+        glm::mat4   local_transform{1.0f};
+    };
+    void SetAttachment(const AttachmentSpec& spec);
+    void ClearAttachment();
+
     void SetStaticBlackCutout(bool v) { static_black_cutout_ = v; }
 
 private:
     void RenderToEngineFrame_(int w, int h, float dt);
     void DrawCollisionOverlay_(const ImVec2& image_pos, const ImVec2& image_size) const;
     void DrawScaleOverlay_   (const ImVec2& image_pos, const ImVec2& image_size) const;
+    void DrawSocketOverlay_  (const ImVec2& image_pos, const ImVec2& image_size) const;
+    void DrawAttachmentGizmo_(const ImVec2& image_pos, const ImVec2& image_size) const;
     void EnsureCollisionMeshCache_() const;
     // Resolve and play the clip for a configured action entry.
     void PlayActionEntry_(const AnimActionEntry& e);
@@ -180,6 +219,11 @@ private:
     bool  playing_         = true;
     float sun_intensity_   = 1.0f;
     float actor_scale_     = 1.0f;
+
+    // Set by LoadSpherePrimitive(); routes the static/non-skinned sphere
+    // through the full deferred PBR pipeline instead of the flat-shaded
+    // simple-forward fast path normally used for static meshes.
+    bool  force_full_pipeline_ = false;
 
     // Configured actions from the actor def's anim map. Refreshed each frame
     // from DrawActorDefs via SetAnimActions().
@@ -220,6 +264,20 @@ private:
 
     bool                        show_collision_preview_ = false;
     std::vector<CollisionShape> collision_shapes_;
+
+    bool                             show_socket_preview_ = false;
+    std::vector<SocketPreviewEntry>  socket_preview_;
+
+    rco::renderer::Actor  attachment_;
+    std::string           attachment_path_;
+    AttachmentSpec         attachment_spec_;
+    bool                   has_attachment_ = false;
+    // World matrix the attachment was last submitted with — cached each
+    // frame in RenderToEngineFrame_ so DrawAttachmentGizmo_ can draw its
+    // axes at the exact spot the item mesh is rendered at, without
+    // recomputing the bone lookup during the ImGui overlay pass.
+    glm::mat4              attachment_world_{1.0f};
+
     mutable std::vector<std::array<glm::vec3, 3>> collision_mesh_tris_;
     mutable std::string                         collision_mesh_cache_path_;
     mutable std::vector<std::array<glm::vec3, 3>> collision_mesh_simplified_tris_;

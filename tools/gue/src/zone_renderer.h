@@ -127,6 +127,11 @@ public:
         float ovr_albedo_r = 1.f, ovr_albedo_g = 1.f, ovr_albedo_b = 1.f;
         float ovr_roughness = 0.5f, ovr_metallic = 0.f;
         bool  has_override  = false;
+
+        // Mirrors media_models.black_cutout (OR'd with the override material's
+        // own flag by the caller). Applied once via Model::ApplyBlackCutout
+        // when an actor for this model is (re)created — see SyncSceneryModels.
+        bool  black_cutout  = false;
     };
 
     // Scenery mesh cache. Loads every referenced model, applies any provided
