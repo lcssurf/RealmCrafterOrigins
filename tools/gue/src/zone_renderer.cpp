@@ -342,6 +342,17 @@ void ZoneRenderer::DrawWater(const ZWater& w, bool selected, const glm::mat4& vp
         GLuint sceneDepthTex = fullPipeline_->SceneDepthTexture();
         glBindTextureUnit(1, sceneDepthTex);
         shader.SetInt("u_sceneDepth", 1);
+
+        // Fase 3 — approximate IBL reflection. Unit 3 (0=albedo, 1=gDepth_
+        // above, 2=ripple tex client-only/unused in GUE preview) — same
+        // already-baked prefiltered specular cubemap gPhongGlobal.fs
+        // samples for its own IBL, via the same Pipeline::PrefilterCube()
+        // getter the client's WaterManager::Render uses. Fixed global
+        // constant, matches the client's value exactly (see
+        // water_manager.cpp) — not exposed as a GUE slider.
+        glBindTextureUnit(3, fullPipeline_->PrefilterCube());
+        shader.SetInt("u_prefilterCube", 3);
+        shader.SetFloat("u_reflectionStrength", 0.45f);
     }
 
     shader.SetVec3("u_shallowColor", w.shallowColor);

@@ -232,7 +232,8 @@ void WaterManager::Render(const glm::mat4& view, const glm::mat4& proj, const Pi
 
     // Sun-only lighting — read from the pipeline's existing sun (same value
     // globalLightPass_() uses for gPhongGlobal.fs), not a duplicated source.
-    // No IBL, no shadow — see doc/TECH_DEBT.md #117.
+    // No shadow — see doc/TECH_DEBT.md #117. Approximate specular IBL
+    // reflection added in Fase 3 (below); no diffuse IBL/ambient term here.
     shader.SetVec3("u_sunDir",   pipeline.SunDirection());
     shader.SetVec3("u_sunColor", pipeline.SunColor());
     // Camera world position — same value/source of truth every deferred
@@ -255,6 +256,22 @@ void WaterManager::Render(const glm::mat4& view, const glm::mat4& proj, const Pi
     // highlight" range, intensity=1.75 in the requested 1.5-2.0 range).
     shader.SetFloat("u_specPower",     80.0f);
     shader.SetFloat("u_specIntensity", 1.75f);
+
+    // Fase 3 — approximate IBL reflection. Unit 3 (0=per-instance albedo,
+    // 1=gDepth_, 2=ripple tex, all already taken — see the loop below and
+    // Sub-fase 2a/ripple comments). Reuses the SAME already-baked
+    // prefiltered specular cubemap gPhongGlobal.fs samples for its own IBL
+    // (Pipeline::PrefilterCube() -> engine_->prefilterCube_) — not a copy,
+    // not a new bake. u_reflectionStrength is a fixed GLOBAL constant (not
+    // per-ZWater instance — this is an approximate/aesthetic effect, not a
+    // configurable per-water-body property, see doc/TECH_DEBT.md), same
+    // pattern as the fixed specPower/specIntensity just above. 0.45 gives a
+    // visible "there's sky/environment in this water" sensation at grazing
+    // angles without washing out the shallow/deep color gradient or the
+    // sun specular highlight.
+    glBindTextureUnit(3, pipeline.PrefilterCube());
+    shader.SetInt("u_prefilterCube", 3);
+    shader.SetFloat("u_reflectionStrength", 0.45f);
 
     // Gerstner wave clock. Caller-supplied (main.cpp's `now`, glfwGetTime()-
     // based) — not a clock owned by WaterManager.

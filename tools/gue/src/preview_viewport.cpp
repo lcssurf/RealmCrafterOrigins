@@ -529,7 +529,22 @@ void PreviewViewport::RenderToEngineFrame_(int w, int h, float dt) {
         auto& sh = rco::renderer::Shader::shaders["preview_static"];
         sh->Bind();
         sh->SetMat4("u_viewProj", vp);
-        sh->SetMat4("u_model",    glm::mat4(1.0f));  // actor at origin, prebaked
+        // Actor stays at world origin (no translate/rotate needed for this
+        // preview), but scale is NOT baked into the vertex data anywhere
+        // (LoadModel loads raw mesh data untouched) — it must be applied
+        // here via the model matrix, same as every other draw path in this
+        // engine. FIX: was a hardcoded glm::mat4(1.0f) (pure identity),
+        // which silently dropped actor_.scale (set every frame by
+        // MediaTab::DrawModels via SetActorScale(editModel_.scale), see
+        // media.cpp:2240) — static models always drew at scale=1.0
+        // regardless of the configured value, while the "Size: WxHxD"
+        // ruler (media.cpp:1952) and skinned/animated models (which go
+        // through Actor::SubmitAs -> actor.cpp's own
+        // glm::scale(model, glm::vec3(scale))) already applied it
+        // correctly. Same pattern as the two other glm::scale(...,
+        // actor_.scale) call sites in this file (:602, :858) and
+        // zone_renderer.cpp:823 — not a new convention.
+        sh->SetMat4("u_model", glm::scale(glm::mat4(1.0f), glm::vec3(actor_.scale)));
         sh->SetVec2("u_uvOffset", uv_offset_[0], uv_offset_[1]);
         sh->SetVec2("u_uvScale",  uv_scale_[0],  uv_scale_[1]);
         sh->SetVec3("u_sunDir",   glm::normalize(glm::vec3(-0.4f, -1.0f, -0.3f)));

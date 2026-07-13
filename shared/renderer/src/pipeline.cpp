@@ -45,6 +45,7 @@ glm::vec3 Pipeline::SunDirection() const { return sun_.direction; }
 glm::vec3 Pipeline::SunColor()     const { return sun_.diffuse; }
 glm::vec3 Pipeline::ViewPos()      const { return camPos_; }
 GLuint    Pipeline::SceneDepthTexture() const { return engine_->gDepth_; }
+GLuint    Pipeline::PrefilterCube()     const { return engine_->prefilterCube_; }
 
 void Pipeline::SetCharacterReadability(const CharacterReadabilityTuning& cfg) {
     characterReadability_ = cfg;

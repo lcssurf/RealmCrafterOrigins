@@ -1279,7 +1279,7 @@ visualmente estranhos em interiores.
 **Estimativa:** luz dinâmica ~1 dia (reaproveita infra); sombra de point light ~3-5 dias
 (trabalho novo de renderização).
 
-## 117. Água Fase 3 (reflexo) + mecânica de nadar (pendente) — profundidade/espuma feitas
+## 117. Água — reflexo aproximado (IBL+Fresnel) feito, reflexo real (planar/SSR) + mecânica de nadar pendentes
 
 **Fase 0 implementada** (plano estático texturizado):
 - `zone_water` já existia (schema + struct `ZWater`) mas sem UI pra `tex_path`/`tex_scale`
@@ -1435,18 +1435,37 @@ parcialmente submerso automaticamente produz um `depthDiff` pequeno no ponto de
 interseção, disparando a mesma faixa de espuma que a margem do terreno — nenhuma
 lógica de "personagem" foi ou precisa ser escrita.
 
+**Fase 3 — reflexo APROXIMADO implementada** (IBL + Fresnel simplificado, sem pass novo):
+- `water.fs` ganhou `R = reflect(-V, N)` (reusa o mesmo `N` Gerstner+ripple e `V` já
+  calculados pro especular Blinn-Phong) amostrando `u_prefilterCube` — a MESMA cubemap
+  especular pré-filtrada que `gPhongGlobal.fs` já usa pro IBL split-sum da cena inteira
+  (`Engine::prefilterCube_`), exposta ao forward pass via novo getter
+  `Pipeline::PrefilterCube()` (mesmo padrão de `SceneDepthTexture()`/`SunDirection()`).
+  Nenhum bake novo, nenhum FBO novo, nenhum render-to-texture — só mais uma leitura de
+  uma cubemap já pronta.
+- LOD do prefilter: `kWaterRoughness=0.08` (fixo, baixo mas não-zero — mesma convenção
+  de `gPhongGlobal.fs:162`'s `clamp(RMA.r, 0.04, 1.0)`) × `MAX_REFLECTION_LOD=4.0` (MESMO
+  valor de `gPhongGlobal.fs:57`, derivado de `Engine::prefilterMipLevels_=5`).
+  Fresnel: Schlick simplificado direto (`pow(1-NdotV, 5.0)`), sem `brdfLUT`/F0/metalness
+  — a integração split-sum completa não se aplica aqui, é um efeito aproximado.
+- `u_reflectionStrength=0.45` — constante GLOBAL fixa em C++ (não campo por-`ZWater`),
+  setada nos dois call sites (`WaterManager::Render`/`ZoneRenderer::DrawWater`), mesmo
+  padrão de `u_specPower`/`u_specIntensity`.
+- Bind na texture unit 3 (0=albedo por-instância, 1=`gDepth_`, 2=ripple tex já ocupadas).
+
 **O que falta (fases futuras, nenhuma implementada ainda):**
-- **IBL/sombra na água**: água ainda não recebe ambient/IBL (nenhuma aproximação de céu)
-  nem sombra projetada (árvore/prédio na frente do sol não escurece a água debaixo).
-  Mais caro que o sun-only atual — sombra exigiria sample do mesmo shadow map do sol
-  dentro do forward pass (hoje só a light pass deferred lê o shadow map); IBL exigiria
-  sample do cubemap de irradiância já usado por `gPhongGlobal.fs` ou uma aproximação
-  barata (cor do céu como uniform único, sem sampling real). Fica pra quando fizer
-  sentido — não pedido nesta rodada.
-- **Fase 3 — reflexo/refração**: render-to-texture de uma câmera espelhada (reflexo
-  planar, mais barato) ou SSR (mais caro, reaproveitaria o `ssr.fs` já existente pro
-  resto da cena). Exige FBO novo + pass novo — maior escopo e custo de performance
-  real desta lista.
+- **IBL/sombra difusa na água**: o reflexo especular acima cobre a "sensação de céu
+  refletido", mas água ainda não recebe irradiância difusa ambiente nem sombra projetada
+  (árvore/prédio na frente do sol não escurece a água debaixo). Sombra exigiria sample do
+  shadow map do sol dentro do forward pass (hoje só a light pass deferred lê). Fica pra
+  quando fizer sentido — não pedido nesta rodada.
+- **Reflexo REAL (planar/SSR)**: o reflexo atual é uma APROXIMAÇÃO via cubemap de
+  ambiente estática — não reflete objetos/personagens específicos da cena (só o
+  "ambiente" capturado no bake do IBL). Reflexo de verdade exigiria render-to-texture de
+  uma câmera espelhada (reflexo planar, mais barato) ou SSR (mais caro, reaproveitaria o
+  `ssr.fs` já existente pro resto da cena). Exige FBO novo + pass novo — maior escopo e
+  custo de performance real desta lista. Só vale a pena quando água virar um elemento de
+  gameplay mais central (lagos grandes, combate aquático).
 - **Mecânica de nadar** (separada da renderização): depende da água estar
   **networked** (feito na Fase 0 — `Area.Water`/`PZoneWater`). Falta o check em si:
   comparar `player.y + player_actor.ModelHeight()*0.6` contra o `Water.Y` mais próximo
@@ -1455,11 +1474,9 @@ lógica de "personagem" foi ou precisa ser escrita.
   NPC em `server/internal/world/area.go`). Servidor é o lugar certo porque movimento é
   autoritativo lá, igual ao snap de terreno.
 
-**Quando atacar:** Fase 3 só vale a pena quando água virar um elemento de gameplay mais
-central (lagos grandes, combate aquático) — antes disso o custo de performance (SSR/RTT)
-não se paga.
-**Estimativa:** IBL/sombra ~1-2 dias (sun-only já existe, é aditivo); Fase 3 ~4-6 dias
-(reflexo planar) ou mais pra SSR; nadar ~1-2 dias (assumindo networked, que já está).
+**Estimativa (itens restantes):** IBL difuso/sombra ~1-2 dias (sun-only já existe, é
+aditivo); reflexo planar ~4-6 dias ou mais pra SSR; nadar ~1-2 dias (assumindo networked,
+que já está).
 
 ## 118. Ripple Sim (rastro de onda do jogador) — Fase (a)+(b) implementadas, só cliente
 

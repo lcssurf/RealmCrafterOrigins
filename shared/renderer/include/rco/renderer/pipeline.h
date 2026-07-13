@@ -158,6 +158,19 @@ public:
     // been empirically verified on this engine's drivers — watch for
     // flickering/garbage depth if this is the first real use.
     GLuint SceneDepthTexture() const;
+    // Read-only access to the specular-prefiltered IBL cubemap
+    // (engine_->prefilterCube_ — same friend-access pattern as
+    // SceneDepthTexture() above). globalLightPass_() already binds this
+    // same texture to unit 7 for gPhongGlobal.fs's full split-sum IBL
+    // (pipeline.cpp:590); exposed here so forward-pass draws (water's
+    // approximate reflection) can sample the SAME already-baked cubemap —
+    // not a second bake, not a new render-to-texture pass. No matching
+    // brdfLUT()/irradianceCube() getter: water's reflection uses a
+    // simplified direct Schlick Fresnel term instead of the full split-sum
+    // integration (which needs brdfLUT), and irradiance is diffuse ambient
+    // light, not a specular reflection source — neither is needed for the
+    // "approximate reflection" effect (see water.fs).
+    GLuint PrefilterCube() const;
     void SetCharacterReadability(const CharacterReadabilityTuning& cfg);
     const CharacterReadabilityTuning& CharacterReadability() const { return characterReadability_; }
     void SetSceneLook(const SceneLookTuning& cfg);
