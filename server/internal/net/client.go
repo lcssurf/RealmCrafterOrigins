@@ -601,6 +601,12 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	// Send static world objects for this area.
 	c.sendWorldObjects(area)
 
+	// Send static point lights (torches/lanterns) for this area.
+	c.sendZoneLights(area)
+
+	// Send static water planes for this area.
+	c.sendZoneWater(area)
+
 	// Send any dropped items already in the area.
 	c.sendWorldItems(area)
 
@@ -886,6 +892,35 @@ func (c *ClientConn) sendWorldObjects(area *world.Area) {
 	c.actor.Send(buildFramedPacket(protocol.PWorldObjects, world.WorldObjectsPayload(objects)))
 }
 
+// sendZoneLights sends the area's static point lights (torches/lanterns —
+// Point-light Phase 1). Mirrors sendWorldObjects exactly; called from the
+// same two places (initial area entry and portal/area change) so the
+// client's LightManager always has the current area's list before the
+// first frame renders in it.
+func (c *ClientConn) sendZoneLights(area *world.Area) {
+	area.Mu.RLock()
+	lights := area.Lights
+	area.Mu.RUnlock()
+	if len(lights) == 0 {
+		return
+	}
+	c.actor.Send(buildFramedPacket(protocol.PZoneLights, world.LightsPayload(lights)))
+}
+
+// sendZoneWater sends the area's static water planes (Water Phase 0).
+// Mirrors sendZoneLights exactly; called from the same two places (initial
+// area entry and portal/area change) so the client's WaterManager always has
+// the current area's list before the first frame renders in it.
+func (c *ClientConn) sendZoneWater(area *world.Area) {
+	area.Mu.RLock()
+	water := area.Water
+	area.Mu.RUnlock()
+	if len(water) == 0 {
+		return
+	}
+	c.actor.Send(buildFramedPacket(protocol.PZoneWater, world.WaterPayload(water)))
+}
+
 func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) error {
 	// Cooldown: 3 s between portal uses.
 	c.actor.Mu.Lock()
@@ -932,9 +967,12 @@ func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) er
 	// Tell everyone in the new area about the arriving player.
 	newArea.Broadcast(buildFramedPacket(protocol.PNewActor, world.NewActorPayload(c.actor)), c.actor.RuntimeID)
 
-	// Send portal positions, world objects, and dropped items in the new area.
+	// Send portal positions, world objects, point lights, and dropped items
+	// in the new area.
 	c.sendPortals(newArea)
 	c.sendWorldObjects(newArea)
+	c.sendZoneLights(newArea)
+	c.sendZoneWater(newArea)
 	c.sendWorldItems(newArea)
 
 	// Resend known spells — the client clears its spellbar on PChangeArea,

@@ -80,6 +80,8 @@ const (
 	PRespec              uint16 = 137 // C->S: reset primary stats to base
 	PFXCatalog           uint16 = 138 // S->C: full fx_templates catalog sent once on startgame
 	PFullStats           uint16 = 139 // S->C: full stats sync (primary + vitals + 34 derived)
+	PZoneLights          uint16 = 140 // S->C: static point lights (zone_lights) for the current area
+	PZoneWater           uint16 = 141 // S->C: static water planes (zone_water) for the current area
 )
 
 // EmitterType values for PCreateEmitter.

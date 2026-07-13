@@ -47,7 +47,7 @@ void ZonesTab::DrawTopBar(sqlite3* db, MediaTab* media) {
         "Scenery","Terrain","Emitters","Water","ColBox",
         "Sound","Trigger","Waypoint","Portal","NPC",
         "Enviro","Other","SpawnPt","ColSphere","PlayerSpawn",
-        "Foliage"
+        "Foliage","Light"
     };
     ImGui::SetNextItemWidth(120.f);
     if (ImGui::BeginCombo("##zmode", kModeLabels[zoneMode_])) {
@@ -198,6 +198,7 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
     DrawGroup("@", "Player Spawns", scene_.playerSpawns, kSelPlayerSpawn, {1.00f,0.80f,0.10f,1.f});
     DrawGroup("~", "Water",      scene_.water,      kSelWater,     {0.10f,0.70f,1.00f,1.f});
     DrawGroup("E", "Emitters",   scene_.emitters,   kSelEmitter,   {0.80f,1.00f,0.20f,1.f});
+    DrawGroup("L", "Lights",     scene_.lights,     kSelLight,     {1.00f,0.85f,0.50f,1.f});
     // Scenery: use model name instead of bare id, grouped by ZScenery::folder.
     // Root/ungrouped items (folder=="") render directly under "Scenery";
     // named folders get their own sub-node with click-to-select-all, a
@@ -588,7 +589,8 @@ void ZonesTab::DrawInspector(sqlite3* db, MediaTab* media) {
         case kSelSpawnPoint:  DrawPanelSpawnPoint(db, media, false); return;
         case kSelPlayerSpawn: DrawPanelPlayerSpawn(db,       false); return;
         case kSelEmitter:   DrawPanelEmitters (db,        false); return;
-        case kSelWater:     DrawPanelWater    (db,        false); return;
+        case kSelLight:     DrawPanelLight    (db,        false); return;
+        case kSelWater:     DrawPanelWater    (db, media, false); return;
         case kSelScenery:   DrawPanelScenery  (db, media, false); return;
         default: break;
         }
@@ -599,7 +601,7 @@ void ZonesTab::DrawInspector(sqlite3* db, MediaTab* media) {
     case kModeScenery:   DrawPanelScenery  (db, media, true); break;
     case kModeTerrain:   DrawPanelTerrain  (db,        true); break;
     case kModeEmitters:  DrawPanelEmitters (db,        true); break;
-    case kModeWater:     DrawPanelWater    (db,        true); break;
+    case kModeWater:     DrawPanelWater    (db, media, true); break;
     case kModeColBox:    DrawPanelColBox   (db,        true); break;
     case kModeColSphere: DrawPanelColSphere(db,        true); break;
     case kModeSoundZone: DrawPanelSoundZone(db,        true); break;
@@ -610,6 +612,7 @@ void ZonesTab::DrawInspector(sqlite3* db, MediaTab* media) {
     case kModeSpawnPoint:  DrawPanelSpawnPoint(db, media, true); break;
     case kModePlayerSpawn: DrawPanelPlayerSpawn(db,       true); break;
     case kModeFoliage:    DrawPanelFoliage  (db, media, true); break;
+    case kModeLight:      DrawPanelLight    (db,        true); break;
     case kModeEnviro:     DrawPanelEnviro   (db); break;
     case kModeOther:     DrawPanelOther    (db); break;
     default:
@@ -632,9 +635,10 @@ void ZonesTab::DrawStatusBar() {
     ImGui::SameLine(0, 16.f);
     if (selectedID_ >= 0) {
         static const char* kSelNames[] = {
-            "Portal","Trigger","Sound","ColBox","Waypoint","NPC","Emitter","Water","Scenery","SpawnPt","ColSphere"
+            "Portal","Trigger","Sound","ColBox","Waypoint","NPC","Emitter","Water","Scenery","SpawnPt","ColSphere",
+            "PlayerSpawn","Light"
         };
-        int si = std::clamp(selectedType_, 0, 10);
+        int si = std::clamp(selectedType_, 0, 12);
         const int selCount = (int)ActiveSelection().size();
         if (selCount > 1) {
             ImGui::TextColored({0.4f, 0.8f, 1.f, 0.8f},

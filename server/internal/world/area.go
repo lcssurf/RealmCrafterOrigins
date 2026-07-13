@@ -37,6 +37,50 @@ type WorldObject struct {
 	BlackCutout bool
 }
 
+// Light is a placed static point light (torch/lantern) in a zone. Sent to
+// clients on area load; the client resubmits every light every frame into
+// its deferred Pipeline::AddPointLight() light-volume pass (that pipeline
+// code already existed and was fully functional but unused before this).
+// Point-light Phase 1 — see doc/TECH_DEBT.md for Phase 2 (dynamic skill/FX
+// lights, reusing this same wire format) and point-light shadows (not
+// implemented at all yet, directional-only).
+type Light struct {
+	Name      string
+	X, Y, Z   float32
+	ColorR, ColorG, ColorB float32
+	Intensity float32
+	Radius    float32
+}
+
+// Water is a placed static water plane — Gerstner wave vertex displacement
+// (water.vs) + depth-based shallow/deep color transparency + procedural
+// shoreline foam (Sub-fase 2a/2b, water.fs sampling gDepth_ via
+// Pipeline::SceneDepthTexture()). Sent to clients on area load; the
+// client's WaterManager draws one grid mesh per instance using
+// water.vs/water.fs.
+// See doc/TECH_DEBT.md #117 for later phases (reflection/refraction) and
+// the swim-detection mechanic.
+type Water struct {
+	X, Y, Z                float32
+	ScaleX, ScaleZ         float32
+	ColorR, ColorG, ColorB float32
+	Opacity                float32 // 0-1
+	TexPath                string
+	TexScale               float32
+	// Gerstner wave tunables (no normal map file).
+	WaveSpeed          float32
+	WaveDirX, WaveDirZ float32
+	WaveScale          float32
+	// Sub-fase 2a — depth-based transparency.
+	ShallowR, ShallowG, ShallowB float32
+	DeepR, DeepG, DeepB          float32
+	DepthFadeDistance            float32
+	// Sub-fase 2b — procedural shoreline foam. Reuses 2a's depth
+	// comparison (no separate depth field/logic here).
+	FoamWidth           float32
+	FoamR, FoamG, FoamB float32
+}
+
 // Trigger is a script-activated zone volume (XZ cylinder).
 type Trigger struct {
 	ID          int
@@ -57,6 +101,8 @@ type Area struct {
 	Portals   []Portal
 	Waypoints map[int]*Waypoint
 	Objects   []WorldObject
+	Lights    []Light
+	Water     []Water
 
 	// Environment config (loaded from area_config at startup)
 	PvPEnabled                   bool

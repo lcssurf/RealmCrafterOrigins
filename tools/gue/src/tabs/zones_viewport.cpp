@@ -548,6 +548,13 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             float tt = rayAABB(orig, dir, s.pos - half, s.pos + half);
             if (tt > 0.f && tt < bestT) { bestT = tt; bestID = s.id; bestType = kSelScenery; }
         }
+        // Test point lights (marker sphere, not the light's falloff radius —
+        // picking against the actual attenuation radius would make large
+        // lights annoyingly easy to grab from far away).
+        for (auto& l : scene_.lights) {
+            float tt = raySphere(orig, dir, l.pos, 0.3f);
+            if (tt > 0.f && tt < bestT) { bestT = tt; bestID = l.id; bestType = kSelLight; }
+        }
 
         if (bestID >= 0) {
             // Waypoint link mode: clicking a waypoint sets nextA or nextB on the current selection
@@ -587,6 +594,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                 case kSelNpc:       zoneMode_ = kModeNPC;       break;
                 case kSelEmitter:   zoneMode_ = kModeEmitters;  break;
                 case kSelWater:     zoneMode_ = kModeWater;     break;
+                case kSelLight:     zoneMode_ = kModeLight;     break;
                 default: break;
                 }
             }
@@ -740,6 +748,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         case kSelWaypoint:  cycle(scene_.waypoints,  kSelWaypoint);  break;
         case kSelNpc:       cycle(scene_.npcs,       kSelNpc);       break;
         case kSelEmitter:   cycle(scene_.emitters,   kSelEmitter);   break;
+        case kSelLight:     cycle(scene_.lights,     kSelLight);     break;
         case kSelWater:     cycle(scene_.water,      kSelWater);     break;
         case kSelScenery:   cycle(scene_.scenery,    kSelScenery);   break;
         }
@@ -1663,6 +1672,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             {"NPC",              kModeNPC        },
             {"Water",            kModeWater      },
             {"Emitter",          kModeEmitters   },
+            {"Point Light",      kModeLight      },
             {"Spawn Point",      kModeSpawnPoint },
         };
         for (auto& e : kEntries) {
@@ -1693,6 +1703,7 @@ bool ZonesTab::SelectedPos(glm::vec3& out) const {
     if (tryVec(scene_.waypoints, kSelWaypoint)) return true;
     if (tryVec(scene_.npcs,      kSelNpc))      return true;
     if (tryVec(scene_.emitters,  kSelEmitter))  return true;
+    if (tryVec(scene_.lights,    kSelLight))    return true;
     if (tryVec(scene_.water,     kSelWater))    return true;
     if (tryVec(scene_.scenery,     kSelScenery))    return true;
     if (tryVec(scene_.spawnPoints,  kSelSpawnPoint))  return true;
@@ -1715,6 +1726,7 @@ void ZonesTab::SetSelectedPos(const glm::vec3& pos) {
     trySet(scene_.waypoints, kSelWaypoint);
     trySet(scene_.npcs,      kSelNpc);
     trySet(scene_.emitters,  kSelEmitter);
+    trySet(scene_.lights,    kSelLight);
     trySet(scene_.water,     kSelWater);
     trySet(scene_.scenery,     kSelScenery);
     trySet(scene_.spawnPoints,  kSelSpawnPoint);
@@ -1742,6 +1754,7 @@ void ZonesTab::PersistSelectedPos(sqlite3* db) {
     case kSelWaypoint:  sql = "UPDATE zone_waypoints   SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelNpc:       sql = "UPDATE npc_spawns       SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelEmitter:   sql = "UPDATE zone_emitters    SET x=?,y=?,z=? WHERE id=?"; break;
+    case kSelLight:     sql = "UPDATE zone_lights      SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelWater:     sql = "UPDATE zone_water       SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelScenery:    sql = "UPDATE zone_scenery  SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelSpawnPoint:  sql = "UPDATE spawn_points  SET x=?,y=?,z=? WHERE id=?"; break;

@@ -81,6 +81,8 @@ constexpr uint16_t kPDistributeStatPoint = 136; // C->S: allocate primary stat p
 constexpr uint16_t kPRespec            = 137; // C->S: reset primary stats to base
 constexpr uint16_t kPFXCatalog         = 138;
 constexpr uint16_t kPFullStats         = 139; // S->C: full stats sync (primary + vitals + 34 derived)
+constexpr uint16_t kPZoneLights        = 140; // S->C: static point lights (zone_lights) for current area
+constexpr uint16_t kPZoneWater         = 141; // S->C: static water planes (zone_water) for current area
 
 // ---------------------------------------------------------------------------
 // Result codes

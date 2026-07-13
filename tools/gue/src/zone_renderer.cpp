@@ -5,6 +5,7 @@
 
 #include "rco/renderer/engine.h"
 #include "rco/renderer/pipeline.h"
+#include "rco/renderer/shader.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -49,6 +50,19 @@ static GLuint LinkProg(GLuint vs, GLuint fs) {
     return p;
 }
 
+// Reads a shader source file from disk. Used for water.vs/water.fs — real
+// files under dist/client/shaders/ (unlike kPrimVS/kPrimFS, which stay
+// inline since they're tiny debug-only primitives).
+static std::string ReadTextFile(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        std::fprintf(stderr, "[ZoneRenderer] shader file not found: %s\n", path.c_str());
+        return {};
+    }
+    std::string out((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return out;
+}
+
 // ─── FBO ─────────────────────────────────────────────────────────────────────
 
 ZoneRenderer::~ZoneRenderer() {
@@ -58,6 +72,12 @@ ZoneRenderer::~ZoneRenderer() {
     npcActors_.clear();
     if (primProg_)         glDeleteProgram(primProg_);
     if (colVisColorProg_)  glDeleteProgram(colVisColorProg_);
+    // No waterProg_ to delete anymore — water's shader is
+    // Shader::shaders["water"], owned/destroyed by the Shader registry
+    // itself (see the comment above ZoneRenderer::DrawWater), not by this
+    // class.
+    if (waterVAO_)         { glDeleteVertexArrays(1, &waterVAO_); glDeleteBuffers(1, &waterVBO_); glDeleteBuffers(1, &waterEBO_); }
+    waterTextures_.clear();
     if (sphereVAO_)   { glDeleteVertexArrays(1, &sphereVAO_); glDeleteBuffers(1, &sphereVBO_); glDeleteBuffers(1, &sphereEBO_); }
     if (boxVAO_)      { glDeleteVertexArrays(1, &boxVAO_);    glDeleteBuffers(1, &boxVBO_);    glDeleteBuffers(1, &boxEBO_);    }
     if (lineVAO_)     { glDeleteVertexArrays(1, &lineVAO_);   glDeleteBuffers(1, &lineVBO_);   }
@@ -145,6 +165,230 @@ bool ZoneRenderer::InitPrimShader() {
     colVisColorProg_ = LinkProg(cvs, cfs);
 
     return primProg_ != 0 && colVisColorProg_ != 0;
+}
+
+// ─── Water shader ────────────────────────────────────────────────────────────
+// FIX: this used to have its own InitWaterShader() that compiled water.vs/
+// water.fs via a raw glShaderSource()/glCompileShader() path (like
+// kPrimVS/kPrimFS below). That broke the moment water.fs added
+// `#include "common.h"` (Sub-fase 2a, to reuse WorldPosFromDepth) — raw
+// glShaderSource() has zero awareness of "#include" (not valid core GLSL
+// without the GL_ARB_shading_language_include extension, which nothing
+// here requests), so the fragment shader failed to compile, the program
+// never linked, and every subsequent glUseProgram/glUniform* call on the
+// dead program ID produced GL_INVALID_OPERATION ("program is not
+// successfully linked") — which is why water disappeared ENTIRELY in the
+// GUE (not just the texture) while the client kept working fine.
+//
+// The client never had this problem because it never hand-rolls shader
+// compilation: it goes through rco::renderer::Shader (shader.cpp), whose
+// resolveIncludes() is the only "#include" preprocessor in this codebase
+// (see CMakeLists.txt's /Zc:preprocessor comment). CompileAllShaders()
+// (compile_shaders.cpp) already registers Shader::shaders["water"] built
+// exactly that way — and the GUE ALREADY calls CompileAllShaders()
+// indirectly, because EnsurePBR_() creates fullEngine_ and calls
+// fullEngine_->Init(), which calls CompileAllShaders() (engine.cpp:276).
+// Shader::shaders is a process-global static map (shader.h), so that
+// correctly-compiled "water" Shader was available to the GUE the whole
+// time — DrawWater below now just looks it up instead of maintaining a
+// redundant (and now broken) second copy.
+//
+// Other GUE shaders (kPrimVS/kPrimFS/kColVisVS/kColVisFS below, and
+// thumbnail_cache.cpp's inline kVS/kFS) still hand-roll compilation the
+// same raw way, but none of their source currently contains "#include" —
+// they're not broken today. thumbnail_cache.cpp's is deliberate (own
+// worker-thread GL context, can't safely touch the main-thread
+// Shader::shaders map) and documents why. The prim shaders here have no
+// stated reason to avoid Shader/resolveIncludes() other than being small
+// inline debug primitives from before this pattern existed — same class of
+// risk if anyone ever adds an #include to one of them, but out of scope
+// for this fix (not broken, not asked for).
+
+// Subdivided grid resolution — enough vertices for Gerstner waves (water.vs)
+// to show real curvature (a 4-vertex quad can't bend) without wasting
+// vertices for a plane that's typically 16x16 to a few dozen world units.
+// 24x24 = 576 vertices / 1058 triangles per water instance, trivial for the
+// GPU (see cost note in RenderFramePBR_/DrawWater).
+static constexpr int kWaterGridN = 24;
+
+void ZoneRenderer::BuildWaterQuadVAO() {
+    // NxN grid in the XZ plane, local space [-0.5,0.5]^2, y=0 at rest.
+    // Interleaved [pos.xyz | uv.xy] — stride 20 bytes (same layout as
+    // before, just many more vertices). Gerstner waves displace these in
+    // world space every frame (water.vs) — the geometry itself now ripples,
+    // not just the shading normal (Phase 1's sum-of-sines approach).
+    std::vector<float> verts;
+    verts.reserve(kWaterGridN * kWaterGridN * 5);
+    for (int gz = 0; gz < kWaterGridN; ++gz) {
+        for (int gx = 0; gx < kWaterGridN; ++gx) {
+            float u = (float)gx / (float)(kWaterGridN - 1);
+            float v = (float)gz / (float)(kWaterGridN - 1);
+            verts.push_back(u - 0.5f); // x
+            verts.push_back(0.f);      // y
+            verts.push_back(v - 0.5f); // z
+            verts.push_back(u);        // u
+            verts.push_back(v);        // v
+        }
+    }
+    std::vector<uint16_t> idx;
+    idx.reserve((kWaterGridN - 1) * (kWaterGridN - 1) * 6);
+    for (int gz = 0; gz < kWaterGridN - 1; ++gz) {
+        for (int gx = 0; gx < kWaterGridN - 1; ++gx) {
+            uint16_t i0 = (uint16_t)(gz * kWaterGridN + gx);
+            uint16_t i1 = (uint16_t)(gz * kWaterGridN + gx + 1);
+            uint16_t i2 = (uint16_t)((gz + 1) * kWaterGridN + gx + 1);
+            uint16_t i3 = (uint16_t)((gz + 1) * kWaterGridN + gx);
+            idx.push_back(i0); idx.push_back(i1); idx.push_back(i2);
+            idx.push_back(i0); idx.push_back(i2); idx.push_back(i3);
+        }
+    }
+    // Winding doesn't matter here — DrawWater disables GL_CULL_FACE for
+    // water entirely (see the backface-culling fix earlier this session),
+    // so both winding orders render regardless.
+    waterIdx_ = (int)idx.size();
+
+    glCreateVertexArrays(1, &waterVAO_);
+    glCreateBuffers(1, &waterVBO_);
+    glCreateBuffers(1, &waterEBO_);  // previously a leaked local `ebo` — now a proper member, deleted in ~ZoneRenderer
+    glNamedBufferData(waterVBO_, (GLsizeiptr)(verts.size() * sizeof(float)), verts.data(), GL_STATIC_DRAW);
+    glNamedBufferData(waterEBO_, (GLsizeiptr)(idx.size() * sizeof(uint16_t)), idx.data(), GL_STATIC_DRAW);
+    glVertexArrayVertexBuffer(waterVAO_, 0, waterVBO_, 0, 20);
+    glVertexArrayElementBuffer(waterVAO_, waterEBO_);
+    glEnableVertexArrayAttrib(waterVAO_, 0);
+    glVertexArrayAttribFormat(waterVAO_, 0, 3, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(waterVAO_, 0, 0);
+    glEnableVertexArrayAttrib(waterVAO_, 1);
+    glVertexArrayAttribFormat(waterVAO_, 1, 2, GL_FLOAT, GL_FALSE, 12);
+    glVertexArrayAttribBinding(waterVAO_, 1, 0);
+}
+
+rco::renderer::Texture2D* ZoneRenderer::GetOrLoadWaterTexture(const std::string& texPath) {
+    if (texPath.empty()) {
+        std::fprintf(stderr, "[water-tex] texPath='' (empty) — nothing to load\n");
+        return nullptr;
+    }
+    std::string resolved = ResolveClientAsset(texPath);
+
+    auto it = waterTextures_.find(resolved);
+    if (it != waterTextures_.end()) {
+        std::fprintf(stderr,
+            "[water-tex] texPath='%s' resolved='%s' (cache hit) stbi_ok=%s handle=%u\n",
+            texPath.c_str(), resolved.c_str(),
+            it->second->Valid() ? "true" : "false", it->second->GetID());
+        return it->second->Valid() ? it->second.get() : nullptr;
+    }
+
+    rco::renderer::TextureCreateInfo info;
+    info.path = resolved;
+    info.sRGB = true;  // albedo colour texture
+    auto tex = std::make_unique<rco::renderer::Texture2D>(info);
+    rco::renderer::Texture2D* raw = tex.get();
+    bool valid = tex->Valid();
+    // Texture2D's own ctor already logs the stb_image failure reason via
+    // fprintf(stderr, "[tex] ...") when the file is missing/unreadable —
+    // this line ties that outcome back to the water instance's texPath and
+    // the GUE-resolved path, since "[tex] failed to load: <resolved>" alone
+    // doesn't say which ZWater it came from.
+    std::fprintf(stderr,
+        "[water-tex] texPath='%s' resolved='%s' stbi_ok=%s handle=%u\n",
+        texPath.c_str(), resolved.c_str(), valid ? "true" : "false", raw->GetID());
+    waterTextures_[resolved] = std::move(tex);
+    return valid ? raw : nullptr;
+}
+
+void ZoneRenderer::DrawWater(const ZWater& w, bool selected, const glm::mat4& vp) {
+    if (!waterVAO_) return;
+
+    // FIX: was `if (!waterProg_) return; glUseProgram(waterProg_);` against
+    // a hand-compiled program that can't survive water.fs's #include (see
+    // the comment block above InitWaterShader's old location). Now looks
+    // up the SAME Shader instance the client uses.
+    auto it = rco::renderer::Shader::shaders.find("water");
+    if (it == rco::renderer::Shader::shaders.end() || !it->second) {
+        std::fprintf(stderr, "[water-draw] id=%d Shader::shaders[\"water\"] not found/compiled — nothing drawn\n", w.id);
+        return;
+    }
+    auto& shader = *it->second;
+    shader.Bind();
+
+    glm::mat4 m = glm::translate(glm::mat4(1.f), w.pos);
+    m = glm::scale(m, glm::vec3(w.scale.x, 1.f, w.scale.y));
+    // u_viewProj (not a combined u_mvp) + u_model separate: Gerstner
+    // displacement in water.vs needs the vertex's true world-space rest
+    // position (u_model * aPos) BEFORE applying the camera transform, since
+    // wave phase is evaluated in world meters — a pre-baked MVP can't be
+    // un-baked back into world space to do that.
+    shader.SetMat4("u_viewProj", vp);
+    shader.SetMat4("u_model", m);
+    shader.SetFloat("u_texScale", w.texScale);
+
+    float a = selected ? 0.85f : (w.opacity / 100.f);
+    shader.SetVec4("u_tint", glm::vec4(w.color, a));
+
+    // Sun-only lighting — reads fullPipeline_'s existing sun (same value
+    // RenderFramePBR_ passes to SetSun()), not a duplicated source.
+    if (fullPipeline_) {
+        shader.SetVec3("u_sunDir",   fullPipeline_->SunDirection());
+        shader.SetVec3("u_sunColor", fullPipeline_->SunColor());
+        shader.SetVec3("u_viewPos",  fullPipeline_->ViewPos());
+
+        // Sub-fase 2a — depth-based transparency. u_invViewProj computed
+        // here (same point vp itself is built by the caller), mirroring
+        // every deferred pass's "glm::inverse(viewProj_)" pattern
+        // (pipeline.cpp:642 etc). gDepth_ bound to unit 1 (unit 0 is the
+        // albedo texture) via Pipeline::SceneDepthTexture() — same texture
+        // the light passes already sample, not a copy.
+        shader.SetMat4("u_invViewProj", glm::inverse(vp));
+        GLuint sceneDepthTex = fullPipeline_->SceneDepthTexture();
+        glBindTextureUnit(1, sceneDepthTex);
+        shader.SetInt("u_sceneDepth", 1);
+    }
+
+    shader.SetVec3("u_shallowColor", w.shallowColor);
+    shader.SetVec3("u_deepColor",    w.deepColor);
+    shader.SetFloat("u_depthFadeDistance", w.depthFadeDistance);
+    shader.SetFloat("u_foamWidth", w.foamWidth);
+    shader.SetVec3("u_foamColor", w.foamColor);
+
+    // Blinn-Phong specular tuning — fixed for now (not exposed as GUE
+    // sliders; power=80 sits in the requested 64-128 "tight highlight"
+    // range, intensity=1.75 in the requested 1.5-2.0 range).
+    shader.SetFloat("u_specPower",     80.0f);
+    shader.SetFloat("u_specIntensity", 1.75f);
+
+    // Gerstner wave (real vertex displacement, water.vs). u_time reuses
+    // elapsed_time_, the same accumulated clock RenderFramePBR_ already
+    // drives NPC idle anims with (elapsed_time_ += dt every frame) — not a
+    // new clock.
+    shader.SetFloat("u_time",      elapsed_time_);
+    shader.SetFloat("u_waveSpeed", w.waveSpeed);
+    shader.SetVec2("u_waveDir",    glm::vec2(w.waveDirX, w.waveDirZ));
+    shader.SetFloat("u_waveScale", w.waveScale);
+
+    rco::renderer::Texture2D* tex = GetOrLoadWaterTexture(w.texPath);
+    shader.SetInt("u_hasTex", tex ? 1 : 0);
+    if (tex) {
+        tex->Bind(0);
+        shader.SetInt("u_tex", 0);
+    }
+
+    // Backface culling is on globally (RenderFramePBR_ sets GL_CULL_FACE +
+    // GL_CCW before all passes, pipeline.cpp:946-947) and the water quad's
+    // winding only faces "up" correctly from one side, so the top face —
+    // the one the camera actually looks at from the default top-down
+    // gameplay angle — was being culled. Disabling cull for water (instead
+    // of just flipping the EBO winding) is deliberate: it also makes the
+    // plane visible from underneath, which will matter once
+    // underwater/swim camera views exist (see doc/TECH_DEBT.md #117).
+    // Save/restore so this doesn't leak into subsequent forward-overlay draws.
+    GLboolean cullWasEnabled = glIsEnabled(GL_CULL_FACE);
+    glDisable(GL_CULL_FACE);
+
+    glBindVertexArray(waterVAO_);
+    glDrawElements(GL_TRIANGLES, waterIdx_, GL_UNSIGNED_SHORT, nullptr);
+
+    if (cullWasEnabled) glEnable(GL_CULL_FACE);
+    glUseProgram(primProg_);  // restore for subsequent forward-overlay draw calls
 }
 
 // ─── Scene actor cache ───────────────────────────────────────────────────────
@@ -403,6 +647,15 @@ bool ZoneRenderer::Init() {
     if (fbo_) return true;  // already initialised
     BuildFBO(800, 600);
     primsReady_ = InitPrimShader() && (BuildPrimitiveVAOs(), true);
+    // Water grid geometry is independent of shader compilation (it's just a
+    // vertex/index buffer) — build it unconditionally. The shader itself
+    // (Shader::shaders["water"]) is compiled by CompileAllShaders() as part
+    // of EnsurePBR_ below (fullEngine_->Init() -> CompileAllShaders(),
+    // engine.cpp:276); DrawWater looks it up at draw time, by which point
+    // EnsurePBR_ has always already run — see the comment above
+    // ZoneRenderer::DrawWater for why this is no longer a separately
+    // hand-compiled program.
+    BuildWaterQuadVAO();
     // Eagerly create the deferred engine + pipeline so scenery and NPC
     // actors can live as soon as the Zones tab opens. This pays ~1s of
     // shader compile at startup, but from then on Simple and Lit share
@@ -667,15 +920,24 @@ void ZoneRenderer::DrawForwardOverlays_(const ZoneScene& scene, int selectedID,
     }
     for (auto& w : scene.water) {
         bool sel = (selectedType == kSelWater && selectedID == w.id);
-        float a  = sel ? 0.8f : w.opacity / 100.f;
-        glm::vec4 col = {w.color.r, w.color.g, w.color.b, a};
-        DrawBox(w.pos, {w.scale.x, 0.2f, w.scale.y}, col, vp);
+        DrawWater(w, sel, vp);
     }
     for (auto& e : scene.emitters) {
         bool sel = (selectedType == kSelEmitter && selectedID == e.id);
         glm::vec4 col = sel ? glm::vec4(1.f, 0.2f, 0.2f, 0.7f)
                             : glm::vec4(0.8f, 1.0f, 0.2f, 0.6f);
         DrawBox(e.pos, {0.8f, 1.5f, 0.8f}, col, vp);
+    }
+    // Point lights: a small sphere tinted the light's own color (so you can
+    // eyeball warm/cool at a glance) plus a faint ring at the falloff radius,
+    // same visual language as ColSphere/SpawnPoint's radius indicator.
+    for (auto& l : scene.lights) {
+        bool sel = (selectedType == kSelLight && selectedID == l.id);
+        glm::vec4 col = {l.color.r, l.color.g, l.color.b, sel ? 1.0f : 0.85f};
+        DrawSphere(l.pos, 0.3f, col, vp);
+        glm::vec4 ringCol = sel ? glm::vec4(1.f, 0.95f, 0.1f, 0.5f)
+                                : glm::vec4(l.color.r, l.color.g, l.color.b, 0.25f);
+        DrawCircleXZ({l.pos.x, l.pos.z}, l.radius, l.pos.y, ringCol, vp);
     }
     static const glm::vec4 kNpcAggColors[] = {
         {0.1f, 0.9f, 0.1f, 0.35f}, {1.0f, 0.9f, 0.0f, 0.35f},

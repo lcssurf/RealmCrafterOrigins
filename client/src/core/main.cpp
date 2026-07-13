@@ -56,6 +56,9 @@
 #include "../renderer/terrain/terrain.h"
 #include "../renderer/actors/actor.h"
 #include "rco/renderer/particles.h"
+#include "rco/renderer/light_manager.h"
+#include "rco/renderer/water_manager.h"
+#include "rco/renderer/ripple_sim.h"
 #include "../renderer/anim_controller.h"
 #include "../input/input_system.h"
 #include "../audio/audio.h"
@@ -1127,6 +1130,158 @@ int main() {
     rco::ui::SkillLoadoutScreen skill_loadout_screen;
 
     rco::renderer::ParticleSystem particles;
+    // Static point lights (torches/lanterns) for the current area — Phase 1
+    // of the point-light system. Resubmitted every frame in the render loop
+    // (see LightManager::SubmitAll call near pipeline->End()); replaced
+    // wholesale on kPZoneLights (area entry / portal change) and cleared on
+    // area change / disconnect so a stale light never outlives its area.
+    rco::renderer::LightManager   light_manager;
+    // Static water planes (Phase 0) for the current area — flat textured
+    // quad, no waves/depth/reflection yet (see doc/TECH_DEBT.md). Rendered
+    // every frame in the forward pass (see WaterManager::Render call near
+    // pipeline->End(), alongside particles.Render); replaced wholesale on
+    // kPZoneWater (area entry / portal change) and cleared on area change /
+    // disconnect, same lifecycle as light_manager.
+    rco::renderer::WaterManager   water_manager;
+    // Ripple Sim — Hugo Elias height-field ping-pong buffer, player-
+    // following world window (RippleSim::UpdateWindow), sampled by
+    // water.vs/water.fs (WaterManager::Render passes it only to the water
+    // instance the player is standing in — see doc/TECH_DEBT.md #118). F9
+    // toggles a debug on-screen view of the raw buffer; F10 force-stamps
+    // the window center for manual visual testing.
+    rco::renderer::RippleSim      ripple_sim;
+    bool                          ripple_debug_visible = false;
+    // Ripple Sim tuning — PROPORTIONS (multipliers), not absolute world
+    // units, applied to the player's ACTUAL model dimensions every frame
+    // (Actor::ModelHeight()/ModelWidth(), the same accessors already used
+    // for camera/impact/snap math elsewhere in this file — see actor.h).
+    // This way the affected area/radius/intensity stay correct if the
+    // character's model or scale ever changes (equipment, buff, different
+    // playable race), instead of being tied to today's specific character
+    // size via hardcoded absolute numbers. See where these are consumed:
+    // the ripple block right before pipeline->End() further down.
+    //
+    // Window width/depth — DECOUPLED from ModelHeight()/character size (a
+    // previous version scaled this off the player's height, which
+    // conflated two unrelated scales: "how big is a footstep" [stamp
+    // radius, still ModelWidth()-derived below] vs. "how far does a wave
+    // travel before it's imperceptible" [a pure damping/propagation
+    // property, independent of who's standing in the water]. Tying window
+    // size to character height meant the buffer's texel-space fade margin
+    // (see below) never actually improved when the window "felt" too
+    // small — it just changed how many world-units each texel covered, not
+    // how much of the buffer the decaying wave actually consumed.
+    //
+    // Derivation, from RippleSim::Update's damping recurrence
+    // (newHeight *= u_damping every simulation tick, kRippleDamping=0.95):
+    //   - This exact scheme (avg-of-4-neighbors*0.5 - previous) has Courant
+    //     number 1 — a disturbance's wavefront advances at most ~1 texel
+    //     per simulation tick (standard property of this discrete leapfrog
+    //     recurrence, not a separate assumption).
+    //   - ticksToFade = ceil(ln(0.05) / ln(0.95)) = ceil(58.4) = 59 ticks
+    //     to decay to 5% of the initial stamp amplitude (visually
+    //     negligible).
+    //   - Simulation ticks once per rendered frame (RippleSim::Update's
+    //     call site below), so ~60 ticks/sec at a typical frame rate.
+    //   - kRippleWaveSpeedWorldPerSec (below) converts ticks -> world
+    //     distance: this is the one genuinely CHOSEN input (the simulation
+    //     itself is texel/tick-based, resolution-agnostic — some world
+    //     speed has to be picked to give "1 texel" a physical meaning), set
+    //     to a plausible small-ripple propagation speed, faster than the
+    //     large-scale Gerstner swell (ZWater::waveSpeed, ~0.3) since local
+    //     splash/footstep ripples are higher-frequency and visually
+    //     quicker than a big rolling swell.
+    //   - decayReachWorld = ticksToFade * (kRippleWaveSpeedWorldPerSec / 60)
+    //                     = 59 * (5.0 / 60) ~= 4.92 world units
+    //   - kRippleWindowMarginFactor (1.4, below) gives the edge extra room
+    //     PAST full decay — not just because of residual amplitude, but
+    //     because CLAMP_TO_BORDER creates a hard discontinuity (finite
+    //     value -> exact zero) at the window edge regardless of how small
+    //     that finite value is, and that discontinuity is amplified ~3x in
+    //     the normal/gradient computation (water.vs's kRippleNormalStrength)
+    //     — pushing the edge well past the decay point keeps that seam out
+    //     of the visually-relevant area.
+    //   - windowRadius = decayReachWorld * 1.4 ~= 6.88
+    //   - kRippleWindowSize (full width/depth, RippleSim::WorldToUV's
+    //     convention) = 2 * windowRadius ~= 13.8
+    // Computed below (constexpr, compile-time) from the named inputs above
+    // rather than hardcoding the resulting 13.8 literal directly — keeps
+    // the derivation and the value that's actually used in sync if any of
+    // the inputs are ever retuned.
+    static constexpr float kRippleWaveSpeedWorldPerSec = 5.0f;
+    static constexpr float kRippleWindowMarginFactor    = 1.4f;
+    static constexpr int   kRippleTicksToFade           = 59;  // ceil(ln(0.05)/ln(0.95)), see derivation above
+    static constexpr float kRippleSimTickHz             = 60.0f;
+    static constexpr float kRippleWindowSize =
+        2.0f * static_cast<float>(kRippleTicksToFade) *
+        (kRippleWaveSpeedWorldPerSec / kRippleSimTickHz) * kRippleWindowMarginFactor;
+    // Stamp world-space radius = ModelWidth() * this. ModelWidth() is the
+    // actor's own AABB-derived footprint width (see actor.h) — a real
+    // measurement, not a height-based guess — so this multiplier only
+    // needs to express "how much of the character's own width actually
+    // touches the water", not compensate for using the wrong axis. Was 0.5
+    // (half the character's width); trimmed to 0.4 alongside the strength
+    // cut below — marks were overlapping into a smeared/coarse trail while
+    // walking, and radius was part of that (though strength, reduced first/
+    // more aggressively below, was the bigger contributor).
+    static constexpr float kRippleStampWidthMul = 0.4f;
+    // Raw height value injected at the stamp origin (before
+    // u_rippleHeightScale in water.vs even applies) — this one stays an
+    // absolute "base force" (not proportional to anything physical; see
+    // doc/TECH_DEBT.md #118's note on why intensity resists a clean
+    // size-based derivation). Was 0.4 (already once calibrated down from an
+    // initial 1.0). Cut to 0.18 (~45% of 0.4) — each individual stamp reads
+    // as a delicate ripple instead of a forceful splash; the safety-ceiling
+    // derivation below (u_rippleHeightScale = ModelHeight fraction /
+    // kRippleStampStrength) automatically compensates so the peak VISUAL
+    // displacement ceiling is unchanged — only the raw buffer force (and,
+    // as a side effect, the ripple foam's raw-height signal, see water.fs)
+    // gets gentler.
+    static constexpr float kRippleStampStrength = 0.18f;
+    // Safety CEILING on peak world-space displacement, as a fraction of
+    // the character's own ModelHeight() — so the ripple can never visually
+    // exceed a small sliver of the character's height regardless of how
+    // kRippleStampStrength is tuned later. 0.015 (1.5%) sits in the
+    // requested 1-2% range. u_rippleHeightScale (water.vs) is derived from
+    // this ceiling divided by kRippleStampStrength (see the ripple block
+    // further down) — kRippleStampStrength remains the independently
+    // adjustable "base" value this ceiling is reasoning about, not
+    // replaced by it.
+    static constexpr float kRippleMaxDisplacementFraction = 0.015f;
+    // Hugo Elias damping factor (RippleSim::Update) — how much energy the
+    // buffer loses per step. Lowered from the old default of 0.985 (too
+    // slow: ~46 frames to halve, leaving stale energy sitting in the
+    // buffer's border texels long enough for the GL_CLAMP_TO_EDGE leak —
+    // see doc/TECH_DEBT.md #118 — to make distant water visibly ripple).
+    // 0.95 halves in ~14 frames (~0.23s @ 60fps), the middle of the
+    // suggested 0.94-0.96 range.
+    static constexpr float kRippleDamping = 0.95f;
+    // Ripple foam — DIRECT thresholds (smoothstep) against abs(rippleH),
+    // the RAW Hugo Elias height field (water.fs re-samples u_rippleTex a
+    // second time), the exact same buffer/values the Phase (a) F9/F10
+    // debug view already showed clearly propagating. No depthDiff, no
+    // WaterEntry::foamWidth, no boost multiplier on a derived quantity —
+    // this replaces the earlier kRippleFoamBoost approach (which chained
+    // through depthDiff/foamWidth and needed constant recalibration
+    // alongside kRippleDamping/kRippleStampStrength changes). Reference
+    // point at the time these were picked: kRippleStampStrength was 0.4
+    // (the height a fresh stamp started at before damping — the same
+    // magnitude that visibly filled the debug quad in F9/F10). _low=0.08
+    // started the foam fade-in well below a fresh stamp's peak; _high=0.35
+    // sat just under the 0.4 peak so foam reached full opacity near the
+    // strongest, freshest part of the wave.
+    // ⚠️ kRippleStampStrength was since reduced to 0.18 (see above, "carimbo
+    // mais delicado" calibration) — a fresh stamp's peak no longer reaches
+    // _high=0.35 at all (sink magnitude ~0.18 vs threshold 0.08-0.35 window,
+    // so foam now only partially blends in instead of reaching full
+    // opacity). Left as-is for now since ripple foam wasn't the target of
+    // that calibration request, but retune these two first (lower both,
+    // proportionally to the new 0.18 peak) if the ripple foam now looks too
+    // faint/rare. Recalibrate these two first if ripple foam still looks
+    // wrong — do not reintroduce a boost multiplier
+    // on top of them.
+    static constexpr float kRippleFoamThresholdLow  = 0.08f;
+    static constexpr float kRippleFoamThresholdHigh = 0.35f;
     rco::audio::AudioSystem       audio;
     const InputConfig input_config = ResolveInputConfig();
     const LoadingPresetConfig loading_preset = ResolveLoadingPreset();
@@ -1812,6 +1967,8 @@ int main() {
                 world_actors.clear();
                 world_corpses.clear();
                 world_static_objects.clear();
+                light_manager.Clear();
+                water_manager.Clear();
                 world_entry_loading = false;
                 world_entry_world_objects_received = false;
                 world_entry_core_indices.clear();
@@ -2257,6 +2414,8 @@ int main() {
                 world_actors.clear();
                 world_corpses.clear();
                 world_static_objects.clear();
+                light_manager.Clear();
+                water_manager.Clear();
                 world_entry_loading = false;
                 world_entry_world_objects_received = false;
                 world_entry_core_indices.clear();
@@ -2960,6 +3119,74 @@ int main() {
                 break;
             }
 
+            case rco::net::kPZoneLights: {
+                // Static point lights (torches/lanterns) for the current
+                // area — Point-light Phase 1. Wire format mirrors
+                // PWorldObjects: count(u16) + per-entry fields, see
+                // server/internal/world/frame.go LightsPayload.
+                uint16_t light_count = r.ReadU16();
+                std::vector<rco::renderer::PointLightEntry> lights;
+                lights.reserve(light_count);
+                for (uint16_t li = 0; li < light_count && r.OK(); ++li) {
+                    (void)r.ReadString();  // name — not used client-side yet (editor-only label)
+                    rco::renderer::PointLightEntry e;
+                    e.pos.x       = r.ReadF32();
+                    e.pos.y       = r.ReadF32();
+                    e.pos.z       = r.ReadF32();
+                    e.color.r     = r.ReadF32();
+                    e.color.g     = r.ReadF32();
+                    e.color.b     = r.ReadF32();
+                    e.intensity   = r.ReadF32();
+                    e.radius      = r.ReadF32();
+                    if (!r.OK()) break;
+                    lights.push_back(e);
+                }
+                light_manager.SetLights(std::move(lights));
+                break;
+            }
+
+            case rco::net::kPZoneWater: {
+                // Static water planes (Phase 0-1) for the current area. Wire
+                // format mirrors PZoneLights: count(u16) + per-entry fields,
+                // see server/internal/world/frame.go WaterPayload.
+                uint16_t water_count = r.ReadU16();
+                std::vector<rco::renderer::WaterEntry> water;
+                water.reserve(water_count);
+                for (uint16_t wi = 0; wi < water_count && r.OK(); ++wi) {
+                    rco::renderer::WaterEntry e;
+                    e.pos.x       = r.ReadF32();
+                    e.pos.y       = r.ReadF32();
+                    e.pos.z       = r.ReadF32();
+                    e.scale.x     = r.ReadF32();
+                    e.scale.y     = r.ReadF32();
+                    e.color.r     = r.ReadF32();
+                    e.color.g     = r.ReadF32();
+                    e.color.b     = r.ReadF32();
+                    e.opacity     = r.ReadF32();
+                    e.texPath     = r.ReadString();
+                    e.texScale    = r.ReadF32();
+                    e.waveSpeed   = r.ReadF32();
+                    e.waveDir.x   = r.ReadF32();
+                    e.waveDir.y   = r.ReadF32();
+                    e.waveScale   = r.ReadF32();
+                    e.shallowColor.r = r.ReadF32();
+                    e.shallowColor.g = r.ReadF32();
+                    e.shallowColor.b = r.ReadF32();
+                    e.deepColor.r    = r.ReadF32();
+                    e.deepColor.g    = r.ReadF32();
+                    e.deepColor.b    = r.ReadF32();
+                    e.depthFadeDistance = r.ReadF32();
+                    e.foamWidth      = r.ReadF32();
+                    e.foamColor.r    = r.ReadF32();
+                    e.foamColor.g    = r.ReadF32();
+                    e.foamColor.b    = r.ReadF32();
+                    if (!r.OK()) break;
+                    water.push_back(std::move(e));
+                }
+                water_manager.SetWater(std::move(water));
+                break;
+            }
+
             case rco::net::kPXPUpdate: {
                 const uint8_t version_or_level_lo = r.ReadU8();
                 uint16_t lvl = 1;
@@ -3598,6 +3825,8 @@ int main() {
             world_actors.clear();
             world_corpses.clear();
             world_static_objects.clear();
+            light_manager.Clear();
+            water_manager.Clear();
             world_entry_loading = false;
             world_entry_world_objects_received = false;
             world_entry_core_indices.clear();
@@ -3872,6 +4101,14 @@ int main() {
                     initial_material_rebuild_pending_log = true;
                     camera.SetActorHeight(player_actor.ModelHeight());
                     particles.Init();
+                    water_manager.Init();
+                    // player-following ripple trail, wired into water.vs/water.fs (Phase b).
+                    // Initial windowSize derived from the player's real ModelHeight()
+                    // (already known-good here — see the ModelHeight() call right above
+                    // for camera setup); UpdateWindow() below recomputes this every
+                    // frame, so this value is only a fallback for any frame before that
+                    // first runs.
+                    ripple_sim.Init(128, kRippleWindowSize);
                     renderer_ready = true;
                     {
                         const auto t0 = std::chrono::steady_clock::now();
@@ -4519,6 +4756,33 @@ int main() {
 
 
 
+                // -- F9 toggles the Ripple Sim debug overlay (small on-screen
+                // quad, top-left corner, shows the raw height buffer). F10 is
+                // a manual override that force-stamps the window's center —
+                // kept from Phase (a) for visual testing even when not
+                // standing in water; the AUTOMATIC stamp (real player
+                // position + water-contact test) is wired further down,
+                // right before ripple_sim.Update().
+                bool ripple_stamp_requested = false;
+                {
+                    static bool f9_prev = false;
+                    bool f9_cur = glfwGetKey(w, GLFW_KEY_F9) == GLFW_PRESS;
+                    if (f9_cur && !f9_prev) {
+                        ripple_debug_visible = !ripple_debug_visible;
+                        std::fprintf(stderr, "[ripple] debug overlay %s\n",
+                                     ripple_debug_visible ? "ON" : "OFF");
+                    }
+                    f9_prev = f9_cur;
+
+                    static bool f10_prev = false;
+                    bool f10_cur = glfwGetKey(w, GLFW_KEY_F10) == GLFW_PRESS;
+                    if (f10_cur && !f10_prev) {
+                        ripple_stamp_requested = true;
+                        std::fprintf(stderr, "[ripple] stamp requested\n");
+                    }
+                    f10_prev = f10_cur;
+                }
+
                 // -- F8 cycles debug viz (0=full,1=albedo,2=normal,3=depth,4=AO,
                 // 5=shadow,6=irradiance,7=NoL,8=albedo*NoL,9=envDiffuse,10=direct).
                 {
@@ -5056,13 +5320,97 @@ int main() {
                     }
                 }
 
+                // Resubmit the current area's static point lights (torches,
+                // etc). Pipeline::Begin() clears its light list every frame
+                // (see localLights_ in pipeline.cpp) — this is the correct,
+                // expected way to keep them lit every frame, not a workaround.
+                light_manager.SubmitAll(*pipeline);
+
                 // All scene submissions done. Step particles forward (sim) then run the
                 // deferred pipeline, letting particles render inside its forward pass
                 // so they benefit from depth coherence + tonemap + FXAA.
                 particles.Update(static_cast<float>(now), dt);
+
+                // Ripple Sim — two DELIBERATELY decoupled scales: the STAMP
+                // (footstep footprint) is derived from the player's ACTUAL
+                // model dimensions (ModelWidth(), see actor.h), recomputed
+                // every frame so a runtime model/scale change is picked up
+                // automatically. The WINDOW (simulation domain size) is a
+                // fixed constant derived from damping physics
+                // (kRippleWindowSize, see its derivation comment above) —
+                // NOT the character's size, since "how far a wave travels
+                // before fading" has nothing to do with who's standing in
+                // the water. See doc/TECH_DEBT.md #118.
+                float ripple_window_size = kRippleWindowSize;
+                float ripple_stamp_radius_world = player_actor.ModelWidth() * kRippleStampWidthMul;
+                // stampRadius is consumed in UV space [0,1] of the CURRENT
+                // window (see RippleSim::Update's doc) — converting a
+                // world-space width into that UV fraction requires dividing
+                // by the window size itself.
+                float ripple_stamp_radius_uv = ripple_stamp_radius_world / (std::max)(ripple_window_size, 0.01f);
+                // Safety-ceiling derivation: desired peak world displacement
+                // (a small fraction of the character's own height) divided
+                // by the raw stamp force gives the scale that keeps the
+                // shader's actual displacement under that ceiling — see
+                // kRippleMaxDisplacementFraction's comment above and
+                // water.vs's u_rippleHeightScale.
+                float ripple_height_scale =
+                    (player_actor.ModelHeight() * kRippleMaxDisplacementFraction) / kRippleStampStrength;
+
+                // Window follows the player (hysteresis recenter on
+                // position, unconditional refresh on size — see
+                // RippleSim::UpdateWindow) and the buffer advances every
+                // frame regardless of debug visibility, so it's always
+                // "live" and decaying via damping even when the player
+                // isn't in water.
+                glm::vec2 player_xz = {player.x, player.z};
+                ripple_sim.UpdateWindow(player_xz, ripple_window_size);
+
+                // Automatic stamp: only when the player is actually standing
+                // in water (WaterManager::PlayerContact — AABB footprint +
+                // vertical water-volume check) AND has moved since last
+                // frame (last_player_pos still holds the PREVIOUS frame's XZ
+                // here, reused as-is rather than tracking a second copy —
+                // it's only overwritten further below). F10 stays a manual
+                // override (stamps the window center regardless of water
+                // contact) for visual testing, same as Phase (a).
+                bool ripple_do_stamp = ripple_stamp_requested;
+                glm::vec2 ripple_stamp_uv(0.5f);
+                if (!ripple_stamp_requested) {
+                    constexpr float kRippleMoveThreshold = 0.02f;  // world units/frame — filters out "standing still" noise
+                    float move_dist = glm::length(player_xz - last_player_pos);
+                    if (move_dist > kRippleMoveThreshold &&
+                        water_manager.PlayerContact({player.x, player.y, player.z})) {
+                        ripple_do_stamp = true;
+                        ripple_stamp_uv = ripple_sim.WorldToUV({player.x, player.y, player.z});
+                    }
+                }
+                ripple_sim.Update(ripple_do_stamp, ripple_stamp_uv,
+                                   ripple_stamp_radius_uv, kRippleStampStrength, kRippleDamping);
+
                 pipeline->End([&]() {
                     particles.Render(view, proj);
+                    // Water Phase 0-1 — static textured plane(s) with a
+                    // procedural wave normal, same forward slot as particles.
+                    // No depth/reflection yet. Sun-only lighting reads
+                    // Pipeline's existing sun; u_time reuses `now`
+                    // (glfwGetTime(), already used by particles.Update above)
+                    // — not a separate clock. Ripple Sim: only the water
+                    // instance containing the player receives the ripple
+                    // contribution (see WaterManager::Render), scaled by
+                    // ripple_height_scale (derived from the player's real
+                    // ModelHeight() above).
+                    water_manager.Render(view, proj, *pipeline, static_cast<float>(now),
+                                          {player.x, player.y, player.z}, &ripple_sim,
+                                          ripple_height_scale, kRippleFoamThresholdLow, kRippleFoamThresholdHigh);
                 });
+
+                // Ripple Sim debug overlay — draws AFTER pipeline->End() so
+                // it lands on top of the already-blitted final frame
+                // (framebuffer 0), gated by the F9 toggle.
+                if (ripple_debug_visible) {
+                    ripple_sim.DebugDraw(window.Width(), window.Height());
+                }
 
                 last_player_pos = {player.x, player.z};
 

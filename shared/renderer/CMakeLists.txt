@@ -35,6 +35,9 @@ add_library(rco_renderer STATIC
 
     # Fase 1 — .ixx → .h/.cpp conversions
     src/light.cpp
+    src/light_manager.cpp
+    src/water_manager.cpp
+    src/ripple_sim.cpp
     src/buffers.cpp
     src/texture.cpp
     src/material.cpp

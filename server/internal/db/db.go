@@ -9768,6 +9768,126 @@ func (d *DB) LoadWorldObjects(ctx context.Context) ([]*WorldObject, error) {
 	return out, rows.Err()
 }
 
+// ZoneLight is one placed static point light (torch/lantern) from zone_lights.
+// Point-light Phase 1 — see tools/gue/src/zone_scene.h ZLight for the
+// authoring side and doc/TECH_DEBT.md for Phase 2 (dynamic skill/FX lights).
+type ZoneLight struct {
+	ID                 int
+	AreaName           string
+	Name               string
+	X, Y, Z            float32
+	ColorR, ColorG, ColorB float32
+	Intensity          float32
+	Radius             float32
+}
+
+// LoadZoneLights returns all placed static point lights across every area.
+// The zone_lights table is created by the GUE (tools/gue/src/zone_scene.cpp
+// EnsureTables), same convention as zone_scenery/zone_emitters — the server
+// doesn't create it itself, so a fresh DB the GUE has never touched yields a
+// query error here; the caller (main.go) logs and continues with zero lights,
+// matching how LoadWorldObjects/LoadWaypoints etc. are already handled.
+func (d *DB) LoadZoneLights(ctx context.Context) ([]*ZoneLight, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(
+		`SELECT id, area_name, name, x, y, z, color_r, color_g, color_b, intensity, radius
+		 FROM zone_lights ORDER BY area_name, id`))
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadZoneLights: %w", err)
+	}
+	defer rows.Close()
+	var out []*ZoneLight
+	for rows.Next() {
+		l := &ZoneLight{}
+		var x, y, z, cr, cg, cb, intensity, radius float64
+		if err := rows.Scan(&l.ID, &l.AreaName, &l.Name,
+			&x, &y, &z, &cr, &cg, &cb, &intensity, &radius); err != nil {
+			return nil, fmt.Errorf("db: LoadZoneLights scan: %w", err)
+		}
+		l.X, l.Y, l.Z = float32(x), float32(y), float32(z)
+		l.ColorR, l.ColorG, l.ColorB = float32(cr), float32(cg), float32(cb)
+		l.Intensity = float32(intensity)
+		l.Radius = float32(radius)
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// ZoneWater is one placed static water plane from zone_water. Gerstner
+// vertex displacement + Sub-fase 2a depth-based transparency + Sub-fase 2b
+// procedural shoreline foam (shares 2a's depth comparison, no separate
+// depth field). See tools/gue/src/zone_scene.h ZWater for the authoring
+// side and doc/TECH_DEBT.md #117 for later phases (reflection).
+type ZoneWater struct {
+	ID                            int
+	AreaName                      string
+	X, Y, Z                       float32
+	ScaleX, ScaleZ                float32
+	ColorR, ColorG, ColorB        float32
+	Opacity                       int
+	TexPath                       string
+	TexScale                      float32
+	WaveSpeed                     float32
+	WaveDirX, WaveDirZ            float32
+	WaveScale                     float32
+	ShallowR, ShallowG, ShallowB  float32
+	DeepR, DeepG, DeepB           float32
+	DepthFadeDistance             float32
+	FoamWidth                     float32
+	FoamR, FoamG, FoamB           float32
+}
+
+// LoadZoneWater returns all placed water planes across every area. The
+// zone_water table (including the wave_*, shallow_*/deep_*/
+// depth_fade_distance, and foam_* columns, all added via idempotent
+// ALTER TABLE ADD COLUMN) is created/migrated entirely by the GUE
+// (tools/gue/src/zone_scene.cpp EnsureTables), same convention as
+// zone_lights/zone_scenery — the server doesn't create or migrate it
+// itself, so a fresh DB the GUE has never touched yields a query error
+// here; the caller (main.go) logs and continues with zero water, matching
+// how LoadZoneLights/LoadWorldObjects etc. are already handled.
+func (d *DB) LoadZoneWater(ctx context.Context) ([]*ZoneWater, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(
+		`SELECT id, area_name, x, y, z, scale_x, scale_z,
+		        color_r, color_g, color_b, opacity, tex_path, tex_scale,
+		        wave_speed, wave_dir_x, wave_dir_z, wave_scale,
+		        shallow_r, shallow_g, shallow_b, deep_r, deep_g, deep_b, depth_fade_distance,
+		        foam_width, foam_r, foam_g, foam_b
+		 FROM zone_water ORDER BY area_name, id`))
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadZoneWater: %w", err)
+	}
+	defer rows.Close()
+	var out []*ZoneWater
+	for rows.Next() {
+		w := &ZoneWater{}
+		var x, y, z, sx, sz, texScale, waveSpeed, waveDirX, waveDirZ, waveScale, depthFade, foamWidth float64
+		// stored as 0-255 ints (see ZWater color binding in tools/gue/src/tabs/zones.cpp)
+		var cr, cg, cb, shR, shG, shB, dpR, dpG, dpB, foR, foG, foB int
+		if err := rows.Scan(&w.ID, &w.AreaName,
+			&x, &y, &z, &sx, &sz,
+			&cr, &cg, &cb, &w.Opacity, &w.TexPath, &texScale,
+			&waveSpeed, &waveDirX, &waveDirZ, &waveScale,
+			&shR, &shG, &shB, &dpR, &dpG, &dpB, &depthFade,
+			&foamWidth, &foR, &foG, &foB); err != nil {
+			return nil, fmt.Errorf("db: LoadZoneWater scan: %w", err)
+		}
+		w.X, w.Y, w.Z = float32(x), float32(y), float32(z)
+		w.ScaleX, w.ScaleZ = float32(sx), float32(sz)
+		w.ColorR, w.ColorG, w.ColorB = float32(cr)/255.0, float32(cg)/255.0, float32(cb)/255.0
+		w.TexScale = float32(texScale)
+		w.WaveSpeed = float32(waveSpeed)
+		w.WaveDirX, w.WaveDirZ = float32(waveDirX), float32(waveDirZ)
+		w.WaveScale = float32(waveScale)
+		w.ShallowR, w.ShallowG, w.ShallowB = float32(shR)/255.0, float32(shG)/255.0, float32(shB)/255.0
+		w.DeepR, w.DeepG, w.DeepB = float32(dpR)/255.0, float32(dpG)/255.0, float32(dpB)/255.0
+		w.DepthFadeDistance = float32(depthFade)
+		w.FoamWidth = float32(foamWidth)
+		w.FoamR, w.FoamG, w.FoamB = float32(foR)/255.0, float32(foG)/255.0, float32(foB)/255.0
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
 // migrateV15 adds random wander fields to npc_spawns.
 func (d *DB) migrateV15(ctx context.Context) {
 	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }

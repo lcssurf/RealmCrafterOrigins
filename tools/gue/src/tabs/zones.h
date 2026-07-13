@@ -36,7 +36,8 @@ enum ZoneMode {
     kModeColSphere   = 13,
     kModePlayerSpawn = 14,
     kModeFoliage     = 15,
-    kModeCount       = 16,
+    kModeLight       = 16,
+    kModeCount       = 17,
 };
 
 // ── Lightweight cache entry for the terrain material picker ─────────────────
@@ -99,12 +100,13 @@ private:
     void DrawPanelScenery  (sqlite3*, MediaTab*, bool placement);
     void DrawPanelTerrain  (sqlite3*, bool placement);
     void DrawPanelEmitters (sqlite3*, bool placement);
-    void DrawPanelWater    (sqlite3*, bool placement);
+    void DrawPanelWater    (sqlite3*, MediaTab*, bool placement);
     void DrawPanelEnviro      (sqlite3*);
     void DrawPanelOther       (sqlite3*);
     void DrawPanelSpawnPoint  (sqlite3*, MediaTab*, bool placement);
     void DrawPanelPlayerSpawn (sqlite3*, bool placement);
     void DrawPanelFoliage     (sqlite3*, MediaTab*, bool placement);
+    void DrawPanelLight       (sqlite3*, bool placement);
 
     // ── Undo ─────────────────────────────────────────────────────────────────
     enum UndoAction { kUndoCreate, kUndoDelete, kUndoMove, kUndoRotate, kUndoScale };
@@ -314,6 +316,26 @@ private:
     glm::vec3 wtrColor_ = {0.f, 0.39f, 0.59f};
     int   wtrOpacity_ = 50;
     int   wtrDamage_  = 0;
+    // Water texture: stored as ZWater::texPath (a media_materials.albedo_path
+    // string, same convention as scenery's material picker), no dedicated
+    // water texture table — reuses the existing Materials list from Media tab.
+    std::string wtrTexPath_;
+    float       wtrTexScale_ = 15.f;
+    // Water Phase 1 — procedural wave normal. Direction is edited as an
+    // angle (0-360°) in the UI (simpler than two raw X/Z sliders the dev
+    // has to keep normalized) and converted to ZWater::waveDirX/waveDirZ
+    // on write. Defaults match ZWater's own defaults (zone_scene.h).
+    float wtrWaveSpeed_    = 0.3f;
+    float wtrWaveAngleDeg_ = 45.f;   // atan2(0.7071, 0.7071) == 45°
+    float wtrWaveScale_    = 0.35f;
+    // Water Sub-fase 2a — depth-based transparency. Defaults match ZWater's
+    // own defaults (zone_scene.h).
+    glm::vec3 wtrShallowColor_      = {0.3f, 0.7f, 0.6f};
+    glm::vec3 wtrDeepColor_         = {0.02f, 0.10f, 0.20f};
+    float     wtrDepthFadeDistance_ = 2.5f;
+    // Water Sub-fase 2b — procedural shoreline foam.
+    float     wtrFoamWidth_ = 0.4f;
+    glm::vec3 wtrFoamColor_ = {1.f, 1.f, 1.f};
     // Scenery
     int   scnModelId_     = 0;
     int   scnMaterialId_  = 0;
@@ -416,6 +438,12 @@ private:
     static constexpr const char* kEmitterNames[] = {
         "Fire", "Explosion", "Heal", "Portal", "Blood", "Smoke"
     };
+
+    // Point lights (Phase 1 — static torches/lanterns)
+    char  lightName_[128]  = {};
+    float lightColor_[3]   = {1.0f, 0.8f, 0.5f};  // warm torch-ish default
+    float lightIntensity_  = 1.0f;
+    float lightRadius_     = 5.0f;
 
     // Spawn Points
     float spawnPtRadius_      = 5.f;

@@ -7,6 +7,7 @@
 #include <memory>
 #include <rco/renderer/actor.h>
 #include <rco/renderer/model.h>
+#include <rco/renderer/texture.h>
 #include "zone_scene.h"
 #include "terrain/editable_terrain.h"
 
@@ -31,6 +32,7 @@ enum ZSelType {
     kSelSpawnPoint  = 9,
     kSelColSphere   = 10,
     kSelPlayerSpawn = 11,
+    kSelLight       = 12,
 };
 
 // Off-screen FBO renderer for the zone editor viewport.
@@ -183,6 +185,24 @@ private:
     GLuint boxVAO_    = 0, boxVBO_    = 0, boxEBO_    = 0;
     int    boxIdx_    = 0;
     GLuint lineVAO_   = 0, lineVBO_   = 0;
+
+    // ── Water (Gerstner wave grid, real vertex displacement — see water.vs) ─
+    // Shader is NOT compiled here anymore (see fix note in zone_renderer.cpp
+    // DrawWater): it's rco::renderer::Shader::shaders["water"], the SAME
+    // Shader instance the client uses, already registered by
+    // CompileAllShaders() (compile_shaders.cpp) when EnsurePBR_ initializes
+    // fullEngine_. That's the only path in this codebase that resolves
+    // "#include" in GLSL (Shader::resolveIncludes(), shader.cpp) — a raw
+    // glShaderSource() here (the old InitWaterShader/waterProg_) can't
+    // compile water.fs since it added #include "common.h" (Sub-fase 2a).
+    GLuint waterVAO_  = 0, waterVBO_ = 0, waterEBO_ = 0;
+    int    waterIdx_  = 0;  // triangle index count for the subdivided grid
+    void   BuildWaterQuadVAO();
+    void   DrawWater(const ZWater& w, bool selected, const glm::mat4& vp);
+    // Texture cache keyed by resolved (dist/tools/-relative) path — avoids
+    // reloading from disk every frame. Lazily populated in DrawWater.
+    std::unordered_map<std::string, std::unique_ptr<rco::renderer::Texture2D>> waterTextures_;
+    rco::renderer::Texture2D* GetOrLoadWaterTexture(const std::string& texPath);
 
     // Batched colVis rendering — all collision shape outlines in one draw call.
     // Vertex layout: float[7] = {x, y, z, r, g, b, a}

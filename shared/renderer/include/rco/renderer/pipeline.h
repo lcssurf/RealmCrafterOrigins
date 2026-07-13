@@ -130,6 +130,34 @@ public:
     void SetFeatures(const FeatureConfig& cfg);
     const FeatureConfig& Features() const { return features_; }
     void SetSun(const glm::vec3& direction, const glm::vec3& color);
+    // Read-only access to the current sun — for forward-pass draws (water,
+    // etc.) that need to light themselves manually since they bypass
+    // globalLightPass_()/localLightsPass_(). Not a second source of truth:
+    // just exposes the same sun_ the deferred passes already use.
+    glm::vec3 SunDirection() const;
+    glm::vec3 SunColor()     const;
+    // Read-only access to the current camera world position (camPos_, set
+    // every frame by Begin()) — same value every deferred pass already
+    // uploads as "u_viewPos"/"u_cameraPos"/"u_camPos". Used by forward-pass
+    // draws (water specular) that need it for a view vector, without
+    // duplicating the source of truth or requiring a second parameter
+    // threaded through from the caller.
+    glm::vec3 ViewPos() const;
+    // Read-only access to the gBuffer's scene depth texture (engine_->gDepth_
+    // — Pipeline is already `friend class Pipeline` of Engine, see engine.h,
+    // and every deferred pass already binds this same texture, e.g.
+    // localLightsPass_ at pipeline.cpp:584). Exposed so forward-pass draws
+    // (water depth-based transparency) can sample the same scene depth the
+    // deferred passes already use — not a second depth buffer.
+    // CAUTION: gDepth_ is also the currently-bound depth ATTACHMENT of
+    // postprocessFbo_ during the forward pass (see End()) — sampling it as a
+    // texture at the same time is a texture/framebuffer feedback loop per
+    // strict GL spec. In practice this is the standard "soft particles"/
+    // water-depth-fade technique and works because the forward pass runs
+    // with glDepthMask(GL_FALSE) (no writes during the read), but it hasn't
+    // been empirically verified on this engine's drivers — watch for
+    // flickering/garbage depth if this is the first real use.
+    GLuint SceneDepthTexture() const;
     void SetCharacterReadability(const CharacterReadabilityTuning& cfg);
     const CharacterReadabilityTuning& CharacterReadability() const { return characterReadability_; }
     void SetSceneLook(const SceneLookTuning& cfg);

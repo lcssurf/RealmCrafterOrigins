@@ -325,3 +325,73 @@ func WorldObjectsPayload(objects []WorldObject) []byte {
 	}
 	return []byte(p)
 }
+
+// LightsPayload encodes a slice of static point lights for PZoneLights.
+// Format: count(u16) + for each: name(str)+x(f32)+y(f32)+z(f32)+
+//         color_r(f32)+color_g(f32)+color_b(f32)+intensity(f32)+radius(f32)
+func LightsPayload(lights []Light) []byte {
+	var p pb
+	n := len(lights)
+	if n > 0xFFFF {
+		n = 0xFFFF
+	}
+	p.u16(uint16(n))
+	for i := 0; i < n; i++ {
+		l := &lights[i]
+		p.str(l.Name)
+		p.f32(l.X)
+		p.f32(l.Y)
+		p.f32(l.Z)
+		p.f32(l.ColorR)
+		p.f32(l.ColorG)
+		p.f32(l.ColorB)
+		p.f32(l.Intensity)
+		p.f32(l.Radius)
+	}
+	return []byte(p)
+}
+
+// WaterPayload encodes a slice of static water planes for PZoneWater.
+// Format: count(u16) + for each: x(f32)+y(f32)+z(f32)+scale_x(f32)+scale_z(f32)+
+//         color_r(f32)+color_g(f32)+color_b(f32)+opacity(f32)+tex_path(str)+tex_scale(f32)+
+//         wave_speed(f32)+wave_dir_x(f32)+wave_dir_z(f32)+wave_scale(f32)+
+//         shallow_r(f32)+shallow_g(f32)+shallow_b(f32)+deep_r(f32)+deep_g(f32)+deep_b(f32)+
+//         depth_fade_distance(f32)+foam_width(f32)+foam_r(f32)+foam_g(f32)+foam_b(f32)
+func WaterPayload(water []Water) []byte {
+	var p pb
+	n := len(water)
+	if n > 0xFFFF {
+		n = 0xFFFF
+	}
+	p.u16(uint16(n))
+	for i := 0; i < n; i++ {
+		w := &water[i]
+		p.f32(w.X)
+		p.f32(w.Y)
+		p.f32(w.Z)
+		p.f32(w.ScaleX)
+		p.f32(w.ScaleZ)
+		p.f32(w.ColorR)
+		p.f32(w.ColorG)
+		p.f32(w.ColorB)
+		p.f32(w.Opacity)
+		p.str(w.TexPath)
+		p.f32(w.TexScale)
+		p.f32(w.WaveSpeed)
+		p.f32(w.WaveDirX)
+		p.f32(w.WaveDirZ)
+		p.f32(w.WaveScale)
+		p.f32(w.ShallowR)
+		p.f32(w.ShallowG)
+		p.f32(w.ShallowB)
+		p.f32(w.DeepR)
+		p.f32(w.DeepG)
+		p.f32(w.DeepB)
+		p.f32(w.DepthFadeDistance)
+		p.f32(w.FoamWidth)
+		p.f32(w.FoamR)
+		p.f32(w.FoamG)
+		p.f32(w.FoamB)
+	}
+	return []byte(p)
+}

@@ -354,6 +354,33 @@ void ZoneScene::EnsureTables(sqlite3* db) {
         "  damage   INTEGER NOT NULL DEFAULT 0,"
         "  dmg_type INTEGER NOT NULL DEFAULT 0"
         ")");
+    // Water Phase 1 — procedural wave normal, tunable per-instance. Defaults
+    // are non-zero on purpose: wave_speed=0/wave_scale=0 would freeze the
+    // normal-perturbation math into a static (but still non-flat) look
+    // instead of true stillness, and a zero wave_dir would normalize() to
+    // NaN in the shader — these defaults keep existing (pre-Phase-1) water
+    // rows visually reasonable without the dev having to touch them.
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN wave_speed REAL NOT NULL DEFAULT 0.3");
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN wave_dir_x REAL NOT NULL DEFAULT 0.7071");
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN wave_dir_z REAL NOT NULL DEFAULT 0.7071");
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN wave_scale REAL NOT NULL DEFAULT 0.35");
+    // Water Sub-fase 2a — depth-based transparency. Colors stored as 0-255
+    // ints, same convention as color_r/g/b above. Defaults match ZWater's
+    // own defaults (zone_scene.h) so pre-2a water rows get a sensible
+    // shallow/deep gradient instead of shallowColor==deepColor==black.
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN shallow_r INTEGER NOT NULL DEFAULT 77");
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN shallow_g INTEGER NOT NULL DEFAULT 178");
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN shallow_b INTEGER NOT NULL DEFAULT 153");
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN deep_r    INTEGER NOT NULL DEFAULT 5");
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN deep_g    INTEGER NOT NULL DEFAULT 26");
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN deep_b    INTEGER NOT NULL DEFAULT 51");
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN depth_fade_distance REAL NOT NULL DEFAULT 2.5");
+    // Water Sub-fase 2b — procedural shoreline foam. Reuses 2a's depth
+    // comparison, no new depth logic. Defaults match ZWater's own defaults.
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN foam_width REAL    NOT NULL DEFAULT 0.4");
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN foam_r     INTEGER NOT NULL DEFAULT 255");
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN foam_g     INTEGER NOT NULL DEFAULT 255");
+    Exec(db, "ALTER TABLE zone_water ADD COLUMN foam_b     INTEGER NOT NULL DEFAULT 255");
 
     // ── Emitters ──────────────────────────────────────────────────────────
     Exec(db,
@@ -364,6 +391,26 @@ void ZoneScene::EnsureTables(sqlite3* db) {
         "  x           REAL    NOT NULL DEFAULT 0,"
         "  y           REAL    NOT NULL DEFAULT 0,"
         "  z           REAL    NOT NULL DEFAULT 0"
+        ")");
+
+    // ── Point lights (Phase 1 — static torches/lanterns) ───────────────────
+    // Sent to the client on area load; resubmitted every frame into the
+    // already-existing (previously unused) Pipeline::AddPointLight() deferred
+    // light-volume pass. See server/internal/db/db.go LoadZoneLights and
+    // client rco::renderer::LightManager.
+    Exec(db,
+        "CREATE TABLE IF NOT EXISTS zone_lights ("
+        "  id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  area_name TEXT    NOT NULL DEFAULT '',"
+        "  name      TEXT    NOT NULL DEFAULT '',"
+        "  x         REAL    NOT NULL DEFAULT 0,"
+        "  y         REAL    NOT NULL DEFAULT 0,"
+        "  z         REAL    NOT NULL DEFAULT 0,"
+        "  color_r   REAL    NOT NULL DEFAULT 1.0,"
+        "  color_g   REAL    NOT NULL DEFAULT 0.8,"
+        "  color_b   REAL    NOT NULL DEFAULT 0.5,"
+        "  intensity REAL    NOT NULL DEFAULT 1.0,"
+        "  radius    REAL    NOT NULL DEFAULT 5.0"
         ")");
 
     // ── Player spawn points ───────────────────────────────────────────────
@@ -654,11 +701,37 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
         sqlite3_finalize(stmt);
     }
 
+    // ── Point lights ─────────────────────────────────────────────────────
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, x, y, z, name, color_r, color_g, color_b, intensity, radius"
+        " FROM zone_lights WHERE area_name=? ORDER BY id",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, area.c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            ZLight l;
+            l.id        = sqlite3_column_int(stmt, 0);
+            l.pos.x     = (float)sqlite3_column_double(stmt, 1);
+            l.pos.y     = (float)sqlite3_column_double(stmt, 2);
+            l.pos.z     = (float)sqlite3_column_double(stmt, 3);
+            l.name      = txt(stmt, 4);
+            l.color.r   = (float)sqlite3_column_double(stmt, 5);
+            l.color.g   = (float)sqlite3_column_double(stmt, 6);
+            l.color.b   = (float)sqlite3_column_double(stmt, 7);
+            l.intensity = (float)sqlite3_column_double(stmt, 8);
+            l.radius    = (float)sqlite3_column_double(stmt, 9);
+            lights.push_back(l);
+        }
+        sqlite3_finalize(stmt);
+    }
+
     // ── Water ─────────────────────────────────────────────────────────────
     if (sqlite3_prepare_v2(db,
         "SELECT id, x, y, z, scale_x, scale_z,"
         "       color_r, color_g, color_b, opacity,"
-        "       tex_path, tex_scale, damage, dmg_type"
+        "       tex_path, tex_scale, damage, dmg_type,"
+        "       wave_speed, wave_dir_x, wave_dir_z, wave_scale,"
+        "       shallow_r, shallow_g, shallow_b, deep_r, deep_g, deep_b, depth_fade_distance,"
+        "       foam_width, foam_r, foam_g, foam_b"
         " FROM zone_water WHERE area_name=? ORDER BY id",
         -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, area.c_str(), -1, SQLITE_TRANSIENT);
@@ -678,6 +751,21 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
             w.texScale  = (float)sqlite3_column_double(stmt, 11);
             w.damage    = sqlite3_column_int(stmt, 12);
             w.dmgType   = sqlite3_column_int(stmt, 13);
+            w.waveSpeed = (float)sqlite3_column_double(stmt, 14);
+            w.waveDirX  = (float)sqlite3_column_double(stmt, 15);
+            w.waveDirZ  = (float)sqlite3_column_double(stmt, 16);
+            w.waveScale = (float)sqlite3_column_double(stmt, 17);
+            w.shallowColor.r      = (float)sqlite3_column_int(stmt, 18) / 255.f;
+            w.shallowColor.g      = (float)sqlite3_column_int(stmt, 19) / 255.f;
+            w.shallowColor.b      = (float)sqlite3_column_int(stmt, 20) / 255.f;
+            w.deepColor.r         = (float)sqlite3_column_int(stmt, 21) / 255.f;
+            w.deepColor.g         = (float)sqlite3_column_int(stmt, 22) / 255.f;
+            w.deepColor.b         = (float)sqlite3_column_int(stmt, 23) / 255.f;
+            w.depthFadeDistance   = (float)sqlite3_column_double(stmt, 24);
+            w.foamWidth           = (float)sqlite3_column_double(stmt, 25);
+            w.foamColor.r         = (float)sqlite3_column_int(stmt, 26) / 255.f;
+            w.foamColor.g         = (float)sqlite3_column_int(stmt, 27) / 255.f;
+            w.foamColor.b         = (float)sqlite3_column_int(stmt, 28) / 255.f;
             water.push_back(w);
         }
         sqlite3_finalize(stmt);

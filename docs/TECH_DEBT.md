@@ -1237,3 +1237,287 @@ Fase 2: flag `black_cutout` no **modelo** — implementada.
   `zones.h`, `zones.cpp`, `zones_panels.cpp`, `zones_sidebar.cpp`, `zones_viewport.cpp`,
   `server/internal/db/db.go` (migrateV52+), `server/internal/net/client.go`.
 
+## 116. Point Lights Fase 2: luz dinâmica de skill/FX + sombra de point light (pendente)
+
+**Fase 1 implementada** (estática, torches/lanternas):
+- Pipeline de point light já existia pronto e nunca era chamado (`Pipeline::AddPointLight`,
+  `localLightsPass_`, shaders `lightGeom.vs`/`gPhongManyLocal.fs`) — Fase 1 só ligou o fio,
+  não mudou nada do shader/SSBO.
+- Tabela `zone_lights` (schema em `tools/gue/src/zone_scene.cpp` `EnsureTables`).
+- GUE Zone editor: Point Light como objeto plaçável (padrão zone_scenery/zone_emitters),
+  `ZLight` em `zone_scene.h`, `kSelLight`/`kModeLight`, marcador esfera colorida + anel de
+  raio no viewport (`zone_renderer.cpp`).
+- Servidor: `LoadZoneLights` (`db.go`), `world.Light`/`Area.Lights` (`area.go`),
+  `LightsPayload` (`frame.go`), pacote `PZoneLights=140`, enviado em `sendZoneLights`
+  (mesmos 2 call sites de `sendWorldObjects`: login e troca de área).
+- Cliente: `rco::renderer::LightManager` (`shared/renderer/include/rco/renderer/
+  light_manager.h` + `src/light_manager.cpp`) — guarda a lista da área atual e resubmete
+  via `Pipeline::AddPointLight` TODO FRAME (o pipeline limpa `localLights_` em `Begin()`,
+  não é "adiciona uma vez"). `light_manager.Clear()` chamado em `kPChangeArea`,
+  `kPKickedPlayer` e `OnLogout`, espelhando `world_static_objects.clear()`.
+
+**O que falta (Fase 2):**
+- **Luz dinâmica de skill/FX**: anexar cor/raio/intensidade a
+  `ParticleSystem::Emitter` (`shared/renderer/include/rco/renderer/particles.h`), que já
+  tem posição + `startTime`/`duration` por instância ativa. Em `ParticleSystem::Update()`,
+  chamar `Pipeline::AddPointLight()` pra cada emitter vivo com luz configurada — reaproveita
+  100% do tracking de posição/vida útil existente, sem estrutura de dados nova.
+  Precisa adicionar campos de luz a `FXParams` (particles.h) e ao pacote `kPFXCatalog`
+  (main.cpp) se a cor/raio da luz do FX for autorada pelo servidor (não hardcoded).
+- **Sombra de point light**: hoje só a luz direcional (sun) tem sombra (`shadowPass_`,
+  PCF em `gPhongGlobal.fs`). Point lights renderizam sem sombra nenhuma — sombra
+  omnidirecional (cubemap) ou aproximação é trabalho novo, não reaproveita a shadow pass
+  direcional existente além do padrão geral de bias/PCF como referência.
+- **Nice-to-have não crítico**: `Pipeline::localLightsPass_` recria o SSBO
+  (`std::make_unique<StaticBuffer>`) do zero todo frame em vez de atualizar um buffer
+  persistente — funciona, mas é uma alocação de GPU buffer nova por frame. Só vale otimizar
+  se o número de luzes simultâneas crescer a ponto de aparecer em profiling.
+
+**Quando atacar:** quando skills com efeito visual luminoso (bola de fogo, raio, etc.)
+virarem prioridade, ou se o teste da Fase 1 revelar que point lights sem sombra ficam
+visualmente estranhos em interiores.
+**Estimativa:** luz dinâmica ~1 dia (reaproveita infra); sombra de point light ~3-5 dias
+(trabalho novo de renderização).
+
+## 117. Água Fase 3 (reflexo) + mecânica de nadar (pendente) — profundidade/espuma feitas
+
+**Fase 0 implementada** (plano estático texturizado):
+- `zone_water` já existia (schema + struct `ZWater`) mas sem UI pra `tex_path`/`tex_scale`
+  e sem consumidor real — o GUE desenhava uma caixa de cor sólida (`kPrimVS`/`kPrimFS`,
+  sem UV) e o cliente do jogo nunca recebia água nenhuma (zero pacote, zero shader).
+- GUE: `DrawPanelWater` (`zones_panels.cpp`) ganhou combo de textura (reaproveita
+  `media->Materials()`, mesmo padrão do combo Model/Material da Scenery) + slider de
+  Tex Scale. `zone_renderer.cpp` ganhou shader real (`InitWaterShader`/`DrawWater`),
+  lendo `dist/client/shaders/water.vs`/`water.fs` do disco (UV real + `sampler2D`,
+  diferente do `kPrimVS`/`kPrimFS` que continua existindo p/ outros overlays de debug).
+- Shaders `water.vs`/`water.fs` (`dist/client/shaders/`): quad único, UV tileável por
+  `tex_scale`, tint de cor + opacity — sem onda, sem profundidade, sem reflexo.
+- Servidor: `LoadZoneWater` (`db.go`), `world.Water`/`Area.Water` (`area.go`),
+  `WaterPayload` (`frame.go`), pacote `PZoneWater=141`, enviado em `sendZoneWater`
+  (mesmos 2 call sites de `sendZoneLights`: login e troca de área).
+- Cliente: `rco::renderer::WaterManager` (`shared/renderer/include/rco/renderer/
+  water_manager.h` + `src/water_manager.cpp`) — desenha um quad texturizado por
+  instância dentro do forward pass do `Pipeline::End()`, no mesmo callback de
+  `particles.Render` (`main.cpp`, perto de `pipeline->End()`). Shader `"water"`
+  registrado em `compile_shaders.cpp` junto dos demais. `water_manager.Clear()`
+  chamado em `kPChangeArea`, `kPKickedPlayer` e `OnLogout`, espelhando
+  `light_manager.Clear()`.
+- **Primeira vez que água aparece no jogo de verdade** — antes desta fase, água era
+  100% preview do editor GUE.
+- **Iluminação sun-only (pós-Fase 0)**: `water.fs` nasceu 100% auto-iluminado
+  (`texel*tint`, sem nenhum uniform de luz) — água ficava com o mesmo brilho de dia ou
+  de noite, sob sol ou sombra. Corrigido: `water.fs` ganhou um termo difuso simples
+  usando só o sol direcional (`N=(0,1,0)` fixo — água ainda é plana, sem onda — e
+  `L=normalize(-u_sunDir)`, mesma convenção de `gPhongGlobal.fs:196`), com piso mínimo
+  0.4 pra não ficar preto total à noite/sombra. `Pipeline` ganhou `SunDirection()`/
+  `SunColor()` (getters, `pipeline.h`/`pipeline.cpp`) só pra repassar o `sun_` que já
+  existe — não duplica a fonte da verdade. `WaterManager::Render` agora recebe
+  `const Pipeline&` e `DrawWater` (GUE) lê `fullPipeline_->SunDirection()/SunColor()`
+  diretamente (é membro da mesma classe). **Ainda sem IBL e sem sombra** — água não
+  escurece dentro de sombra de árvore/prédio nem reflete a cor ambiente do céu; é
+  puramente `NdotL` contra o sol. Ver pendência abaixo.
+
+**Fase 1 implementada, REVISADA — Gerstner waves reais (deslocamento de vértice), não
+mais só perturbação de normal:**
+- **Histórico**: a primeira versão da Fase 1 só perturbava a normal de shading via
+  sum-of-sines (superfície continuava um quad plano de 4 vértices — só a luz "cintilava",
+  a geometria não se mexia). Substituída pela técnica padrão da indústria: **Gerstner
+  waves** (GPU Gems, "Effective Water Simulation from Physical Models" — mesma técnica
+  usada em Dishonored/War Thunder/tutoriais UE4/Unity/Godot), que desloca vértices de
+  verdade.
+- **Malha**: `BuildWaterQuadVAO` (`tools/gue/src/zone_renderer.cpp`) e `WaterManager::Init`
+  (`shared/renderer/src/water_manager.cpp`) trocaram o quad de 4 vértices por uma grade
+  NxN (`kWaterGridN=24` → 576 vértices / 1058 triângulos) — só uma grade subdividida
+  consegue curvar de verdade; um quad plano não. Índices em `GL_UNSIGNED_SHORT` (576
+  cabe folgado). De quebra, corrigido um leak pré-existente no GUE (`ebo` local nunca
+  armazenado num membro) — agora `waterEBO_` é membro e é deletado no destrutor.
+- **Vertex shader** (`water.vs`): `GerstnerWave(dir, steepness, k, speed, time, p, out
+  dDispDx, out dDispDz)` — implementa a fórmula padrão `f=k*(dot(dir,p)-speed*time)`,
+  `a=steepness/k`, `disp=(dir.x*a*cos(f), a*sin(f), dir.y*a*cos(f))`, e retorna também as
+  derivadas parciais analíticas de `disp` em relação a x/z (regra da cadeia sobre a
+  própria fórmula de deslocamento, derivada à mão — não uma fórmula de normal genérica
+  "encaixada" por fora). A normal final vem de `normalize(cross(tangentZ, tangentX))`,
+  onde `tangentX/Z = (1,0,0)/(0,0,1) + Σ derivadas` — no caso plano (steepness=0) isso
+  colapsa exatamente pro antigo `N=(0,1,0)`.
+- **Mapeamento dos campos existentes** (nenhum campo novo configurável adicionado):
+  `wave_speed` → `speed` (m/s que a crista viaja ao longo de `dir`); `wave_dir` → `dir`
+  (normalizado no shader); `wave_scale` → `k` (número de onda angular, rad/unidade-de-
+  mundo, usado DIRETO — `wavelength=2*PI/wave_scale`; no default do GUE, 0.35, dá um
+  "swell" de ~18 unidades; no máximo do slider, 2.0, dá um chop de ~3 unidades).
+  Amplitude é uma constante fixa no shader (~0.12 unidades, "sutil" — mesmo alvo visual
+  da versão anterior), com `steepness = clamp(amplitude*k, 0, 0.5)` — o clamp evita
+  onda "looping"/auto-interseção em k alto, e é também fisicamente plausível (ondas
+  curtas e íngremes arrebentam em vez de crescer). Onda secundária: mesmo padrão do
+  sum-of-sines anterior — direção rotacionada 90°+misturada, `k*1.8`, `speed*1.3`,
+  metade da amplitude — sem campo configurável novo.
+- **Uniforms renomeados**: `u_mvp` (combinado) virou `u_viewProj` (só proj*view) + o
+  `u_model` que já existia (da correção de especular) passou a ser usado pra calcular a
+  posição de mundo ANTES da câmera — necessário porque a fase da onda é avaliada em
+  metros de mundo, e um MVP pré-combinado não dá pra "desfazer" de volta.
+- **Difuso + especular Blinn-Phong** (já implementados numa correção anterior) mantidos
+  intactos — agora contra a normal Gerstner real, não a perturbação artificial. Resultado
+  esperado: o brilho especular "quebra" fisicamente nas cristas conforme a câmera/sol se
+  move, em vez de só cintilar no lugar.
+- `ZWater`/`WaterEntry`/rede (`wave_speed`/`wave_dir_x`/`wave_dir_z`/`wave_scale`,
+  `PZoneWater`) — **inalterados**, os mesmos 4 campos da Fase 1 original, só a semântica
+  de `wave_scale` mudou (de "frequência em espaço de UV" pra "número de onda em espaço
+  de mundo").
+
+**Sub-fase 2a implementada** (transparência por profundidade, via `gDepth_`):
+- `Pipeline::SceneDepthTexture()` (`pipeline.h`/`pipeline.cpp`) — getter novo, mesmo
+  padrão de `SunDirection()`/`ViewPos()`, retorna `engine_->gDepth_` (`Pipeline` já é
+  `friend class Pipeline` de `Engine`, `engine.h:82`, usado direto em 6+ lugares de
+  `pipeline.cpp` — nada novo em termos de acesso, só exposto pra fora da classe).
+- `water.fs` ganhou `#include "common.h"` e reusa `WorldPosFromDepth()` (já existente,
+  usada por `gPhongManyLocal.fs:37`) pra reconstruir a posição de mundo da cena a partir
+  de `gDepth_` — **não** reinventou linearização de depth com near/far. `u_invViewProj`
+  é calculado no C++ chamador (`glm::inverse(vp)`, mesmo padrão de todo pass deferred,
+  ex. `pipeline.cpp:642`), não um getter novo no `Pipeline`.
+- Fórmula: `depthDiff = max(vWorldPos.y - sceneWorldPos.y, 0)`,
+  `depthFactor = 1-exp(-depthDiff/depth_fade_distance)`,
+  `waterColor = mix(shallow_color, deep_color, depthFactor)`.
+- **Composição final decidida**: `waterColor` (o gradiente por profundidade) **substitui**
+  o papel do `color`/`u_tint.rgb` antigo no cálculo de luz — `texel.rgb * waterColor *
+  lightAmt * u_sunColor` (a textura de albedo, se houver, continua multiplicando pra
+  detalhe tileável; `u_tint.a`/opacity continua controlando alpha). O campo `color` antigo
+  do `ZWater` continua salvo/carregado (não removido do schema), só deixou de influenciar
+  a cor da água — `shallow_color`/`deep_color` são estritamente mais expressivos.
+- Campos novos em `ZWater`: `shallow_color`/`deep_color` (vec3, default
+  `(0.3,0.7,0.6)`/`(0.02,0.10,0.20)`) e `depth_fade_distance` (float, default 2.5) —
+  mesmo padrão de `wave_speed` (migração `ALTER TABLE ADD COLUMN` idempotente, sliders/
+  color-pickers no `DrawPanelWater`, campos espelhados em `ZoneWater`(Go)/`world.Water`/
+  `WaterPayload`/`WaterEntry`).
+- **⚠️ Risco técnico sinalizado, não resolvido silenciosamente**: `gDepth_` é
+  simultaneamente o depth ATTACHMENT ativo do `postprocessFbo_` durante o forward pass
+  e a textura sendo lida por `u_sceneDepth` — um feedback loop pela spec estrita do GL.
+  Esperado ser seguro (`glDepthMask(GL_FALSE)` durante o forward pass, `pipeline.cpp:971`
+  — é a técnica padrão de "soft particles"), mas **não testado empiricamente nesta
+  engine ainda**. Se aparecer flickering/profundidade com ruído/cor estranha na água ao
+  testar, a correção é copiar `gDepth_` pra uma textura separada antes do forward pass
+  (blit, custo extra) em vez de sample-enquanto-attachment direto.
+
+**Anotado, não implementado**: normal map de TEXTURA complementar ao Gerstner procedural
+— o Gerstner dá deslocamento real de baixa frequência (ondas grandes), mas rugas finas de
+alta frequência (o "chapinhado" fino da superfície) tradicionalmente vêm de um normal map
+sampleado e animado por cima, mais barato que aumentar a resolução da grade. Não pedido
+ainda; ficaria como uma segunda fonte de perturbação de normal somada à do Gerstner.
+
+**Sub-fase 2b implementada** (espuma de margem procedural):
+- Reusa `depthDiff` de 2a **sem modificação** — nenhuma segunda amostragem de
+  profundidade. `foamMask = 1.0 - smoothstep(0.0, foam_width, depthDiff)` (`water.fs`).
+- Ruído procedural (não textura): `foamNoise = sin(dot(vWorldPos.xz,dirA)*freqA +
+  u_time*speedA) * cos(dot(vWorldPos.xz,dirB)*freqB + u_time*speedB)`, com
+  `freqA/freqB`/`speedA/speedB` derivados de `wave_scale`/`wave_speed` (4x/5.3x e
+  2x/1.7x — múltiplos não-inteiros pra evitar repetição óbvia), não campos novos.
+  `foam = foamMask * smoothstep(0.3, 0.9, foamNoise*0.5+0.5)`; composição final
+  `mix(lit+specular, foam_color, foam)`.
+- **Acompanha a onda + desliza sozinha**: usa `vWorldPos.xz` (posição JÁ deslocada pelo
+  Gerstner em `water.vs`, não a posição de repouso) e `u_time` (mesmo relógio
+  reaproveitado — `elapsed_time_` no GUE, `now` no cliente) — dois efeitos empilhados,
+  não uma textura grudada numa posição fixa.
+- **Função de ruído NÃO compartilhada entre vertex/fragment** — decisão deliberada:
+  `GerstnerWave` (vertex) retorna deslocamento + derivadas parciais analíticas (uma
+  assinatura pesada e especializada, necessária pra deslocar vértice + montar normal);
+  a espuma (fragment) só precisa de um valor escalar de ruído. Forçar um compartilhamento
+  significaria pagar por derivadas não usadas de um lado, ou uma variante "burra" do
+  outro — a espuma ganhou uma implementação fragment-local nova, curta (4 linhas),
+  reaproveitando o ESPÍRITO sum-of-sines, não o código.
+- Campos novos em `ZWater`: `foam_width` (float, default 0.4) e `foam_color` (vec3,
+  default branco `1,1,1`) — mesmo padrão de `shallow_color`/`deep_color` (migração
+  `ALTER TABLE ADD COLUMN` idempotente, slider+color-picker no `DrawPanelWater`, campos
+  espelhados em `ZoneWater`(Go)/`world.Water`/`WaterPayload`/`WaterEntry`).
+
+**Sub-fase 2c confirmada por design** (espuma ao redor de personagem/objetos, sem código
+novo): `foamMask` usa o MESMO `depthDiff` de 2a, que já compara a água contra QUALQUER
+geometria opaca em `gDepth_` — terreno (`terrainPass_`) OU atores/props
+(`gBufferPass_`), ambos desenhados antes do forward pass da água rodar. Um personagem
+parcialmente submerso automaticamente produz um `depthDiff` pequeno no ponto de
+interseção, disparando a mesma faixa de espuma que a margem do terreno — nenhuma
+lógica de "personagem" foi ou precisa ser escrita.
+
+**O que falta (fases futuras, nenhuma implementada ainda):**
+- **IBL/sombra na água**: água ainda não recebe ambient/IBL (nenhuma aproximação de céu)
+  nem sombra projetada (árvore/prédio na frente do sol não escurece a água debaixo).
+  Mais caro que o sun-only atual — sombra exigiria sample do mesmo shadow map do sol
+  dentro do forward pass (hoje só a light pass deferred lê o shadow map); IBL exigiria
+  sample do cubemap de irradiância já usado por `gPhongGlobal.fs` ou uma aproximação
+  barata (cor do céu como uniform único, sem sampling real). Fica pra quando fizer
+  sentido — não pedido nesta rodada.
+- **Fase 3 — reflexo/refração**: render-to-texture de uma câmera espelhada (reflexo
+  planar, mais barato) ou SSR (mais caro, reaproveitaria o `ssr.fs` já existente pro
+  resto da cena). Exige FBO novo + pass novo — maior escopo e custo de performance
+  real desta lista.
+- **Mecânica de nadar** (separada da renderização): depende da água estar
+  **networked** (feito na Fase 0 — `Area.Water`/`PZoneWater`). Falta o check em si:
+  comparar `player.y + player_actor.ModelHeight()*0.6` contra o `Water.Y` mais próximo
+  na área, rodando no servidor (autoridade de movimento), no mesmo ponto onde já roda
+  o snap de terreno (`main.cpp` cliente ~4474 e a lógica equivalente de spawn/movimento
+  NPC em `server/internal/world/area.go`). Servidor é o lugar certo porque movimento é
+  autoritativo lá, igual ao snap de terreno.
+
+**Quando atacar:** Fase 3 só vale a pena quando água virar um elemento de gameplay mais
+central (lagos grandes, combate aquático) — antes disso o custo de performance (SSR/RTT)
+não se paga.
+**Estimativa:** IBL/sombra ~1-2 dias (sun-only já existe, é aditivo); Fase 3 ~4-6 dias
+(reflexo planar) ou mais pra SSR; nadar ~1-2 dias (assumindo networked, que já está).
+
+## 118. Ripple Sim (rastro de onda do jogador) — Fase (a)+(b) implementadas, só cliente
+
+**Fase (a) implementada** (buffer Hugo Elias isolado, sem integração):
+- `rco::renderer::RippleSim` (`shared/renderer/include/rco/renderer/ripple_sim.h` +
+  `src/ripple_sim.cpp`) — 2 texturas `GL_R32F` ping-pong (128px default) + FBOs, molde do
+  SSAO (`engine.cpp:323-332`). Update via fullscreen triangle (`ripple_update.fs`,
+  `fullscreen_tri.vs` reaproveitado) rodando a recorrência clássica Hugo Elias/verlet:
+  `novaAltura = (vizinhos_media_de_u_current)/2 - u_previous(mesmo texel)`, com damping.
+  `GL_CLAMP_TO_EDGE` nas duas texturas evita vazamento de borda; `GL_NEAREST` garante
+  amostragem exata texel-a-texel (crítico pro same-texel self-read do `u_previous`).
+- **Same-texel self-read documentado, não escondido**: `u_previous` é sampleado do MESMO
+  buffer que está sendo escrito nesse pass (só no texel exato, sem offset de vizinho) —
+  é a técnica padrão de toda implementação real do algoritmo (GPU Gems também documenta
+  isso), tecnicamente não coberta por `GL_ARB_texture_barrier`, mas universalmente aceita
+  na prática pra esse padrão específico de acesso. Mesma classe de risco documentado do
+  `gDepth_` na Fase 2a.
+- Debug: `F9` liga/desliga um overlay pequeno no canto superior esquerdo
+  (`RippleSim::DebugDraw`, reusa `Shader::shaders["fstexture"]`); `F10` (fase a) forçava
+  um carimbo manual no centro do buffer.
+
+**Fase (b) implementada** (janela dinâmica + carimbo automático + integração na água):
+- `RippleSim` ganhou `windowCenter_`/`windowSize_` — o buffer não é mais um UV fixo, é uma
+  janela de MUNDO (`windowSize_` unidades, default 20) que segue o jogador.
+  `UpdateWindow(playerXZ)` recentra com **histerese** (só quando `dist > 0.25*windowSize_`,
+  não todo frame) — decisão confirmada: sem shift shader, aceita o salto ao recentrar
+  (mascarado pelo damping). `WorldToUV(worldPos)` faz a conversão mundo→UV da janela,
+  reaproveitada IDENTICAMENTE em C++ (carimbo) e GLSL (`water.vs`, mesma fórmula).
+- **Carimbo automático**: `main.cpp` chama `water_manager.PlayerContact(playerPos)` (AABB
+  via `WaterEntry::Contains` + tolerância vertical de 1.5 unidades) ANTES de
+  `ripple_sim.Update()` — se o jogador está na água E se moveu (usa o `last_player_pos` já
+  rastreado, sem duplicar estado), carimba na posição real via `WorldToUV`. `F10`
+  mantido como override manual (carimba no centro da janela, ignora o teste de água) —
+  útil pra teste visual mesmo fora d'água.
+- `WaterEntry::Contains(vec2 xz)` — AABB simples (`pos.xz ± scale/2`) — o método que
+  faltava, apontado na investigação.
+- `WaterManager::Render` ganhou parâmetros `playerPos`/`rippleSim`; por instância, roda o
+  MESMO teste de `PlayerContact` (AABB + tolerância Y) — só a instância onde o jogador
+  está recebe `u_hasRipple=1` + bind da textura de ripple + os uniforms de janela; as
+  outras recebem `u_hasRipple=0` e o `water.vs` pula o bloco inteiro (nem amostra a
+  textura) — custo zero pras águas sem jogador.
+- `water.vs`: dentro de `if (u_hasRipple != 0)`, soma a altura do ripple a `worldPos.y`
+  (SOMA, não substitui — depois do deslocamento Gerstner já computado) e soma o gradiente
+  (diferenças de vizinhos, técnica padrão pra heightmap discreto — Gerstner é analítico,
+  isso não é) aos MESMOS acumuladores de tangente que as 2 ondas Gerstner já usam, antes
+  do `cross(tangentZ, tangentX)`/`normalize()` final — combina as 3 fontes de normal
+  (wave1+wave2+ripple) com o mesmo padrão aditivo já estabelecido.
+- **GUE intocado, confirmado por design**: `Shader::shaders` é um mapa global POR
+  PROCESSO — GUE e cliente são processos separados, cada um com seu próprio contexto GL.
+  O GUE nunca seta `u_hasRipple`/`u_rippleTex`/etc (`ZoneRenderer::DrawWater` não foi
+  tocado), e uniforms não setados ficam zero-inicializados em GLSL — `u_hasRipple`
+  permanece `0` no GUE automaticamente, sem precisar de nenhuma mudança lá.
+- `kRippleHeightScale=0.5`/`kRippleNormalStrength=3.0` são constantes fixas no shader,
+  estimadas por olho (mesmo espírito do antigo `kWaveStrength` do Gerstner antes de ser
+  calibrado) — esperar precisar de um ajuste visual quando testável com jogador real em
+  água de verdade.
+
+**O que falta**: calibração visual dos 2 constantes acima (só possível com teste real em
+jogo); um possível ajuste de `kSurfaceYTolerance` (1.5 unidades, também estimado) se o
+carimbo disparar cedo/tarde demais na prática.
+

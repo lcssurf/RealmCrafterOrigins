@@ -1,5 +1,6 @@
 #include "zones.h"
 #include "media.h"
+#include "../ui_widgets.h"
 
 #include <imgui.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -1426,9 +1427,81 @@ void ZonesTab::DrawPanelEmitters(sqlite3* db, bool placement) {
     ImGui::PopStyleColor();
 }
 
+// ─── Point light panel (Phase 1 — static torches/lanterns) ───────────────────
+// Purely a Zone-editor authoring surface: name/position/color/intensity/radius
+// persisted to zone_lights. The actual lighting math (Cook-Torrance point
+// light, radius falloff) already exists in the shader (gPhongManyLocal.fs) —
+// nothing here touches rendering; the server reads this table and sends it to
+// the client, which resubmits every light every frame via LightManager.
+void ZonesTab::DrawPanelLight(sqlite3* db, bool placement) {
+    if (placement || selectedType_ != kSelLight) {
+        ImGui::TextColored({1.0f, 0.85f, 0.5f, 1.f}, "Point Light placement");
+        ImGui::Separator();
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##lightname", "Name (optional, e.g. \"Torch North Gate\")",
+                                 lightName_, sizeof(lightName_));
+        ImGui::ColorEdit3("Color##lightp", lightColor_);
+        ImGui::SliderFloat("Intensity##lightp", &lightIntensity_, 0.f, 10.f, "%.2f");
+        ImGui::SliderFloat("Radius##lightp", &lightRadius_, 0.5f, 40.f, "%.1f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Attenuation cutoff — how far the light reaches, world units.");
+        ImGui::Spacing();
+        ImGui::TextDisabled("RMB in viewport to place.");
+        return;
+    }
+
+    auto it = std::find_if(scene_.lights.begin(), scene_.lights.end(),
+                           [&](auto& l){ return l.id == selectedID_; });
+    if (it == scene_.lights.end()) return;
+    ZLight& l = *it;
+
+    ImGui::TextColored({1.0f, 0.85f, 0.5f, 1.f}, "Point Light [id=%d]", l.id);
+    ImGui::Separator();
+    bool changed = false;
+
+    char nameBuf[128];
+    std::strncpy(nameBuf, l.name.c_str(), sizeof(nameBuf) - 1);
+    nameBuf[sizeof(nameBuf) - 1] = 0;
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::InputText("Name##lighto", nameBuf, sizeof(nameBuf))) { l.name = nameBuf; changed = true; }
+
+    float pw = (ImGui::GetContentRegionAvail().x - 8) * 0.5f;
+    ImGui::SetNextItemWidth(pw); if (ImGui::InputFloat("X##lighto",&l.pos.x,0,0,"%.2f")) changed=true;
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1); if (ImGui::InputFloat("Z##lighto",&l.pos.z,0,0,"%.2f")) changed=true;
+    ImGui::SetNextItemWidth(pw); if (ImGui::InputFloat("Y##lighto",&l.pos.y,0,0,"%.2f")) changed=true;
+
+    float col[3] = {l.color.r, l.color.g, l.color.b};
+    if (ImGui::ColorEdit3("Color##lighto", col)) { l.color = {col[0], col[1], col[2]}; changed = true; }
+    if (ImGui::SliderFloat("Intensity##lighto", &l.intensity, 0.f, 10.f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Radius##lighto", &l.radius, 0.5f, 40.f, "%.1f")) changed = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Attenuation cutoff — how far the light reaches, world units.\n"
+                          "Shown in the viewport as a faint ring around the light marker.");
+
+    if (changed) {
+        sqlite3_stmt* s = nullptr;
+        sqlite3_prepare_v2(db,
+            "UPDATE zone_lights SET name=?,x=?,y=?,z=?,color_r=?,color_g=?,color_b=?,intensity=?,radius=? WHERE id=?",
+            -1, &s, nullptr);
+        sqlite3_bind_text(s, 1, l.name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(s, 2, l.pos.x); sqlite3_bind_double(s, 3, l.pos.y); sqlite3_bind_double(s, 4, l.pos.z);
+        sqlite3_bind_double(s, 5, l.color.r); sqlite3_bind_double(s, 6, l.color.g); sqlite3_bind_double(s, 7, l.color.b);
+        sqlite3_bind_double(s, 8, l.intensity);
+        sqlite3_bind_double(s, 9, l.radius);
+        sqlite3_bind_int(s, 10, l.id);
+        sqlite3_step(s); sqlite3_finalize(s);
+    }
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Button,{0.65f,0.1f,0.1f,1.f});
+    if (ImGui::Button("Delete light")) DeleteSelected(db);
+    ImGui::PopStyleColor();
+    ImGui::TextDisabled("Ctrl+D to duplicate (same shortcut as every other object).");
+}
+
 // ─── Water panel (Phase 8) ────────────────────────────────────────────────────
 
-void ZonesTab::DrawPanelWater(sqlite3* db, bool placement) {
+void ZonesTab::DrawPanelWater(sqlite3* db, MediaTab* media, bool placement) {
     if (placement || selectedType_ != kSelWater) {
         ImGui::TextColored({0.f, 0.6f, 0.9f, 1.f}, "Water placement");
         ImGui::Separator();
@@ -1438,6 +1511,58 @@ void ZonesTab::DrawPanelWater(sqlite3* db, bool placement) {
         if (ImGui::ColorEdit3("Color##wtrp", col)) { wtrColor_ = {col[0], col[1], col[2]}; }
         ImGui::SliderInt("Opacity##wtrp",       &wtrOpacity_, 0, 100);
         ImGui::InputInt ("Damage/s##wtrp",      &wtrDamage_);
+        ImGui::Separator();
+        if (media) {
+            const auto& mats = media->Materials();
+            std::vector<std::pair<int, std::string>> texItems;
+            texItems.reserve(mats.size());
+            for (auto& m : mats) if (!m.albedo_path.empty()) texItems.emplace_back(m.id, m.name);
+
+            int curMatId = 0;
+            for (auto& m : mats) if (m.albedo_path == wtrTexPath_) { curMatId = m.id; break; }
+
+            if (ui::SearchableComboId("Texture##wtrp", curMatId, texItems, "(none — flat color)")) {
+                if (curMatId == 0) {
+                    wtrTexPath_.clear();
+                    std::fprintf(stderr, "[water-panel] placement texPath cleared\n");
+                } else {
+                    for (auto& m : mats) {
+                        if (m.id == curMatId) {
+                            wtrTexPath_ = m.albedo_path;
+                            std::fprintf(stderr, "[water-panel] placement texPath set to '%s' (material='%s')\n",
+                                         wtrTexPath_.c_str(), m.name.c_str());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        ImGui::InputFloat("Tex Scale##wtrp", &wtrTexScale_, 1.f, 5.f, "%.0f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How many times the texture tiles across the water plane.");
+        ImGui::Separator();
+        ImGui::TextDisabled("Wave (procedural — no normal map file)");
+        ImGui::SliderFloat("Wave Speed##wtrp",     &wtrWaveSpeed_,    0.f, 2.f,   "%.2f");
+        ImGui::SliderFloat("Wave Direction##wtrp", &wtrWaveAngleDeg_, 0.f, 360.f, "%.0f deg");
+        ImGui::SliderFloat("Wave Scale##wtrp",     &wtrWaveScale_,    0.05f, 2.f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Ripple frequency — higher = smaller, more frequent ripples.");
+        ImGui::Separator();
+        ImGui::TextDisabled("Depth-based transparency");
+        float shallowCol[3] = {wtrShallowColor_.r, wtrShallowColor_.g, wtrShallowColor_.b};
+        if (ImGui::ColorEdit3("Shallow Color##wtrp", shallowCol)) wtrShallowColor_ = {shallowCol[0], shallowCol[1], shallowCol[2]};
+        float deepCol[3] = {wtrDeepColor_.r, wtrDeepColor_.g, wtrDeepColor_.b};
+        if (ImGui::ColorEdit3("Deep Color##wtrp", deepCol)) wtrDeepColor_ = {deepCol[0], deepCol[1], deepCol[2]};
+        ImGui::SliderFloat("Depth Fade Distance##wtrp", &wtrDepthFadeDistance_, 0.1f, 10.f, "%.1f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("World units of depth at which the water is ~fully at Deep Color.");
+        ImGui::Separator();
+        ImGui::TextDisabled("Shoreline foam (procedural)");
+        ImGui::SliderFloat("Foam Width##wtrp", &wtrFoamWidth_, 0.f, 3.f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How far from a shore/submerged object the foam band extends, in world units.");
+        float foamCol[3] = {wtrFoamColor_.r, wtrFoamColor_.g, wtrFoamColor_.b};
+        if (ImGui::ColorEdit3("Foam Color##wtrp", foamCol)) wtrFoamColor_ = {foamCol[0], foamCol[1], foamCol[2]};
         ImGui::Spacing();
         ImGui::TextDisabled("RMB in viewport to place water.");
         return;
@@ -1464,18 +1589,111 @@ void ZonesTab::DrawPanelWater(sqlite3* db, bool placement) {
     if (ImGui::ColorEdit3("Color##wtro", col)) { w.color={col[0],col[1],col[2]}; changed=true; }
     if (ImGui::SliderInt("Opacity##wtro",     &w.opacity, 0,100)) changed=true;
     if (ImGui::InputInt ("Damage/s##wtro",    &w.damage))          changed=true;
+    ImGui::Separator();
+    if (media) {
+        const auto& mats = media->Materials();
+        std::vector<std::pair<int, std::string>> texItems;
+        texItems.reserve(mats.size());
+        for (auto& m : mats) if (!m.albedo_path.empty()) texItems.emplace_back(m.id, m.name);
+
+        int curMatId = 0;
+        for (auto& m : mats) if (m.albedo_path == w.texPath) { curMatId = m.id; break; }
+
+        if (ui::SearchableComboId("Texture##wtro", curMatId, texItems, "(none — flat color)")) {
+            changed = true;
+            if (curMatId == 0) {
+                w.texPath.clear();
+                std::fprintf(stderr, "[water-panel] edit id=%d texPath cleared\n", w.id);
+            } else {
+                for (auto& m : mats) {
+                    if (m.id == curMatId) {
+                        w.texPath = m.albedo_path;
+                        std::fprintf(stderr, "[water-panel] edit id=%d texPath set to '%s' (material='%s')\n",
+                                     w.id, w.texPath.c_str(), m.name.c_str());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (ImGui::InputFloat("Tex Scale##wtro", &w.texScale, 1.f, 5.f, "%.0f")) changed = true;
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Wave (procedural — no normal map file)");
+    if (ImGui::SliderFloat("Wave Speed##wtro", &w.waveSpeed, 0.f, 2.f, "%.2f")) changed = true;
+    {
+        float angleDeg = glm::degrees(std::atan2(w.waveDirZ, w.waveDirX));
+        if (angleDeg < 0.f) angleDeg += 360.f;
+        if (ImGui::SliderFloat("Wave Direction##wtro", &angleDeg, 0.f, 360.f, "%.0f deg")) {
+            w.waveDirX = std::cos(glm::radians(angleDeg));
+            w.waveDirZ = std::sin(glm::radians(angleDeg));
+            changed = true;
+        }
+    }
+    if (ImGui::SliderFloat("Wave Scale##wtro", &w.waveScale, 0.05f, 2.f, "%.2f")) changed = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Ripple frequency — higher = smaller, more frequent ripples.");
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Depth-based transparency");
+    {
+        float shallowCol[3] = {w.shallowColor.r, w.shallowColor.g, w.shallowColor.b};
+        if (ImGui::ColorEdit3("Shallow Color##wtro", shallowCol)) { w.shallowColor = {shallowCol[0], shallowCol[1], shallowCol[2]}; changed = true; }
+        float deepCol[3] = {w.deepColor.r, w.deepColor.g, w.deepColor.b};
+        if (ImGui::ColorEdit3("Deep Color##wtro", deepCol)) { w.deepColor = {deepCol[0], deepCol[1], deepCol[2]}; changed = true; }
+    }
+    if (ImGui::SliderFloat("Depth Fade Distance##wtro", &w.depthFadeDistance, 0.1f, 10.f, "%.1f")) changed = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("World units of depth at which the water is ~fully at Deep Color.");
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Shoreline foam (procedural)");
+    if (ImGui::SliderFloat("Foam Width##wtro", &w.foamWidth, 0.f, 3.f, "%.2f")) changed = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("How far from a shore/submerged object the foam band extends, in world units.");
+    {
+        float foamCol[3] = {w.foamColor.r, w.foamColor.g, w.foamColor.b};
+        if (ImGui::ColorEdit3("Foam Color##wtro", foamCol)) { w.foamColor = {foamCol[0], foamCol[1], foamCol[2]}; changed = true; }
+    }
 
     if (changed) {
         sqlite3_stmt* s = nullptr;
         sqlite3_prepare_v2(db,
             "UPDATE zone_water SET x=?,y=?,z=?,scale_x=?,scale_z=?,"
-            "color_r=?,color_g=?,color_b=?,opacity=?,damage=? WHERE id=?",
+            "color_r=?,color_g=?,color_b=?,opacity=?,tex_path=?,tex_scale=?,damage=?,"
+            "wave_speed=?,wave_dir_x=?,wave_dir_z=?,wave_scale=?,"
+            "shallow_r=?,shallow_g=?,shallow_b=?,deep_r=?,deep_g=?,deep_b=?,depth_fade_distance=?,"
+            "foam_width=?,foam_r=?,foam_g=?,foam_b=? WHERE id=?",
             -1, &s, nullptr);
         sqlite3_bind_double(s,1,w.pos.x); sqlite3_bind_double(s,2,w.pos.y); sqlite3_bind_double(s,3,w.pos.z);
         sqlite3_bind_double(s,4,w.scale.x); sqlite3_bind_double(s,5,w.scale.y);
         sqlite3_bind_int(s,6,(int)(w.color.r*255)); sqlite3_bind_int(s,7,(int)(w.color.g*255)); sqlite3_bind_int(s,8,(int)(w.color.b*255));
-        sqlite3_bind_int(s,9,w.opacity); sqlite3_bind_int(s,10,w.damage); sqlite3_bind_int(s,11,w.id);
-        sqlite3_step(s); sqlite3_finalize(s);
+        sqlite3_bind_int(s,9,w.opacity);
+        sqlite3_bind_text(s,10,w.texPath.c_str(),-1,SQLITE_TRANSIENT);
+        sqlite3_bind_double(s,11,w.texScale);
+        sqlite3_bind_int(s,12,w.damage);
+        sqlite3_bind_double(s,13,w.waveSpeed);
+        sqlite3_bind_double(s,14,w.waveDirX);
+        sqlite3_bind_double(s,15,w.waveDirZ);
+        sqlite3_bind_double(s,16,w.waveScale);
+        sqlite3_bind_int(s,17,(int)(w.shallowColor.r*255));
+        sqlite3_bind_int(s,18,(int)(w.shallowColor.g*255));
+        sqlite3_bind_int(s,19,(int)(w.shallowColor.b*255));
+        sqlite3_bind_int(s,20,(int)(w.deepColor.r*255));
+        sqlite3_bind_int(s,21,(int)(w.deepColor.g*255));
+        sqlite3_bind_int(s,22,(int)(w.deepColor.b*255));
+        sqlite3_bind_double(s,23,w.depthFadeDistance);
+        sqlite3_bind_double(s,24,w.foamWidth);
+        sqlite3_bind_int(s,25,(int)(w.foamColor.r*255));
+        sqlite3_bind_int(s,26,(int)(w.foamColor.g*255));
+        sqlite3_bind_int(s,27,(int)(w.foamColor.b*255));
+        sqlite3_bind_int(s,28,w.id);
+        int stepRc = sqlite3_step(s);
+        std::fprintf(stderr,
+            "[water-panel] UPDATE zone_water id=%d tex_path='%s' tex_scale=%.1f step_rc=%d (%s)\n",
+            w.id, w.texPath.c_str(), w.texScale, stepRc,
+            stepRc == SQLITE_DONE ? "OK" : "FAILED");
+        sqlite3_finalize(s);
     }
     ImGui::Spacing();
     ImGui::PushStyleColor(ImGuiCol_Button,{0.65f,0.1f,0.1f,1.f});

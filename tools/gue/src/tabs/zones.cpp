@@ -647,24 +647,59 @@ void ZonesTab::PlaceObject(const glm::vec3& wpos, sqlite3* db, MediaTab* media) 
     }
     case kModeWater: {
         ZWater w;
-        w.pos     = wpos;
-        w.scale   = {wtrScaleX_, wtrScaleZ_};
-        w.color   = wtrColor_;
-        w.opacity = wtrOpacity_;
-        w.damage  = wtrDamage_;
+        w.pos      = wpos;
+        w.scale    = {wtrScaleX_, wtrScaleZ_};
+        w.color    = wtrColor_;
+        w.opacity  = wtrOpacity_;
+        w.texPath  = wtrTexPath_;
+        w.texScale = wtrTexScale_;
+        w.damage   = wtrDamage_;
+        w.waveSpeed = wtrWaveSpeed_;
+        w.waveDirX  = std::cos(glm::radians(wtrWaveAngleDeg_));
+        w.waveDirZ  = std::sin(glm::radians(wtrWaveAngleDeg_));
+        w.waveScale = wtrWaveScale_;
+        w.shallowColor      = wtrShallowColor_;
+        w.deepColor         = wtrDeepColor_;
+        w.depthFadeDistance = wtrDepthFadeDistance_;
+        w.foamWidth         = wtrFoamWidth_;
+        w.foamColor         = wtrFoamColor_;
 
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
-            "INSERT INTO zone_water (area_name, x, y, z, scale_x, scale_z, color_r, color_g, color_b, opacity, damage)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            "INSERT INTO zone_water (area_name, x, y, z, scale_x, scale_z, color_r, color_g, color_b, opacity, tex_path, tex_scale, damage,"
+            " wave_speed, wave_dir_x, wave_dir_z, wave_scale,"
+            " shallow_r, shallow_g, shallow_b, deep_r, deep_g, deep_b, depth_fade_distance,"
+            " foam_width, foam_r, foam_g, foam_b)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt,1,scene_.areaName.c_str(),-1,SQLITE_TRANSIENT);
             sqlite3_bind_double(stmt,2,w.pos.x); sqlite3_bind_double(stmt,3,w.pos.y); sqlite3_bind_double(stmt,4,w.pos.z);
             sqlite3_bind_double(stmt,5,w.scale.x); sqlite3_bind_double(stmt,6,w.scale.y);
             sqlite3_bind_int(stmt,7,(int)(w.color.r*255)); sqlite3_bind_int(stmt,8,(int)(w.color.g*255)); sqlite3_bind_int(stmt,9,(int)(w.color.b*255));
-            sqlite3_bind_int(stmt,10,w.opacity); sqlite3_bind_int(stmt,11,w.damage);
+            sqlite3_bind_int(stmt,10,w.opacity);
+            sqlite3_bind_text(stmt,11,w.texPath.c_str(),-1,SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt,12,w.texScale);
+            sqlite3_bind_int(stmt,13,w.damage);
+            sqlite3_bind_double(stmt,14,w.waveSpeed);
+            sqlite3_bind_double(stmt,15,w.waveDirX);
+            sqlite3_bind_double(stmt,16,w.waveDirZ);
+            sqlite3_bind_double(stmt,17,w.waveScale);
+            sqlite3_bind_int(stmt,18,(int)(w.shallowColor.r*255));
+            sqlite3_bind_int(stmt,19,(int)(w.shallowColor.g*255));
+            sqlite3_bind_int(stmt,20,(int)(w.shallowColor.b*255));
+            sqlite3_bind_int(stmt,21,(int)(w.deepColor.r*255));
+            sqlite3_bind_int(stmt,22,(int)(w.deepColor.g*255));
+            sqlite3_bind_int(stmt,23,(int)(w.deepColor.b*255));
+            sqlite3_bind_double(stmt,24,w.depthFadeDistance);
+            sqlite3_bind_double(stmt,25,w.foamWidth);
+            sqlite3_bind_int(stmt,26,(int)(w.foamColor.r*255));
+            sqlite3_bind_int(stmt,27,(int)(w.foamColor.g*255));
+            sqlite3_bind_int(stmt,28,(int)(w.foamColor.b*255));
             sqlite3_step(stmt);
             w.id = (int)sqlite3_last_insert_rowid(db);
             sqlite3_finalize(stmt);
+            std::fprintf(stderr,
+                "[water-panel] INSERT zone_water id=%d tex_path='%s' (from placement combo wtrTexPath_='%s')\n",
+                w.id, w.texPath.c_str(), wtrTexPath_.c_str());
             scene_.water.push_back(w);
             selectedID_ = w.id; selectedType_ = kSelWater;
             PushUndo(kUndoCreate, kSelWater, w.id);
@@ -721,6 +756,34 @@ void ZonesTab::PlaceObject(const glm::vec3& wpos, sqlite3* db, MediaTab* media) 
             selectedID_ = e.id; selectedType_ = kSelEmitter;
             PushUndo(kUndoCreate, kSelEmitter, e.id);
             std::snprintf(statusMsg_, sizeof(statusMsg_), "Placed emitter '%s' id=%d.", e.configName.c_str(), e.id);
+        }
+        break;
+    }
+    case kModeLight: {
+        ZLight l;
+        l.pos       = wpos;
+        l.name      = lightName_;
+        l.color     = {lightColor_[0], lightColor_[1], lightColor_[2]};
+        l.intensity = lightIntensity_;
+        l.radius    = lightRadius_;
+
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO zone_lights (area_name, name, x, y, z, color_r, color_g, color_b, intensity, radius)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, l.name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 3, l.pos.x); sqlite3_bind_double(stmt, 4, l.pos.y); sqlite3_bind_double(stmt, 5, l.pos.z);
+            sqlite3_bind_double(stmt, 6, l.color.r); sqlite3_bind_double(stmt, 7, l.color.g); sqlite3_bind_double(stmt, 8, l.color.b);
+            sqlite3_bind_double(stmt, 9, l.intensity);
+            sqlite3_bind_double(stmt, 10, l.radius);
+            sqlite3_step(stmt);
+            l.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.lights.push_back(l);
+            selectedID_ = l.id; selectedType_ = kSelLight;
+            PushUndo(kUndoCreate, kSelLight, l.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Placed light id=%d.", l.id);
         }
         break;
     }
@@ -1151,6 +1214,7 @@ void ZonesTab::Undo(sqlite3* db) {
         case kSelWaypoint:  table = "zone_waypoints";   break;
         case kSelNpc:       table = "npc_spawns";       break;
         case kSelEmitter:   table = "zone_emitters";    break;
+        case kSelLight:     table = "zone_lights";      break;
         case kSelWater:       table = "zone_water";       break;
         case kSelScenery:     table = "zone_scenery";     break;
         case kSelPlayerSpawn: table = "player_spawns";    break;
@@ -1176,6 +1240,7 @@ void ZonesTab::Undo(sqlite3* db) {
         case kSelWaypoint:  rem(scene_.waypoints);  break;
         case kSelNpc:         rem(scene_.npcs);         break;
         case kSelEmitter:     rem(scene_.emitters);     break;
+        case kSelLight:       rem(scene_.lights);       break;
         case kSelWater:       rem(scene_.water);        break;
         case kSelScenery:     rem(scene_.scenery);      break;
         case kSelPlayerSpawn: rem(scene_.playerSpawns); needsSpawnReload_ = true; break;
@@ -1220,6 +1285,7 @@ void ZonesTab::Undo(sqlite3* db) {
         case kSelWaypoint:  restorePos(scene_.waypoints,  "zone_waypoints");   break;
         case kSelNpc:       restorePos(scene_.npcs,       "npc_spawns");       break;
         case kSelEmitter:   restorePos(scene_.emitters,   "zone_emitters");    break;
+        case kSelLight:     restorePos(scene_.lights,     "zone_lights");      break;
         case kSelWater:     restorePos(scene_.water,      "zone_water");       break;
         case kSelScenery:   restorePos(scene_.scenery,    "zone_scenery");     break;
         }
@@ -1578,6 +1644,33 @@ void ZonesTab::DuplicateSelected(sqlite3* db, MediaTab* media) {
         }
         break;
     }
+    case kSelLight: {
+        auto it = std::find_if(scene_.lights.begin(), scene_.lights.end(),
+                               [&](auto& l){ return l.id == selectedID_; });
+        if (it == scene_.lights.end()) return;
+        ZLight l = *it;
+        l.id = 0;
+        l.pos += offset;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO zone_lights (area_name, name, x, y, z, color_r, color_g, color_b, intensity, radius)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, l.name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 3, l.pos.x); sqlite3_bind_double(stmt, 4, l.pos.y); sqlite3_bind_double(stmt, 5, l.pos.z);
+            sqlite3_bind_double(stmt, 6, l.color.r); sqlite3_bind_double(stmt, 7, l.color.g); sqlite3_bind_double(stmt, 8, l.color.b);
+            sqlite3_bind_double(stmt, 9, l.intensity);
+            sqlite3_bind_double(stmt, 10, l.radius);
+            sqlite3_step(stmt);
+            l.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.lights.push_back(l);
+            selectedID_ = l.id;
+            PushUndo(kUndoCreate, kSelLight, l.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Duplicated light id=%d.", l.id);
+        }
+        break;
+    }
     case kSelWater: {
         auto it = std::find_if(scene_.water.begin(), scene_.water.end(),
                                [&](auto& w){ return w.id == selectedID_; });
@@ -1587,8 +1680,11 @@ void ZonesTab::DuplicateSelected(sqlite3* db, MediaTab* media) {
         w.pos += offset;
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
-            "INSERT INTO zone_water (area_name, x, y, z, scale_x, scale_z, color_r, color_g, color_b, opacity, tex_path, tex_scale, damage, dmg_type)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            "INSERT INTO zone_water (area_name, x, y, z, scale_x, scale_z, color_r, color_g, color_b, opacity, tex_path, tex_scale, damage, dmg_type,"
+            " wave_speed, wave_dir_x, wave_dir_z, wave_scale,"
+            " shallow_r, shallow_g, shallow_b, deep_r, deep_g, deep_b, depth_fade_distance,"
+            " foam_width, foam_r, foam_g, foam_b)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
             auto to255 = [](float v) -> int {
                 int iv = (int)(v * 255.f);
                 if (iv < 0) iv = 0;
@@ -1603,6 +1699,21 @@ void ZonesTab::DuplicateSelected(sqlite3* db, MediaTab* media) {
             sqlite3_bind_text(stmt,11, w.texPath.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_double(stmt,12, w.texScale);
             sqlite3_bind_int(stmt,13, w.damage); sqlite3_bind_int(stmt,14, w.dmgType);
+            sqlite3_bind_double(stmt,15, w.waveSpeed);
+            sqlite3_bind_double(stmt,16, w.waveDirX);
+            sqlite3_bind_double(stmt,17, w.waveDirZ);
+            sqlite3_bind_double(stmt,18, w.waveScale);
+            sqlite3_bind_int(stmt,19, to255(w.shallowColor.r));
+            sqlite3_bind_int(stmt,20, to255(w.shallowColor.g));
+            sqlite3_bind_int(stmt,21, to255(w.shallowColor.b));
+            sqlite3_bind_int(stmt,22, to255(w.deepColor.r));
+            sqlite3_bind_int(stmt,23, to255(w.deepColor.g));
+            sqlite3_bind_int(stmt,24, to255(w.deepColor.b));
+            sqlite3_bind_double(stmt,25, w.depthFadeDistance);
+            sqlite3_bind_double(stmt,26, w.foamWidth);
+            sqlite3_bind_int(stmt,27, to255(w.foamColor.r));
+            sqlite3_bind_int(stmt,28, to255(w.foamColor.g));
+            sqlite3_bind_int(stmt,29, to255(w.foamColor.b));
             sqlite3_step(stmt);
             w.id = (int)sqlite3_last_insert_rowid(db);
             sqlite3_finalize(stmt);
@@ -1767,6 +1878,7 @@ void ZonesTab::DeleteSelected(sqlite3* db) {
     case kSelWaypoint:  table = "zone_waypoints";   break;
     case kSelNpc:       table = "npc_spawns";       break;
     case kSelEmitter:   table = "zone_emitters";    break;
+    case kSelLight:     table = "zone_lights";      break;
     case kSelSpawnPoint: {
         // Cascade-delete mobs first, then the point itself.
         char sql[128];
@@ -1826,6 +1938,7 @@ void ZonesTab::DeleteSelected(sqlite3* db) {
     case kSelWaypoint:  del(scene_.waypoints);  break;
     case kSelNpc:         del(scene_.npcs);         break;
     case kSelEmitter:     del(scene_.emitters);     break;
+    case kSelLight:       del(scene_.lights);       break;
     case kSelWater:       del(scene_.water);        break;
     case kSelScenery:     del(scene_.scenery);      break;
     case kSelPlayerSpawn: del(scene_.playerSpawns); break;

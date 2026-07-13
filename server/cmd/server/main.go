@@ -589,6 +589,57 @@ func main() {
 		log.Printf("main: loaded %d world objects", len(worldObjs))
 	}
 
+	// Load point lights (torches/lanterns) and distribute to areas. Point-light
+	// Phase 1 — see world.Light and tools/gue/src/zone_scene.h ZLight.
+	zoneLights, err := database.LoadZoneLights(ctx)
+	if err != nil {
+		log.Printf("main: load zone_lights: %v", err)
+	} else {
+		for _, zl := range zoneLights {
+			area := gameWorld.GetOrCreateArea(zl.AreaName)
+			area.Mu.Lock()
+			area.Lights = append(area.Lights, world.Light{
+				Name:      zl.Name,
+				X:         zl.X, Y: zl.Y, Z: zl.Z,
+				ColorR:    zl.ColorR, ColorG: zl.ColorG, ColorB: zl.ColorB,
+				Intensity: zl.Intensity,
+				Radius:    zl.Radius,
+			})
+			area.Mu.Unlock()
+		}
+		log.Printf("main: loaded %d zone lights", len(zoneLights))
+	}
+
+	// Load water planes and distribute to areas. Gerstner waves + Sub-fase 2a
+	// depth-based transparency — see world.Water and tools/gue/src/zone_scene.h ZWater.
+	zoneWater, err := database.LoadZoneWater(ctx)
+	if err != nil {
+		log.Printf("main: load zone_water: %v", err)
+	} else {
+		for _, zw := range zoneWater {
+			area := gameWorld.GetOrCreateArea(zw.AreaName)
+			area.Mu.Lock()
+			area.Water = append(area.Water, world.Water{
+				X: zw.X, Y: zw.Y, Z: zw.Z,
+				ScaleX: zw.ScaleX, ScaleZ: zw.ScaleZ,
+				ColorR: zw.ColorR, ColorG: zw.ColorG, ColorB: zw.ColorB,
+				Opacity:   float32(zw.Opacity) / 100.0,
+				TexPath:   zw.TexPath,
+				TexScale:  zw.TexScale,
+				WaveSpeed: zw.WaveSpeed,
+				WaveDirX:  zw.WaveDirX, WaveDirZ: zw.WaveDirZ,
+				WaveScale: zw.WaveScale,
+				ShallowR: zw.ShallowR, ShallowG: zw.ShallowG, ShallowB: zw.ShallowB,
+				DeepR: zw.DeepR, DeepG: zw.DeepG, DeepB: zw.DeepB,
+				DepthFadeDistance: zw.DepthFadeDistance,
+				FoamWidth: zw.FoamWidth,
+				FoamR: zw.FoamR, FoamG: zw.FoamG, FoamB: zw.FoamB,
+			})
+			area.Mu.Unlock()
+		}
+		log.Printf("main: loaded %d water planes", len(zoneWater))
+	}
+
 	// Spawn NPCs from spawn points (scatter within radius).
 	spawnPoints, err := database.LoadSpawnPoints(ctx)
 	if err != nil {

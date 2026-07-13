@@ -81,12 +81,51 @@ struct ZWater {
     float       texScale  = 15.f;
     int         damage    = 0;
     int         dmgType   = 0;
+    // Gerstner wave params (water.vs — real vertex displacement, no normal
+    // map file). waveDir is normalized in the shader; keep non-zero so
+    // normalize() never sees a zero vector. waveScale is the primary wave's
+    // angular wavenumber k (rad/world-unit) directly — wavelength=2*PI/k.
+    // See zone_scene.cpp EnsureTables for the idempotent ADD COLUMN
+    // migration and its default-value rationale.
+    float       waveSpeed = 0.3f;
+    float       waveDirX  = 0.7071f;
+    float       waveDirZ  = 0.7071f;
+    float       waveScale = 0.35f;
+    // Sub-fase 2a — transparência por profundidade (water.fs samples
+    // gDepth_ via Pipeline::SceneDepthTexture()). shallowColor/deepColor
+    // replace the old flat `color` field's role in the lit shading (color
+    // is still stored/loaded but no longer used for the water's hue — see
+    // water.fs for the exact composition). depthFadeDistance is world
+    // units of depth at which the gradient is ~63% (1-1/e) toward deepColor.
+    glm::vec3   shallowColor      = {0.3f, 0.7f, 0.6f};
+    glm::vec3   deepColor         = {0.02f, 0.10f, 0.20f};
+    float       depthFadeDistance = 2.5f;
+    // Sub-fase 2b — procedural shoreline foam. Reuses the same depthDiff as
+    // shallowColor/deepColor (no separate depth logic) — foamWidth is how
+    // far (world units) from a depthDiff=0 shoreline/submerged-object edge
+    // the foam band extends.
+    float       foamWidth = 0.4f;
+    glm::vec3   foamColor = {1.f, 1.f, 1.f};
 };
 
 struct ZEmitter {
     int         id         = 0;
     glm::vec3   pos        = {};
     std::string configName;
+};
+
+// Static point light (torch/lantern) — Phase 1 of the point-light system.
+// Resubmitted every frame by the client's LightManager into
+// Pipeline::AddPointLight(); purely additive to the deferred lighting pass
+// (sun + IBL are untouched). See doc/TECH_DEBT.md for Phase 2 (dynamic
+// skill/FX lights) and point-light shadows, neither of which are in scope here.
+struct ZLight {
+    int         id        = 0;
+    glm::vec3   pos        = {};
+    std::string name;
+    glm::vec3   color      = {1.0f, 0.8f, 0.5f};  // warm torch-ish default
+    float       intensity  = 1.0f;
+    float       radius     = 5.0f;                // attenuation cutoff, world units
 };
 
 struct ZWaypoint {
@@ -203,6 +242,7 @@ struct ZoneScene {
     std::vector<ZColSphere>  colSpheres;
     std::vector<ZWater>      water;
     std::vector<ZEmitter>    emitters;
+    std::vector<ZLight>      lights;
     std::vector<ZWaypoint>   waypoints;
     std::vector<ZNpcSpawn>    npcs;
     std::vector<ZSpawnPoint>  spawnPoints;
@@ -227,6 +267,7 @@ struct ZoneScene {
         emitters.clear(); waypoints.clear(); npcs.clear();
         spawnPoints.clear();
         playerSpawns.clear();
+        lights.clear();
         sceneryFolders.clear();
         env = {};
         dirty = false;

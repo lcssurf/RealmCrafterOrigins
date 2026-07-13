@@ -41,6 +41,11 @@ void Pipeline::SetSun(const glm::vec3& dir, const glm::vec3& col) {
     sun_.diffuse   = col;
 }
 
+glm::vec3 Pipeline::SunDirection() const { return sun_.direction; }
+glm::vec3 Pipeline::SunColor()     const { return sun_.diffuse; }
+glm::vec3 Pipeline::ViewPos()      const { return camPos_; }
+GLuint    Pipeline::SceneDepthTexture() const { return engine_->gDepth_; }
+
 void Pipeline::SetCharacterReadability(const CharacterReadabilityTuning& cfg) {
     characterReadability_ = cfg;
 }

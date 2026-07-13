@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <cstdint>
 #include <atomic>
+#include <algorithm>
 #include "rco/renderer/model.h"
 
 namespace rco::renderer {
@@ -159,6 +160,25 @@ public:
     float ModelHeight() const {
         float h = model_ ? (model_->BoundsMax().y - model_->BoundsMin().y) * scale : 0.f;
         return h > 0.1f ? h : 1.8f;
+    }
+
+    // World-space horizontal "footprint" width (bind-pose AABB, larger of
+    // the X/Z extent × scale). There's no dedicated collision capsule
+    // radius/width on Actor — this is a proxy for body/stride width used
+    // where an approximate contact width is good enough (e.g. Ripple Sim's
+    // stamp radius, main.cpp), not a precise collision shape. Same
+    // safe-fallback pattern as ModelHeight(): returns a plausible default
+    // (0.6, roughly shoulder-width) if the model isn't loaded or the
+    // extent is degenerate.
+    float ModelWidth() const {
+        if (!model_) return 0.6f;
+        glm::vec3 bmin = model_->BoundsMin();
+        glm::vec3 bmax = model_->BoundsMax();
+        // Parens around std::max defeat the windows.h max() macro (no
+        // NOMINMAX in this build) — matches the (std::max)/(std::min)
+        // convention already used throughout client/src/core/main.cpp.
+        float w = (std::max)(bmax.x - bmin.x, bmax.z - bmin.z) * scale;
+        return w > 0.05f ? w : 0.6f;
     }
 
     // World-space Y offset from position.y to the model's visual feet.

@@ -184,6 +184,31 @@ void CompileAllShaders() {
         {"particle.vert", GL_VERTEX_SHADER},
         {"particle.frag", GL_FRAGMENT_SHADER}
     }));
+
+    // Water Phase 0 — forward pass, textured quad, alpha blend. No waves/
+    // depth/reflection yet (see doc/TECH_DEBT.md). Same file also compiled
+    // standalone by the GUE's ZoneRenderer for the editor preview.
+    Shader::shaders["water"].emplace(Shader({
+        {"water.vs", GL_VERTEX_SHADER},
+        {"water.fs", GL_FRAGMENT_SHADER}
+    }));
+
+    // Ripple sim Phase (a) — standalone Hugo Elias height-field update,
+    // not yet sampled by water.vs/water.fs (see rco::renderer::RippleSim).
+    Shader::shaders["ripple_update"].emplace(Shader({
+        {"fullscreen_tri.vs",  GL_VERTEX_SHADER},
+        {"ripple_update.fs",   GL_FRAGMENT_SHADER}
+    }));
+
+    // Ripple sim window recenter — shifts the height buffer's contents by
+    // an integer texel offset (RippleSim::Update, only runs on a hysteresis
+    // recenter) so existing ripples stay attached to their world position
+    // instead of jumping/disappearing when the player-following window
+    // moves. See RippleSim::Update's shift-pass comment.
+    Shader::shaders["ripple_shift"].emplace(Shader({
+        {"fullscreen_tri.vs", GL_VERTEX_SHADER},
+        {"ripple_shift.fs",   GL_FRAGMENT_SHADER}
+    }));
 }
 
 } // namespace rco::renderer
