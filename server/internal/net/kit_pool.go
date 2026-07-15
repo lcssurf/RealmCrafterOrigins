@@ -3,6 +3,7 @@ package net
 import "fmt"
 
 const pKitPoolVersion1 uint8 = 1
+const pKitPoolVersion2 uint8 = 2
 
 // PKitPoolPayload is the server->client payload for packet 132.
 type PKitPoolPayload struct {
@@ -18,11 +19,14 @@ type PKitPoolAbility struct {
 	AbilityID   uint32
 	AbilityName string
 	CooldownMs  uint32
+	// IconPath: UI icon shown on the hotbar (migrateV53, version 2+). "" =
+	// client keeps drawing the placeholder rect.
+	IconPath string
 }
 
 // EncodePKitPool serializes the payload to wire format.
 func EncodePKitPool(p PKitPoolPayload) ([]byte, error) {
-	if p.Version != pKitPoolVersion1 {
+	if p.Version != pKitPoolVersion1 && p.Version != pKitPoolVersion2 {
 		return nil, fmt.Errorf("PKitPool: unsupported version %d", p.Version)
 	}
 	if len(p.Abilities) > 255 {
@@ -59,6 +63,9 @@ func EncodePKitPool(p PKitPoolPayload) ([]byte, error) {
 		w.WriteUint32(a.AbilityID)
 		w.WriteString(a.AbilityName)
 		w.WriteUint32(a.CooldownMs)
+		if p.Version >= pKitPoolVersion2 {
+			w.WriteString(a.IconPath)
+		}
 	}
 	return w.Bytes(), nil
 }
@@ -72,7 +79,7 @@ func DecodePKitPool(buf []byte) (PKitPoolPayload, error) {
 	if err != nil {
 		return out, fmt.Errorf("PKitPool: read version: %w", err)
 	}
-	if version != pKitPoolVersion1 {
+	if version != pKitPoolVersion1 && version != pKitPoolVersion2 {
 		return out, fmt.Errorf("PKitPool: unsupported version %d", version)
 	}
 	out.Version = version
@@ -108,6 +115,12 @@ func DecodePKitPool(buf []byte) (PKitPoolPayload, error) {
 		a.CooldownMs, err = r.ReadUint32()
 		if err != nil {
 			return out, fmt.Errorf("PKitPool: read abilities[%d].cooldown_ms: %w", i, err)
+		}
+		if version >= pKitPoolVersion2 {
+			a.IconPath, err = r.ReadString()
+			if err != nil {
+				return out, fmt.Errorf("PKitPool: read abilities[%d].icon_path: %w", i, err)
+			}
 		}
 		out.Abilities = append(out.Abilities, a)
 	}

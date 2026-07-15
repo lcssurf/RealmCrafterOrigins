@@ -1,5 +1,7 @@
 #include "file_import.h"
 
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <string>
 
@@ -197,6 +199,31 @@ std::vector<std::string> PickMultipleFiles(const char* filter_label,
     }
     return out;
 #endif
+}
+
+std::vector<std::string> ListTextureAssets() {
+    namespace fs = std::filesystem;
+    std::vector<std::string> out;
+    std::error_code ec;
+
+    // Same cwd convention as ImportAbsolutePath: dist/tools/ → ../client/assets/.
+    fs::path assetsDir = fs::current_path().parent_path() / "client" / "assets";
+    if (!fs::exists(assetsDir, ec)) return out;
+
+    for (auto& entry : fs::recursive_directory_iterator(
+             assetsDir, fs::directory_options::skip_permission_denied, ec)) {
+        if (ec) { ec.clear(); continue; }
+        if (!entry.is_regular_file()) continue;
+        std::string ext = entry.path().extension().string();
+        for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (ext != ".png" && ext != ".jpg" && ext != ".jpeg" &&
+            ext != ".bmp" && ext != ".tga") continue;
+        fs::path rel = fs::relative(entry.path(), assetsDir, ec);
+        if (ec) { ec.clear(); continue; }
+        out.push_back("assets/" + rel.generic_string());
+    }
+    std::sort(out.begin(), out.end());
+    return out;
 }
 
 std::string PickFolder(const char* title) {

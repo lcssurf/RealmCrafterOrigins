@@ -1,5 +1,6 @@
 #include "skill_hotbar.h"
 #include "util.h"
+#include "ui_texture.h"
 
 #include <algorithm>
 #include <cctype>
@@ -237,6 +238,20 @@ void SkillHotbar::RenderAbilitySlot(int slot_index, const gameplay::SkillStateAb
 
     dl->AddRectFilled(p0, p1, IM_COL32(20, 28, 52, 220), 5.f);
     dl->AddRect(p0, p1, IM_COL32(100, 140, 255, 210), 5.f, 0, 1.8f);
+
+    // Ability icon (migrateV53) — drawn over the placeholder rect, same
+    // cache-by-path load as the inventory item icons. Empty icon_path
+    // (legacy abilities) = no image, colored rect + text only, unchanged.
+    if (!ability.icon_path.empty()) {
+        ImTextureID icon = rco::ui::g_tex.Load(ability.icon_path);
+        if (icon) {
+            constexpr float kIconInset = 3.f;
+            dl->AddImage(icon,
+                {x0 + kIconInset, y0 + kIconInset},
+                {x1 - kIconInset, y1 - kIconInset},
+                {0,0},{1,1}, IM_COL32(255,255,255,255));
+        }
+    }
 
     char abbr[12];
     std::snprintf(abbr, sizeof(abbr), "%.10s", ability.ability_name.c_str());

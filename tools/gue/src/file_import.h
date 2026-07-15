@@ -45,4 +45,12 @@ std::vector<std::string> PickMultipleFiles(const char* filter_label,
 std::string ImportAbsolutePath(const std::string& src_abs,
                                const char* target_subdir);
 
+// Lists every image file (png/jpg/jpeg/bmp/tga) anywhere under
+// dist/client/assets/, recursively — the whole texture tree, not scoped to
+// any one subfolder. Each entry is an "assets/..." relative path, same
+// convention as MediaModel::file_path / ImportAbsolutePath's return value.
+// Shared by any picker that lets the user reuse an already-imported texture
+// as-is (e.g. item/ability icon pickers) instead of re-importing a copy.
+std::vector<std::string> ListTextureAssets();
+
 } // namespace gue

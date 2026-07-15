@@ -364,6 +364,7 @@ func main() {
 					MasteryPrimaryBonusPerLvl:  row.MasteryPrimaryBonusPerLvl,
 					MasteryCooldownReduxPerLvl: row.MasteryCooldownReduxPerLvl,
 					Enabled:                    row.Enabled,
+					IconPath:                   row.IconPath,
 				})
 			}
 			world.SetAbilityCatalog(abilities)

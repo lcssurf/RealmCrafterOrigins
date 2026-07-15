@@ -2681,10 +2681,12 @@ int main() {
                         override_rot[2] = r.ReadF32();
                         override_scale = r.ReadF32();
                     }
+                    // Trailing field (migrateV53), last per-item.
+                    std::string icon_path = r.ReadString();
                     if (!r.OK()) break;
                     inventory.SetSlot(slot, iid, qty, dur, name, itype, stype, wdmg, armor,
                                      model_path, model_scale, socket_name, has_override != 0,
-                                     override_pos, override_rot, override_scale);
+                                     override_pos, override_rot, override_scale, icon_path);
                 }
                 break;
             }

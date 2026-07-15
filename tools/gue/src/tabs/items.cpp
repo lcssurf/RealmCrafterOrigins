@@ -1,6 +1,7 @@
 #include "items.h"
 #include "../attribute_list.h"
 #include "../ui_widgets.h"
+#include "../file_import.h"
 #include "rco/renderer/engine.h"
 #include "rco/renderer/pipeline.h"
 #include <imgui.h>
@@ -369,12 +370,13 @@ bool ItemsTab::ResolveActorDefSocket(sqlite3* db, int actor_def_id,
 void ItemsTab::Fetch(sqlite3* db) {
     items_.clear();
     selected_ = -1;
+    iconOptions_ = gue::ListTextureAssets();
 
     sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "SELECT id, name, item_type, slot_type, weapon_damage, armor_level, "
         "       weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit "
-        "       , model_path, model_scale, socket_name "
+        "       , model_path, model_scale, socket_name, icon_path "
         "FROM item_templates ORDER BY id";
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -403,6 +405,8 @@ void ItemsTab::Fetch(sqlite3* db) {
         t.model_scale = static_cast<float>(sqlite3_column_double(stmt, 14));
         const char* sock = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 15));
         t.socket_name = sock ? sock : "";
+        const char* icon = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 16));
+        t.icon_path = icon ? icon : "";
         items_.push_back(t);
     }
     sqlite3_finalize(stmt);
@@ -442,8 +446,8 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         const char* sql =
             "INSERT INTO item_templates "
             "(name, item_type, slot_type, weapon_damage, armor_level, "
-            " weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+            " weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name, icon_path) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) goto err;
         sqlite3_bind_text(stmt, 1, t.name.c_str(), -1, SQLITE_TRANSIENT);
@@ -461,6 +465,7 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         sqlite3_bind_text(stmt, 13, t.model_path.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_double(stmt, 14, static_cast<double>(t.model_scale));
         sqlite3_bind_text(stmt, 15, t.socket_name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 16, t.icon_path.c_str(), -1, SQLITE_TRANSIENT);
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE) goto err;
         t.id = (int)sqlite3_last_insert_rowid(db);
@@ -469,7 +474,7 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         const char* sql =
             "UPDATE item_templates SET "
             "name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, "
-            "weapon_dimension=?, weapon_hands=?, weapon_range=?, max_stack=?, item_value=?, stackable=?, weapon_kit=?, model_path=?, model_scale=?, socket_name=? "
+            "weapon_dimension=?, weapon_hands=?, weapon_range=?, max_stack=?, item_value=?, stackable=?, weapon_kit=?, model_path=?, model_scale=?, socket_name=?, icon_path=? "
             "WHERE id=?";
         rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) goto err;
@@ -488,7 +493,8 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         sqlite3_bind_text(stmt, 13, t.model_path.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_double(stmt, 14, static_cast<double>(t.model_scale));
         sqlite3_bind_text(stmt, 15, t.socket_name.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 16, t.id);
+        sqlite3_bind_text(stmt, 16, t.icon_path.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 17, t.id);
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE) goto err;
     }
@@ -685,6 +691,23 @@ bool ItemsTab::DrawFields(ItemTemplate& t) {
     if (ImGui::InputFloat("Model Scale", &t.model_scale, 0.05f, 0.1f, "%.3f")) {
         changed = true;
     }
+
+    ImGui::SeparatorText("Inventory Icon");
+    if (gue::ui::SearchableComboString("Icon", t.icon_path, iconOptions_, "(none)")) {
+        changed = true;
+    }
+    if (!t.icon_path.empty())
+        ImGui::TextDisabled("%s", t.icon_path.c_str());
+    if (ImGui::Button("Import Icon...")) {
+        std::string picked = gue::PickAndImportAsset(
+            "Icon Image", "png,jpg,jpeg,bmp", "models/Textures/Item Icons");
+        if (!picked.empty()) {
+            t.icon_path = picked;
+            iconOptions_ = gue::ListTextureAssets();
+            changed = true;
+        }
+    }
+
     if (socketVocab_.empty()) {
         char sockBuf[128];
         std::strncpy(sockBuf, t.socket_name.c_str(), sizeof(sockBuf)-1);

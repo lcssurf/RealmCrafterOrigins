@@ -50,6 +50,10 @@ type ItemTemplate struct {
 	ModelPath    string
 	ModelScale   float32
 	SocketName   string
+	// IconPath: UI icon shown in the inventory slot (migrateV53). "" = legacy
+	// behaviour, client keeps drawing the item name as text instead.
+	// Independent of ModelPath (the 3D model rendered in-hand/on-ground).
+	IconPath     string
 }
 
 // ItemAttribute holds one bonus row for an item.
@@ -247,6 +251,7 @@ type CharacterItem struct {
 	ModelPath    string
 	ModelScale   float32
 	SocketName   string
+	IconPath     string
 }
 
 // Character mirrors the characters table.
@@ -493,6 +498,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV50(ctx)
 	d.migrateV51(ctx)
 	d.migrateV52(ctx)
+	d.migrateV53(ctx)
 
 	return d, nil
 }
@@ -1839,7 +1845,7 @@ func (d *DB) ResolveActivePlayerAbilities(ctx context.Context, charID string) ([
 func (d *DB) GetInventory(ctx context.Context, charID string) ([]*CharacterItem, error) {
 	rows, err := d.db.QueryContext(ctx,
 		d.q(`SELECT ci.slot, ci.item_id, ci.quantity, ci.durability,
-		          it.name, it.item_type, it.slot_type, it.weapon_damage, it.armor_level, it.model_path, it.model_scale, it.socket_name
+		          it.name, it.item_type, it.slot_type, it.weapon_damage, it.armor_level, it.model_path, it.model_scale, it.socket_name, it.icon_path
 		     FROM character_items ci
 		     JOIN item_templates it ON it.id = ci.item_id
 		     WHERE ci.character_id = ?
@@ -1857,7 +1863,7 @@ func (d *DB) GetInventory(ctx context.Context, charID string) ([]*CharacterItem,
 		if err := rows.Scan(
 			&ci.Slot, &ci.ItemID, &ci.Quantity, &ci.Durability,
 			&ci.Name, &ci.ItemType, &ci.SlotType, &ci.WeaponDamage, &ci.ArmorLevel,
-			&ci.ModelPath, &ci.ModelScale, &ci.SocketName,
+			&ci.ModelPath, &ci.ModelScale, &ci.SocketName, &ci.IconPath,
 		); err != nil {
 			return nil, fmt.Errorf("db: GetInventory scan: %w", err)
 		}
@@ -2089,6 +2095,10 @@ type AbilityTemplateRow struct {
 	MasteryPrimaryBonusPerLvl  float64
 	MasteryCooldownReduxPerLvl float64
 	Enabled                    bool
+	// IconPath: UI icon shown on the hotbar (migrateV53). "" = legacy
+	// behaviour, client keeps drawing the placeholder rect. Independent of
+	// the legacy spell_templates.icon (uint8 ID) — different system.
+	IconPath string
 }
 
 // NPCAbilityLoadoutRow mirrors one row in npc_ability_loadouts.
@@ -2165,7 +2175,7 @@ func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, er
 		       mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type,
 		       mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity,
 		       mastery_primary_bonus_per_lvl,
-		       mastery_cooldown_redux_per_lvl, enabled
+		       mastery_cooldown_redux_per_lvl, enabled, icon_path
 		  FROM ability_templates
 		 ORDER BY id`)
 	if err != nil {
@@ -2194,6 +2204,7 @@ func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, er
 			&r.MasteryPrimaryBonusPerLvl,
 			&r.MasteryCooldownReduxPerLvl,
 			&enabledRaw,
+			&r.IconPath,
 		); err != nil {
 			return nil, fmt.Errorf("db: LoadAbilityTemplates scan: %w", err)
 		}
@@ -4232,7 +4243,7 @@ func (d *DB) GetItemAtSlot(ctx context.Context, charID string, slot uint8) (*Cha
 // LoadAllItemTemplates returns all item templates keyed by name.
 func (d *DB) LoadAllItemTemplates(ctx context.Context) (map[string]*ItemTemplate, error) {
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name
+		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name, icon_path
 		 FROM item_templates ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: LoadAllItemTemplates: %w", err)
@@ -4243,7 +4254,7 @@ func (d *DB) LoadAllItemTemplates(ctx context.Context) (map[string]*ItemTemplate
 		t := &ItemTemplate{}
 		var stackable int
 		if err := rows.Scan(&t.ID, &t.Name, &t.ItemType, &t.SlotType, &t.WeaponDamage,
-			&t.ArmorLevel, &t.WeaponDimension, &t.WeaponHands, &t.WeaponRange, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit, &t.ModelPath, &t.ModelScale, &t.SocketName); err != nil {
+			&t.ArmorLevel, &t.WeaponDimension, &t.WeaponHands, &t.WeaponRange, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit, &t.ModelPath, &t.ModelScale, &t.SocketName, &t.IconPath); err != nil {
 			return nil, err
 		}
 		t.Stackable = stackable != 0
@@ -4255,7 +4266,7 @@ func (d *DB) LoadAllItemTemplates(ctx context.Context) (map[string]*ItemTemplate
 // ListItemTemplates returns all item templates as a slice ordered by id.
 func (d *DB) ListItemTemplates(ctx context.Context) ([]*ItemTemplate, error) {
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name
+		`SELECT id, name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name, icon_path
 		 FROM item_templates ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: ListItemTemplates: %w", err)
@@ -4266,7 +4277,7 @@ func (d *DB) ListItemTemplates(ctx context.Context) ([]*ItemTemplate, error) {
 		t := &ItemTemplate{}
 		var stackable int
 		if err := rows.Scan(&t.ID, &t.Name, &t.ItemType, &t.SlotType, &t.WeaponDamage,
-			&t.ArmorLevel, &t.WeaponDimension, &t.WeaponHands, &t.WeaponRange, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit, &t.ModelPath, &t.ModelScale, &t.SocketName); err != nil {
+			&t.ArmorLevel, &t.WeaponDimension, &t.WeaponHands, &t.WeaponRange, &t.MaxStack, &t.ItemValue, &stackable, &t.WeaponKit, &t.ModelPath, &t.ModelScale, &t.SocketName, &t.IconPath); err != nil {
 			return nil, err
 		}
 		t.Stackable = stackable != 0
@@ -4282,9 +4293,9 @@ func (d *DB) CreateItemTemplate(ctx context.Context, t *ItemTemplate) (int, erro
 		stackable = 1
 	}
 	res, err := d.db.ExecContext(ctx,
-		`INSERT INTO item_templates (name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponDimension, t.WeaponHands, t.WeaponRange, t.MaxStack, t.ItemValue, stackable, t.WeaponKit, t.ModelPath, t.ModelScale, t.SocketName)
+		`INSERT INTO item_templates (name, item_type, slot_type, weapon_damage, armor_level, weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name, icon_path)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponDimension, t.WeaponHands, t.WeaponRange, t.MaxStack, t.ItemValue, stackable, t.WeaponKit, t.ModelPath, t.ModelScale, t.SocketName, t.IconPath)
 	if err != nil {
 		return 0, fmt.Errorf("db: CreateItemTemplate: %w", err)
 	}
@@ -4300,9 +4311,9 @@ func (d *DB) UpdateItemTemplate(ctx context.Context, t *ItemTemplate) error {
 	}
 	_, err := d.db.ExecContext(ctx,
 		`UPDATE item_templates
-		 SET name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, weapon_dimension=?, weapon_hands=?, weapon_range=?, max_stack=?, item_value=?, stackable=?, weapon_kit=?, model_path=?, model_scale=?, socket_name=?
+		 SET name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, weapon_dimension=?, weapon_hands=?, weapon_range=?, max_stack=?, item_value=?, stackable=?, weapon_kit=?, model_path=?, model_scale=?, socket_name=?, icon_path=?
 		 WHERE id=?`,
-		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponDimension, t.WeaponHands, t.WeaponRange, t.MaxStack, t.ItemValue, stackable, t.WeaponKit, t.ModelPath, t.ModelScale, t.SocketName, t.ID)
+		t.Name, t.ItemType, t.SlotType, t.WeaponDamage, t.ArmorLevel, t.WeaponDimension, t.WeaponHands, t.WeaponRange, t.MaxStack, t.ItemValue, stackable, t.WeaponKit, t.ModelPath, t.ModelScale, t.SocketName, t.IconPath, t.ID)
 	if err != nil {
 		return fmt.Errorf("db: UpdateItemTemplate: %w", err)
 	}
@@ -9460,6 +9471,18 @@ func (d *DB) migrateV52(ctx context.Context) {
 	d.addColumnIfMissing(ctx, "media_actor_meshes", "offset_rot_y", "REAL NOT NULL DEFAULT 0.0")
 	d.addColumnIfMissing(ctx, "media_actor_meshes", "offset_rot_z", "REAL NOT NULL DEFAULT 0.0")
 	d.addColumnIfMissing(ctx, "media_actor_meshes", "offset_scale", "REAL NOT NULL DEFAULT 1.0")
+}
+
+// migrateV53 adds icon_path to item_templates and ability_templates, for the
+// GUE's Item/Combat Ability editors to configure a UI icon (from the existing
+// "Item Icons" asset folder, imported like any other texture). Empty
+// icon_path = legacy behaviour: the client keeps drawing the current
+// placeholder/text (inventory slot / hotbar rect), no regression for
+// existing rows. Independent of the legacy spell_templates.icon (uint8 ID,
+// spells.cpp) — different table, different system, not touched here.
+func (d *DB) migrateV53(ctx context.Context) {
+	d.addColumnIfMissing(ctx, "item_templates", "icon_path", "TEXT NOT NULL DEFAULT ''")
+	d.addColumnIfMissing(ctx, "ability_templates", "icon_path", "TEXT NOT NULL DEFAULT ''")
 }
 
 // PlayerSpawn is a named world position where players spawn or respawn.

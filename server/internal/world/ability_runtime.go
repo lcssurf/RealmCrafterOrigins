@@ -105,6 +105,9 @@ type AbilityTemplate struct {
 	MasteryPrimaryBonusPerLvl  float64
 	MasteryCooldownReduxPerLvl float64
 	Enabled                    bool
+	// IconPath: UI icon shown on the hotbar (migrateV53). "" = client keeps
+	// drawing the placeholder rect.
+	IconPath string
 }
 
 // NPCAbilityLoadoutEntry maps NPCs/archetypes to ability templates and simple

@@ -13,7 +13,7 @@ bool ActiveKitPoolState::ApplyPacket(rco::net::Reader& r) {
         std::fprintf(stderr, "[KIT_POOL] underflow reading version\n");
         return false;
     }
-    if (version != 1) {
+    if (version != 1 && version != 2) {
         std::fprintf(stderr, "[KIT_POOL] unsupported version %u, ignoring\n",
                      static_cast<unsigned>(version));
         return false;
@@ -31,6 +31,9 @@ bool ActiveKitPoolState::ApplyPacket(rco::net::Reader& r) {
         a.ability_id = r.ReadU32();
         a.ability_name = r.ReadString();
         a.cooldown_ms = r.ReadU32();
+        if (version >= 2) {
+            a.icon_path = r.ReadString();
+        }
         abilities.push_back(std::move(a));
     }
 

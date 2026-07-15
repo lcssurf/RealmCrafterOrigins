@@ -1,6 +1,7 @@
 #include "combat_abilities.h"
 #include "util/ability_json_validator.h"
 #include "../ui_widgets.h"
+#include "../file_import.h"
 
 #include <imgui.h>
 
@@ -282,6 +283,22 @@ bool CombatAbilitiesTab::DrawAbilityFields(CombatAbilityTemplate& row) {
     if (ImGui::InputInt("Cooldown (ms)", &row.cooldown_ms)) changed = true;
     if (ImGui::InputFloat("Range Min", &row.range_min, 0.5f, 2.0f, "%.2f")) changed = true;
     if (ImGui::InputFloat("Range Max", &row.range_max, 0.5f, 2.0f, "%.2f")) changed = true;
+
+    ImGui::SeparatorText("Hotbar Icon");
+    if (gue::ui::SearchableComboString("Icon", row.icon_path, icon_options_, "(none)")) {
+        changed = true;
+    }
+    if (!row.icon_path.empty())
+        ImGui::TextDisabled("%s", row.icon_path.c_str());
+    if (ImGui::Button("Import Icon...")) {
+        std::string picked = gue::PickAndImportAsset(
+            "Icon Image", "png,jpg,jpeg,bmp", "models/Textures/Item Icons");
+        if (!picked.empty()) {
+            row.icon_path = picked;
+            icon_options_ = gue::ListTextureAssets();
+            changed = true;
+        }
+    }
 
     ImGui::Separator();
     ImGui::TextUnformatted("Timeline");
@@ -892,6 +909,7 @@ bool CombatAbilitiesTab::VocabContains(const std::string& name) const {
 
 void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
     LoadAnimVocabNames(db);
+    icon_options_ = gue::ListTextureAssets();
     abilities_.clear();
     selected_ability_ = -1;
 
@@ -909,7 +927,7 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
         "       mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type, "
         "       mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity, "
         "       mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, "
-        "       enabled, dimension "
+        "       enabled, dimension, icon_path "
         "FROM ability_templates ORDER BY id";
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -965,6 +983,7 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
         row.mastery_cooldown_redux_per_lvl = static_cast<float>(sqlite3_column_double(stmt, 43));
         row.enabled = sqlite3_column_int(stmt, 44) != 0;
         if (const auto* text = sqlite3_column_text(stmt, 45)) row.dimension = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 46)) row.icon_path = reinterpret_cast<const char*>(text);
         abilities_.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
@@ -1414,8 +1433,8 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
             "vfx_path_windup, vfx_path_impact, sfx_path_windup, sfx_path_impact, "
             "mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type, "
             "mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity, "
-            "mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, enabled, dimension"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+            "mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, enabled, dimension, icon_path"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
             SetStatus("Ability create error: %s", sqlite3_errmsg(db));
@@ -1435,7 +1454,7 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
             "vfx_path_windup=?, vfx_path_impact=?, sfx_path_windup=?, sfx_path_impact=?, "
             "mastery_xp_per_use=?, mastery_max_level=?, mastery_xp_curve_type=?, "
             "mastery_xp_curve_base=?, mastery_xp_curve_exponent=?, mastery_xp_irregularity=?, "
-            "mastery_primary_bonus_per_lvl=?, mastery_cooldown_redux_per_lvl=?, enabled=?, dimension=? "
+            "mastery_primary_bonus_per_lvl=?, mastery_cooldown_redux_per_lvl=?, enabled=?, dimension=?, icon_path=? "
             "WHERE id=?";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1489,8 +1508,9 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     sqlite3_bind_double(stmt, 43, row.mastery_cooldown_redux_per_lvl);
     sqlite3_bind_int(stmt, 44, row.enabled ? 1 : 0);
     sqlite3_bind_text(stmt, 45, row.dimension.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 46, row.icon_path.c_str(), -1, SQLITE_TRANSIENT);
     if (!is_new) {
-        sqlite3_bind_int(stmt, 46, row.id);
+        sqlite3_bind_int(stmt, 47, row.id);
     }
 
     rc = sqlite3_step(stmt);

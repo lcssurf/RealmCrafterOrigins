@@ -9,6 +9,7 @@ const (
 	pSkillStateVersion2 uint8 = 2
 	pSkillStateVersion3 uint8 = 3
 	pSkillStateVersion4 uint8 = 4
+	pSkillStateVersion5 uint8 = 5
 )
 
 // PSkillStatePayload is the server->client payload for packet 129.
@@ -34,6 +35,9 @@ type PSkillStateAbility struct {
 	MasteryXPForNext               uint32
 	MasteryMaxLevel                uint8
 	Description                    string
+	// IconPath: UI icon shown on the hotbar (migrateV53, version 5+). "" =
+	// client keeps drawing the placeholder rect.
+	IconPath string
 }
 
 // EncodePSkillState serializes the payload to wire format.
@@ -41,7 +45,8 @@ func EncodePSkillState(p PSkillStatePayload) ([]byte, error) {
 	if p.Version != pSkillStateVersion1 &&
 		p.Version != pSkillStateVersion2 &&
 		p.Version != pSkillStateVersion3 &&
-		p.Version != pSkillStateVersion4 {
+		p.Version != pSkillStateVersion4 &&
+		p.Version != pSkillStateVersion5 {
 		return nil, fmt.Errorf("PSkillState: unsupported version %d", p.Version)
 	}
 	if len(p.Abilities) > 255 {
@@ -103,6 +108,9 @@ func EncodePSkillState(p PSkillStatePayload) ([]byte, error) {
 		if p.Version >= pSkillStateVersion3 {
 			w.WriteString(a.Description)
 		}
+		if p.Version >= pSkillStateVersion5 {
+			w.WriteString(a.IconPath)
+		}
 	}
 	return w.Bytes(), nil
 }
@@ -119,7 +127,8 @@ func DecodePSkillState(buf []byte) (PSkillStatePayload, error) {
 	if version != pSkillStateVersion1 &&
 		version != pSkillStateVersion2 &&
 		version != pSkillStateVersion3 &&
-		version != pSkillStateVersion4 {
+		version != pSkillStateVersion4 &&
+		version != pSkillStateVersion5 {
 		return out, fmt.Errorf("PSkillState: unsupported version %d", version)
 	}
 	out.Version = version
@@ -216,6 +225,12 @@ func DecodePSkillState(buf []byte) (PSkillStatePayload, error) {
 			a.Description, err = r.ReadString()
 			if err != nil {
 				return out, fmt.Errorf("PSkillState: read abilities[%d].description: %w", i, err)
+			}
+		}
+		if version >= pSkillStateVersion5 {
+			a.IconPath, err = r.ReadString()
+			if err != nil {
+				return out, fmt.Errorf("PSkillState: read abilities[%d].icon_path: %w", i, err)
 			}
 		}
 		out.Abilities = append(out.Abilities, a)

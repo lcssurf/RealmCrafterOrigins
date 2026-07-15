@@ -1687,3 +1687,50 @@ reaproveitados, como já acontecia entre o preview de item do GUE e o B5 do clie
 falta: configurar `bone_name` do slot Helm do Gremlin no GUE e verificar visualmente
 no preview e em jogo.
 
+## 122. Ícones de UI para Items e Combat Abilities
+
+**Problema**: a UI de inventário e a hotbar de combate já reservavam espaço visual pra
+um ícone por item/ability, mas nenhum dos dois sistemas tinha campo de ícone no schema
+— o slot ocupado sempre desenhava só texto (nome truncado) e o hotbar sempre desenhava
+um retângulo colorido fixo. Existiam 174 PNGs prontos em
+`dist/client/assets/models/Textures/Item Icons/` (20 subpastas), sobrando do
+RealmCrafter original, não referenciados por nenhum código.
+
+**Implementado**: campo `icon_path` (string, "" = comportamento legado) ponta a
+ponta, mesma técnica pros dois sistemas:
+- **Schema** (`migrateV53`, `db.go`): `icon_path TEXT NOT NULL DEFAULT ''` em
+  `item_templates` e `ability_templates` (ADD COLUMN idempotente). Structs Go
+  (`ItemTemplate`, `CharacterItem`, `AbilityTemplateRow`, `world.AbilityTemplate`)
+  e todas as queries (Load/List/Create/Update de item; Load de ability;
+  `GetInventory`'s join) ganharam o campo. `server/cmd/server/main.go` propaga
+  `row.IconPath` do DB pro catálogo de abilities em runtime
+  (`world.SetAbilityCatalog`).
+- **Wire**: `PInventoryUpdate` (`sendInventory`, `client.go`) ganhou `icon_path`
+  como campo aditivo no fim de cada item. `PSkillState` subiu pra versão 5 e
+  `PKitPool` pra versão 2 — mesmo padrão de versionamento retrocompatível já usado
+  nesses dois pacotes (campos novos só lidos/escritos quando a versão negociada
+  permite; servidor e cliente antigos continuam se falando sem o campo).
+- **Cliente**: `InventoryItem`/`SkillStateAbility`/`KitPoolAbility` ganharam
+  `icon_path`. `inventory.cpp` desenha o ícone (equip slot e grade da bag) atrás do
+  texto quando `icon_path` não é vazio — texto continua sendo desenhado por cima
+  (nome/durabilidade), nada removido. `skill_hotbar.cpp`'s `RenderAbilitySlot`
+  desenha o ícone sobre o retângulo colorido pelo mesmo critério. Ambos usam
+  `UITextureCache::Load(path)` (`ui_texture.h`) — cache por path já existente no
+  projeto, mesmo espírito do `GetOrLoadWaterTexture` — então reabrir a bag/hotbar
+  não recarrega a textura do disco a cada frame.
+- **GUE**: `items.cpp` e `combat_abilities.cpp` ganharam um combo "Icon"
+  (`SearchableComboString`, mesmo padrão já usado pra Model/Socket/Bone) populado
+  escaneando recursivamente a pasta "Item Icons" existente, mais um botão "Import
+  Icon..." (`PickAndImportAsset`, mesmo fluxo de import já usado pra texturas de
+  material) pra trazer ícones novos pra essa mesma pasta. `LoadIconOptions()` é
+  duplicada (não compartilhada) entre os dois arquivos — mesmo padrão de
+  duplicação de helper pequeno já usado no resto do GUE (ex. bone-name lists por
+  aba), não uma abstração nova.
+- **Intocado, de propósito**: o sistema legado de `spell_templates`/`spells.cpp`
+  (campo `icon` numérico antigo) — sistema desconectado do fluxo atual de combate,
+  fora de escopo.
+
+**Não testado em jogo ainda** (implementado nesta sessão, sem compilar/commit) —
+falta configurar `icon_path` em pelo menos um item/ability no GUE e confirmar
+visualmente na bag e na hotbar.
+

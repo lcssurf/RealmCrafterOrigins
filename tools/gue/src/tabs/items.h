@@ -44,6 +44,10 @@ struct ItemTemplate {
     std::string model_path;
     float       model_scale   = 1.f;
     std::string socket_name;
+    // UI icon shown in the inventory slot (migrateV53). "" = legacy
+    // behaviour, client draws item name as text instead. Independent of
+    // model_path (the 3D model rendered in-hand/on-ground).
+    std::string icon_path;
     std::vector<ItemSocketOverride> overrides;
     std::vector<ItemAttribute> attributes;
 };
@@ -117,6 +121,10 @@ private:
     std::vector<std::string> socketVocab_;
     std::vector<std::pair<int, std::string>> actorDefOptions_;
     std::vector<ModelOption> modelOptions_;
+    // Icon picker options (migrateV53) — every image found under the
+    // existing "Item Icons" asset folder, as "assets/..." relative paths.
+    // Refreshed on Fetch() and after importing a new icon.
+    std::vector<std::string> iconOptions_;
 
     // Which override row (index into t.overrides) is currently shown in the
     // preview panel. -1 = no preview.

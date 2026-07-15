@@ -12,6 +12,8 @@ struct KitPoolAbility {
     uint32_t    ability_id = 0;
     std::string ability_name;
     uint32_t    cooldown_ms = 0;
+    // UI icon path (migrateV53, wire version 2+). Empty = placeholder rect.
+    std::string icon_path;
 };
 
 class ActiveKitPoolState {

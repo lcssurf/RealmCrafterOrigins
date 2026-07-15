@@ -23,6 +23,9 @@ struct InventoryItem {
     float override_pos[3] = {0.f, 0.f, 0.f};
     float override_rot[3] = {0.f, 0.f, 0.f};
     float override_scale = 1.f;
+    // UI icon path (migrateV53). Empty = legacy behaviour, slot keeps
+    // drawing name/durability text only, no image.
+    std::string icon_path;
 
     bool empty() const { return item_id == 0; }
 };
@@ -49,7 +52,7 @@ public:
                  const std::string& model_path, float model_scale,
                  const std::string& socket_name, bool has_override,
                  const float override_pos[3], const float override_rot[3],
-                 float override_scale);
+                 float override_scale, const std::string& icon_path);
     void Clear();
 
     // Renders both sub-windows (each checks its own visibility flag).

@@ -54,6 +54,8 @@ struct CombatAbilityTemplate {
     float       mastery_primary_bonus_per_lvl = 0.03f;
     float       mastery_cooldown_redux_per_lvl = 0.01f;
     bool        enabled = true;
+    // UI icon shown on the hotbar (migrateV53). "" = legacy placeholder rect.
+    std::string icon_path;
 };
 
 struct NPCAbilityLoadoutEntry {
@@ -181,6 +183,10 @@ private:
     std::vector<ProfileOption> profile_options_;
     std::vector<std::string> fx_keys_;
     std::vector<std::string> anim_vocab_names_;
+    // Icon picker options (migrateV53) — every image found under the
+    // existing "Item Icons" asset folder, as "assets/..." relative paths.
+    // Refreshed on FetchAbilities() and after importing a new icon.
+    std::vector<std::string> icon_options_;
 
     int selected_ability_ = -1;
     int selected_loadout_ = -1;

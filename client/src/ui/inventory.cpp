@@ -54,7 +54,7 @@ void Inventory::SetSlot(uint8_t slot, uint16_t item_id, uint8_t qty, uint8_t dur
                         const std::string& model_path, float model_scale,
                         const std::string& socket_name, bool has_override,
                         const float override_pos[3], const float override_rot[3],
-                        float override_scale) {
+                        float override_scale, const std::string& icon_path) {
     if (slot >= kTotalSlots) return;
     slots_[slot].item_id = item_id;
     slots_[slot].quantity = qty;
@@ -79,6 +79,7 @@ void Inventory::SetSlot(uint8_t slot, uint16_t item_id, uint8_t qty, uint8_t dur
         slots_[slot].override_rot[2] = override_rot[2];
     }
     slots_[slot].override_scale = override_scale;
+    slots_[slot].icon_path = icon_path;
 }
 
 void Inventory::Clear() { slots_ = {}; }
@@ -162,6 +163,20 @@ static void drawEquipSlotContent(const InventoryItem& it, int slotIdx,
                 {0,0},{1,1}, IM_COL32(255,255,255,100));
         }
     } else {
+        // Item icon (migrateV53) — drawn full-opacity behind the text, same
+        // cache-by-path mechanism as the empty-slot placeholder above.
+        // Empty icon_path (legacy items) = no image, text-only, unchanged.
+        if (!it.icon_path.empty()) {
+            ImTextureID icon = g_tex.Load(it.icon_path);
+            if (icon) {
+                constexpr float kIconInset = 4.f;
+                dl->AddImage(icon,
+                    {pos.x + kIconInset,      pos.y + kIconInset},
+                    {pos.x + sz - kIconInset, pos.y + sz - kIconInset},
+                    {0,0},{1,1}, IM_COL32(255,255,255,255));
+            }
+        }
+
         // Item name (top-left, truncated)
         char trunc[14];
         std::snprintf(trunc, sizeof(trunc), "%.11s", it.name.c_str());
@@ -301,6 +316,18 @@ void Inventory::RenderBag(int screenW, int screenH) {
                 ImVec2 p  = ImGui::GetItemRectMin();
                 auto*  dl = ImGui::GetWindowDrawList();
                 float  th = ImGui::GetTextLineHeight();
+                // Item icon (migrateV53) — same cache-by-path load as the
+                // equip slot. Empty icon_path (legacy items) = unchanged.
+                if (!it.icon_path.empty()) {
+                    ImTextureID icon = g_tex.Load(it.icon_path);
+                    if (icon) {
+                        constexpr float kIconInset = 3.f;
+                        dl->AddImage(icon,
+                            {p.x + kIconInset,          p.y + kIconInset},
+                            {p.x + bCellSz - kIconInset, p.y + bCellSz - kIconInset},
+                            {0,0},{1,1}, IM_COL32(255,255,255,255));
+                    }
+                }
                 char trunc[12];
                 std::snprintf(trunc, sizeof(trunc), "%.9s", it.name.c_str());
                 dl->AddText({p.x+3.f, p.y+3.f}, IM_COL32(235,225,200,230), trunc);

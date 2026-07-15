@@ -1330,6 +1330,10 @@ func (c *ClientConn) sendInventory(ctx context.Context, charID string) error {
 			w.WriteFloat32(float32(ovr.OffsetRotZ))
 			w.WriteFloat32(float32(ovr.OffsetScale))
 		}
+		// IconPath (migrateV53): trailing field, last per-item — additive,
+		// same position convention already used for AttackRange in
+		// PFullStats (kept last so any earlier-field ordering never shifts).
+		w.WriteString(ci.IconPath)
 	}
 	return c.sendPacket(protocol.PInventoryUpdate, w.Bytes())
 }
@@ -1723,7 +1727,7 @@ func (c *ClientConn) sendSkillState(ctx context.Context) {
 	nowMs := time.Now().UnixMilli()
 
 	payload := PSkillStatePayload{
-		Version:        4,
+		Version:        5,
 		HasKit:         resolution.HasKit,
 		KitID:          0,
 		KitKey:         resolution.KitKey,
@@ -1754,9 +1758,11 @@ func (c *ClientConn) sendSkillState(ctx context.Context) {
 		maxLevel := 10
 		var abilityTemplate *world.AbilityTemplate
 		abilityDescription := ""
+		abilityIconPath := ""
 		if tpl, ok := world.GetAbilityTemplateByID(ab.AbilityID); ok {
 			abilityTemplate = &tpl
 			abilityDescription = tpl.Description
+			abilityIconPath = tpl.IconPath
 			if tpl.MasteryMaxLevel > 0 {
 				maxLevel = tpl.MasteryMaxLevel
 			}
@@ -1848,6 +1854,7 @@ func (c *ClientConn) sendSkillState(ctx context.Context) {
 			MasteryXPForNext:               masteryXPForNext,
 			MasteryMaxLevel:                uint8(maxLevel),
 			Description:                    abilityDescription,
+			IconPath:                       abilityIconPath,
 		})
 	}
 
@@ -1881,7 +1888,7 @@ func (c *ClientConn) sendKitPool(ctx context.Context) {
 	}
 
 	payload := PKitPoolPayload{
-		Version:        1,
+		Version:        2,
 		KitID:          0,
 		KitKey:         "",
 		KitDisplayName: "",
@@ -1910,10 +1917,15 @@ func (c *ClientConn) sendKitPool(ctx context.Context) {
 			if cdMs > math.MaxUint32 {
 				cdMs = math.MaxUint32
 			}
+			abilityIconPath := ""
+			if tpl, ok := world.GetAbilityTemplateByID(ab.AbilityID); ok {
+				abilityIconPath = tpl.IconPath
+			}
 			payload.Abilities = append(payload.Abilities, PKitPoolAbility{
 				AbilityID:   uint32(ab.AbilityID),
 				AbilityName: ab.AbilityName,
 				CooldownMs:  uint32(cdMs),
+				IconPath:    abilityIconPath,
 			})
 		}
 	}

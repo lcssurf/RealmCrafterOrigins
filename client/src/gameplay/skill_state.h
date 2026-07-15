@@ -20,6 +20,9 @@ struct SkillStateAbility {
     uint32_t    mastery_xp_for_next = 0;
     uint8_t     mastery_max_level = 0;
     std::string description;
+    // UI icon path (migrateV53, wire version 5+). Empty = hotbar keeps
+    // drawing the placeholder rect, no image.
+    std::string icon_path;
 };
 
 class SkillState {

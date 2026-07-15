@@ -13,7 +13,7 @@ bool SkillState::ApplyPacket(rco::net::Reader& r) {
         std::fprintf(stderr, "[SKILL_STATE] underflow reading version\n");
         return false;
     }
-    if (version != 1 && version != 2 && version != 3 && version != 4) {
+    if (version != 1 && version != 2 && version != 3 && version != 4 && version != 5) {
         std::fprintf(stderr, "[SKILL_STATE] unsupported version %u, ignoring\n",
                      static_cast<unsigned>(version));
         return false;
@@ -48,6 +48,9 @@ bool SkillState::ApplyPacket(rco::net::Reader& r) {
         }
         if (version >= 3) {
             a.description = r.ReadString();
+        }
+        if (version >= 5) {
+            a.icon_path = r.ReadString();
         }
         abilities.push_back(std::move(a));
     }
