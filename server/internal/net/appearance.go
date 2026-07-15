@@ -54,6 +54,12 @@ func BuildAppearanceFromDef(ctx context.Context, database *db.DB, def *db.ActorD
 			Slot:      uint8(m.Slot),
 			ModelPath: model.FilePath,
 			Scale:     model.Scale * actorScale,
+			// Rigid bone attachment (migrateV52) — independent of
+			// actor_def_sockets (item/equipment attachment) below.
+			BoneName:    m.BoneName,
+			OffsetPos:   [3]float32{float32(m.OffsetPosX), float32(m.OffsetPosY), float32(m.OffsetPosZ)},
+			OffsetRot:   [3]float32{float32(m.OffsetRotX), float32(m.OffsetRotY), float32(m.OffsetRotZ)},
+			OffsetScale: float32(m.OffsetScale),
 		}
 		if mat, _ := database.GetMediaMaterial(ctx, m.MaterialID); mat != nil {
 			slot.AlbedoPath  = mat.AlbedoPath

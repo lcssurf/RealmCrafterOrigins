@@ -627,6 +627,8 @@ void Inventory::RenderCharacter(int screenW, int screenH, const rco::PlayerState
             draw_derived_int("MagicCritValue", confirmed_derived.MagicCritValue, preview_derived.MagicCritValue);
             draw_derived_int("MeleeDmgMin", confirmed_derived.MeleeDmgMin, preview_derived.MeleeDmgMin);
             draw_derived_int("MeleeDmgMax", confirmed_derived.MeleeDmgMax, preview_derived.MeleeDmgMax);
+            draw_derived_int("RangedDmgMin", confirmed_derived.RangedDmgMin, preview_derived.RangedDmgMin);
+            draw_derived_int("RangedDmgMax", confirmed_derived.RangedDmgMax, preview_derived.RangedDmgMax);
             draw_derived_int("MagicDmgMin", confirmed_derived.MagicDmgMin, preview_derived.MagicDmgMin);
             draw_derived_int("MagicDmgMax", confirmed_derived.MagicDmgMax, preview_derived.MagicDmgMax);
             draw_derived_float("CritDamageMult", confirmed_derived.CritDamageMult, preview_derived.CritDamageMult);

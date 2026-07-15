@@ -441,11 +441,19 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	actor.UnspentStatPoints = char.UnspentStatPoints
 	actor.FreeRespecsUsed = char.FreeRespecsUsed
 	actor.Radius = 0.4
+	// AttackRange is resolved AFTER RecomputeDerivedStats below (not inline
+	// here like before) — it needs actor.Derived.RangeBonusPct, which isn't
+	// populated yet at this point in actor construction (Derived is still
+	// its zero value until RecomputeDerivedStats runs). Resolving here would
+	// silently apply a 0% range bonus on every login regardless of PER.
+	var equippedWeaponRange float32
+	haveEquippedStats := false
 	if wdmg, armor, wdim, wrange, err := c.server.db.GetEquippedStats(ctx, char.ID); err == nil {
 		actor.WeaponDamage = wdmg
 		actor.CachedArmor = armor
 		actor.BasicAttackDim = world.CombatDimension(wdim)
-		actor.AttackRange = world.ResolveAttackRange(wrange, actor.BasicAttackDim)
+		equippedWeaponRange = wrange
+		haveEquippedStats = true
 	}
 	actor.SetPrimaryStats(world.PrimaryStats{
 		STR: char.PrimaryStrength,
@@ -462,6 +470,11 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 		bonuses = nil
 	}
 	world.RecomputeDerivedStats(actor, bonuses)
+	if haveEquippedStats {
+		// Derived.RangeBonusPct is populated now — safe to resolve.
+		actor.AttackRange = world.ResolveAttackRange(
+			equippedWeaponRange, actor.BasicAttackDim, actor.Derived.RangeBonusPct)
+	}
 	actor.Mu.Lock()
 	actor.Health = actor.HealthMax
 	actor.Energy = actor.EnergyMax
@@ -1165,12 +1178,18 @@ func (c *ClientConn) sendXPUpdate() error {
 
 // sendFullStats sends a PFullStats packet with the actor's primary stats
 // (base), unspent points, effective primary stats (base + item primary
-// bonuses), vitals (current+max), and the full 34-field DerivedStats.
+// bonuses), vitals (current+max), the full 34-field DerivedStats, and
+// (trailing, NOT part of DerivedStats) the actor's current AttackRange.
 //
 // Field order MUST match DerivedStats in attributes.go (client reads
 // sequentially): the 34 derived fields are written in struct declaration
 // order, each as Int32 or Float32 per its Go type. The effective primary
 // stats (5x u16) come immediately after unspent and before vitals.
+// AttackRange is the LAST field in the packet — client must read it after
+// DamageReductionFlat. Already kept in sync on weapon/equip changes for
+// free: recomputeStatsWithItemBonuses (called from handleInventorySwap on
+// any successful swap) calls this function again after AttackRange is
+// re-resolved from the newly-equipped weapon.
 func (c *ClientConn) sendFullStats() {
 	if c == nil || c.actor == nil {
 		return
@@ -1183,6 +1202,15 @@ func (c *ClientConn) sendFullStats() {
 	mp, mpMax := c.actor.Energy, c.actor.EnergyMax
 	sp, spMax := c.actor.Stamina, c.actor.StaminaMax
 	d := c.actor.Derived
+	// AttackRange is NOT part of DerivedStats (it's a top-level Actor field,
+	// resolved from the equipped weapon — see world.ResolveAttackRange,
+	// called from both character-load and handleInventorySwap on any
+	// weapon-slot change) — captured under the SAME lock/snapshot as
+	// everything else here so it can't tear relative to the rest of this
+	// packet, then appended as one extra field at the END of the wire
+	// format below (client-side auto-approach/melee-range gating is the
+	// only consumer for now).
+	attackRange := c.actor.AttackRange
 	c.actor.Mu.Unlock()
 
 	var w Writer
@@ -1242,6 +1270,12 @@ func (c *ClientConn) sendFullStats() {
 	w.WriteInt32(d.CCChanceValue)
 	w.WriteInt32(d.CCResistanceValue)
 	w.WriteInt32(d.DamageReductionFlat)
+	// Extra field, appended AFTER the 34 DerivedStats fields (not part of
+	// that struct/its declared order — see capture comment above). Client
+	// must read this as the very last field of PFullStats, in this same
+	// position, or every field before it silently desyncs on the next
+	// packet layout change.
+	w.WriteFloat32(attackRange)
 
 	_ = c.sendPacket(protocol.PFullStats, w.Bytes())
 }
@@ -1370,8 +1404,18 @@ func (c *ClientConn) handleInventorySwap(ctx context.Context, payload []byte) er
 		c.actor.CachedArmor = armor
 		if weaponSlotAffected {
 			// Attack dimension/range only depend on the weapon (slot 0).
+			// Uses the actor's CURRENT Derived.RangeBonusPct (from before
+			// this swap's recomputeStatsWithItemBonuses call below) — a
+			// PER-driven stat that a plain weapon swap never changes, so
+			// this is correct for that common case. Known edge case: if
+			// the newly-equipped item ITSELF grants a range_bonus_pct item
+			// attribute, that bonus won't be reflected in this packet's
+			// AttackRange until the NEXT stats recompute
+			// (recomputeStatsWithItemBonuses below updates Derived but
+			// doesn't re-resolve AttackRange).
 			c.actor.BasicAttackDim = world.CombatDimension(wdim)
-			c.actor.AttackRange = world.ResolveAttackRange(wrange, c.actor.BasicAttackDim)
+			c.actor.AttackRange = world.ResolveAttackRange(
+				wrange, c.actor.BasicAttackDim, c.actor.Derived.RangeBonusPct)
 		}
 		c.actor.Mu.Unlock()
 	}
@@ -1445,8 +1489,11 @@ func (c *ClientConn) handleUseItem(ctx context.Context, payload []byte) error {
 			c.actor.WeaponDamage = wdmg
 			c.actor.CachedArmor = armor
 			if res.EquipSlot == 0 {
+				// Same RangeBonusPct staleness caveat as handleInventorySwap
+				// above: uses Derived from before this swap's recompute.
 				c.actor.BasicAttackDim = world.CombatDimension(wdim)
-				c.actor.AttackRange = world.ResolveAttackRange(wrange, c.actor.BasicAttackDim)
+				c.actor.AttackRange = world.ResolveAttackRange(
+					wrange, c.actor.BasicAttackDim, c.actor.Derived.RangeBonusPct)
 			}
 			c.actor.Mu.Unlock()
 			c.recomputeStatsWithItemBonuses(ctx)

@@ -297,18 +297,26 @@ static bool DrawFolderList(
 // Slot names
 // ---------------------------------------------------------------------------
 
+// Slot 0 (Body) is the only slot with special meaning to the renderer today
+// (the primary skinned mesh every Actor Def preview/lazy-init resolves — see
+// media.cpp's DrawActorDefs preview block and main.cpp's NPC lazy-init). Slots
+// 1-10 are generic "extra piece" slots with no built-in positioning semantics
+// of their own (see the Gremlin-Helm investigation) — labeling them "Hair"/
+// "Helm"/"Chest"/etc. implied a wardrobe system that doesn't exist yet.
+// Renamed to generic "Slot N" so the UI doesn't overpromise; the numeric
+// values (0-10) are unchanged, so no data migration is needed.
 static const char* kSlotNames[] = {
     "Body",
-    "Hair",
-    "Helm",
-    "Chest",
-    "Hands",
-    "Belt",
-    "Legs",
-    "Feet",
-    "Weapon",
-    "Shield",
-    "Attachment",
+    "Slot 1",
+    "Slot 2",
+    "Slot 3",
+    "Slot 4",
+    "Slot 5",
+    "Slot 6",
+    "Slot 7",
+    "Slot 8",
+    "Slot 9",
+    "Slot 10",
 };
 static constexpr int kSlotCount = (int)(sizeof(kSlotNames) / sizeof(kSlotNames[0]));
 
@@ -761,7 +769,9 @@ void MediaTab::FetchAll(sqlite3* db) {
 
     // Actor mesh slots
     if (sqlite3_prepare_v2(db,
-        "SELECT id, actor_def_id, slot, model_id, material_id"
+        "SELECT id, actor_def_id, slot, model_id, material_id,"
+        " bone_name, offset_pos_x, offset_pos_y, offset_pos_z,"
+        " offset_rot_x, offset_rot_y, offset_rot_z, offset_scale"
         " FROM media_actor_meshes ORDER BY actor_def_id, slot",
         -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -771,6 +781,25 @@ void MediaTab::FetchAll(sqlite3* db) {
             s.slot         = sqlite3_column_int(stmt, 2);
             s.model_id     = sqlite3_column_int(stmt, 3);
             s.material_id  = sqlite3_column_int(stmt, 4);
+            s.bone_name    = colText(stmt, 5);
+            s.offset_pos_x = (float)sqlite3_column_double(stmt, 6);
+            s.offset_pos_y = (float)sqlite3_column_double(stmt, 7);
+            s.offset_pos_z = (float)sqlite3_column_double(stmt, 8);
+            s.offset_rot_x = (float)sqlite3_column_double(stmt, 9);
+            s.offset_rot_y = (float)sqlite3_column_double(stmt, 10);
+            s.offset_rot_z = (float)sqlite3_column_double(stmt, 11);
+            s.offset_scale = (float)sqlite3_column_double(stmt, 12);
+            // TEMP DEBUG (Gremlin Helm-never-draws investigation, point 1 —
+            // confirms the row actually loaded FROM the DB has a non-empty
+            // bone_name, i.e. it's not just SaveMeshSlot writing it but the
+            // read-back losing it (column mismatch, wrong index, etc).
+            if (s.slot != 0) {
+                std::fprintf(stderr,
+                    "[mesh-attach-dbg] Fetch: loaded mesh id=%d actor_def_id=%d slot=%d "
+                    "bone_name='%s' (empty=%s)\n",
+                    s.id, s.actor_def_id, s.slot, s.bone_name.c_str(),
+                    s.bone_name.empty() ? "yes" : "no");
+            }
             for (auto& d : actor_defs_) {
                 if (d.id == s.actor_def_id) { d.mesh_slots.push_back(s); break; }
             }
@@ -1374,25 +1403,46 @@ void MediaTab::SaveMeshSlot(sqlite3* db, ActorMeshSlot& s) {
     int rc;
     if (s.id == 0) {
         rc = sqlite3_prepare_v2(db,
-            "INSERT INTO media_actor_meshes (actor_def_id, slot, model_id, material_id)"
-            " VALUES (?, ?, ?, ?)", -1, &stmt, nullptr);
+            "INSERT INTO media_actor_meshes (actor_def_id, slot, model_id, material_id,"
+            " bone_name, offset_pos_x, offset_pos_y, offset_pos_z,"
+            " offset_rot_x, offset_rot_y, offset_rot_z, offset_scale)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
-            "UPDATE media_actor_meshes SET slot=?, model_id=?, material_id=? WHERE id=?",
+            "UPDATE media_actor_meshes SET slot=?, model_id=?, material_id=?,"
+            " bone_name=?, offset_pos_x=?, offset_pos_y=?, offset_pos_z=?,"
+            " offset_rot_x=?, offset_rot_y=?, offset_rot_z=?, offset_scale=?"
+            " WHERE id=?",
             -1, &stmt, nullptr);
     }
     if (rc != SQLITE_OK) return;
 
     if (s.id == 0) {
-        sqlite3_bind_int(stmt, 1, s.actor_def_id);
-        sqlite3_bind_int(stmt, 2, s.slot);
-        sqlite3_bind_int(stmt, 3, s.model_id);
-        sqlite3_bind_int(stmt, 4, s.material_id);
+        sqlite3_bind_int   (stmt, 1, s.actor_def_id);
+        sqlite3_bind_int   (stmt, 2, s.slot);
+        sqlite3_bind_int   (stmt, 3, s.model_id);
+        sqlite3_bind_int   (stmt, 4, s.material_id);
+        sqlite3_bind_text  (stmt, 5, s.bone_name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(stmt, 6, s.offset_pos_x);
+        sqlite3_bind_double(stmt, 7, s.offset_pos_y);
+        sqlite3_bind_double(stmt, 8, s.offset_pos_z);
+        sqlite3_bind_double(stmt, 9, s.offset_rot_x);
+        sqlite3_bind_double(stmt, 10, s.offset_rot_y);
+        sqlite3_bind_double(stmt, 11, s.offset_rot_z);
+        sqlite3_bind_double(stmt, 12, s.offset_scale);
     } else {
-        sqlite3_bind_int(stmt, 1, s.slot);
-        sqlite3_bind_int(stmt, 2, s.model_id);
-        sqlite3_bind_int(stmt, 3, s.material_id);
-        sqlite3_bind_int(stmt, 4, s.id);
+        sqlite3_bind_int   (stmt, 1, s.slot);
+        sqlite3_bind_int   (stmt, 2, s.model_id);
+        sqlite3_bind_int   (stmt, 3, s.material_id);
+        sqlite3_bind_text  (stmt, 4, s.bone_name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(stmt, 5, s.offset_pos_x);
+        sqlite3_bind_double(stmt, 6, s.offset_pos_y);
+        sqlite3_bind_double(stmt, 7, s.offset_pos_z);
+        sqlite3_bind_double(stmt, 8, s.offset_rot_x);
+        sqlite3_bind_double(stmt, 9, s.offset_rot_y);
+        sqlite3_bind_double(stmt, 10, s.offset_rot_z);
+        sqlite3_bind_double(stmt, 11, s.offset_scale);
+        sqlite3_bind_int   (stmt, 12, s.id);
     }
     bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
     if (ok) {
@@ -1409,6 +1459,16 @@ void MediaTab::SaveMeshSlot(sqlite3* db, ActorMeshSlot& s) {
             "[actor-mat] SaveMeshSlot: slot=%s model_id=%d material_id=%d (%s) -> %s\n",
             ActorSlotName(s.slot), s.model_id, s.material_id,
             mat_name.c_str(), ok ? "SAVED" : "DB ERROR");
+        // TEMP DEBUG (Gremlin Helm-never-draws investigation, point 1 — confirms
+        // whether bone_name/offsets actually reach the DB on Save, or the row
+        // saved has an empty bone_name (e.g. combo selection never wrote to s).
+        std::fprintf(stderr,
+            "[mesh-attach-dbg] SaveMeshSlot: id=%d slot=%d bone_name='%s' "
+            "offset_pos=(%.2f,%.2f,%.2f) offset_rot=(%.1f,%.1f,%.1f) offset_scale=%.2f -> %s\n",
+            s.id, s.slot, s.bone_name.c_str(),
+            s.offset_pos_x, s.offset_pos_y, s.offset_pos_z,
+            s.offset_rot_x, s.offset_rot_y, s.offset_rot_z, s.offset_scale,
+            ok ? "SAVED" : "DB ERROR");
     }
 
     // Replace per-submesh material overrides (DELETE + INSERT, idempotent).
@@ -3118,6 +3178,40 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                         dirtyActorDef_ = true;
                     if (ComboId("Model", s.model_id, modelList))
                         dirtyActorDef_ = true;
+
+                    // Rigid bone attachment — only meaningful for non-Body
+                    // slots. This is a fixed-at-authoring-time attachment
+                    // (independent of the item/equipment socket system below
+                    // in this same editor — see ActorMeshSlot::bone_name doc,
+                    // media.h). Bone names come from the currently loaded
+                    // preview model (slot 0/Body) — same source the Socket
+                    // Bindings table further down uses — just as a list of
+                    // options for this combo, no runtime code shared.
+                    if (s.slot != 0) {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Rigid bone attachment:");
+                        std::vector<std::string> slot_bone_names;
+                        if (preview_ && preview_init_ok_)
+                            slot_bone_names = preview_->GetModel().BoneNames();
+                        if (slot_bone_names.empty())
+                            ImGui::TextDisabled(
+                                "Bone list unavailable — ensure the Body slot is loaded in the preview.");
+                        if (ui::SearchableComboString("Bone", s.bone_name, slot_bone_names, "(none — slot not drawn)"))
+                            dirtyActorDef_ = true;
+                        float pos[3] = {s.offset_pos_x, s.offset_pos_y, s.offset_pos_z};
+                        if (ImGui::DragFloat3("Offset Pos", pos, 0.01f, -100.f, 100.f, "%.2f")) {
+                            s.offset_pos_x = pos[0]; s.offset_pos_y = pos[1]; s.offset_pos_z = pos[2];
+                            dirtyActorDef_ = true;
+                        }
+                        float rot[3] = {s.offset_rot_x, s.offset_rot_y, s.offset_rot_z};
+                        if (ImGui::DragFloat3("Offset Rot", rot, 1.f, -180.f, 180.f, "%.0f")) {
+                            s.offset_rot_x = rot[0]; s.offset_rot_y = rot[1]; s.offset_rot_z = rot[2];
+                            dirtyActorDef_ = true;
+                        }
+                        if (ImGui::DragFloat("Offset Scale", &s.offset_scale, 0.01f, 0.01f, 10.f, "%.2f"))
+                            dirtyActorDef_ = true;
+                    }
+
                     ImGui::Separator();
                     ImGui::TextUnformatted("Global material (all parts):");
                     if (ComboId("##mat_global", s.material_id, matList, "(embedded)"))
@@ -3544,6 +3638,24 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
     if (!preview_init_ok_) {
         ImGui::TextDisabled("Preview unavailable (shader load failed).");
     } else if (selActorDef_ >= 0 && selActorDef_ < (int)actor_defs_.size()) {
+        // TEMP DEBUG (Gremlin Helm-not-drawn investigation, remove after diagnosis):
+        // dump every mesh slot this actor def actually has, so we can see
+        // whether the Helm slot even exists in editActorDef_ at this point
+        // and what model_id it points at.
+        {
+            std::fprintf(stderr, "[preview-slots] actor_def=%d slot_count=%zu\n",
+                         editActorDef_.id, editActorDef_.mesh_slots.size());
+            for (const auto& s : editActorDef_.mesh_slots) {
+                const MediaModel* sm = nullptr;
+                for (auto& m : models_) if (m.id == s.model_id) { sm = &m; break; }
+                std::fprintf(stderr,
+                    "[preview-slots]   slot=%d (%s) model_id=%d model_path='%s' found=%s\n",
+                    s.slot, ActorSlotName(s.slot), s.model_id,
+                    sm ? sm->file_path.c_str() : "(none)",
+                    sm ? "yes" : "no");
+            }
+        }
+
         // Resolve the Body slot mesh + material from the edit state.
         const ActorMeshSlot* body = nullptr;
         for (auto& s : editActorDef_.mesh_slots) {
@@ -3552,6 +3664,16 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         if (!body && !editActorDef_.mesh_slots.empty())
             body = &editActorDef_.mesh_slots.front();
 
+        // TEMP DEBUG (Gremlin Helm-not-drawn investigation, remove after diagnosis):
+        // this is the ONLY slot this function ever loads/submits to preview_ —
+        // every other slot in editActorDef_.mesh_slots (Helm included) is
+        // simply never looked at again below. Logging this makes that
+        // explicit rather than inferred from reading the code.
+        std::fprintf(stderr,
+            "[preview-slots] SUBMITTED-TO-DRAW slot=%d (%s) -- all other slots SKIPPED "
+            "(this preview only ever draws one slot)\n",
+            body ? body->slot : -1, body ? ActorSlotName(body->slot) : "(none)");
+
         if (!body) {
             preview_->Clear();
             ImGui::TextDisabled("Add a Body slot to see the actor.");
@@ -3559,13 +3681,23 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
             const MediaModel* mdl = nullptr;
             for (auto& m : models_) if (m.id == body->model_id) { mdl = &m; break; }
 
+            // TEMP DEBUG (Gremlin Helm-not-drawn investigation, remove after diagnosis):
+            std::fprintf(stderr,
+                "[preview-slots] body model resolve: model_id=%d -> %s (path='%s')\n",
+                body->model_id, mdl ? "FOUND" : "NOT FOUND",
+                mdl ? mdl->file_path.c_str() : "");
+
             if (!mdl || mdl->file_path.empty()) {
                 preview_->Clear();
                 ImGui::TextDisabled("Body slot points to an invalid model.");
             } else {
                 bool model_changed = preview_->CurrentPath() != mdl->file_path;
                 if (model_changed) {
-                    preview_->LoadModel(mdl->file_path);
+                    // TEMP DEBUG (Gremlin Helm-not-drawn investigation, remove after diagnosis):
+                    bool loaded_ok = preview_->LoadModel(mdl->file_path);
+                    std::fprintf(stderr,
+                        "[preview-slots] LoadModel('%s') -> %s\n",
+                        mdl->file_path.c_str(), loaded_ok ? "OK" : "FAILED");
                     preview_last_material_id_ = -1;    // force re-apply below
                     preview_last_model_id_    = -1;    // force re-apply mapping
                 }
@@ -3693,6 +3825,58 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                     }
                     preview_->SetSocketPreview(std::move(sockEntries));
                     preview_->SetSocketPreviewVisible(show_socket_preview_);
+                }
+
+                // Rigid mesh-slot attachments (non-Body slots with a bone_name
+                // configured) — independent of the socket overlay above and of
+                // the Items tab's SetAttachment; a third, parallel consumer of
+                // the same bone-attach primitive. body->slot is excluded since
+                // it's already the primary preview_ actor, not an attachment.
+                {
+                    // TEMP DEBUG (Gremlin Helm-never-draws investigation, point 5 —
+                    // confirms this block actually runs every frame the Actor Def
+                    // editor is drawn, and dumps every non-Body slot considered so
+                    // we can see exactly which ones get dropped (bone_name empty vs
+                    // model not found) before ever reaching SetMeshSlotAttachments.
+                    std::fprintf(stderr,
+                        "[mesh-attach-dbg] preview block: actor_def=%d mesh_slots=%zu\n",
+                        editActorDef_.id, editActorDef_.mesh_slots.size());
+                    std::vector<PreviewViewport::MeshSlotAttachment> meshAttachments;
+                    for (const auto& s : editActorDef_.mesh_slots) {
+                        if (s.slot == 0) continue;
+                        if (s.bone_name.empty()) {
+                            std::fprintf(stderr,
+                                "[mesh-attach-dbg]   slot=%d DROPPED (bone_name empty)\n", s.slot);
+                            continue;
+                        }
+                        const MediaModel* smdl = nullptr;
+                        for (auto& m : models_) if (m.id == s.model_id) { smdl = &m; break; }
+                        if (!smdl || smdl->file_path.empty()) {
+                            std::fprintf(stderr,
+                                "[mesh-attach-dbg]   slot=%d bone_name='%s' DROPPED "
+                                "(model_id=%d not found or empty file_path)\n",
+                                s.slot, s.bone_name.c_str(), s.model_id);
+                            continue;
+                        }
+                        std::fprintf(stderr,
+                            "[mesh-attach-dbg]   slot=%d bone_name='%s' model='%s' -> QUEUED\n",
+                            s.slot, s.bone_name.c_str(), smdl->file_path.c_str());
+                        PreviewViewport::MeshSlotAttachment e;
+                        e.model_path    = smdl->file_path;
+                        e.bone_name     = s.bone_name;
+                        e.offset_pos_x  = s.offset_pos_x;
+                        e.offset_pos_y  = s.offset_pos_y;
+                        e.offset_pos_z  = s.offset_pos_z;
+                        e.offset_rot_x  = s.offset_rot_x;
+                        e.offset_rot_y  = s.offset_rot_y;
+                        e.offset_rot_z  = s.offset_rot_z;
+                        e.offset_scale  = s.offset_scale;
+                        meshAttachments.push_back(std::move(e));
+                    }
+                    std::fprintf(stderr,
+                        "[mesh-attach-dbg] preview block: calling SetMeshSlotAttachments with %zu entr%s\n",
+                        meshAttachments.size(), meshAttachments.size() == 1 ? "y" : "ies");
+                    preview_->SetMeshSlotAttachments(std::move(meshAttachments));
                 }
 
                 // Build action entries so the preview dropdown lists actions

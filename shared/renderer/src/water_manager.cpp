@@ -191,32 +191,6 @@ void WaterManager::Render(const glm::mat4& view, const glm::mat4& proj, const Pi
                            float rippleHeightScale, float rippleFoamThresholdLow, float rippleFoamThresholdHigh) {
     if (water_.empty() || !vao_) return;
 
-    // [DIAGNOSTIC] Investigating "distant water still rippling" — confirms
-    // (a) how many water instances exist this session (a single huge
-    // instance vs. multiple small ones changes the diagnosis, see the
-    // investigation report) and (b) whether Contains()/u_hasRipple is
-    // actually 0 for every instance except the correct one, isolating a
-    // possible per-instance gating bug from the GL_CLAMP_TO_EDGE
-    // border-leak hypothesis (ripple_sim.cpp:27-28). Logged once every ~2s
-    // (not every frame) to avoid flooding stderr.
-    {
-        static float lastLogTime = -1000.0f;
-        if (timeSeconds - lastLogTime > 2.0f) {
-            lastLogTime = timeSeconds;
-            std::fprintf(stderr, "[water-ripple] frame check: %zu water instance(s), playerPos=(%.2f,%.2f,%.2f)\n",
-                         water_.size(), playerPos.x, playerPos.y, playerPos.z);
-            for (const auto& w : water_) {
-                bool windowOverlap = rippleSim != nullptr &&
-                    RippleWindowOverlapsWater(w, rippleSim->WindowCenter(), rippleSim->WindowSize());
-                std::fprintf(stderr,
-                    "[water-ripple]   instance pos=(%.1f,%.1f,%.1f) scale=(%.1f,%.1f) "
-                    "WindowOverlap=%s -> u_hasRipple=%d\n",
-                    w.pos.x, w.pos.y, w.pos.z, w.scale.x, w.scale.y,
-                    windowOverlap ? "true" : "false", windowOverlap ? 1 : 0);
-            }
-        }
-    }
-
     auto it = Shader::shaders.find("water");
     if (it == Shader::shaders.end() || !it->second) return;
     auto& shader = *it->second;

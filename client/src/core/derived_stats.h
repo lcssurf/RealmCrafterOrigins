@@ -63,6 +63,15 @@ struct DerivedStats {
     int32_t CCResistanceValue = 0;
 
     int32_t DamageReductionFlat = 0;
+
+    // NOT computed by ComputeDerivedStats()/formulas below — unlike every
+    // other field here, AttackRange isn't derived from primary stats, it's
+    // resolved server-side from the equipped weapon (world.ResolveAttackRange,
+    // server/internal/net/client.go) and arrives purely over the network as
+    // a trailing field on PFullStats (see main.cpp's kPFullStats parse).
+    // 0.0f = not yet received (e.g. before the first PFullStats snapshot
+    // after login) — callers must treat 0 as "unknown", not "melee range".
+    float AttackRange = 0.0f;
 };
 
 constexpr int32_t healthBase = 100;

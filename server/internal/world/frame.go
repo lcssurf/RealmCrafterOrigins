@@ -151,6 +151,21 @@ func AppearanceBytes(app *Appearance) []byte {
 		} else {
 			p.u8(0)
 		}
+		// Rigid bone attachment (migrateV52) — independent of the socket
+		// section below (appendSockets/AppearanceSockets is the item/
+		// equipment attachment path, untouched by this field).
+		p.str(m.BoneName)
+		p.f32(m.OffsetPos[0])
+		p.f32(m.OffsetPos[1])
+		p.f32(m.OffsetPos[2])
+		p.f32(m.OffsetRot[0])
+		p.f32(m.OffsetRot[1])
+		p.f32(m.OffsetRot[2])
+		if m.OffsetScale == 0 {
+			p.f32(1.0)
+		} else {
+			p.f32(m.OffsetScale)
+		}
 		nm := len(m.MaterialMap)
 		if nm > 255 {
 			nm = 255
@@ -208,6 +223,8 @@ func AppearanceSockets(app *Appearance) []byte {
 //     slot u8, model_path str, scale f32,
 //     albedo str, normal str, orm str,
 //     albedo_r f32, albedo_g f32, albedo_b f32, roughness f32, metallic f32,
+//     black_cutout u8,
+//     bone_name str, offset_pos[3] f32, offset_rot[3] f32, offset_scale f32,
 //     num_ai_mats u8, for each: ai_name str + PBR paths + factors,
 //   binding_count u16,
 //   for each binding:
@@ -269,6 +286,20 @@ func NewActorPayload(a *Actor) []byte {
 			p.u8(1)
 		} else {
 			p.u8(0)
+		}
+		// Rigid bone attachment (migrateV52) — independent of appendSockets
+		// below (item/equipment attachment path, untouched by this field).
+		p.str(m.BoneName)
+		p.f32(m.OffsetPos[0])
+		p.f32(m.OffsetPos[1])
+		p.f32(m.OffsetPos[2])
+		p.f32(m.OffsetRot[0])
+		p.f32(m.OffsetRot[1])
+		p.f32(m.OffsetRot[2])
+		if m.OffsetScale == 0 {
+			p.f32(1.0)
+		} else {
+			p.f32(m.OffsetScale)
 		}
 
 		// Per-aiMaterial mapping — paint multi-material meshes correctly

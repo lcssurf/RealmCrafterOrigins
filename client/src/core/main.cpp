@@ -999,6 +999,17 @@ int main() {
         // mapping into concrete texture paths. Applied on the client via
         // Actor::OverrideMaterialsByName so multi-material meshes paint correctly.
         std::vector<WorldAiMat> material_map;
+
+        // Rigid bone attachment (server migrateV52) — set only for non-Body
+        // slots authored with a bone target in the GUE (e.g. the Gremlin's
+        // Helm/eyes mesh). Empty bone_name = legacy: this slot is not loaded/
+        // drawn beyond slot 0, same as before this field existed. Independent
+        // of the item/equipment socket system (WorldSocket below) — this is
+        // NOT read by the B5 equipped-weapon path.
+        std::string bone_name;
+        float offset_pos[3] = {0.f, 0.f, 0.f};
+        float offset_rot[3] = {0.f, 0.f, 0.f};
+        float offset_scale  = 1.f;
     };
     struct WorldAnim {
         std::string action;
@@ -1026,6 +1037,24 @@ int main() {
         float scale   = 1.f;
     };
 
+    // A single rigidly-attached extra mesh slot (non-Body, bone_name set),
+    // resolved once at lazy-init time and re-positioned every frame off the
+    // body actor's current bone transform. Independent of the item/equipment
+    // socket system (WorldSocket/equipped_item/B5 below) — a parallel,
+    // unrelated consumer of the same GetBoneWorldTransform + SubmitWithMatrix
+    // primitives.
+    struct WorldMeshAttachment {
+        std::unique_ptr<rco::renderer::Actor> actor;
+        std::string bone_name;
+        float offset_pos[3] = {0.f, 0.f, 0.f};
+        float offset_rot[3] = {0.f, 0.f, 0.f};
+        float offset_scale  = 1.f;
+        WorldMeshAttachment() = default;
+        WorldMeshAttachment(WorldMeshAttachment&&) = default;
+        WorldMeshAttachment& operator=(WorldMeshAttachment&&) = default;
+        WorldMeshAttachment(const WorldMeshAttachment&) = delete;
+        WorldMeshAttachment& operator=(const WorldMeshAttachment&) = delete;
+    };
     struct WorldActorEntry {
         // Smoothed/rendered transform used across client systems.
         float x = 0, y = 0, z = 0, yaw = 0;
@@ -1052,6 +1081,11 @@ int main() {
         // render when renderer_ready is true. nullptr = fall back to the
         // shared player_actor model.
         std::unique_ptr<rco::renderer::Actor> actor;
+
+        // Rigid mesh-slot attachments, built alongside `actor` in the lazy-
+        // init below (main.cpp's NPC render loop) from any `meshes` entries
+        // with slot != 0 and a non-empty bone_name.
+        std::vector<WorldMeshAttachment> extra_meshes;
 
         // Animation state machine
         rco::anim::AnimController anim_ctrl;
@@ -1108,6 +1142,120 @@ int main() {
 
     rco::renderer::Engine engine;
     std::unique_ptr<rco::renderer::Pipeline> pipeline;
+
+    // Rigid mesh-slot attachments for the local player (parallel to
+    // WorldActorEntry::extra_meshes for NPCs). Rebuilt whenever player_actor
+    // is (re)initialized from player_meshes.
+    std::vector<WorldMeshAttachment> player_extra_mesh_actors;
+
+    // Rebuilds a body actor's rigid mesh-slot attachments from its resolved
+    // mesh list: for each non-Body slot with a bone_name configured, loads a
+    // separate Actor for that slot's model. Slots with no bone_name (legacy)
+    // are skipped entirely — same as before this feature existed. This is a
+    // THIRD, independent consumer of GetBoneWorldTransform/SubmitWithMatrix,
+    // parallel to (and untouched by) the Items tab equivalent in the GUE and
+    // the B5 equipped-weapon path (equipped_item/player_weapon_actor) below —
+    // neither of those is read or modified by this lambda.
+    auto rebuild_extra_mesh_actors =
+        [&engine](std::vector<WorldMeshAttachment>& out, const std::vector<WorldMesh>& meshes) {
+            out.clear();
+            // TEMP DEBUG (Gremlin Helm-never-draws investigation, point 3 —
+            // confirms whether the slot's model actually loaded on the client,
+            // not just the GUE preview) — dumps every candidate mesh considered
+            // and why it was skipped, if it was.
+            for (const auto& wm : meshes) {
+                if (wm.slot == 0) continue;
+                if (wm.bone_name.empty() || wm.model_path.empty()) {
+                    std::fprintf(stderr,
+                        "[mesh-attach-dbg] rebuild_extra_mesh_actors: slot=%d SKIPPED "
+                        "(bone_name='%s' model_path='%s')\n",
+                        wm.slot, wm.bone_name.c_str(), wm.model_path.c_str());
+                    continue;
+                }
+                WorldMeshAttachment att;
+                att.actor = std::make_unique<rco::renderer::Actor>();
+                att.actor->Init("shaders", wm.model_path.c_str(), &engine.materials());
+                att.bone_name     = wm.bone_name;
+                att.offset_pos[0] = wm.offset_pos[0];
+                att.offset_pos[1] = wm.offset_pos[1];
+                att.offset_pos[2] = wm.offset_pos[2];
+                att.offset_rot[0] = wm.offset_rot[0];
+                att.offset_rot[1] = wm.offset_rot[1];
+                att.offset_rot[2] = wm.offset_rot[2];
+                att.offset_scale  = wm.offset_scale;
+                std::fprintf(stderr,
+                    "[mesh-attach-dbg] rebuild_extra_mesh_actors: slot=%d bone='%s' "
+                    "model_path='%s' -> IsLoaded=%s\n",
+                    wm.slot, wm.bone_name.c_str(), wm.model_path.c_str(),
+                    att.actor->IsLoaded() ? "true" : "false");
+                if (att.actor->IsLoaded()) engine.MarkMaterialsDirty();
+                out.push_back(std::move(att));
+            }
+        };
+
+    // Submits every rigid mesh-slot attachment in `attachments`, positioned
+    // off `body_actor`'s CURRENT bone transform this frame. Self-contained —
+    // does not touch equipped_item/player_sockets/SetAttachment.
+    auto submit_extra_mesh_actors =
+        [](std::vector<WorldMeshAttachment>& attachments,
+           const rco::renderer::Actor& body_actor,
+           rco::renderer::Pipeline& pipeline_ref) {
+            // TEMP DEBUG (Gremlin Helm-never-draws investigation, points 2+4):
+            // throttled to ~once/2s (not every frame) to avoid flooding stderr —
+            // same pattern used in the GUE preview's equivalent loop.
+            static double s_lastLog = -1000.0;
+            double nowT = glfwGetTime();
+            bool doLog = (nowT - s_lastLog > 2.0);
+            if (doLog) s_lastLog = nowT;
+            for (auto& att : attachments) {
+                if (!att.actor || !att.actor->IsLoaded()) {
+                    if (doLog)
+                        std::fprintf(stderr,
+                            "[mesh-attach-dbg] submit-skip: bone='%s' has_actor=%s loaded=%s\n",
+                            att.bone_name.c_str(), att.actor ? "true" : "false",
+                            (att.actor && att.actor->IsLoaded()) ? "true" : "false");
+                    continue;
+                }
+                glm::mat4 bone_world;
+                bool boneFound = body_actor.GetBoneWorldTransform(att.bone_name, &bone_world);
+                if (doLog)
+                    std::fprintf(stderr,
+                        "[mesh-attach-dbg] point2: GetBoneWorldTransform('%s') on body actor -> %s\n",
+                        att.bone_name.c_str(), boneFound ? "TRUE" : "FALSE (bone not found in body model)");
+                if (!boneFound) continue;
+
+                glm::mat4 body_matrix(1.f);
+                body_matrix = glm::translate(body_matrix,
+                    body_actor.position + glm::vec3(0.f, body_actor.y_offset, 0.f));
+                body_matrix = glm::rotate(body_matrix, glm::radians(body_actor.yaw), glm::vec3(0.f, 1.f, 0.f));
+                if (body_actor.yaw_offset != 0.f)
+                    body_matrix = glm::rotate(body_matrix, glm::radians(body_actor.yaw_offset), glm::vec3(0.f, 1.f, 0.f));
+                body_matrix = glm::scale(body_matrix, glm::vec3(body_actor.scale));
+
+                glm::mat4 local(1.f);
+                local = glm::translate(local,
+                    glm::vec3(att.offset_pos[0], att.offset_pos[1], att.offset_pos[2]));
+                local = glm::rotate(local, glm::radians(att.offset_rot[0]), glm::vec3(1.f, 0.f, 0.f));
+                local = glm::rotate(local, glm::radians(att.offset_rot[1]), glm::vec3(0.f, 1.f, 0.f));
+                local = glm::rotate(local, glm::radians(att.offset_rot[2]), glm::vec3(0.f, 0.f, 1.f));
+                local = glm::scale(local, glm::vec3(att.offset_scale));
+
+                glm::mat4 world = body_matrix * bone_world * local;
+                if (doLog) {
+                    glm::vec3 worldPos(world[3]);
+                    bool hasNaN = std::isnan(worldPos.x) || std::isnan(worldPos.y) || std::isnan(worldPos.z);
+                    std::fprintf(stderr,
+                        "[mesh-attach-dbg] point4: about to SubmitWithMatrix bone='%s' "
+                        "world_pos=(%.3f,%.3f,%.3f) hasNaN=%s\n",
+                        att.bone_name.c_str(), worldPos.x, worldPos.y, worldPos.z,
+                        hasNaN ? "true" : "false");
+                }
+                att.actor->SubmitWithMatrix(pipeline_ref, world);
+                if (doLog)
+                    std::fprintf(stderr, "[mesh-attach-dbg] point4: SubmitWithMatrix CALLED for bone='%s'\n",
+                                 att.bone_name.c_str());
+            }
+        };
 
     rco::ui::Chat            chat;
     rco::ui::Inventory       inventory;
@@ -1414,6 +1562,13 @@ int main() {
     // Combat state
     uint32_t combat_target     = 0;
     double   last_attack_sent  = 0.0;
+    // Sticky "approach in progress" latch, owned here (not PlayerController —
+    // see player_controller.h's approach_requested doc). Set true ONLY by the
+    // explicit Attack-button handler (LMB "attack_click" block below), never
+    // by the passive 0.85s auto-attack resend. Cleared on PlayerController::
+    // Update()'s Result::approach_arrived / Result::approach_cancelled_by_input,
+    // and wherever combat_target itself is cleared (target lost/deselected).
+    bool     combat_approach_active = false;
     bool     player_dead       = false;
     glm::mat4 view_mat{1.f}, proj_mat{1.f};
     bool      dodge_roll_active = false;
@@ -1781,6 +1936,15 @@ int main() {
                         wm.roughness  = r.ReadF32();
                         wm.metallic   = r.ReadF32();
                         wm.black_cutout = (r.ReadU8() != 0);
+                        // Rigid bone attachment (server migrateV52).
+                        wm.bone_name      = r.ReadString();
+                        wm.offset_pos[0]  = r.ReadF32();
+                        wm.offset_pos[1]  = r.ReadF32();
+                        wm.offset_pos[2]  = r.ReadF32();
+                        wm.offset_rot[0]  = r.ReadF32();
+                        wm.offset_rot[1]  = r.ReadF32();
+                        wm.offset_rot[2]  = r.ReadF32();
+                        wm.offset_scale   = r.ReadF32();
                         uint8_t nmm   = r.ReadU8();
                         for (uint8_t j = 0; j < nmm && r.OK(); ++j) {
                             WorldAiMat wam;
@@ -1979,6 +2143,7 @@ int main() {
                 world_items.clear();
                 shop.open = false;
                 combat_target = 0;
+                combat_approach_active = false;
                 special_parry_telegraphs.clear();
                 parry_judgements.clear();
                 active_character_readability_tuning = character_readability_tuning;
@@ -2031,6 +2196,11 @@ int main() {
                     std::string albedo, normal, orm;
                     float       ar, ag, ab, roughness, metallic;
                     bool        black_cutout = false;
+                    // Rigid bone attachment (server migrateV52).
+                    std::string bone_name;
+                    float       offset_pos[3] = {0.f, 0.f, 0.f};
+                    float       offset_rot[3] = {0.f, 0.f, 0.f};
+                    float       offset_scale  = 1.f;
                     std::vector<IncomingAiMat> material_map;
                 };
                 struct IncomingAnim {
@@ -2058,6 +2228,16 @@ int main() {
                     m.roughness  = r.ReadF32();
                     m.metallic   = r.ReadF32();
                     m.black_cutout = (r.ReadU8() != 0);
+                    // Rigid bone attachment (server migrateV52) — independent
+                    // of the socket section parsed further below.
+                    m.bone_name      = r.ReadString();
+                    m.offset_pos[0]  = r.ReadF32();
+                    m.offset_pos[1]  = r.ReadF32();
+                    m.offset_pos[2]  = r.ReadF32();
+                    m.offset_rot[0]  = r.ReadF32();
+                    m.offset_rot[1]  = r.ReadF32();
+                    m.offset_rot[2]  = r.ReadF32();
+                    m.offset_scale   = r.ReadF32();
                     uint8_t nmm  = r.ReadU8();
                     m.material_map.reserve(nmm);
                     for (uint8_t j = 0; j < nmm && r.OK(); ++j) {
@@ -2140,6 +2320,10 @@ int main() {
                         wm.roughness    = m.roughness;
                         wm.metallic     = m.metallic;
                         wm.black_cutout = m.black_cutout;
+                        wm.bone_name    = std::move(m.bone_name);
+                        wm.offset_pos[0] = m.offset_pos[0]; wm.offset_pos[1] = m.offset_pos[1]; wm.offset_pos[2] = m.offset_pos[2];
+                        wm.offset_rot[0] = m.offset_rot[0]; wm.offset_rot[1] = m.offset_rot[1]; wm.offset_rot[2] = m.offset_rot[2];
+                        wm.offset_scale  = m.offset_scale;
                         wm.material_map.reserve(m.material_map.size());
                         for (auto& am : m.material_map) {
                             WorldAiMat wam;
@@ -2258,6 +2442,7 @@ int main() {
                             player_anim_ctrl.SetClipDuration(
                                 wa.action, player_actor.ClipDuration(wa.action));
                         }
+                        rebuild_extra_mesh_actors(player_extra_mesh_actors, player_meshes);
                         engine.MarkMaterialsDirty();
                         camera.SetActorHeight(player_actor.ModelHeight());
                     }
@@ -2293,6 +2478,10 @@ int main() {
                     wm.roughness    = m.roughness;
                     wm.metallic     = m.metallic;
                     wm.black_cutout = m.black_cutout;
+                    wm.bone_name    = std::move(m.bone_name);
+                    wm.offset_pos[0] = m.offset_pos[0]; wm.offset_pos[1] = m.offset_pos[1]; wm.offset_pos[2] = m.offset_pos[2];
+                    wm.offset_rot[0] = m.offset_rot[0]; wm.offset_rot[1] = m.offset_rot[1]; wm.offset_rot[2] = m.offset_rot[2];
+                    wm.offset_scale  = m.offset_scale;
                     wm.material_map.reserve(m.material_map.size());
                     for (auto& am : m.material_map) {
                         WorldAiMat wam;
@@ -2584,7 +2773,9 @@ int main() {
                         glm::dot(dodge_roll_pending_dir, dodge_roll_pending_dir) > 0.0001f) {
                         chosen_dir = glm::normalize(dodge_roll_pending_dir);
                     } else {
-                        float yr = glm::radians(player.yaw);
+                        // camera_yaw, not player.yaw — same reasoning as
+                        // resolve_dodge_dir above (main.cpp's mouse-orbit block).
+                        float yr = glm::radians(camera.GetYaw());
                         chosen_dir = {-std::sin(yr), -std::cos(yr)}; // fallback: forward roll
                     }
                     dodge_roll_dir = chosen_dir;
@@ -2784,6 +2975,7 @@ int main() {
                     player_dead    = true;
                     player.health  = 0;
                     combat_target  = 0;
+                    combat_approach_active = false;
                     dodge_roll_active = false;
                     dodge_roll_pending = false;
                     if (player_anim_ctrl.IsReady()) {
@@ -2823,7 +3015,10 @@ int main() {
                             ++it;
                         }
                     }
-                    if (combat_target == dead_rid) combat_target = 0;
+                    if (combat_target == dead_rid) {
+                        combat_target = 0;
+                        combat_approach_active = false;
+                    }
                     audio.PlaySfx(rco::audio::SfxId::NPCDeath);
                 }
                 break;
@@ -3018,6 +3213,13 @@ int main() {
                 player.derived.CCChanceValue     = static_cast<int32_t>(r.ReadU32());
                 player.derived.CCResistanceValue = static_cast<int32_t>(r.ReadU32());
                 player.derived.DamageReductionFlat = static_cast<int32_t>(r.ReadU32());
+
+                // Trailing field, NOT part of the 34-field DerivedStats set
+                // above — server appends it after DamageReductionFlat (see
+                // sendFullStats, client.go). Must stay last/in this exact
+                // position, matching the server's WriteFloat32(attackRange)
+                // at the end of the same packet.
+                player.derived.AttackRange = r.ReadF32();
 
                 if (!r.OK()) break;
 
@@ -4097,6 +4299,7 @@ int main() {
                         player_anim_ctrl.SetClipDuration(
                             wa.action, player_actor.ClipDuration(wa.action));
                     }
+                    rebuild_extra_mesh_actors(player_extra_mesh_actors, player_meshes);
                     engine.MarkMaterialsDirty();
                     initial_material_rebuild_pending_log = true;
                     camera.SetActorHeight(player_actor.ModelHeight());
@@ -4559,7 +4762,16 @@ int main() {
                         const double held_s = now - ms_rmb_down_time;
                         if (can_send && held_s >= kRMBHoldThresholdSec) {
                             auto resolve_dodge_dir = [&]() -> glm::vec2 {
-                                const float yr = glm::radians(player.yaw);
+                                // Uses camera_yaw, not player.yaw: player.yaw is now the
+                                // character's own (movement-smoothed) facing, which can
+                                // diverge from the camera at any time since the hard
+                                // camera/body yaw coupling was removed (see the "REMOVED:
+                                // player.yaw = camera.GetYaw()" note below). A dodge is a
+                                // camera-relative strafe like WASD, so it must share WASD's
+                                // basis (camera_yaw) or a lateral dodge picks up an
+                                // unwanted forward/back component whenever the body isn't
+                                // currently facing the camera direction.
+                                const float yr = glm::radians(camera.GetYaw());
                                 const glm::vec2 fdir{-std::sin(yr), -std::cos(yr)};
                                 const glm::vec2 rdir{std::cos(yr), -std::sin(yr)};
 
@@ -4630,7 +4842,18 @@ int main() {
                     if (!action_cursor_unlocked && !io_state.WantCaptureMouse) {
                         camera.ApplyMouseDelta((float)(cx - ms_prev_x),
                                                (float)(cy - ms_prev_y));
-                        player.yaw = camera.GetYaw();
+                        // REMOVED: player.yaw = camera.GetYaw();
+                        // This was the root cause of "character always faces
+                        // the camera / A-D slides without turning" — camera
+                        // and player facing were hard-locked together every
+                        // frame. Camera now orbits fully independently;
+                        // player.yaw is smoothed toward the movement
+                        // direction inside PlayerController::Update() (see
+                        // player_controller.cpp's turn-to-face block), which
+                        // already receives camera.GetYaw() below as the
+                        // WASD-relative-to-camera basis — the camera's yaw
+                        // still feeds player facing, just indirectly via
+                        // movement intent instead of a direct 1:1 sync.
                     }
                     ms_prev_x = cx;
                     ms_prev_y = cy;
@@ -4647,7 +4870,40 @@ int main() {
                     bool rmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
                     bool lmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
 
-                    player_ctrl.Update(w, dt, player_dead, player, terrain, rmb_held, lmb_held);
+                    // Turn-to-face-target: "in the attack window" = the
+                    // Attack animation is the actor's currently active
+                    // state (same CurrentAction() comparison already used
+                    // elsewhere, e.g. main.cpp's Walk/Run submit checks).
+                    // target_pos resolves combat_target's RENDERED position
+                    // (world_actors' smoothed x/y/z, same lookup pattern as
+                    // the target ring/nameplate below) — std::nullopt when
+                    // there's no target selected or it's no longer present
+                    // (died/left range), which PlayerController treats as
+                    // "no override, behave normally."
+                    bool is_attacking = player_anim_ctrl.CurrentAction() == "Attack";
+                    std::optional<glm::vec3> attack_target_pos;
+                    if (combat_target != 0) {
+                        auto tgt_it = world_actors.find(combat_target);
+                        if (tgt_it != world_actors.end()) {
+                            attack_target_pos = glm::vec3(tgt_it->second.x, tgt_it->second.y, tgt_it->second.z);
+                        }
+                    }
+
+                    rco::PlayerController::Result pc_result = player_ctrl.Update(
+                        w, dt, player_dead, player, terrain,
+                        camera.GetYaw(), rmb_held, lmb_held,
+                        is_attacking, attack_target_pos, combat_approach_active);
+                    // combat_approach_active is a sticky latch this file owns (see
+                    // its declaration doc) — PlayerController only ever reports
+                    // outcomes, never persists the flag itself. Clear on either:
+                    // approach reached AttackRange (arrived — passive auto-attack
+                    // timer takes over) or WASD/click-to-move preempted it this
+                    // frame (must not silently resume when the player lets go of
+                    // WASD; only another explicit Attack-button press can restart
+                    // it).
+                    if (pc_result.approach_arrived || pc_result.approach_cancelled_by_input) {
+                        combat_approach_active = false;
+                    }
                 }
 
                 // Directional dodge roll impulse (authoritative start from PCombatEvent).
@@ -5137,6 +5393,7 @@ int main() {
                                 e.anims.size(), a->model().ClipCount());
                         }
                         e.actor = std::move(a);
+                        rebuild_extra_mesh_actors(e.extra_meshes, e.meshes);
                     }
 
                     // Y is server-authoritative — the GUE places NPCs on
@@ -5193,10 +5450,12 @@ int main() {
                         e.actor->position = pos;
                         e.actor->yaw      = e.yaw;
                         e.anim_ctrl.Submit(*e.actor, *pipeline);
+                        submit_extra_mesh_actors(e.extra_meshes, *e.actor, *pipeline);
                     } else {
                         player_actor.position = pos;
                         player_actor.yaw      = e.yaw;
                         player_anim_ctrl.Submit(player_actor, *pipeline);
+                        submit_extra_mesh_actors(player_extra_mesh_actors, player_actor, *pipeline);
                     }
                 }
 
@@ -5630,6 +5889,22 @@ int main() {
                 // ms_lmb_click is set by the orbit section above: true for one
                 // frame when LMB is pressed.
                 {
+                    // Snapshot before this block's branches consume/clear ms_lmb_click,
+                    // for the explicit-Attack handler below (Mouse1/"Attack" binding,
+                    // main.cpp:1928) — reuses the same LMB-click edge as target
+                    // selection instead of a second input path.
+                    const bool attack_click = ms_lmb_click && !player_dead
+                        && !skill_loadout_open && !ImGui::GetIO().WantCaptureMouse
+                        && spellbar.pending_ground_spell == 0;
+                    // Set only by the combat-select branch below (best_id is a
+                    // hostile/attackable actor, not a dialog NPC) — distinguishes
+                    // "this click just (re)confirmed combat_target" from
+                    // combat_target merely still holding a stale value from an
+                    // earlier click (e.g. this click hit a dialog NPC instead).
+                    // The Attack handler below must require this, not just
+                    // combat_target != 0, or it fires on a leftover target.
+                    bool this_click_confirmed_combat_target = false;
+
                     // Ground-AoE targeting: resolve mouse ray to world XZ plane.
                     float ground_cursor_x = 0.f, ground_cursor_z = 0.f;
                     if (spellbar.pending_ground_spell != 0) {
@@ -5690,12 +5965,30 @@ int main() {
                         ms_lmb_click = false;
                     } else
                     if (ms_lmb_click && !player_dead && !skill_loadout_open && !ImGui::GetIO().WantCaptureMouse) {
-                        double mx, my;
-                        glfwGetCursorPos(w, &mx, &my);
-                        float best_dist2 = 55.f * 55.f;
-                        uint32_t best_id = 0;
                         float sw = static_cast<float>(window.Width());
                         float sh = static_cast<float>(window.Height());
+                        // Reticle hit-test: screen CENTER, not glfwGetCursorPos. In
+                        // Action mode the cursor is GLFW_CURSOR_DISABLED whenever
+                        // mouselook is engaged (main.cpp:~3949-3953) — in that mode
+                        // GLFW reports an unbounded delta-accumulator, not a real
+                        // screen coordinate, so testing actor screen positions
+                        // against it was comparing against a stale/meaningless
+                        // point (confirmed by [dbg-select] logs: best_dist2 pinned
+                        // at the initial 55*55=3025 threshold, i.e. nothing was
+                        // ever ranked closer than "no hit"). The camera's forward
+                        // direction always projects to the screen center, so the
+                        // center IS the reticle — action-camera-style targeting
+                        // (GW2/similar), not cursor-precision picking.
+                        const float mx = sw * 0.5f;
+                        const float my = sh * 0.5f;
+                        // Generous aim-assist radius, not pixel-precision — accept
+                        // the nearest hostile within this radius of the reticle,
+                        // same spirit as the old 55px cursor-hitbox test but wider
+                        // since the player is aiming with the whole camera, not a
+                        // free-roaming mouse cursor.
+                        constexpr float kAimAssistRadiusPx = 120.f;
+                        float best_dist2 = kAimAssistRadiusPx * kAimAssistRadiusPx;
+                        uint32_t best_id = 0;
                         for (auto& [rid, e] : world_actors) {
                             // Hit-test at the actor's actual Y + 1 (chest height).
                             // Using terrain sample would miss NPCs placed off-ground.
@@ -5704,8 +5997,8 @@ int main() {
                             if (clip.w <= 0.f) continue;
                             float sx2 = (clip.x / clip.w + 1.f) * 0.5f * sw;
                             float sy2 = (1.f - clip.y / clip.w) * 0.5f * sh;
-                            float dx = sx2 - static_cast<float>(mx);
-                            float dy = sy2 - static_cast<float>(my);
+                            float dx = sx2 - mx;
+                            float dy = sy2 - my;
                             float d2 = dx * dx + dy * dy;
                             if (d2 < best_dist2) { best_dist2 = d2; best_id = rid; }
                         }
@@ -5730,13 +6023,59 @@ int main() {
                             } else {
                                 combat_target    = best_id;
                                 pending_interact = 0;
+                                this_click_confirmed_combat_target = true;
                             }
                         } else {
                             combat_target    = 0;
+                            combat_approach_active = false;
                             pending_interact = 0;
                         }
                     }
                     ms_lmb_click = false;  // consumed; reset for next frame
+
+                    // Explicit Attack (Mouse1 press, this frame's click): if this
+                    // SAME click just (re)confirmed a combat target — not merely a
+                    // leftover combat_target from an earlier click — and it's in
+                    // range, force an immediate PAttackActor instead of waiting up
+                    // to the passive auto-attack resend's effective_interval_sec
+                    // below (kCombatDelayMs / AttackSpeedMult). Gating on this_click_confirmed_combat_target
+                    // (rather than combat_target != 0 alone) is what stops a click
+                    // on a dialog NPC (interact branch above, which never sets that
+                    // flag and leaves combat_target untouched) from attacking a
+                    // stale target from a previous combat click. Clicking the same
+                    // already-selected combat target again still sets the flag
+                    // (the combat-select branch always runs when best_id resolves
+                    // to a non-dialog actor, regardless of whether it matches the
+                    // previous combat_target), so re-attacking the current target
+                    // keeps working. Resets last_attack_sent so that resend doesn't
+                    // immediately duplicate this one. Out of range: sets
+                    // combat_approach_active — the ONLY place that latch is set
+                    // (see its declaration doc and player_controller.h) — so
+                    // PlayerController::Update starts walking the player into
+                    // range; the passive 0.85s auto-attack timer picks up the
+                    // attack once there.
+                    if (attack_click && this_click_confirmed_combat_target
+                        && combat_target != 0 && !local_guarding
+                        && !dodge_roll_active && conn.IsConnected()) {
+                        auto atk_it = world_actors.find(combat_target);
+                        if (atk_it != world_actors.end()) {
+                            float adx = atk_it->second.x - player.x;
+                            float adz = atk_it->second.z - player.z;
+                            float arange = player.derived.AttackRange;
+                            bool in_range = arange > 0.f && adx * adx + adz * adz <= arange * arange;
+                            if (in_range) {
+                                rco::net::Writer aw;
+                                aw.WriteU32(combat_target);
+                                conn.SendPacket(rco::net::kPAttackActor, aw);
+                                last_attack_sent = now;
+                            } else {
+                                // Out of range: this explicit Attack press is what
+                                // turns approach on — never the passive auto-attack
+                                // timer below, and never mere target selection.
+                                combat_approach_active = true;
+                            }
+                        }
+                    }
                 }
 
                 // ---- Tab: cycle to nearest hostile actor ----
@@ -5779,13 +6118,30 @@ int main() {
                     tab_prev = tab_cur;
                 }
 
-                // Auto-attack: send PAttackActor every ~0.85 s while target is selected.
-                static constexpr double kAutoAttackInterval = 0.85;
+                // Auto-attack: send PAttackActor while target is selected, at the
+                // SAME effective cadence the server's cooldown gate actually
+                // enforces (combat_basic.go:42-54), not a fixed interval — a
+                // fixed client timer would under-utilize AttackSpeedMult for any
+                // character with DEX invested (server would already accept
+                // faster resends than the client was bothering to send).
+                //
+                // WARNING: kCombatDelayMs MUST stay in sync with server's
+                // CombatDelay (server/internal/world/combat.go:7) — same
+                // "must stay in sync" contract already used for derived_stats.h
+                // (see that file's header comment) and its formula constants.
+                constexpr float kCombatDelayMs = 800.0f;
+                float atk_speed = player.derived.AttackSpeedMult;
+                if (atk_speed <= 0.0f) atk_speed = 1.0f;
+                // Same formula as combat_basic.go:50's effectiveDelay, just in
+                // seconds (client's `now`/last_attack_sent are glfwGetTime()
+                // seconds) instead of the server's milliseconds.
+                double effective_interval_sec =
+                    static_cast<double>((kCombatDelayMs / 1000.0f) / atk_speed);
                 if (combat_target && !player_dead && conn.IsConnected()
                     && !skill_loadout_open
                     && !local_guarding
                     && !dodge_roll_active
-                    && now - last_attack_sent >= kAutoAttackInterval) {
+                    && now - last_attack_sent >= effective_interval_sec) {
                     rco::net::Writer aw;
                     aw.WriteU32(combat_target);
                     conn.SendPacket(rco::net::kPAttackActor, aw);
@@ -5976,12 +6332,25 @@ int main() {
                 if (ImGui::IsKeyPressed(ImGuiKey_P) && !ImGui::GetIO().WantTextInput)
                     party_panel.visible = !party_panel.visible;
 
-                // Close shop and helper windows with Escape
+                // Escape: cascading priority, one tier resolved per press —
+                // (1) close shop/helper windows if any are open; (2) else clear
+                // combat_target if one is selected; (3) else [reserved — no
+                // pause/system menu exists yet, so this tier is currently a
+                // no-op]. Snapshot "was anything open" BEFORE closing so tier 2
+                // only fires on a press that had nothing to close, not on the
+                // same press that just closed something.
                 if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-                    shop.open = false;
-                    controls_ui.SetVisible(false);
-                    skill_loadout_screen.SetOpen(false);
-                    quest_log.journal_visible = false;
+                    bool any_panel_open = shop.open || controls_ui.IsVisible()
+                        || skill_loadout_screen.IsOpen() || quest_log.journal_visible;
+                    if (any_panel_open) {
+                        shop.open = false;
+                        controls_ui.SetVisible(false);
+                        skill_loadout_screen.SetOpen(false);
+                        quest_log.journal_visible = false;
+                    } else if (combat_target != 0) {
+                        combat_target = 0;
+                        combat_approach_active = false;
+                    }
                 }
 
                 // F key — pick up nearby dropped item
@@ -6059,7 +6428,9 @@ int main() {
                                 handled_ingame_cmd = true;
                             } else if (lower == "/combat dodge") {
                                 {
-                                    const float yr = glm::radians(player.yaw);
+                                    // camera_yaw, not player.yaw — same reasoning as
+                                    // resolve_dodge_dir (main.cpp's mouse-orbit block).
+                                    const float yr = glm::radians(camera.GetYaw());
                                     dodge_roll_pending = true;
                                     dodge_roll_pending_dir = {-std::sin(yr), -std::cos(yr)};
                                     dodge_roll_pending_until = glfwGetTime() + 0.45;
@@ -6156,6 +6527,7 @@ int main() {
                         }
                     } else {
                         combat_target = 0; // actor gone
+                        combat_approach_active = false;
                     }
                 }
 

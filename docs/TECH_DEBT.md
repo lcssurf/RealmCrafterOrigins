@@ -759,6 +759,17 @@ Esses campos ficam para evolucao V0.2+ quando o mini Niagara avancar.
 - Guard atkSpeed<=0 → 1.0 (evita div-zero). Piso 1.0 = nunca mais lento que antes.
 - Só ataque básico. Abilities têm cooldown próprio (CooldownSpeedPct órfão fica
   pra CB futuro).
+- **Corrigido (cliente)**: o timer de auto-attack do cliente (`main.cpp`, bloco
+  "Auto-attack" perto do fim do loop principal) ignorava `AttackSpeedMult`
+  inteiramente — usava um `kAutoAttackInterval` fixo de 0.85s, mesmo o
+  servidor já modulando o delay real por DEX (acima). Personagens com DEX
+  investido tinham direito a atacar mais rápido no servidor, mas o cliente só
+  reenviava no ritmo fixo, gargalando o DPS real no timing de reenvio.
+  Agora o cliente calcula `effective_interval_sec = (kCombatDelayMs/1000) /
+  AttackSpeedMult` — MESMA fórmula do servidor — com `kCombatDelayMs = 800.0f`
+  espelhando `combat.go:7` (mesmo contrato "must stay in sync" já usado em
+  `derived_stats.h`). Não mexe no botão de ataque explícito (já disparava na
+  hora, independente do timer).
 
 ## 81. CB3: regen real (misto HP max + atributo)
 - HealthRegen/EnergyRegen agora MISTO: proporcional ao HealthMax/EnergyMax (justo
@@ -1537,4 +1548,142 @@ que já está).
 **O que falta**: calibração visual dos 2 constantes acima (só possível com teste real em
 jogo); um possível ajuste de `kSurfaceYTolerance` (1.5 unidades, também estimado) se o
 carimbo disparar cedo/tarde demais na prática.
+
+## 119. Movimento do player — WASD relativo à câmera + rotação suave (implementado)
+
+**Problema anterior**: `player.yaw` era travado no yaw da câmera todo frame
+(`main.cpp:4633`, removido: `player.yaw = camera.GetYaw();`) — o personagem sempre
+encarava exatamente pra onde a câmera olhava, então W/A/S/D moviam nos eixos
+`fdir`/`rdir` dessa direção travada: W/S andavam de frente/trás corretamente, mas A/D
+deslizavam de lado sem o corpo virar (strafe puro, sem giro).
+
+**Correção implementada**:
+- `main.cpp`: removida a sincronização `player.yaw = camera.GetYaw()` (câmera e
+  personagem agora desacoplados — a câmera orbita livre via `ApplyMouseDelta`, sem
+  empurrar o yaw do personagem). `player_ctrl.Update(...)` passa a receber
+  `camera.GetYaw()` como novo parâmetro `camera_yaw`.
+- `player_controller.h`/`.cpp`: `PlayerController::Update()` ganhou o parâmetro
+  `float camera_yaw` — a base `fdir`/`rdir` do WASD (`player_controller.cpp`, dentro de
+  `Update()`) passou a usar `camera_yaw` em vez de `player.yaw`, tornando o input
+  genuinamente relativo à câmera.
+- Rotação suave: quando há input de movimento (`dir != 0`), calcula
+  `target_yaw = atan2(dir.x, dir.y)` (mesma convenção já usada pelo click-to-move,
+  `player_controller.cpp:~250`) e interpola `player.yaw` até `target_yaw` via
+  shortest-arc lerp — MESMO padrão já ativo em produção pra suavizar o yaw de OUTROS
+  jogadores via rede (`main.cpp:102-117`,
+  `NormalizeYawDegrees`/`ShortestYawDeltaDegrees`/`SmoothLerpFactor`), duplicado como
+  helpers locais em `player_controller.cpp` (não compartilhados via header — os
+  originais em `main.cpp` são `static`/linkage interno). Sem input (parado), `player.yaw`
+  não muda — não gira mais sozinho acompanhando o mouse.
+- `PlayerController::Config::turn_rate` (`player_controller.h:20`) — campo que existia
+  mas nunca era lido — agora está ATIVO como a taxa do lerp (`SmoothLerpFactor`).
+  Default subiu de 150.0f (morto) pra 180.0f (mais rápido que os 20°/s usados pra
+  suavizar correção de rede de outros jogadores, já que resposta a input local precisa
+  ser mais ágil que uma correção gradual de rede).
+- **Intocado, confirmado por design**: animação (`anim_controller.cpp`'s `Update(dt,
+  speed)` só reage a velocidade escalar, nunca a yaw/direção — Walk/Run ficam coerentes
+  automaticamente já que o personagem sempre vira de frente antes/durante o movimento);
+  rede (`main.cpp:4706-4716` continua enviando `player.yaw`, mesmo campo, sem mudança).
+- **Corrigido** (era o item pendente abaixo): os 3 call sites de dodge-roll
+  (`resolve_dodge_dir` em `main.cpp:~4568`, dodge autoritativo em `main.cpp:~2587`,
+  `/combat dodge` em `main.cpp:~6099`) liam `player.yaw`, que divergia de
+  `camera.GetYaw()` a qualquer momento (já que o acoplamento câmera/corpo foi removido
+  acima) — um dodge lateral puro ganhava componente de frente indesejada quando o corpo
+  não estava alinhado com a câmera. Todos os 3 agora derivam a direção de
+  `camera.GetYaw()`, mesma base do WASD, sem delay do lerp de giro do corpo.
+
+**O que falta**: calibração visual do `turn_rate=180.0f` em jogo real (só uma estimativa
+inicial, mesmo espírito de outras constantes desta lista).
+
+## 120. Stats derivados — auditoria de uso real em combate (server) + 2 fixes
+
+- Auditoria completa dos 34 campos de `DerivedStats` confirmou que hit/miss, crit,
+  defesa, dano (min/max por dimensão), `DamageReductionFlat`, `AttackSpeedMult` e
+  `CooldownSpeedPct` já estavam genuinamente lidos na resolução de combate
+  (`combat_basic.go`, `combat_special.go`, `combat_cooldown.go`, `combat_dimension.go`).
+- **Corrigido**: `RangeBonusPct` (PER-driven) nunca influenciava alcance —
+  `ResolveAttackRange` (`combat_dimension.go`) ganhou um 3º parâmetro
+  `rangeBonusPct` e aplica `final = base * (1 + rangeBonusPct)`. Afeta o alcance do
+  ataque básico sempre (`InAttackRange` lê `actor.AttackRange` diretamente); afeta
+  skills só quando a ability não define `RangeMax` próprio (fallback pra
+  `npc.AttackRange` em `inSpecialRange`, `combat_special.go`). Bug de ordering achado
+  de brinde: no login (`handleStartGame`, `client.go`), `AttackRange` era resolvido
+  ANTES de `RecomputeDerivedStats` popular `Derived` — todo personagem entrava com
+  bônus de alcance zerado independente do PER. Movido pra depois do recompute.
+  Edge case conhecido e NÃO corrigido: nas trocas de equipamento
+  (`handleInventorySwap`/`handleUseItem`), o `AttackRange` da troca usa o
+  `Derived.RangeBonusPct` de ANTES do recompute dessa mesma troca — só importa se o
+  item recém-equipado também conceder `range_bonus_pct` via `item_attributes` (bônus
+  só aparece no próximo recompute, não no pacote imediato).
+- **Corrigido**: `BonusDamageFlat` (nível-based) só era aplicado em dano de skill
+  (`combat_special.go:415`), não no ataque básico. Adicionado em `combat_basic.go`'s
+  `ProcessAttack`, na MESMA posição relativa que skills usam — logo após o roll de
+  dano base, antes de defesa/armor e antes de crit — pra manter o bônus consistente
+  entre básico e skill (reduzido por defesa, amplificado por crit em ambos).
+- **PRÓXIMO ARCO GRANDE (não é bug, é feature a projetar)**: Sistema de Crowd Control
+  (stun/root/silence) e Buffs/Debuffs com duração — não existe hoje no servidor.
+  `CCChanceValue`/`CCResistanceValue`/`BuffDurationPct`/`DebuffDurationPct` já são
+  calculados (fórmulas reais, PER-driven) e transmitidos ao cliente (`PFullStats`),
+  prontos para consumo quando essas features forem implementadas. Requer: sistema de
+  status effect/aplicação, resolução de resistência (chance vs resistência, mesmo
+  padrão comparativo de `computeHitChance`), duração e ticking, sincronização de
+  estado (visual + servidor). Planejar como sessão dedicada, não como fix pontual.
+
+## 121. Mesh slots fixos com anexação rígida via bone (Gremlin Helm)
+
+**Problema investigado**: o Actor Def "Gremlin" tem um slot Helm (`GremlinEye_01`,
+mesh estática sem esqueleto — confirmado inspecionando o `.b3d`: 0 chunks `BONE`,
+0 `KEYS`) que nunca aparecia nem no preview do GUE nem no jogo. Causa raiz: tanto o
+preview do GUE (`media.cpp`'s `DrawActorDefs`) quanto o lazy-init de NPC/player no
+cliente (`main.cpp`) só resolviam e desenhavam o slot 0 (Body) — todo outro
+`mesh_slots` era armazenado mas nunca lido de novo. O mecanismo de anexação por bone
+já existia (`Actor::GetBoneWorldTransform` + `Actor::SubmitWithMatrix`, usados pelo
+attachment de item da aba Items/preview e pelo B5 de arma-na-mão), mas cabeado
+exclusivamente ao fluxo de item equipado — nunca aos mesh slots do próprio Actor Def.
+
+**Implementado**: mesh slots não-Body agora podem ser anexados rigidamente a um bone
+do Body, fixo por design (configurado uma vez no GUE, não runtime/dinâmico):
+- **Schema** (`migrateV52`, `db.go`): `media_actor_meshes` ganhou `bone_name` +
+  `offset_pos_x/y/z` + `offset_rot_x/y/z` + `offset_scale` (mesmo padrão de campos já
+  usado por `actor_def_sockets`, mas tabela e consumidor **separados**). `bone_name`
+  vazio = comportamento legado (slot ignorado além do Body, igual antes).
+- **Servidor**: `world.MeshSlot` (`actor.go`) ganhou os mesmos campos;
+  `BuildAppearanceFromDef` (`appearance.go`) os copia; `AppearanceBytes` e
+  `NewActorPayload` (`frame.go`) os serializam por mesh, logo após `black_cutout` e
+  antes do material_map — aditivo, mesma posição nos dois pacotes (PStartGame e
+  PNewActor).
+- **GUE**: editor de mesh slot (`media.cpp`, popup "edit_slot") ganhou campo Bone
+  (reaproveitando a MESMA lista de bones que a tabela de Sockets já usa, só como
+  fonte de opções de UI) + offsets, visível apenas quando `slot != 0`. Preview
+  (`PreviewViewport::SetMeshSlotAttachments`, `preview_viewport.h/cpp`) é um
+  **terceiro consumidor, paralelo e independente** de
+  `GetBoneWorldTransform`/`SubmitWithMatrix` — não lê nem escreve
+  `attachment_`/`AttachmentSpec`/`has_attachment_` (que continuam exclusivos do
+  attachment de item da aba Items).
+- **Cliente do jogo** (`main.cpp`): `WorldMesh` ganhou os mesmos campos;
+  `WorldMeshAttachment` + as lambdas `rebuild_extra_mesh_actors` (carrega um Actor
+  extra por slot com `bone_name` preenchido, na lazy-init do NPC/player) e
+  `submit_extra_mesh_actors` (reposiciona todo frame via bone atual do Body) também
+  são um consumidor paralelo — não tocam em `equipped_item`, `player_sockets`,
+  `player_weapon_actor` nem no bloco B5.
+- **Labels do GUE** (`media.cpp`'s `kSlotNames`): slots 1-10 renomeados de
+  "Hair/Helm/Chest/.../Attachment" para "Slot 1".."Slot 10" — só o texto exibido
+  mudou (os valores numéricos do enum continuam 0-10, nenhuma migração de dado). O
+  slot 0 continua "Body" (único com significado especial: a mesh primária/skinned
+  que preview e client sempre resolvem). Motivo: os nomes antigos prometiam um
+  sistema de guarda-roupa que não existe — "Helm"/"Hat" também é um enum
+  **totalmente separado** do `slot_type` de equipamento de item (`ItemTemplate`,
+  `kSlotTypes` em `items.cpp`), que só coincide em 3 valores (Chest/Hands/Belt/Legs/
+  Feet) por acaso.
+
+**Isolamento confirmado**: nenhuma linha tocada em `items.cpp`, no bloco B5
+(`equipped_item`/`player_weapon_actor`, `main.cpp`), em
+`SetAttachment`/`AttachmentSpec`/`attachment_` (`preview_viewport.h/cpp`), ou em
+`WorldSocket`/`ActorDefSocket`/`SocketBinding`. Apenas os dois primitivos de baixo
+nível do renderer compartilhado (`GetBoneWorldTransform`, `SubmitWithMatrix`) foram
+reaproveitados, como já acontecia entre o preview de item do GUE e o B5 do cliente.
+
+**Não testado em jogo ainda** (implementado nesta sessão, sem compilar/commit) —
+falta: configurar `bone_name` do slot Helm do Gremlin no GUE e verificar visualmente
+no preview e em jogo.
 

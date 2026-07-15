@@ -327,7 +327,15 @@ GLuint Model::LoadTex(const aiScene* scene, const std::string& path, bool srgb) 
     unsigned char* px = nullptr;
     int w = 0, h = 0;
 
-    const bool verbose      = VerboseAssetLogsEnabled();
+    // TEMP DEBUG (GremlinEye_01 embedded-texture investigation — remove
+    // after diagnosis): forces the [tex-resolve] trace below (raw texture
+    // path from the model file, embedded-vs-external classification, every
+    // resolution candidate BuildTextureCandidates tries, and which one — if
+    // any — actually loaded) for this one model, without needing
+    // RCO_ASSET_LOG_VERBOSE=1 set process-wide (which would also spam every
+    // other model's texture loads).
+    const bool verbose      = VerboseAssetLogsEnabled() ||
+        model_path_.find("GremlinEye") != std::string::npos;
     const bool is_embedded  = !path.empty() && path[0] == '*';
 
     if (verbose) {

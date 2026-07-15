@@ -173,6 +173,21 @@ type MeshSlot struct {
 	// after model load — every submesh that names one of these aiMaterials
 	// gets the corresponding media_material's textures + PBR factors.
 	MaterialMap []AiMaterial
+
+	// Rigid bone attachment for non-Body slots (fixed at Actor Def authoring
+	// time in the GUE, not driven by equipped items). Empty BoneName = legacy
+	// behaviour: the client loads/renders slot 0 only and ignores this slot
+	// entirely (unchanged from before this field existed). When set, the
+	// client loads this slot's model as a separate mesh and positions it via
+	// Actor::GetBoneWorldTransform(BoneName) * (OffsetPos/OffsetRot/OffsetScale)
+	// — the SAME two renderer primitives the item-attachment system (B5) and
+	// the GUE preview's item-on-socket attachment already use, but as an
+	// independent, parallel consumer: this is NOT the item/equipment socket
+	// system (SocketBinding above) and does not touch it.
+	BoneName    string
+	OffsetPos   [3]float32
+	OffsetRot   [3]float32
+	OffsetScale float32
 }
 
 // AiMaterial is one entry in MeshSlot.MaterialMap — the ai-material name as

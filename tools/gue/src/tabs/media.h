@@ -110,6 +110,17 @@ struct ActorMeshSlot {
     // key = material_name from the model file (e.g. "ID01", "Body_Mat")
     // value = media_materials.id; 0 = no override (use model default)
     std::unordered_map<std::string, int> submesh_materials;
+
+    // Rigid bone attachment (only meaningful for slot != 0/Body). Fixed at
+    // authoring time here in the GUE — NOT the item/equipment socket system
+    // (ActorDefSocket above, consumed by the Items tab / B5 weapon-in-hand).
+    // Empty bone_name = legacy behaviour: this slot is not loaded/drawn by
+    // the preview or the client beyond slot 0, same as before this field
+    // existed.
+    std::string bone_name;
+    float offset_pos_x = 0.f, offset_pos_y = 0.f, offset_pos_z = 0.f;
+    float offset_rot_x = 0.f, offset_rot_y = 0.f, offset_rot_z = 0.f;
+    float offset_scale = 1.f;
 };
 
 struct ActorAnimMap {

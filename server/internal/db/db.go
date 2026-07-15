@@ -492,6 +492,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV49(ctx)
 	d.migrateV50(ctx)
 	d.migrateV51(ctx)
+	d.migrateV52(ctx)
 
 	return d, nil
 }
@@ -2930,6 +2931,19 @@ type ActorDefMesh struct {
 	Slot       int
 	ModelID    int
 	MaterialID int
+
+	// Rigid bone attachment (migrateV52) — fixed at authoring time in the GUE,
+	// independent of the item/equipment socket system (actor_def_sockets).
+	// Empty BoneName = legacy behaviour (slot ignored by the renderer beyond
+	// slot 0, same as before this migration).
+	BoneName    string
+	OffsetPosX  float64
+	OffsetPosY  float64
+	OffsetPosZ  float64
+	OffsetRotX  float64
+	OffsetRotY  float64
+	OffsetRotZ  float64
+	OffsetScale float64
 }
 
 // ActorDefAnim mirrors one row in media_actor_anims.
@@ -3011,13 +3025,17 @@ func (d *DB) LoadActorDef(ctx context.Context, id int) (*ActorDef, error) {
 	}
 
 	rows, err := d.db.QueryContext(ctx,
-		d.q(`SELECT id, actor_def_id, slot, model_id, material_id
+		d.q(`SELECT id, actor_def_id, slot, model_id, material_id,
+		            bone_name, offset_pos_x, offset_pos_y, offset_pos_z,
+		            offset_rot_x, offset_rot_y, offset_rot_z, offset_scale
 		     FROM media_actor_meshes WHERE actor_def_id = ? ORDER BY slot`), id)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
 			var m ActorDefMesh
-			if err := rows.Scan(&m.ID, &m.ActorDefID, &m.Slot, &m.ModelID, &m.MaterialID); err == nil {
+			if err := rows.Scan(&m.ID, &m.ActorDefID, &m.Slot, &m.ModelID, &m.MaterialID,
+				&m.BoneName, &m.OffsetPosX, &m.OffsetPosY, &m.OffsetPosZ,
+				&m.OffsetRotX, &m.OffsetRotY, &m.OffsetRotZ, &m.OffsetScale); err == nil {
 				out.Meshes = append(out.Meshes, m)
 			}
 		}
@@ -9424,6 +9442,24 @@ func (d *DB) migrateV51(ctx context.Context) {
 	} else {
 		d.db.ExecContext(ctx, `ALTER TABLE media_actor_defs ADD COLUMN initial_spawn_id INTEGER NOT NULL DEFAULT 0`)
 	}
+}
+
+// migrateV52 adds rigid bone-attachment fields to media_actor_meshes, for
+// Actor Def mesh slots that are a fixed extra piece of the model (e.g. the
+// Gremlin's Helm/eyes mesh) rather than a dynamically equipped item. This is
+// independent of actor_def_sockets (item/equipment attachment, B3a/B5) —
+// same field shape (bone_name + pos/rot/scale offset), separate table and
+// separate consumer. Empty bone_name = legacy behaviour (slot rendered only
+// if it's slot 0 / Body, same as before this migration).
+func (d *DB) migrateV52(ctx context.Context) {
+	d.addColumnIfMissing(ctx, "media_actor_meshes", "bone_name", "TEXT NOT NULL DEFAULT ''")
+	d.addColumnIfMissing(ctx, "media_actor_meshes", "offset_pos_x", "REAL NOT NULL DEFAULT 0.0")
+	d.addColumnIfMissing(ctx, "media_actor_meshes", "offset_pos_y", "REAL NOT NULL DEFAULT 0.0")
+	d.addColumnIfMissing(ctx, "media_actor_meshes", "offset_pos_z", "REAL NOT NULL DEFAULT 0.0")
+	d.addColumnIfMissing(ctx, "media_actor_meshes", "offset_rot_x", "REAL NOT NULL DEFAULT 0.0")
+	d.addColumnIfMissing(ctx, "media_actor_meshes", "offset_rot_y", "REAL NOT NULL DEFAULT 0.0")
+	d.addColumnIfMissing(ctx, "media_actor_meshes", "offset_rot_z", "REAL NOT NULL DEFAULT 0.0")
+	d.addColumnIfMissing(ctx, "media_actor_meshes", "offset_scale", "REAL NOT NULL DEFAULT 1.0")
 }
 
 // PlayerSpawn is a named world position where players spawn or respawn.

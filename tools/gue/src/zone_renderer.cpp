@@ -264,17 +264,12 @@ void ZoneRenderer::BuildWaterQuadVAO() {
 
 rco::renderer::Texture2D* ZoneRenderer::GetOrLoadWaterTexture(const std::string& texPath) {
     if (texPath.empty()) {
-        std::fprintf(stderr, "[water-tex] texPath='' (empty) — nothing to load\n");
         return nullptr;
     }
     std::string resolved = ResolveClientAsset(texPath);
 
     auto it = waterTextures_.find(resolved);
     if (it != waterTextures_.end()) {
-        std::fprintf(stderr,
-            "[water-tex] texPath='%s' resolved='%s' (cache hit) stbi_ok=%s handle=%u\n",
-            texPath.c_str(), resolved.c_str(),
-            it->second->Valid() ? "true" : "false", it->second->GetID());
         return it->second->Valid() ? it->second.get() : nullptr;
     }
 
@@ -284,14 +279,6 @@ rco::renderer::Texture2D* ZoneRenderer::GetOrLoadWaterTexture(const std::string&
     auto tex = std::make_unique<rco::renderer::Texture2D>(info);
     rco::renderer::Texture2D* raw = tex.get();
     bool valid = tex->Valid();
-    // Texture2D's own ctor already logs the stb_image failure reason via
-    // fprintf(stderr, "[tex] ...") when the file is missing/unreadable —
-    // this line ties that outcome back to the water instance's texPath and
-    // the GUE-resolved path, since "[tex] failed to load: <resolved>" alone
-    // doesn't say which ZWater it came from.
-    std::fprintf(stderr,
-        "[water-tex] texPath='%s' resolved='%s' stbi_ok=%s handle=%u\n",
-        texPath.c_str(), resolved.c_str(), valid ? "true" : "false", raw->GetID());
     waterTextures_[resolved] = std::move(tex);
     return valid ? raw : nullptr;
 }

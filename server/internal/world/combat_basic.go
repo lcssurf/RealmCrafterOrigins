@@ -82,6 +82,13 @@ func ProcessAttack(attacker, target *Actor) (damage int32, isCrit bool, onCooldo
 	if maxDmg > minDmg {
 		dmg += rand.Int31n(maxDmg - minDmg + 1)
 	}
+	// Flat bonus damage from attacker Derived (level-based, see attributes.go).
+	// Same order as combat_special.go:415's skill-damage path — added right
+	// after the base roll, before defense/armor reduction and before crit —
+	// so a basic attack's BonusDamageFlat behaves identically to a skill's:
+	// it's part of the damage that gets reduced by defense and amplified by
+	// crit, not a separate post-mitigation bonus.
+	dmg += aDerived.BonusDamageFlat
 
 	// Defense reduction from target Derived defense curve.
 	defPct := ValueToPercent(stats.DefenseValue, defenseCap, defenseSoftcap)

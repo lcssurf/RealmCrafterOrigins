@@ -8,6 +8,7 @@
 #include <vector>
 #include <array>
 #include <functional>
+#include <memory>
 
 struct ImVec2;
 
@@ -183,6 +184,25 @@ public:
     void SetAttachment(const AttachmentSpec& spec);
     void ClearAttachment();
 
+    // Rigid mesh-slot attachments — Actor Def mesh slots (slot != Body) with
+    // a configured bone_name, fixed at authoring time in the GUE (e.g. the
+    // Gremlin's Helm/eyes mesh). This is a THIRD, independent consumer of the
+    // same two low-level primitives AttachmentSpec uses below
+    // (Actor::GetBoneWorldTransform + Actor::SubmitWithMatrix) — it does NOT
+    // read or write attachment_/attachment_spec_/has_attachment_ above, which
+    // stay exclusively for the Items tab's per-actor-override preview.
+    // Entries with an empty bone_name are dropped (legacy slot, nothing to
+    // attach). Called every frame from DrawActorDefs with the current mesh
+    // slot list; unchanged entries (same model_path) are not reloaded.
+    struct MeshSlotAttachment {
+        std::string model_path;
+        std::string bone_name;
+        float offset_pos_x = 0.f, offset_pos_y = 0.f, offset_pos_z = 0.f;
+        float offset_rot_x = 0.f, offset_rot_y = 0.f, offset_rot_z = 0.f;
+        float offset_scale = 1.f;
+    };
+    void SetMeshSlotAttachments(std::vector<MeshSlotAttachment> entries);
+
     void SetStaticBlackCutout(bool v) { static_black_cutout_ = v; }
 
 private:
@@ -272,6 +292,17 @@ private:
     std::string           attachment_path_;
     AttachmentSpec         attachment_spec_;
     bool                   has_attachment_ = false;
+
+    // Runtime state for SetMeshSlotAttachments — one Actor per rigidly-
+    // attached mesh slot. Separate from attachment_/attachment_spec_ above
+    // (Items tab); rebuilt (reloading only entries whose model_path changed)
+    // each time SetMeshSlotAttachments is called.
+    struct MeshSlotRuntime {
+        std::string                           model_path;
+        MeshSlotAttachment                    spec;
+        std::unique_ptr<rco::renderer::Actor> mesh_actor;
+    };
+    std::vector<MeshSlotRuntime> mesh_slot_runtime_;
     // World matrix the attachment was last submitted with — cached each
     // frame in RenderToEngineFrame_ so DrawAttachmentGizmo_ can draw its
     // axes at the exact spot the item mesh is rendered at, without

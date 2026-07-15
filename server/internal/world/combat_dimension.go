@@ -43,12 +43,20 @@ func DefaultRangeForDimension(dim CombatDimension) float32 {
 }
 
 // ResolveAttackRange picks the weapon's explicit range if set (>0), else the
-// dimension default.
-func ResolveAttackRange(weaponRange float32, dim CombatDimension) float32 {
-	if weaponRange > 0 {
-		return weaponRange
+// dimension default, then applies rangeBonusPct (DerivedStats.RangeBonusPct,
+// PER-driven — see attributes.go) as a percentage increase on top: final =
+// base * (1 + rangeBonusPct). Same convention already used by CooldownSpeedPct
+// (attributes.go/combat_cooldown.go) for a *Pct derived stat modulating a base
+// value, just increasing instead of decreasing.
+func ResolveAttackRange(weaponRange float32, dim CombatDimension, rangeBonusPct float32) float32 {
+	base := weaponRange
+	if base <= 0 {
+		base = DefaultRangeForDimension(dim)
 	}
-	return DefaultRangeForDimension(dim)
+	if rangeBonusPct > 0 {
+		base *= 1.0 + rangeBonusPct
+	}
+	return base
 }
 
 // resolveAbilityDimension returns the ability's combat dimension. If the
