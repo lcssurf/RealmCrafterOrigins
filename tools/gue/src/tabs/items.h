@@ -121,10 +121,18 @@ private:
     std::vector<std::string> socketVocab_;
     std::vector<std::pair<int, std::string>> actorDefOptions_;
     std::vector<ModelOption> modelOptions_;
-    // Icon picker options (migrateV53) — every image found under the
-    // existing "Item Icons" asset folder, as "assets/..." relative paths.
+    // Icon picker options (migrateV53) — every image found anywhere under
+    // dist/client/assets/, as "assets/..." relative paths (gue::ListTextureAssets).
     // Refreshed on Fetch() and after importing a new icon.
     std::vector<std::string> iconOptions_;
+
+    // Icon thumbnail preview — same safe lifecycle as MediaTab's
+    // preview_mat_tex_/preview_mat_tex_id_ (media.h/media.cpp): at most one
+    // texture alive at a time, freed before loading the next. Keyed by PATH
+    // (not id) since icons are chosen by file path, not a media_materials-
+    // style id.
+    GLuint      preview_icon_tex_  = 0;   // 0 = none loaded
+    std::string preview_icon_path_;       // path whose texture is in preview_icon_tex_
 
     // Which override row (index into t.overrides) is currently shown in the
     // preview panel. -1 = no preview.

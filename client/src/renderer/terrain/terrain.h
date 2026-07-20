@@ -1,10 +1,12 @@
 #pragma once
 #include "renderer/terrain/terrain_chunk.h"
+#include "rco/renderer/material_texture_array.h"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 #include <vector>
 #include <memory>
 #include <string>
+#include <cstdint>
 
 namespace rco::renderer {
 
@@ -99,13 +101,34 @@ private:
     float  macro_strength_ = 0.0f;
     GLuint def_macro_      = 0;  // fallback 1×1 neutral gray (no effect)
 
-    // Up to 4 materials
+    // Materials — no longer capped at 4 (Phase 1: >4 uses the generalized
+    // N-material shader path via the texture arrays below; <=4 keeps the
+    // legacy exact-4-slot path unchanged). See docs/TECH_DEBT.md "Terrain
+    // multi-material authoring (Phase 1)".
     std::vector<MatTex> materials_;
     GLuint def_normal_    = 0;
     GLuint def_roughness_ = 0;
     GLuint def_ao_        = 0;
     GLuint def_height_    = 0;
     bool   has_materials_ = false;
+
+    // N-material path (only populated/used when materials_.size() > 4) —
+    // one array layer per material, built from the same already-loaded 2D
+    // GL textures in materials_[i] via MaterialTextureArray::SetLayerFromGLTexture.
+    rco::renderer::MaterialTextureArray mat_albedo_array_;
+    rco::renderer::MaterialTextureArray mat_normal_array_;
+    rco::renderer::MaterialTextureArray mat_roughness_array_;
+    rco::renderer::MaterialTextureArray mat_ao_array_;
+    rco::renderer::MaterialTextureArray mat_height_array_;
+    void RebuildMaterialArrays();
+
+    // Splatmap weight layers — CPU-side copies of every RSPN layer (kept
+    // around so RebuildMaterialArrays-equivalent rebuilds aren't needed;
+    // the splatmap itself never changes at runtime on the client) plus the
+    // GPU array built from them for the N-material path.
+    int splatmap_w_ = 0, splatmap_h_ = 0;
+    std::vector<std::vector<uint8_t>> splatmap_layers_;
+    rco::renderer::SplatWeightArray splatmap_array_;
 
     TerrainRenderTuning render_tuning_{};
 };

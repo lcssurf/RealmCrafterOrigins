@@ -83,6 +83,13 @@ struct AnimClip {
     float                     fps          = 30.f;  // ticks-per-second from Assimp; default 30
     std::vector<BoneChannel>  channels;
     std::map<std::string,int> chan_map; // node name → channels[] index
+    // Model::bone_alias_revision_ at the moment this clip's channels were
+    // resolved/retargeted (see AppendAnimationsFrom). If SetBoneAliases or
+    // SetBoneRetargetOffsets is called AFTER this clip was appended, this
+    // stamp goes stale and the clip's baked rotations no longer reflect the
+    // current alias/offset maps — AppendAnimationsFrom's name-match
+    // fast-path checks this before trusting an already-appended clip.
+    int                        built_with_alias_revision = -1;
 };
 
 // Node in the bone hierarchy stored in topological order (parent before child).
@@ -186,6 +193,73 @@ public:
         return out;
     }
 
+    // Returns the names of ALL nodes in this model's hierarchy (sorted
+    // alphabetically by map iteration) — unlike BoneNames(), NOT restricted
+    // to nodes that actually deform a mesh vertex (bone_map_ only gets
+    // entries from aiMesh::mBones; pure-transform helper/socket nodes never
+    // appear there). This is the same universe AppendAnimationsFrom's
+    // retargeting fallback resolves against (node_map_, populated
+    // unconditionally for every aiNode in BuildNodeTree) — so any node here
+    // is already a valid Bone Slot target, even ones BoneNames() hides.
+    std::vector<std::string> AllNodeNames() const {
+        std::vector<std::string> out;
+        out.reserve(node_map_.size());
+        for (const auto& [name, _] : node_map_) out.push_back(name);
+        return out;
+    }
+
+    // Standalone helper for editor UIs (GUE's Bone Slots combo): opens `path`
+    // in a SEPARATE, throwaway Assimp::Importer::ReadFile call — without
+    // aiProcess_OptimizeGraph — purely to list every node name in the raw
+    // hierarchy, then discards the scene. aiProcess_OptimizeGraph is an
+    // established invariant of the real Model::Load path (skinning/pipeline
+    // depends on the transform-collapsed graph it produces) and must not be
+    // removed there just to recover leaf nodes it merges away (e.g.
+    // Male_01.b3d's L_Shin/R_Shin, children of Bip01 L/R Calf). This function
+    // never touches node_map_/bone_map_/anim_nodes_ on any live Model — its
+    // result is only ever used to populate a UI dropdown.
+    static std::vector<std::string> AllNodeNamesUnoptimized(const char* path);
+
+    // Bind-pose (no animation) GLOBAL transform of a node in THIS model's own
+    // hierarchy — composed by walking node_map_/anim_nodes_ from the root
+    // down to `name` and multiplying each ancestor's node.local in order.
+    // Used by the Retarget Pose offset estimator (GUE) to get a bone's rest
+    // position in world/component space for FindBetweenNormals-style
+    // direction comparisons. Returns false (leaves *out untouched) if `name`
+    // is not in node_map_.
+    bool GetBindWorldTransform(const std::string& name, glm::mat4* out) const;
+
+    // Standalone helper, same throwaway-parse pattern as
+    // AllNodeNamesUnoptimized: opens `path` (any file sharing a naming
+    // convention's rest pose, e.g. any Mixamo export) purely to extract every
+    // node's bind-pose GLOBAL position, keyed by the same pipe-stripped name
+    // convention used elsewhere for external files ("Armature|Hips" ->
+    // "Hips"). Used by the offset estimator to get the SOURCE side of a
+    // bone-direction comparison. Never touches any live Model.
+    static std::unordered_map<std::string, glm::vec3> BindWorldPositionsUnoptimized(const char* path);
+
+    // World (root-composed) bind-pose rotation of `name`'s PARENT node —
+    // i.e. every ancestor's local rotation multiplied root-to-parent
+    // (inclusive of the parent, exclusive of `name` itself). Identity if
+    // `name`'s parent is the root (no parent). Used by the Retarget Pose
+    // offset estimator: comparing the PARENT FRAME's full composed
+    // orientation (not just a bone-direction vector) uses all available
+    // rotational information and has no twist ambiguity, unlike
+    // FindBetweenNormals on a single direction vector. Returns false if
+    // `name` is not in node_map_.
+    bool GetBindParentWorldRotation(const std::string& name, glm::quat* out) const;
+
+    // Standalone helper, same throwaway-parse pattern as
+    // AllNodeNamesUnoptimized/BindWorldPositionsUnoptimized: for EVERY node
+    // in `path`'s own hierarchy (keyed by pipe-stripped name), returns the
+    // WORLD (root-composed) bind-pose rotation of THAT NODE'S PARENT — the
+    // origin-side counterpart to GetBindParentWorldRotation. Parent chains
+    // are walked exactly as authored (including synthetic
+    // "_$AssimpFbx$_..." nodes when one is the immediate parent — this is
+    // deliberately NOT the same filtering as ComposedOriginBindRotation).
+    // Never touches any live Model.
+    static std::unordered_map<std::string, glm::quat> ParentBindWorldRotationsUnoptimized(const char* path);
+
     // Returns the bone's model-space world transform (global_inv_ * accumulated
     // hierarchy, WITHOUT inverse-bind) from the last Compute*Bones call.
     // Use this for attachment placement; the skinning matrix in out_mats has
@@ -220,6 +294,40 @@ public:
     // (pass "" to keep the file's own name). Returns the index of the first
     // appended clip, or -1 on failure.
     int AppendAnimationsFrom(const char* path, const char* name_override = "");
+
+    // Sets the retargeting fallback map (external bone name -> this model's
+    // own bone/node name) consulted by AppendAnimationsFrom when a clip's
+    // channel name has no direct match in node_map_. The map is plain DATA —
+    // this class has no knowledge of "Mixamo" or any other naming convention;
+    // the caller (GUE preview, or the game client applying a server-resolved
+    // map) builds it however it wants and injects it here. Replaces any
+    // previously set map. Pass an empty map to clear (restores exact-name-
+    // only matching).
+    void SetBoneAliases(std::unordered_map<std::string, std::string> aliases) {
+        bone_aliases_ = std::move(aliases);
+        ++bone_alias_revision_;
+    }
+
+    // Sets the calibratable Retarget Pose rotation-offset map (this model's
+    // own bone/node name -> offset quaternion), consulted by
+    // AppendAnimationsFrom for retargeted channels only (see the retargeting
+    // formula in model.cpp). Plain DATA, same pattern as SetBoneAliases: this
+    // class has no knowledge of "Mixamo" or model_retarget_offsets — the
+    // caller builds the map from BuildBoneRetargetOffsetMap (db.go) or its
+    // GUE-local mirror and injects it here. A bone absent from the map (or
+    // an empty map altogether) is treated as identity offset — i.e. exactly
+    // today's behavior, unchanged. Replaces any previously set map.
+    void SetBoneRetargetOffsets(std::unordered_map<std::string, glm::quat> offsets) {
+        bone_retarget_offsets_ = std::move(offsets);
+        ++bone_alias_revision_;
+    }
+
+    // Current revision stamp — bumped by SetBoneAliases and
+    // SetBoneRetargetOffsets. Exposed read-only so callers (GUE) can tell
+    // whether a Model's already-baked clips are stale, e.g. to decide
+    // whether to force a specific clip re-append instead of relying on
+    // AppendAnimationsFrom's own (already revision-aware) fast path.
+    int BoneAliasRevision() const { return bone_alias_revision_; }
 
     // Rename an embedded clip by its FBX-native name (e.g. "mixamo.com") to a
     // game action name (e.g. "Idle") so FindClip resolves it. No-op if not found.
@@ -276,6 +384,19 @@ private:
     std::vector<BoneInfo>      bones_;
     std::map<std::string,int>  bone_map_;
     std::vector<AnimClip>      clips_;
+    // Retargeting fallback: external bone name -> this model's own node name.
+    // Consulted only when node_map_.find(rc.name) fails in
+    // AppendAnimationsFrom (model.cpp). Empty by default — exact-name
+    // matching is unaffected until a caller opts in via SetBoneAliases.
+    std::unordered_map<std::string, std::string> bone_aliases_;
+    // Calibratable Retarget Pose rotation offset per bone (this model's own
+    // node name -> offset quaternion). Empty by default (== identity for
+    // every bone, i.e. no behavior change) until a caller opts in via
+    // SetBoneRetargetOffsets. See AppendAnimationsFrom's retargeting formula.
+    std::unordered_map<std::string, glm::quat> bone_retarget_offsets_;
+    // Bumped by SetBoneAliases/SetBoneRetargetOffsets — see AnimClip::
+    // built_with_alias_revision and AppendAnimationsFrom's name-match guard.
+    int bone_alias_revision_ = 0;
     // World transform per bone (global_inv_ * global[ni], no inverse-bind).
     // Sized to bones_.size() in Load; updated each Compute*Bones call.
     // mutable: Compute*Bones are const but write this as a pose cache.

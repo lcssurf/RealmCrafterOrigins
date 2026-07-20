@@ -3,7 +3,9 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <vector>
+#include <span>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <cmath>
 
@@ -454,6 +456,16 @@ void Pipeline::gBufferPass_() {
 // deferred effects (CSM shadows, SSAO, IBL) apply transparently.
 // ---------------------------------------------------------------------------
 
+// Two independent terrain shader programs — "terrainGBuffer" (legacy,
+// exact-4-material, used by the game client and reverted to its exact
+// pre-Phase-1 form) and "terrainGBufferExt" (GUE editor authoring preview
+// only, generalized N-material path via texture arrays). They used to be a
+// single program with two runtime branches; that design caused several
+// hard-to-diagnose bugs (stale/colliding sampler units across draws,
+// combined texture-unit budget pressure) documented in docs/TECH_DEBT.md
+// "Terrain multi-material authoring (Phase 1)". Splitting them means each
+// program has its own texture-unit budget and its own uniform state — no
+// possibility of one path's bind leaking into the other's.
 void Pipeline::terrainPass_() {
     if (terrainChunks_.empty()) return;
 
@@ -465,51 +477,99 @@ void Pipeline::terrainPass_() {
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
 
-    auto& sh = Shader::shaders["terrainGBuffer"];
-    sh->Bind();
-    sh->SetMat4 ("u_viewProj",      viewProj_);
-    sh->SetVec3 ("u_cameraPos",     camPos_);
-    sh->SetFloat("u_lodBlendRange", 1.0f);  // morph across full LOD band
-
     for (const auto& c : terrainChunks_) {
-        sh->SetVec4 ("u_tilings",       c.tilings);
+        bool useExt = c.num_materials > 0;
+        auto& sh = Shader::shaders[useExt ? "terrainGBufferExt" : "terrainGBuffer"];
+        sh->Bind();
+        sh->SetMat4 ("u_viewProj",      viewProj_);
+        sh->SetVec3 ("u_cameraPos",     camPos_);
+        sh->SetFloat("u_lodBlendRange", 1.0f);  // morph across full LOD band
         sh->SetVec2 ("u_terrainOrigin", c.terrain_origin.x, c.terrain_origin.y);
         sh->SetVec2 ("u_terrainSize",   c.terrain_size.x,   c.terrain_size.y);
         sh->SetFloat("u_cellSize",      c.cell_size);
         sh->SetFloat("u_lodLevel",      c.lod_level);
 
-        // Slot 22: heightmap (R32F) — read by vertex shader for height + normals
-        glBindTextureUnit(22, c.heightmap_tex);
-        sh->SetInt("u_heightmap", 22);
+        if (!useExt) {
+            // --- terrainGBuffer (legacy, exact-4-material) — units 0-22,
+            // identical to before Phase 1. ---
+            glBindTextureUnit(0, c.splatmap);
+            sh->SetInt("u_splatmap", 0);
+            for (int i = 0; i < 4; ++i) {
+                glBindTextureUnit(1 + i*5 + 0, c.mat_albedo[i]);
+                glBindTextureUnit(1 + i*5 + 1, c.mat_normal[i]);
+                glBindTextureUnit(1 + i*5 + 2, c.mat_roughness[i]);
+                glBindTextureUnit(1 + i*5 + 3, c.mat_ao[i]);
+                glBindTextureUnit(1 + i*5 + 4, c.mat_height[i]);
+            }
+            sh->SetInt("u_mat0_albedo",  1); sh->SetInt("u_mat0_normal",  2);
+            sh->SetInt("u_mat0_roughness", 3); sh->SetInt("u_mat0_ao",  4); sh->SetInt("u_mat0_height",  5);
+            sh->SetInt("u_mat1_albedo",  6); sh->SetInt("u_mat1_normal",  7);
+            sh->SetInt("u_mat1_roughness", 8); sh->SetInt("u_mat1_ao",  9); sh->SetInt("u_mat1_height", 10);
+            sh->SetInt("u_mat2_albedo", 11); sh->SetInt("u_mat2_normal", 12);
+            sh->SetInt("u_mat2_roughness", 13); sh->SetInt("u_mat2_ao", 14); sh->SetInt("u_mat2_height", 15);
+            sh->SetInt("u_mat3_albedo", 16); sh->SetInt("u_mat3_normal", 17);
+            sh->SetInt("u_mat3_roughness", 18); sh->SetInt("u_mat3_ao", 19); sh->SetInt("u_mat3_height", 20);
 
-        glBindTextureUnit(0, c.splatmap);
-        sh->SetInt("u_splatmap", 0);
-        // 5 textures per material × 4 materials = 20 units, slots 1..20.
-        for (int i = 0; i < 4; ++i) {
-            glBindTextureUnit(1 + i*5 + 0, c.mat_albedo[i]);
-            glBindTextureUnit(1 + i*5 + 1, c.mat_normal[i]);
-            glBindTextureUnit(1 + i*5 + 2, c.mat_roughness[i]);
-            glBindTextureUnit(1 + i*5 + 3, c.mat_ao[i]);
-            glBindTextureUnit(1 + i*5 + 4, c.mat_height[i]);
+            sh->SetVec4 ("u_tilings",       c.tilings);
+            sh->SetFloat("u_mat0_normal_strength",   c.mat_normal_strength[0]);
+            sh->SetFloat("u_mat1_normal_strength",   c.mat_normal_strength[1]);
+            sh->SetFloat("u_mat2_normal_strength",   c.mat_normal_strength[2]);
+            sh->SetFloat("u_mat3_normal_strength",   c.mat_normal_strength[3]);
+
+            // Slot 21: macro variation. Slot 22: heightmap (R32F, read by
+            // the shared vertex shader for height + normals).
+            glBindTextureUnit(21, c.macro_variation);
+            sh->SetInt  ("u_macroVariation", 21);
+            glBindTextureUnit(22, c.heightmap_tex);
+            sh->SetInt  ("u_heightmap", 22);
+        } else {
+            // --- terrainGBufferExt (GUE editor, N-material) — own budget,
+            // units restart at 0 since this is a separate linked program.
+            // Mirrors the legacy bind block above 1:1 (same 5 texture roles
+            // + splat + macro + heightmap), just array-typed and looped. ---
+            sh->SetInt("u_numMaterials", c.num_materials);
+            glBindTextureUnit(0, c.ext_splatmap_array);
+            sh->SetInt("u_splatmapArrayExt", 0);
+            glBindTextureUnit(1, c.ext_mat_albedo_array);
+            sh->SetInt("u_matAlbedoArrayExt", 1);
+            glBindTextureUnit(2, c.ext_mat_normal_array);
+            sh->SetInt("u_matNormalArrayExt", 2);
+            glBindTextureUnit(3, c.ext_mat_roughness_array);
+            sh->SetInt("u_matRoughnessArrayExt", 3);
+            glBindTextureUnit(4, c.ext_mat_ao_array);
+            sh->SetInt("u_matAoArrayExt", 4);
+            glBindTextureUnit(5, c.ext_mat_height_array);
+            sh->SetInt("u_matHeightArrayExt", 5);
+            // NOTE: array uniform names MUST include the "[0]" suffix here.
+            // Shader::initUniforms() populates the Uniforms map with the
+            // EXACT names glGetActiveUniform() reports, and for array
+            // uniforms that name always includes "[0]" (e.g. "u_tilingsExt[0]",
+            // never bare "u_tilingsExt") — this is standard GLSL reflection
+            // behaviour, not a quirk. Shader::loc() does a plain map lookup
+            // and silently returns -1 on a miss in release builds (asserts
+            // in debug), so glProgramUniform1fv(..., -1, ...) was a no-op:
+            // u_tilingsExt/u_matNormalStrengthExt were NEVER actually being
+            // set, leaving every element at the GLSL default of 0.0 — dividing
+            // world position by a 0.0 tile produced Inf/NaN, which is exactly
+            // what the magenta NaN marker caught. Confirmed by the existing
+            // "kernel[0]"/"offsets[0]" convention already used elsewhere in
+            // this file (ssaoPass_, volumetricPass_) for the same reason.
+            // See docs/TECH_DEBT.md "Terrain multi-material authoring (Phase 1)".
+            sh->Set1FloatArray("u_tilingsExt[0]",           std::span<const float>(c.ext_tilings));
+            sh->Set1FloatArray("u_matNormalStrengthExt[0]", std::span<const float>(c.ext_mat_normal_strength));
+
+            // Slot 6: macro variation. Slot 7: heightmap (R32F, read by the
+            // shared vertex shader for height + normals) — same roles as
+            // legacy slots 21/22, just renumbered since this program's
+            // budget restarts at 0.
+            glBindTextureUnit(6, c.macro_variation);
+            sh->SetInt  ("u_macroVariation", 6);
+            glBindTextureUnit(7, c.heightmap_tex);
+            sh->SetInt  ("u_heightmap", 7);
         }
-        sh->SetInt("u_mat0_albedo",  1); sh->SetInt("u_mat0_normal",  2);
-        sh->SetInt("u_mat0_roughness", 3); sh->SetInt("u_mat0_ao",  4); sh->SetInt("u_mat0_height",  5);
-        sh->SetInt("u_mat1_albedo",  6); sh->SetInt("u_mat1_normal",  7);
-        sh->SetInt("u_mat1_roughness", 8); sh->SetInt("u_mat1_ao",  9); sh->SetInt("u_mat1_height", 10);
-        sh->SetInt("u_mat2_albedo", 11); sh->SetInt("u_mat2_normal", 12);
-        sh->SetInt("u_mat2_roughness", 13); sh->SetInt("u_mat2_ao", 14); sh->SetInt("u_mat2_height", 15);
-        sh->SetInt("u_mat3_albedo", 16); sh->SetInt("u_mat3_normal", 17);
-        sh->SetInt("u_mat3_roughness", 18); sh->SetInt("u_mat3_ao", 19); sh->SetInt("u_mat3_height", 20);
 
-        // Slot 21: macro variation (grayscale, covers full terrain)
-        glBindTextureUnit(21, c.macro_variation);
-        sh->SetInt  ("u_macroVariation", 21);
-        sh->SetFloat("u_macroStrength",          c.macro_strength);
-        sh->SetFloat("u_heightBlendSlop",        c.height_blend_slop);
-        sh->SetFloat("u_mat0_normal_strength",   c.mat_normal_strength[0]);
-        sh->SetFloat("u_mat1_normal_strength",   c.mat_normal_strength[1]);
-        sh->SetFloat("u_mat2_normal_strength",   c.mat_normal_strength[2]);
-        sh->SetFloat("u_mat3_normal_strength",   c.mat_normal_strength[3]);
+        sh->SetFloat("u_macroStrength",   c.macro_strength);
+        sh->SetFloat("u_heightBlendSlop", c.height_blend_slop);
 
         glBindVertexArray(c.vao);
         glDrawElements(GL_TRIANGLES, c.index_count, GL_UNSIGNED_INT, nullptr);

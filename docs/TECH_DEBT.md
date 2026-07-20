@@ -1734,3 +1734,456 @@ ponta, mesma técnica pros dois sistemas:
 falta configurar `icon_path` em pelo menos um item/ability no GUE e confirmar
 visualmente na bag e na hotbar.
 
+## 123. Retargeting genérico de animação por bone slot canônico (Humanoid Rig)
+
+**Problema**: aplicar uma animação externa (ex.: download do Mixamo, "Without Skin")
+no esqueleto de um modelo do projeto exige que os NOMES de bone batam exatamente
+(`Model::AppendAnimationsFrom`, `shared/renderer/src/model.cpp`, casa canais por
+`node_map_.find(rc.name)` — nome exato, sem tradução). O Mixamo sempre renomeia
+bones pra sua própria convenção (`mixamorig:Hips`, etc.), então um clip baixado de
+lá nunca bate com a convenção `Bip01 X` usada pelos modelos do projeto
+(confirmado inspecionando `Male_01.b3d`/`FemaleHuman.b3d`/`Gremlin.b3d` — Male e
+Female compartilham a mesma convenção exata; o Gremlin já diverge em topologia).
+
+**Implementado — sistema de retargeting por PAPEL SEMÂNTICO (inspirado no
+Humanoid Rig/IK Rig da Unreal/Unity)**, em vez de uma tabela de tradução fixa em
+código ou um alias direto por modelo:
+
+- **Papel canônico**: lista fixa de 19 slots humanoides (`Hips, Spine, Chest,
+  Neck, Head, Clavicle_L/R, UpperArm_L/R, Forearm_L/R, Hand_L/R, Thigh_L/R,
+  Calf_L/R, Foot_L/R`) — constante compartilhada, duplicada por linguagem
+  (`server/internal/db/db.go`'s `CanonicalBoneSlots`, `tools/gue/src/tabs/media.h`'s
+  `kCanonicalBoneSlots`), mesmo padrão já usado pra `ActorSlot`/`kSlotTypes`.
+- **Duas tabelas independentes** (`migrateV54`, `db.go`):
+  - `model_bone_slots` (POR MODELO): qual bone REAL do modelo toca cada slot
+    (ex.: model 7's slot "Chest" → bone interno "Bip01 Neck"). Um modelo só
+    preenche os slots que fazem sentido pra ele.
+  - `external_bone_conventions` (GLOBAL, não por modelo): como uma convenção de
+    nomenclatura (ex. "Mixamo") rotula cada slot (ex. "Chest" → "mixamorig:Spine2").
+    Seedada uma vez com os 19 pares padrão do Mixamo (idempotente,
+    `INSERT OR IGNORE`/`ON CONFLICT DO NOTHING`) — editável, outras convenções
+    podem ser adicionadas como dado, sem tocar código.
+- **`BuildBoneAliasMap`** (`db.go`, espelhado em C++ como
+  `MediaTab::BuildBoneAliasMap`, `media.cpp`) — o JOIN das duas tabelas por
+  `slot`, pra um `(model_id, convention_name)`, produzindo o mapa achatado
+  `external_name -> internal_bone_name` que o motor consome.
+- **Motor** (`shared/renderer`): `Model::SetBoneAliases(unordered_map)`
+  (`model.h`) injeta esse mapa; `AppendAnimationsFrom` (`model.cpp:~1561`) tenta
+  `node_map_.find(rc.name)` primeiro (caminho normal, intocado) e só consulta
+  `bone_aliases_` como fallback se a busca exata falhar — arquivos que já usam
+  nomes compatíveis não notam nenhuma diferença. `shared/renderer` continua sem
+  nenhuma dependência de SQLite; o mapa é sempre dado injetado, nunca uma query
+  interna.
+- **GUE**: duas UIs novas — "Bone Slots" dentro da aba Models (por modelo
+  selecionado) e uma sub-aba nova e GLOBAL "Bone Conventions" (lista de
+  convenções + tabela slot→external_name editável, com botão "Load Mixamo
+  Names" — só pré-preenche o campo de texto com os nomes padrão do Mixamo, não
+  é lógica de tradução). Um botão "Apply for Preview" injeta o mapa achatado
+  direto no `preview_`'s Model (`SetBoneAliases`), pra testar o retargeting ao
+  vivo sem depender de rede/servidor.
+- **Configurar um modelo novo não exige reensinar nada sobre Mixamo** — a
+  convenção já está pronta globalmente (seedada uma vez); só é preciso mapear os
+  slots do modelo novo em "Bone Slots".
+- **`aiProcess_OptimizeGraph` é INVARIANTE no carregamento principal do corpo**
+  (`Model::Load`, `model.cpp:~1291`) — funde nós de transformação "redundantes"
+  no pai, e o pipeline de skinning depende desse grafo já colapsado. **Nunca
+  remover esse flag pra "resolver" um problema de listagem de nós** — ele
+  colapsa folhas reais sem peso de vértice próprio (ex.: `L_Shin`/`R_Shin` do
+  Male_01.b3d, filhos de `Bip01 L/R Calf`) antes de `BuildNodeTree` rodar,
+  então elas nunca entram em `node_map_`/aparecem no combo de Bone Slots — mas
+  a correção correta é uma leitura AUXILIAR e descartável do mesmo arquivo, sem
+  esse flag, só pra extrair nomes (`Model::AllNodeNamesUnoptimized`, estático,
+  `model.cpp`/`model.h`), nunca usada pra desenhar/animar. O combo de Bone
+  Slots (`media.cpp`'s `DrawModels`) usa essa função, cacheada por
+  `editModel_.id` (`bone_slot_node_names_cache_`) pra não reparsear o arquivo
+  todo frame; o Model real usado pelo jogo/preview nunca é afetado.
+
+- **Delta-retargeting (rotação, não só nome do canal)**: `AppendAnimationsFrom`
+  não aplica mais a rotação bruta do canal externo direto como rotação final
+  do bone de destino (isso presumia implicitamente que os dois rigs
+  compartilham referencial de repouso — falso entre Mixamo e um rig Biped
+  próprio). Em vez disso, calcula um delta relativo à bind pose de cada lado:
+  `delta = inverse(bind_origem) * rotação_animada`, aplicado como
+  `bind_destino * delta`.
+  - ⚠️ **`bind_origem` usado NESSA fórmula precisa ser a rotação PRÓPRIA do nó
+    nomeado, NÃO composta com ancestrais sintéticos** — `CollectBindRotations`
+    (`model.cpp`) usa só `BindPoseRS(node->mTransformation)`, deliberadamente
+    sem subir por `_$AssimpFbx$_PreRotation`/etc. Isso porque o valor ANIMADO
+    do canal (`rc.rot`, vindo direto de `ch->mRotationKeys`) também NUNCA é
+    composto com esses ancestrais — Assimp sempre expressa a animação
+    relativa ao pai IMEDIATO do nó (o próprio nó sintético de PreRotation,
+    quando existe), nunca composta com ele. Usar a versão COMPOSTA
+    (`ComposedOriginBindRotation`, mantida no arquivo só como utilitário não
+    usado — `[[maybe_unused]]`) nessa fórmula foi um bug real, encontrado via
+    um invariante matemático simples: num clipe quase parado (Idle), o canal
+    animado ≈ bind pose de origem, então `delta_origin_frame` deveria ficar
+    ≈identidade — mas com a versão composta, isso só valia pro Hips (sem
+    ancestral PreRotation); todo o resto do corpo (que TEM PreRotation)
+    produzia uma rotação espúria grande mesmo parado, porque `bind_origem`
+    composta e o canal animado (não composto) estavam em referenciais
+    diferentes sendo subtraídos como se fossem o mesmo. O estimador de offset
+    posicional (`EstimateRetargetOffsets`/`BindWorldPositionsUnoptimized`) não
+    tem esse problema — comparação de POSIÇÃO já é sempre feita com a
+    hierarquia inteira composta dos dois lados, sem essa armadilha de
+    referencial.
+
+- **Retarget Pose offset por bone (`model_retarget_offsets`)** — inspirado na
+  `FIKRetargetPose::BoneRotationOffsets` da Unreal IK Retargeter (investigação
+  no source em `D:\Github\UnrealEngine\Engine\Plugins\Animation\IKRig`,
+  `FKChainsOp.cpp`). Mesmo com a bind pose de origem corretamente composta, o
+  delta puramente LOCAL ainda erra quando os dois rigs têm CONVENÇÕES DE EIXO
+  diferentes por bone (ex.: braço em repouso ao longo de eixos diferentes) — a
+  Unreal resolve isso em espaço GLOBAL/componente, exigindo uma "Retarget
+  Pose" pré-alinhada entre os dois esqueletos (ver `FKChainsOp.cpp:342-351`,
+  `RetargetRotation`). **Adaptação deliberada pra nossa arquitetura**: em vez
+  de migrar pra avaliação hierárquica GLOBAL completa (que exigiria reescrever
+  `ComputeBones`/`ComputeBlendedBones` pra propagar rotação global pai→filho
+  em tempo de execução, e reavaliar a hierarquia INTEIRA do arquivo de origem
+  por keyframe — nosso `AppendAnimationsFrom` hoje processa canais de forma
+  achatada/independente, sem essa dependência hierárquica), implementamos o
+  offset como uma CONJUGAÇÃO no delta local já existente:
+  ```
+  delta_dest_frame = offset * (inverse(bind_origem) * rotação_animada) * inverse(offset)
+  final = bind_destino * delta_dest_frame
+  ```
+  Conjugação é a forma padrão de reinterpretar uma rotação de uma base pra
+  outra quando as duas se relacionam por uma rotação fixa (`offset`) — e com
+  `offset = identidade`, `offset * X * inverse(offset) == X`, então a fórmula
+  colapsa EXATAMENTE pra `bind_destino * delta` (o comportamento pré-existente,
+  sem NENHUMA mudança) — invariante provado, não só testado.
+  - Schema: `model_retarget_offsets(model_id, slot, convention_name,
+    offset_x/y/z/w)` — offset por (model, slot, CONVENÇÃO), não só por slot,
+    já que a correção de eixo é especificamente em relação a uma convenção
+    externa (`server/internal/db/db.go`'s `migrateV55`, espelhado em
+    `media.cpp`'s `EnsureTables`).
+  - Estimativa automática: `MediaTab::EstimateRetargetOffsets` (`media.cpp`)
+    compara a direção osso-pai→filho (`kSlotChain`, `media.h`) entre a bind
+    pose do modelo (`Model::GetBindWorldTransform`, composição via
+    `node_map_`/`anim_nodes_`) e a de um "Reference Pose File" da convenção
+    (`Model::BindWorldPositionsUnoptimized`, leitura descartável — mesmo
+    padrão de `AllNodeNamesUnoptimized`), via `glm::rotation(origem, destino)`
+    (equivalente ao `FQuat::FindBetweenNormals` da Unreal). Fallback pra
+    extremidades sem filho na cadeia (Head, Hand_L/R, Foot_L/R): usa a direção
+    PAI→este-bone em vez de este-bone→filho.
+  - GUE: sub-seção "Retarget Offsets" (aba Models, dentro de Bone Slots) —
+    slider euler XYZ por slot, salva no DB e reinjeta no preview
+    IMEDIATAMENTE a cada mudança (sem esperar reload/restart — mesmo padrão
+    de `bone_slots_revision_` já usado pros bone_aliases_).
+  - **Limitação conhecida, não resolvida nesta sessão**: `bone_retarget_offsets_`
+    (`Model`) é uma única flat map por bone (nome interno), não escopada por
+    convenção em tempo de execução — se DUAS convenções diferentes
+    calibrarem offsets DIFERENTES pro MESMO bone interno e ambas forem
+    injetadas na mesma sessão de preview, uma sobrescreve/perde a outra
+    (mesma limitação já documentada pra `bone_aliases_`, mas lá é inofensiva
+    porque os vocabulários de nome externo são disjuntos — aqui NÃO é, já
+    que a chave é o nome INTERNO). Na prática afeta pouco: só um corpo/preview
+    ativo por vez, tipicamente uma convenção só.
+
+**Não implementado nesta sessão (fora do escopo pedido)**: entrega do mapa pro
+CLIENTE do jogo via rede (o `BuildBoneAliasMap`/`SetBoneAliases` hoje só é
+exercitado pelo preview do GUE, que tem acesso direto ao SQLite — o cliente do
+jogo, sem banco, precisaria receber o mapa resolvido servidor→wire, análogo ao
+que já foi feito pra `bone_name`/offsets do mesh slot rígido). Sem compilar,
+sem commit.
+
+## 124. Terrain multi-material authoring (Phase 1) — teto de 4 materiais removido na AUTORIA; runtime do jogo ainda travado em 4
+
+**Estado:** o sistema de splatmap/terreno era hard-limitado a 4 materiais
+(`kMaxMats=4`, RGBA de um único `Splatmap`, shader com uniforms nomeados
+`u_mat0_*`.._mat3_*`). Investigação prévia (ver `git log` desta sessão)
+mapeou o limite e recomendou generalizar a autoria antes de resolver o
+runtime — este item é a Fase 1 dessa recomendação.
+
+**O que foi feito (autoria no GUE, sem cap):**
+- `tools/gue/src/terrain/splatmap.h`: `Splatmap` virou uma pilha de
+  `SplatLayer` (cada um a antiga textura RGBA8 de 4 canais). Material `i`
+  resolve pra `layer i/4, channel i%4` — sem teto superior. Persistência
+  ganhou formato nativo `RSPN` (multi-layer), com fallback de leitura pros
+  formatos legados `RSP2`/`RSPM` (single-layer). `PaintSplatmap` generalizado:
+  redistribui peso perdido entre TODOS os slots ativos da pilha, não só os 4
+  do mesmo grupo RGBA.
+- `tools/gue/src/terrain/editable_terrain.h/.cpp`: `kMaxMats` removido;
+  `materials_`, `matIds_`, `matAlbedoPaths_`, `matNormalPaths_`,
+  `matOrmPaths_`, `matNormalStrengths_`, `tilings` viraram `std::vector`
+  sem teto. Novos `AddMaterialSlot`/`RemoveMaterialSlot`. `materials.txt` lê
+  quantas linhas houver (antes limitado a `kMaxMats`).
+- UI (`tools/gue/src/tabs/zones_panels.cpp`): picker de pintura trocou os 4
+  botões fixos por um combo com busca (`ui::SearchableComboId`) listando
+  todos os materiais cadastrados; painel "Materials" ganhou botão
+  "+ Add Material" e "x" por slot pra remover; sliders de tiling e combos de
+  Auto-paint Slope (`Flat/Rock layer`) agora percorrem `terrain.NumMaterials()`.
+
+**Preview do editor (shader) — usa texture arrays, não mais units por material:**
+Extender o shader generalizando a técnica antiga (mais `u_matN_*` nomeados,
+mais texture units) satura em ~5-6 materiais: `GL_MAX_TEXTURE_IMAGE_UNITS`
+por estágio de fragment é tipicamente 32 em GPUs desktop e o path legado já
+usa 23 unidades pra só 4 materiais. Em vez disso:
+- `tools/gue/src/terrain/material.h`: `MaterialTextureArray` — um
+  `GL_TEXTURE_2D_ARRAY` por role (albedo/normal/roughness/ao/height), 1
+  camada por material, resolução fixa (`kRes=512`, reamostragem
+  nearest-neighbour a partir da textura 2D já carregada via `glGetTexImage`).
+  Custa 1 unidade de textura por role independente de N.
+- `shared/renderer/include/rco/renderer/pipeline.h`: `TerrainChunkSubmission`
+  ganhou campos `ext_*` (aditivos — os campos legados `mat_albedo[4]`,
+  `tilings` (vec4), `splatmap` continuam intocados e são os únicos que o
+  CLIENTE (`client/src/renderer/terrain/terrain.cpp`, não tocado nesta sessão)
+  preenche). `num_materials` = 0 é o sinal de "usa o path legado".
+- `shared/renderer/src/pipeline.cpp` (`terrainPass_`): AMBOS os conjuntos de
+  uniforms (legado sampler2D units 0-20, ext sampler2DArray units 23-28) são
+  sempre setados/bindados em TODO draw, independente de qual path está
+  ativo — ver bug 124.1 abaixo. O conjunto inativo recebe uma textura dummy
+  1x1 branca do tipo certo (`ensureTerrainDummyTextures_`), nunca um handle 0
+  nem uma textura do tipo errado.
+- `dist/client/shaders/terrainGBuffer.fs`: branch em tempo de execução no
+  `main()` — `u_numMaterials>0` entra no path generalizado (`sampler2DArray`,
+  loop até `MAX_EXT_MATERIALS=64`, height-blend UE5 generalizado pra N);
+  `u_numMaterials==0` (sempre o caso pro cliente do jogo) cai no path legado
+  EXATO de antes, sem nenhuma mudança de comportamento/resultado visual.
+
+**Bug encontrado e corrigido nesta sessão:** a primeira versão de
+`EditableTerrain::SubmitToPipeline` setava `num_materials = materials_.size()`
+incondicionalmente — fazendo QUALQUER área, mesmo com ≤4 materiais (ex.
+"Training Camp", formato legado), entrar no path novo (texture arrays) nunca
+testado visualmente, resultando em terreno invisível no GUE (o cliente do
+jogo não era afetado, pois nunca seta `num_materials`). Corrigido: o path
+generalizado só ativa quando `materials_.size() > 4`; caso contrário
+`SubmitToPipeline` preenche os campos legados (`splatmap`, `mat_albedo[4]`,
+`tilings` vec4, `mat_normal_strength[4]`) exatamente como antes da Fase 1, e
+`num_materials` fica em 0 (path legado). Logs de diagnóstico temporários
+(`[terrain-dbg]`) permanecem em `editable_terrain.cpp`/`pipeline.cpp` até uma
+área com >4 materiais de verdade ser testada visualmente com sucesso.
+
+**Bug 124.1 encontrado e corrigido — `GL_INVALID_OPERATION` "program texture
+usage" (terreno invisível mesmo no path legado, inclusive em mapa novo/vazio):**
+Depois da correção acima, o path legado passou a ser o caso comum de novo —
+e foi aí que apareceu um segundo bug, pré-existente desde que o path `ext_*`
+foi introduzido: o programa `terrainGBuffer` compilado tem, ao MESMO TEMPO,
+os uniforms sampler2D legados (`u_splatmap`, `u_mat0_albedo`, ...) E os
+sampler2DArray novos (`u_splatmapArrayExt`, `u_matAlbedoArrayExt`, ...).
+Valores de uniform persistem no programa entre draw calls — o branch que
+NÃO roda numa dada chamada deixa seus samplers apontando pra alguma unidade
+(0, se nunca setados desde o link; ou o que uma chamada anterior tiver
+deixado). O código original reusava as unidades 0-5 tanto pro splatmap/mat0
+legado (sampler2D) quanto pros arrays novos (sampler2DArray) — dois samplers
+ativos de tipo incompatível referenciando a MESMA unidade é exatamente o que
+gera esse erro no draw. Isso batia com "quebra em qualquer mapa": assim que
+o path legado passou a ser usado (Bug 124 corrigido acima), as unidades 0-5
+ficaram com sampler2D bindado enquanto os sampler2DArray (nunca setados no
+branch legado) ainda apontavam — por default/estado anterior — pras mesmas
+unidades 0-5.
+- **Correção 1:** unidades disjuntas — legado continua 0-22 (0=splatmap,
+  1-20=materiais, 21=macro, 22=heightmap), `ext_*` movido pra 23-28
+  (`shared/renderer/src/pipeline.cpp`, `terrainPass_`). Nenhum tipo de
+  sampler pode mais colidir numa mesma unidade.
+- **Correção 2:** `Pipeline::ensureTerrainDummyTextures_()` cria duas
+  texturas dummy 1x1 brancas (uma `GL_TEXTURE_2D`, uma `GL_TEXTURE_2D_ARRAY`)
+  uma única vez. TODO draw agora seta E binda os DOIS conjuntos de uniforms,
+  sempre — o conjunto ativo recebe os dados reais do chunk, o conjunto
+  inativo recebe a dummy do tipo certo. Elimina tanto a colisão de tipo
+  quanto qualquer unidade "vazia" (handle 0) que um sampler ainda declarado
+  ativo no programa possa amostrar.
+- Isso explica por que um mapa NOVO/vazio ("Test") também quebrava: mesmo
+  sem nenhum material configurado, `SubmitToPipeline` já roda o path legado
+  (≤4 materiais sempre, ver Bug 124) — o conflito de unidade acontecia
+  independente de haver dado real ou não.
+
+**Bug 124.2 encontrado e corrigido — 5º material adicionado ("+ Add Material")
+aparece com peso 100% em todo o terreno, sem o dev ter pintado nada:**
+`Splatmap::RebuildArrayStorage()` (`tools/gue/src/terrain/splatmap.h`) roda a
+cada mudança de contagem de materiais (inclusive ao crescer de 4→5 via
+`EnsureMaterialCount`) e SEMPRE destrói e recria `arrayTex` do zero via
+`glTexImage3D(..., nullptr)` — que aloca memória de GPU SEM zerar
+(conteúdo indefinido/lixo, não garantidamente zero). Isso dependia
+inteiramente de uma chamada posterior a `UploadArray()` (via `Upload()`,
+disparado no próximo `Update()`/frame) pra sobrescrever esse lixo antes de
+qualquer sample no shader — sem nenhuma garantia explícita nesse meio-tempo.
+Como o canal de peso do material novo cai exatamente nessa janela (o layer
+INTEIRO é realocado do zero, não só o canal novo), um valor de lixo alto no
+canal R/G/B/A correspondente ao material recém-adicionado se traduz
+diretamente em "peso ~100% em todo lugar" após a normalização do shader
+(`wsum`), afogando os pesos reais dos outros materiais.
+- **Correção:** `RebuildArrayStorage()` agora chama `glClearTexImage(arrayTex,
+  0, GL_RGBA, GL_UNSIGNED_BYTE, zero)` imediatamente após a alocação — zera
+  explicitamente TODOS os layers na GPU antes de qualquer outra coisa rodar,
+  eliminando a dependência de ordem entre alocação e upload. `SplatLayer`
+  individual (a textura 2D por-grupo) já fazia upload explícito de dados
+  zerados (`data.assign(...,0u)` + `glTexImage2D(..., data.data())`, nunca
+  `nullptr`) — não precisou de correção.
+
+**Bug 124.3 — path novo (>4 materiais) ainda quebra (cinza/preto); desativado
+via fallback defensivo, causa raiz não isolada:** mesmo depois de confirmar
+por leitura direta de GPU que (a) os pesos do splatmap estão corretos em
+múltiplos pontos, (b) as texturas por-material são distintas, (c) toda a
+cadeia de bind não gera nenhum `GL error`, e (d) o programa do shader
+linka/valida (`GL_LINK_STATUS`/`GL_VALIDATE_STATUS` = 1) nesse estado — o
+terreno ainda aparece cinza/preto assim que a 5ª textura é adicionada.
+Revisão de todos os limiares `>4`/`<4` (C++ e GLSL) e de todo array de
+tamanho fixo no caminho novo não encontrou nenhum operador errado nem
+limite menor que `MAX_EXT_MATERIALS=64`. Causa raiz **não isolada** ainda.
+- **Fallback aplicado (`editable_terrain.cpp`, `SubmitToPipeline`):**
+  `constexpr bool kExtPathEnabled = false;` — o path novo (texture arrays)
+  fica desativado; `SubmitToPipeline` SEMPRE usa o path legado exato-4,
+  mostrando só os primeiros 4 materiais quando há mais. Autoria (catálogo,
+  pintura do splatmap) continua funcionando pra N ilimitado — só o PREVIEW
+  fica limitado a 4 até o bug ser isolado e corrigido (flip
+  `kExtPathEnabled = true` quando resolvido).
+- Nunca mostra terreno quebrado: pior caso agora é "preview mostra só os 4
+  primeiros materiais", nunca cinza/preto.
+
+**Hipótese testada e DESCARTADA — placeholder inválido (GL id 0) nos mapas
+normal/roughness/ao/height de slots novos:** pista de outra engine (HTerrain)
+sugeria que slots novos podiam ter esses mapas em 0 (nunca atribuídos),
+corrompendo o `MaterialTextureArray` inteiro no upload. Revisão de código
+(não só do 5º slot, de TODO caminho que constrói um `Material`) mostrou que
+`EnsureSlotCapacity`, `SetMaterialSlot`, `ReloadMaterials` e o branch
+`hasIds` de `LoadArea` sempre atribuem `defaultNormal_`/`defaultRoughness_`/
+`defaultAO_`/`defaultHeight_` (texturas sólidas válidas) — nunca 0.
+`MaterialTextureArray::SetLayerFromGLTexture` também já tinha uma guarda
+explícita pra `srcTex==0` (preenche branco, não chama `glBindTexture`/
+`glGetTexImage` nesse estado). Hipótese não confirmada como causa raiz.
+Mesmo assim, adicionado um clamp defensivo em `RebuildMaterialArrays()`
+(`editable_terrain.cpp`) — se qualquer material tiver um desses handles em 0
+por algum caminho futuro que esqueça de setá-lo, cai pro `default*_`
+correspondente antes do upload, nunca um handle 0 alcança o array.
+`kExtPathEnabled` continua `false` — essa correção é defesa-em-profundidade,
+não a causa raiz encontrada.
+
+**Bug 124.4 encontrado e corrigido — CRÍTICO: qualquer área salva pelo GUE
+depois da Fase 1 quebrava o carregamento de splatmap no CLIENTE (jogo),
+mesmo com só 4 materiais:** `Splatmap::Save()` (`splatmap.h`) sempre grava o
+magic `RSPN` (multi-layer, novo formato) — mesmo pra uma área de 4
+materiais (1 layer). O parser de splatmap do cliente
+(`client/src/renderer/terrain/terrain.cpp:381-396`, antes desta correção) só
+reconhecia os magics legados `RSP2`/`RSPM` — um arquivo `RSPN` não batia com
+nenhum dos dois, `ok` ficava `false`, e o splatmap simplesmente nunca era
+enviado pra GPU (`splatmap_tex_` ficava no estado anterior/zero) — terreno
+carregava sem NENHUMA pintura de material no jogo. Isso não dependia de ter
+>4 materiais: bastava salvar QUALQUER área pelo GUE pós-Fase-1 pra quebrar
+no client.
+- **Correção:** `terrain.cpp` ganhou um novo branch `magic == 0x4E505352`
+  (RSPN) — lê o `numLayers` extra do header e carrega **só o layer 0** (W×H×4
+  bytes, materiais 0-3), ignorando silenciosamente quaisquer layers extras
+  (materiais 4+) sem erro — consistente com o cliente ficar limitado a 4
+  materiais nesta fase. `materials.txt` com 5+ linhas já era seguro (loop
+  `while (... && materials_.size() < 4)` em `terrain.cpp:454` já parava
+  sozinho nos 4 primeiros, sem erro) — não precisou de correção.
+
+**Limitação conhecida, esperada e documentada — o RUNTIME do jogo continua em 4:**
+Quando uma área tem >4 materiais, o preview do editor mistura corretamente
+qualquer N via o path novo (atualmente desativado, ver Bug 124.3 acima). O cliente do jogo
+(`client/src/renderer/terrain/terrain.cpp`) monta só os 4 slots legados a
+partir de `materials.txt` (loop `< 4` em `terrain.cpp:454`, e agora lê só o
+layer 0 do `RSPN`, ver Bug 124.4) — uma área salva com >4 materiais roda no
+jogo usando só os primeiros 4 até a Fase 2. Isso é intencional: o objetivo
+desta
+fase era só destravar a AUTORIA; o runtime do jogo (que não pode pagar o
+custo por-pixel do path generalizado nem, no médio prazo, N sets de texturas
+inteiras carregadas) precisa do bake (Fase 2, ver item de investigação
+"Terrain material bake / RVT" desta mesma sessão) antes de ganhar >4
+materiais de verdade.
+
+**Pendente (Fase 2 — bake pra runtime simplificado):**
+- Assar splatmap + materiais autorados (N ilimitado) numa textura
+  índice+peso compacta (Variante B da investigação prévia), consumida por um
+  shader novo e simples no cliente (2-4 texture fetches por pixel,
+  independente de N).
+- Até lá, o cliente permanece limitado a 4 materiais por área — comportamento
+  inalterado em relação a antes desta sessão.
+
+**Quando atacar:** ao iniciar a Fase 2 (bake), ou se algum dev tentar
+efetivamente configurar/pintar >4 materiais numa área que precisa aparecer
+correta no jogo (não só no editor) antes disso.
+**Estimativa:** Fase 2 é o grosso do trabalho restante — bake FBO offscreen +
+shader runtime novo + fluxo de UI "Bake Terrain"; 3-5 dias.
+
+**Bug 124.5 — redesign: separado em DOIS shaders de terreno independentes,
+`kExtPathEnabled` reativado:** manter os dois caminhos (legado exato-4 e o
+novo N-materiais) coexistindo num ÚNICO programa GLSL foi identificado como a
+causa estrutural da fragilidade — não um bug pontual. Uniforms de sampler
+persistem no programa entre draw calls; qualquer branch que não roda numa
+chamada deixa seus samplers apontando pra alguma unidade, e os dois conjuntos
+de samplers (sampler2D legado + sampler2DArray novo) competindo por unidades
+no MESMO programa foi a causa raiz confirmada do bug `GL_INVALID_OPERATION`
+anterior — além de pressão combinada de orçamento (29 de um total prático de
+~32 `GL_MAX_TEXTURE_IMAGE_UNITS`) e da dificuldade de depuração que consumiu
+várias rodadas de investigação.
+- **`dist/client/shaders/terrainGBuffer.fs`**: revertido — é EXATAMENTE o
+  arquivo de antes da Fase 1 (sem `u_numMaterials`, sem `sampler2DArray`, sem
+  `MAX_EXT_MATERIALS`, sem as variantes `*Arr` das funções triplanares). Só o
+  path de 4 materiais. Usado pelo cliente do jogo e pelo editor quando
+  `materials_.size() <= 4`.
+- **`dist/client/shaders/terrainGBufferExt.fs`** (novo arquivo): só o path
+  generalizado (sampler2DArray + blend de N materiais). Duplica as funções
+  auxiliares (`stochCoords`, `sampleStochArr`, `triplanarArr`/`RArr`/`GArr`/
+  `NormalArr`, `octEncode`) — duplicação aceita conscientemente, é pouco
+  código e raramente mexido. Unidades de textura reiniciam do 0 (0=splat
+  array, 1-5=arrays de material, 6=macro, 7=heightmap) — não competem mais
+  com o legado, cada programa tem seu próprio orçamento.
+- **`shared/renderer/src/compile_shaders.cpp`**: registra
+  `Shader::shaders["terrainGBufferExt"]` compilado com o mesmo
+  `terrainGBuffer.vs` (estágio de vértice idêntico) + o novo `.fs`.
+- **`shared/renderer/src/pipeline.cpp`** (`terrainPass_`): escolhe o
+  programa por chunk — `Shader::shaders[c.num_materials>0 ?
+  "terrainGBufferExt" : "terrainGBuffer"]` — e faz bind SÓ dos
+  uniforms/texturas do programa escolhido. Removida toda a maquinaria de
+  texturas dummy/unidades disjuntas (`ensureTerrainDummyTextures_`,
+  `terrainDummyTex2D_`/`terrainDummyTexArray_` em `pipeline.h`) e o acessor
+  temporário `Shader::DebugProgramID()` — não fazem mais sentido com
+  programas separados.
+- **`tools/gue/src/terrain/editable_terrain.cpp`** (`SubmitToPipeline`):
+  `kExtPathEnabled` voltou a `true` — com os dois shaders isolados, o path
+  novo não tem mais como contaminar o legado.
+- Logs de diagnóstico `TerrainCheckGL_`/`[gl-err]` em `splatmap.h`/
+  `material.h` foram mantidos (são checks de erro genéricos, silenciosos em
+  caso de sucesso) — não fazem parte do mecanismo de coexistência removido.
+
+**Bug 124.6 encontrado e corrigido — CAUSA RAIZ FINAL do cinza/NaN no shader
+novo: `Set1FloatArray("u_tilingsExt", ...)` e `Set1FloatArray("u_matNormalStrengthExt", ...)`
+faltavam o sufixo `"[0]"` no nome do uniform:** `Shader::initUniforms()`
+(`shader.cpp:107-123`) enumera os uniforms ativos via `glGetActiveUniform` e
+guarda no mapa `Uniforms` a chave EXATA que o driver retorna — pra um
+uniform array, essa chave SEMPRE inclui `[0]` (ex: `"u_tilingsExt[0]"`,
+nunca o nome nu `"u_tilingsExt"`; comportamento padrão de reflexão GLSL, não
+peculiaridade de driver). `Shader::loc()` (`shader.cpp:138-143`) faz um
+lookup exato no mapa e retorna `-1` silenciosamente em release quando não
+acha (só dispara `assert` em debug). `glProgramUniform1fv(prog, -1, ...)`
+com location `-1` é um no-op definido pelo spec — ou seja,
+`u_tilingsExt`/`u_matNormalStrengthExt` **nunca eram de fato setados**,
+ficando em `0.0` (default GLSL) em todos os elementos. Dividir posição de
+mundo por um tiling `0.0` produz Inf/NaN — exatamente o que o marcador
+magenta de NaN capturou, e a causa do cinza uniforme antes disso (UV
+degenerada por divisão por zero).
+- **Confirmado pelo próprio padrão já usado no arquivo**: `ssaoPass_` e
+  `volumetricPass_` já chamam `Set1FloatArray("kernel[0]", ...)` e
+  `Set1FloatArray("offsets[0]", ...)` — com o sufixo — precisamente por essa
+  razão. As chamadas novas do path Ext (`u_tilingsExt`/`u_matNormalStrengthExt`)
+  foram as únicas no arquivo que omitiram o sufixo.
+- **Correção**: `pipeline.cpp` (`terrainPass_`, branch Ext) — `Set1FloatArray("u_tilingsExt[0]", ...)`
+  e `Set1FloatArray("u_matNormalStrengthExt[0]", ...)`.
+- Isso explica por que o teste de coordenada (`wp.xz / u_tilingsExt[0]`) deu
+  magenta (divisão por zero) enquanto os testes anteriores sem essa divisão
+  (RMA fixo, normal fixa, albedo puro sem tiling) davam cinza mas não
+  disparavam o marcador — o cinza vinha de UVs degeneradas alimentando
+  `texture()`/`textureGrad()` com coordenadas Inf, não de um NaN aritmético
+  simples nos valores escalares testados antes.
+
+**Item de colisão anotado, NÃO investigado (reportado pelo dev):** objetos
+de "ponte" não são escaláveis/atravessáveis pelo jogador — suspeita de
+interação entre a colisão do objeto (ponte) e algum ajuste anterior de
+colisão de terreno/montanha, impedindo o jogador de subir na ponte. Ver item
+125 abaixo.
+
+## 125. COLISÃO: objetos de ponte não são escaláveis/atravessáveis pelo jogador
+
+**Estado:** reportado pelo dev — jogador não consegue subir/atravessar
+objetos de ponte no jogo.
+
+**Suspeita (não confirmada):** interação entre a colisão do objeto (ponte) e
+algum ajuste anterior de colisão de terreno/montanha, impedindo o jogador de
+subir na ponte.
+
+**NÃO investigado ainda** — só reportado. A investigar em sessão futura.
+
+**Quando atacar:** próxima sessão dedicada a colisão/movimentação do
+jogador.
+

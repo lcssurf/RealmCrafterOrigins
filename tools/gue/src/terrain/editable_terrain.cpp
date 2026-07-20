@@ -13,6 +13,18 @@
 
 namespace gue {
 
+namespace {
+// Debug colours cycled every 4 slots so painting stays visually distinct
+// even past the original 4-material layout, and when no real texture files
+// exist for a slot yet.
+constexpr uint8_t kSlotRGB[4][3] = {
+    {110, 155,  70},   // grassy green
+    {148, 116,  78},   // dirt brown
+    {130, 135, 148},   // rocky grey-blue
+    {195, 180, 120},   // sandy
+};
+} // namespace
+
 // ─── Default placeholder textures ────────────────────────────────────────────
 
 void EditableTerrain::EnsureDefaultTextures() {
@@ -118,6 +130,7 @@ void EditableTerrain::DestroyMaterials() {
         m.Unload();
     }
     materials_.clear();
+    matConfigured_.clear();
 }
 
 void EditableTerrain::MarkDirtyAll() {
@@ -133,6 +146,51 @@ void EditableTerrain::MarkDirtyRegion(float wx, float wz, float radius) {
     heightmap_.UploadRegion(x0, z0, x1, z1);
 }
 
+// ─── Material texture arrays (feed the shader's generalized N-material path) ─
+
+void EditableTerrain::RebuildMaterialArrays() {
+    int n = (int)materials_.size();
+    if (n == 0) {
+        matAlbedoArray_.Destroy();
+        matNormalArray_.Destroy();
+        matRoughnessArray_.Destroy();
+        matAoArray_.Destroy();
+        matHeightArray_.Destroy();
+        return;
+    }
+
+    matAlbedoArray_.Resize(n, /*srgb=*/true);
+    matNormalArray_.Resize(n, false);
+    matRoughnessArray_.Resize(n, false);
+    matAoArray_.Resize(n, false);
+    matHeightArray_.Resize(n, false);
+
+    // Defensive: every construction path for materials_[i] (EnsureSlotCapacity,
+    // SetMaterialSlot, ReloadMaterials, LoadArea's placeholder seeding) already
+    // assigns valid default*_ handles to normal/roughness/ao/height — none of
+    // them should ever be 0 here. Clamp anyway so a future code path that
+    // forgets to set one of these can never feed a 0 GL id into the texture
+    // array upload. See docs/TECH_DEBT.md "Terrain multi-material authoring
+    // (Phase 1)".
+    for (int i = 0; i < n; ++i) {
+        GLuint normal    = materials_[i].normal    ? materials_[i].normal    : defaultNormal_;
+        GLuint roughness = materials_[i].roughness ? materials_[i].roughness : defaultRoughness_;
+        GLuint ao        = materials_[i].ao        ? materials_[i].ao        : defaultAO_;
+        GLuint height     = materials_[i].height    ? materials_[i].height    : defaultHeight_;
+        matAlbedoArray_.SetLayerFromGLTexture(i, materials_[i].albedo);
+        matNormalArray_.SetLayerFromGLTexture(i, normal);
+        matRoughnessArray_.SetLayerFromGLTexture(i, roughness);
+        matAoArray_.SetLayerFromGLTexture(i, ao);
+        matHeightArray_.SetLayerFromGLTexture(i, height);
+    }
+
+    matAlbedoArray_.GenerateMipmaps();
+    matNormalArray_.GenerateMipmaps();
+    matRoughnessArray_.GenerateMipmaps();
+    matAoArray_.GenerateMipmaps();
+    matHeightArray_.GenerateMipmaps();
+}
+
 // ─── Material scanning ───────────────────────────────────────────────────────
 
 void EditableTerrain::ReloadMaterials() {
@@ -140,10 +198,9 @@ void EditableTerrain::ReloadMaterials() {
     DestroyMaterials();
 
     // Materials live under dist/client/data/terrain/materials/<name>/.
-    // Scan per configured name; fall back to a 1×1 placeholder if missing.
+    // Scan per configured name — no cap on how many; falls back to a
+    // debug-coloured placeholder if a folder is missing.
     for (const std::string& name : materialNames_) {
-        if ((int)materials_.size() >= kMaxMats) break;
-
         std::string dir = "../client/data/terrain/materials/" + name;
         auto scanned = ScanMaterials(dir, defaultNormal_, defaultRoughness_,
                                      defaultAO_, defaultHeight_);
@@ -162,15 +219,10 @@ void EditableTerrain::ReloadMaterials() {
             }
             m.name = name;
             materials_.push_back(std::move(m));
+            matConfigured_.push_back(true); // real texture files found
         } else {
             // Distinct debug colors per slot so painting is visible even when
-            // no real texture files exist. Matches splatmap channels R/G/B/A.
-            static const uint8_t kSlotRGB[4][3] = {
-                {110, 155,  70},   // 0 R — grassy green
-                {148, 116,  78},   // 1 G — dirt brown
-                {130, 135, 148},   // 2 B — rocky grey-blue
-                {195, 180, 120},   // 3 A — sandy
-            };
+            // no real texture files exist.
             int si = (int)materials_.size() % 4;
             Material m;
             m.name      = name;
@@ -180,47 +232,40 @@ void EditableTerrain::ReloadMaterials() {
             m.ao        = defaultAO_;
             m.height    = defaultHeight_;
             materials_.push_back(std::move(m));
+            matConfigured_.push_back(false); // debug placeholder, not a real material
         }
     }
     if (materials_.empty()) {
         EnsureDefaultTextures();
-        static const uint8_t kSlotRGB[4][3] = {
-            {110, 155,  70},
-            {148, 116,  78},
-            {130, 135, 148},
-            {195, 180, 120},
-        };
-        for (int si = 0; si < 1; ++si) {   // seed at least one
-            Material m;
-            m.name      = "default";
-            m.albedo    = MakeSolidTex(kSlotRGB[si][0], kSlotRGB[si][1], kSlotRGB[si][2]);
-            m.normal    = defaultNormal_;
-            m.roughness = defaultRoughness_;
-            m.ao        = defaultAO_;
-            m.height    = defaultHeight_;
-            materials_.push_back(std::move(m));
-        }
+        Material m;
+        m.name      = "default";
+        m.albedo    = MakeSolidTex(kSlotRGB[0][0], kSlotRGB[0][1], kSlotRGB[0][2]);
+        m.normal    = defaultNormal_;
+        m.roughness = defaultRoughness_;
+        m.ao        = defaultAO_;
+        m.height    = defaultHeight_;
+        materials_.push_back(std::move(m));
+        matConfigured_.push_back(false); // debug placeholder, not a real material
     }
+
+    while ((int)tilings.size()             < (int)materials_.size()) tilings.push_back(8.f);
+    while ((int)matIds_.size()             < (int)materials_.size()) matIds_.push_back(0);
+    while ((int)matAlbedoPaths_.size()     < (int)materials_.size()) matAlbedoPaths_.push_back({});
+    while ((int)matNormalPaths_.size()     < (int)materials_.size()) matNormalPaths_.push_back({});
+    while ((int)matOrmPaths_.size()        < (int)materials_.size()) matOrmPaths_.push_back({});
+    while ((int)matNormalStrengths_.size() < (int)materials_.size()) matNormalStrengths_.push_back(2.5f);
+    while ((int)matConfigured_.size()      < (int)materials_.size()) matConfigured_.push_back(false);
+
+    splatmap_.EnsureMaterialCount((int)materials_.size());
+    RebuildMaterialArrays();
 }
 
 void EditableTerrain::SetMaterialNames(const std::vector<std::string>& names) {
-    materialNames_.clear();
-    for (const auto& n : names) {
-        if ((int)materialNames_.size() >= kMaxMats) break;
-        materialNames_.push_back(n);
-    }
+    materialNames_ = names;
     ReloadMaterials();
 }
 
-void EditableTerrain::SetMaterialSlot(int slot, const TerrainMatSpec& spec) {
-    if (slot < 0 || slot >= kMaxMats) return;
-    EnsureDefaultTextures();
-
-    static const uint8_t kSlotRGB[4][3] = {
-        {110, 155,  70}, {148, 116,  78}, {130, 135, 148}, {195, 180, 120}
-    };
-
-    // Grow the vector to cover this slot with placeholder colours
+void EditableTerrain::EnsureSlotCapacity(int slot) {
     while ((int)materials_.size() <= slot) {
         int si = (int)materials_.size() % 4;
         Material ph;
@@ -230,7 +275,27 @@ void EditableTerrain::SetMaterialSlot(int slot, const TerrainMatSpec& spec) {
         ph.ao        = defaultAO_;
         ph.height    = defaultHeight_;
         materials_.push_back(std::move(ph));
+        matIds_.push_back(0);
+        matAlbedoPaths_.push_back({});
+        matNormalPaths_.push_back({});
+        matOrmPaths_.push_back({});
+        matNormalStrengths_.push_back(2.5f);
+        tilings.push_back(8.f);
+        matConfigured_.push_back(false); // fresh placeholder — not a real material yet
     }
+    splatmap_.EnsureMaterialCount((int)materials_.size());
+}
+
+int EditableTerrain::AddMaterialSlot(const TerrainMatSpec& spec) {
+    int slot = (int)materials_.size();
+    SetMaterialSlot(slot, spec);
+    return slot;
+}
+
+void EditableTerrain::SetMaterialSlot(int slot, const TerrainMatSpec& spec) {
+    if (slot < 0) return;
+    EnsureDefaultTextures();
+    EnsureSlotCapacity(slot);
 
     // Free old textures — null shared defaults first to avoid double-delete
     Material& m = materials_[slot];
@@ -254,7 +319,19 @@ void EditableTerrain::SetMaterialSlot(int slot, const TerrainMatSpec& spec) {
         return LoadTex("../client/" + relPath, srgb);
     };
 
-    m.albedo = !spec.albedo_path.empty()
+    // Single source of truth for "does this slot actually have a real
+    // texture, or is it still the debug placeholder colour" — used for BOTH
+    // m.albedo's choice AND matConfigured_ below. These used to be two
+    // separate conditions (m.albedo checked albedo_path; matConfigured_
+    // additionally accepted a nonzero media_id on its own) — a DB material
+    // with a valid id but an unresolved/empty albedo_path made
+    // matConfigured_ true (shader starts reading this slot) while m.albedo
+    // was still the placeholder (e.g. the green kSlotRGB[0]), permanently
+    // showing the placeholder colour once picked. See docs/TECH_DEBT.md
+    // "Terrain multi-material authoring (Phase 1)".
+    bool hasRealAlbedo = !spec.albedo_path.empty();
+
+    m.albedo = hasRealAlbedo
         ? tryLoad(spec.albedo_path, true)
         : MakeSolidTex(kSlotRGB[slot % 4][0], kSlotRGB[slot % 4][1], kSlotRGB[slot % 4][2]);
 
@@ -262,33 +339,64 @@ void EditableTerrain::SetMaterialSlot(int slot, const TerrainMatSpec& spec) {
     m.roughness = spec.roughness_path.empty() ? defaultRoughness_ : tryLoad(spec.roughness_path, false);
     m.ao        = defaultAO_;
     m.height    = defaultHeight_;
+
+    // A slot is only "configured" once it actually has a real texture in
+    // m.albedo — never true while m.albedo is still the placeholder, so the
+    // shader can never read a placeholder-filled layer.
+    matConfigured_[slot] = hasRealAlbedo;
+
+    RebuildMaterialArrays();
 }
 
 void EditableTerrain::ClearMaterialSlot(int slot) {
-    if (slot < 0 || slot >= kMaxMats) return;
+    if (slot < 0 || slot >= (int)materials_.size()) return;
     EnsureDefaultTextures();
-    static const uint8_t kSlotRGB[4][3] = {
-        {110, 155,  70}, {148, 116,  78}, {130, 135, 148}, {195, 180, 120}
-    };
-    if (slot < (int)materials_.size()) {
-        Material& m = materials_[slot];
-        if (m.normal    == defaultNormal_)    m.normal    = 0;
-        if (m.roughness == defaultRoughness_) m.roughness = 0;
-        if (m.ao        == defaultAO_)        m.ao        = 0;
-        if (m.height    == defaultHeight_)    m.height    = 0;
-        m.Unload();
-        m.name      = "";
-        m.albedo    = MakeSolidTex(kSlotRGB[slot % 4][0], kSlotRGB[slot % 4][1], kSlotRGB[slot % 4][2]);
-        m.normal    = defaultNormal_;
-        m.roughness = defaultRoughness_;
-        m.ao        = defaultAO_;
-        m.height    = defaultHeight_;
-    }
+    Material& m = materials_[slot];
+    if (m.normal    == defaultNormal_)    m.normal    = 0;
+    if (m.roughness == defaultRoughness_) m.roughness = 0;
+    if (m.ao        == defaultAO_)        m.ao        = 0;
+    if (m.height    == defaultHeight_)    m.height    = 0;
+    m.Unload();
+    m.name      = "";
+    m.albedo    = MakeSolidTex(kSlotRGB[slot % 4][0], kSlotRGB[slot % 4][1], kSlotRGB[slot % 4][2]);
+    m.normal    = defaultNormal_;
+    m.roughness = defaultRoughness_;
+    m.ao        = defaultAO_;
+    m.height    = defaultHeight_;
+
     matIds_[slot] = 0;
     matAlbedoPaths_[slot].clear();
     matNormalPaths_[slot].clear();
     matOrmPaths_[slot].clear();
     matNormalStrengths_[slot] = 2.5f;
+    matConfigured_[slot] = false; // back to placeholder — excluded from the shader
+
+    RebuildMaterialArrays();
+}
+
+void EditableTerrain::RemoveMaterialSlot(int slot) {
+    if (slot < 0 || slot >= (int)materials_.size()) return;
+
+    Material& m = materials_[slot];
+    if (m.normal    == defaultNormal_)    m.normal    = 0;
+    if (m.roughness == defaultRoughness_) m.roughness = 0;
+    if (m.ao        == defaultAO_)        m.ao        = 0;
+    if (m.height    == defaultHeight_)    m.height    = 0;
+    m.Unload();
+
+    materials_.erase(materials_.begin() + slot);
+    matIds_.erase(matIds_.begin() + slot);
+    matAlbedoPaths_.erase(matAlbedoPaths_.begin() + slot);
+    matNormalPaths_.erase(matNormalPaths_.begin() + slot);
+    matOrmPaths_.erase(matOrmPaths_.begin() + slot);
+    matNormalStrengths_.erase(matNormalStrengths_.begin() + slot);
+    tilings.erase(tilings.begin() + slot);
+    matConfigured_.erase(matConfigured_.begin() + slot);
+    // Splatmap weight storage for the removed slot is left in the stack
+    // (unused channels are simply ignored by painting/blend) rather than
+    // redistributed — the stack never shrinks mid-session.
+
+    RebuildMaterialArrays();
 }
 
 // ─── Area I/O ────────────────────────────────────────────────────────────────
@@ -315,46 +423,65 @@ bool EditableTerrain::LoadArea(const std::string& areaName) {
         splatmap_.Resize(heightmap_.W, heightmap_.H);
     }
 
-    // Materials list — new format: "id tiling" (int id); old format: "name tiling" (folder name).
-    // Auto-detected per token: if the first non-whitespace char is a digit, treat as ID.
+    // Materials list — new format: "id tiling albedo normal orm normal_strength"
+    // (int id); old format: "name tiling" (folder name). Auto-detected per
+    // token: if the first non-whitespace char is a digit, treat as ID.
+    // No cap on the number of lines — Phase 1 authoring supports N materials.
     materialNames_.clear();
-    matIds_.fill(0);
-    tilings.fill(8.f);
-    matAlbedoPaths_.fill({});
-    matNormalPaths_.fill({});
-    matOrmPaths_.fill({});
-    matNormalStrengths_.fill(2.5f);
+    matIds_.clear();
+    matAlbedoPaths_.clear();
+    matNormalPaths_.clear();
+    matOrmPaths_.clear();
+    matNormalStrengths_.clear();
+    tilings.clear();
     bool hasIds = false;
     std::ifstream mt(mtPath);
     if (mt) {
         std::string line;
-        int lineIdx = 0;
-        while (std::getline(mt, line) && lineIdx < kMaxMats) {
+        while (std::getline(mt, line)) {
             std::istringstream is(line);
             std::string token; float t = 8.f;
             if (!(is >> token)) continue;
             is >> t;
             if (token.empty()) continue;
+
+            int id = 0;
+            std::string alb, nrm, orm;
+            float ns = 2.5f;
             bool looksInt = std::isdigit((unsigned char)token[0]) || token[0] == '-';
             if (looksInt) {
-                try { matIds_[lineIdx] = std::stoi(token); hasIds = true; } catch (...) {}
-                // Extended format: id tiling albedo normal orm normal_strength
-                std::string alb, nrm, orm, ns;
-                if ((is >> alb) && alb != "-") matAlbedoPaths_[lineIdx] = alb;
-                if ((is >> nrm) && nrm != "-") matNormalPaths_[lineIdx]  = nrm;
-                if ((is >> orm) && orm != "-") matOrmPaths_[lineIdx]      = orm;
-                if (is >> ns) {
-                    try { matNormalStrengths_[lineIdx] = std::stof(ns); } catch (...) {}
+                try { id = std::stoi(token); hasIds = true; } catch (...) {}
+                std::string a, n, o, nsStr;
+                if ((is >> a) && a != "-") alb = a;
+                if ((is >> n) && n != "-") nrm = n;
+                if ((is >> o) && o != "-") orm = o;
+                if (is >> nsStr) {
+                    try { ns = std::stof(nsStr); } catch (...) {}
                 }
             } else {
                 materialNames_.push_back(token);
             }
-            tilings[lineIdx] = t;
-            ++lineIdx;
+
+            matIds_.push_back(id);
+            matAlbedoPaths_.push_back(alb);
+            matNormalPaths_.push_back(nrm);
+            matOrmPaths_.push_back(orm);
+            matNormalStrengths_.push_back(ns);
+            tilings.push_back(t);
         }
     }
-    if (!hasIds && materialNames_.empty())
-        materialNames_ = {"grass", "dirt", "rock"};
+    if (!hasIds && materialNames_.empty()) {
+        materialNames_      = {"grass", "dirt", "rock"};
+        matIds_              = {0, 0, 0};
+        matAlbedoPaths_.resize(3);
+        matNormalPaths_.resize(3);
+        matOrmPaths_.resize(3);
+        matNormalStrengths_  = {2.5f, 2.5f, 2.5f};
+        tilings              = {8.f, 8.f, 8.f};
+    }
+
+    int totalMats = std::max((int)matIds_.size(), (int)materialNames_.size());
+    if (totalMats > 0) splatmap_.EnsureMaterialCount(totalMats);
 
     // Load macro variation if it exists
     {
@@ -392,18 +519,25 @@ bool EditableTerrain::LoadArea(const std::string& areaName) {
         // will call SetMaterialSlot() per slot once it resolves IDs from the DB.
         EnsureDefaultTextures();
         DestroyMaterials();
-        static const uint8_t kSlotRGB[4][3] = {
-            {110, 155,  70}, {148, 116,  78}, {130, 135, 148}, {195, 180, 120}
-        };
-        for (int si = 0; si < kMaxMats; ++si) {
+        int n = (int)matIds_.size();
+        for (int si = 0; si < n; ++si) {
             Material m;
-            m.albedo    = MakeSolidTex(kSlotRGB[si][0], kSlotRGB[si][1], kSlotRGB[si][2]);
+            int c = si % 4;
+            m.albedo    = MakeSolidTex(kSlotRGB[c][0], kSlotRGB[c][1], kSlotRGB[c][2]);
             m.normal    = defaultNormal_;
             m.roughness = defaultRoughness_;
             m.ao        = defaultAO_;
             m.height    = defaultHeight_;
             materials_.push_back(std::move(m));
+            // Seeded correctly up front: slots with a saved DB id are about
+            // to be resolved by ZonesTab::LoadZone's SetMaterialSlot loop
+            // (which will confirm/update this); slots with id==0 (e.g. an
+            // extra slot saved without ever picking a material) stay
+            // unconfigured, excluded from the shader's material count.
+            matConfigured_.push_back(matIds_[si] != 0);
         }
+        splatmap_.EnsureMaterialCount(n);
+        RebuildMaterialArrays();
     }
     return true;
 }
@@ -425,15 +559,15 @@ bool EditableTerrain::SaveArea() const {
         if (allZero && !materialNames_.empty()) {
             // Preserve old-format zones that have folder names but no DB ids yet
             for (int i = 0; i < (int)materialNames_.size(); ++i)
-                mt << materialNames_[i] << ' ' << tilings[i] << '\n';
+                mt << materialNames_[i] << ' ' << (i < (int)tilings.size() ? tilings[i] : 8.f) << '\n';
         } else {
-            // Extended format: "id tiling albedo_path normal_path orm_path"
+            // Extended format: "id tiling albedo_path normal_path orm_path normal_strength"
             // Paths are relative to dist/ root — client CWD is dist/client/ so they resolve directly.
             auto dash = [](const std::string& s) -> const std::string& {
                 static const std::string d = "-";
                 return s.empty() ? d : s;
             };
-            for (int i = 0; i < kMaxMats; ++i) {
+            for (int i = 0; i < (int)matIds_.size(); ++i) {
                 mt << matIds_[i] << ' ' << tilings[i]
                    << ' ' << dash(matAlbedoPaths_[i])
                    << ' ' << dash(matNormalPaths_[i])
@@ -495,14 +629,16 @@ void EditableTerrain::ApplyBrush(float wx, float wz, float radius, float strengt
 
 void EditableTerrain::Paint(float wx, float wz, float radius, float strength,
                             float dt, int matIdx, BrushFalloff falloff) {
-    if (matIdx < 0 || matIdx >= kMaxMats) return;
+    if (matIdx < 0 || matIdx >= (int)materials_.size()) return;
     ::PaintSplatmap(splatmap_, wx, wz, radius, strength, dt, matIdx,
                     WorldW(), WorldH(), falloff);
 }
 
 void EditableTerrain::AutoPaintBySlope(int flat, int rock, float mn, float mx) {
-    if (flat < 0 || flat >= kMaxMats || rock < 0 || rock >= kMaxMats || flat == rock) return;
+    int n = (int)materials_.size();
+    if (flat < 0 || flat >= n || rock < 0 || rock >= n || flat == rock) return;
     float cs = heightmap_.cell_size;
+    int numSlots = splatmap_.NumMaterialSlots();
     for (int z = 0; z < splatmap_.H; z++) {
         for (int x = 0; x < splatmap_.W; x++) {
             float dhdx = (heightmap_.Get(x+1,z) - heightmap_.Get(x-1,z)) / (2.f * cs);
@@ -511,7 +647,7 @@ void EditableTerrain::AutoPaintBySlope(int flat, int rock, float mn, float mx) {
             float t = glm::smoothstep(mn, mx, slope);
             splatmap_.SetWeight(x, z, flat, 1.f - t);
             splatmap_.SetWeight(x, z, rock, t);
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < numSlots; i++)
                 if (i != flat && i != rock) splatmap_.SetWeight(x, z, i, 0.f);
         }
     }
@@ -526,22 +662,66 @@ void EditableTerrain::SubmitToPipeline(rco::renderer::Pipeline& pipeline,
     Update();   // rebuild dirty chunks + upload splatmap
 
     rco::renderer::TerrainChunkSubmission base{};
-    base.splatmap        = splatmap_.tex;
-    base.tilings          = glm::vec4(tilings[0], tilings[1], tilings[2], tilings[3]);
     base.macro_variation  = macroTex_ ? macroTex_ : defaultMacro_;
     base.macro_strength   = macroStrength;
     base.terrain_origin   = glm::vec2(0.f);
     base.terrain_size     = glm::vec2(WorldW(), WorldH());
     base.heightmap_tex    = heightmap_.tex;
     base.cell_size        = heightmap_.cell_size;
-    for (int i = 0; i < kMaxMats; ++i) {
-        base.mat_normal_strength[i] = matNormalStrengths_[i];
-        if (i < (int)materials_.size()) {
-            base.mat_albedo[i]    = materials_[i].albedo;
-            base.mat_normal[i]    = materials_[i].normal;
-            base.mat_roughness[i] = materials_[i].roughness;
-            base.mat_ao[i]        = materials_[i].ao;
-            base.mat_height[i]    = materials_[i].height;
+
+    // Phase 1: the generalized N-material path (texture arrays) is now its
+    // own shader program (terrainGBufferExt.fs, see pipeline.cpp
+    // terrainPass_), fully independent from the legacy exact-4-material
+    // program (terrainGBuffer.fs). The gray/black bug that motivated
+    // temporarily disabling this path (docs/TECH_DEBT.md "Terrain
+    // multi-material authoring (Phase 1)", Bug 124.3) traced back to both
+    // paths sharing one linked GLSL program — stale/colliding sampler unit
+    // state between draws, not the data or math itself (both were verified
+    // correct by direct GPU readback). With separate programs that failure
+    // mode is structurally impossible, so the ext path is re-enabled.
+    constexpr bool kExtPathEnabled = true;
+
+    // Unconfigured trailing slots (e.g. right after "+ Add Material", before
+    // the dev picks a texture) must NOT be sent to the shader at all —
+    // otherwise their debug placeholder colour (kSlotRGB[slot%4], e.g. the
+    // green (110,155,70) reused by slot 4) blends in with real weight,
+    // showing through even where nothing was painted with that material.
+    // numConfigured = index of the highest CONFIGURED slot + 1, so trailing
+    // unconfigured slots are simply excluded from num_materials/the arrays
+    // below (a hole in the MIDDLE, e.g. a cleared slot before the last one,
+    // is a separate pre-existing edge case not addressed here).
+    int numConfigured = 0;
+    for (int i = 0; i < (int)materials_.size(); ++i)
+        if (matConfigured_[i]) numConfigured = i + 1;
+
+    if (kExtPathEnabled && numConfigured > 4) {
+        base.num_materials            = numConfigured;
+        base.ext_splatmap_array       = splatmap_.arrayTex;
+        base.ext_num_splat_groups     = splatmap_.NumGroups();
+        base.ext_mat_albedo_array     = matAlbedoArray_.tex;
+        base.ext_mat_normal_array     = matNormalArray_.tex;
+        base.ext_mat_roughness_array  = matRoughnessArray_.tex;
+        base.ext_mat_ao_array         = matAoArray_.tex;
+        base.ext_mat_height_array     = matHeightArray_.tex;
+        base.ext_tilings              = tilings;
+        base.ext_mat_normal_strength  = matNormalStrengths_;
+    } else {
+        // Legacy exact-4-material path — identical to how the editor
+        // rendered before Phase 1. num_materials stays 0 (default). Only
+        // taken when there are <=4 materials, now that kExtPathEnabled=true.
+        base.splatmap = splatmap_.layers.empty() ? 0 : splatmap_.layers[0].tex;
+        base.tilings = glm::vec4(
+            tilings.size() > 0 ? tilings[0] : 8.f,
+            tilings.size() > 1 ? tilings[1] : 8.f,
+            tilings.size() > 2 ? tilings[2] : 8.f,
+            tilings.size() > 3 ? tilings[3] : 8.f);
+        for (int i = 0; i < 4 && i < (int)materials_.size(); ++i) {
+            base.mat_albedo[i]          = materials_[i].albedo;
+            base.mat_normal[i]          = materials_[i].normal;
+            base.mat_roughness[i]       = materials_[i].roughness;
+            base.mat_ao[i]              = materials_[i].ao;
+            base.mat_height[i]          = materials_[i].height;
+            base.mat_normal_strength[i] = i < (int)matNormalStrengths_.size() ? matNormalStrengths_[i] : 2.5f;
         }
     }
 
@@ -633,11 +813,49 @@ bool EditableTerrain::SaveMacro() const {
     return stbi_write_png(outPath.c_str(), mw, mh, 1, pixels.data(), mw) != 0;
 }
 
+// ─── Debug dump (F11) ────────────────────────────────────────────────────────
+
+void EditableTerrain::DumpDebugReport(const std::string& path) const {
+    FILE* f = std::fopen(path.c_str(), "a");
+    if (!f) return;
+
+    static int dumpCount = 0;
+    ++dumpCount;
+
+    std::fprintf(f, "\n=== DUMP %d === area=\"%s\" NumMaterials=%d ===\n",
+                 dumpCount, areaName_.c_str(), (int)materials_.size());
+
+    splatmap_.WriteDebugReport(f);
+
+    std::fprintf(f, "-- Material albedo array: tex=%u, %d layer(s) --\n",
+                 matAlbedoArray_.tex, (int)materials_.size());
+    if (matAlbedoArray_.tex != 0) {
+        int cx = MaterialTextureArray::kRes / 2, cy = MaterialTextureArray::kRes / 2;
+        for (int i = 0; i < (int)materials_.size(); ++i) {
+            uint8_t px[4] = {0, 0, 0, 0};
+            glGetTextureSubImage(matAlbedoArray_.tex, 0, cx, cy, i, 1, 1, 1,
+                                  GL_RGBA, GL_UNSIGNED_BYTE, sizeof(px), px);
+            std::fprintf(f, "  layer %d (materials_[%d].albedo GL id=%u, name=\"%s\") center texel = R=%u G=%u B=%u A=%u\n",
+                         i, i, materials_[i].albedo, materials_[i].name.c_str(),
+                         px[0], px[1], px[2], px[3]);
+        }
+    } else {
+        std::fprintf(f, "  (no albedo array texture yet)\n");
+    }
+
+    std::fclose(f);
+}
+
 // ─── Destructor ──────────────────────────────────────────────────────────────
 
 EditableTerrain::~EditableTerrain() {
     DestroyChunks();
     DestroyMaterials();
+    matAlbedoArray_.Destroy();
+    matNormalArray_.Destroy();
+    matRoughnessArray_.Destroy();
+    matAoArray_.Destroy();
+    matHeightArray_.Destroy();
     splatmap_.Destroy();
     heightmap_.DestroyGPU();
     if (defaultNormal_)    glDeleteTextures(1, &defaultNormal_);

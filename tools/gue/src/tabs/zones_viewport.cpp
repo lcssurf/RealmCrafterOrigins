@@ -613,7 +613,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                 terrainStrokeActive_ = true;
                 TerrainSnapshot snap;
                 snap.heights = renderer_.terrain().heightmap().heights;
-                snap.splat   = renderer_.terrain().splatmap().data;
+                snap.splat   = renderer_.terrain().splatmap().AllData();
                 if ((int)terrainUndo_.size() >= kMaxTerrainUndo)
                     terrainUndo_.erase(terrainUndo_.begin());
                 terrainUndo_.push_back(std::move(snap));
@@ -686,18 +686,37 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
     if (vpHovered_ && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
         DeleteSelected(db);
 
+    // F11 — debug dump: appends one report to terrain_debug_dump.txt in the
+    // GUE's working directory — splatmap weights + material albedo array
+    // (8 points/layer, texture-space) PLUS the actual rendered G-buffer
+    // (gAlbedo/gNormal/gRMA at viewport center + the mouse cursor's current
+    // pixel, screen-space) so weight vs. visual result can be compared.
+    // Fixed 8-percentage screen points were unreliable (could land on sky,
+    // not terrain) — center is a much safer bet, and pointing the mouse at
+    // the exact visually-gray spot before pressing F11 lets the dev sample
+    // that precise pixel. Investigation tool for the Phase 1 multi-material
+    // terrain work — see docs/TECH_DEBT.md "Terrain multi-material
+    // authoring (Phase 1)".
+    if (ImGui::IsKeyPressed(ImGuiKey_F11, false) && renderer_.terrain().Loaded()) {
+        glm::ivec2 mousePx = {-1, -1};
+        if (vpHovered_) {
+            ImVec2 mp = ImGui::GetMousePos();
+            mousePx = { (int)(mp.x - vpOrigin_.x), (int)(mp.y - vpOrigin_.y) };
+        }
+        renderer_.DumpDebugReport("terrain_debug_dump.txt", mousePx);
+    }
+
     // Ctrl+Z — undo (terrain undo when in terrain mode, scene undo otherwise)
     if (vpHovered_ && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
         if (zoneMode_ == kModeTerrain && !terrainUndo_.empty()) {
             TerrainSnapshot cur;
             cur.heights = renderer_.terrain().heightmap().heights;
-            cur.splat   = renderer_.terrain().splatmap().data;
+            cur.splat   = renderer_.terrain().splatmap().AllData();
             terrainRedo_.push_back(std::move(cur));
             auto& prev = terrainUndo_.back();
             renderer_.terrain().heightmap().heights = prev.heights;
             renderer_.terrain().heightmap().InitGPU();
-            renderer_.terrain().splatmap().data  = prev.splat;
-            renderer_.terrain().splatmap().dirty = true;
+            renderer_.terrain().splatmap().SetAllData(prev.splat);
             terrainUndo_.pop_back();
         } else {
             Undo(db);
@@ -708,15 +727,14 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         if (zoneMode_ == kModeTerrain && !terrainRedo_.empty()) {
             TerrainSnapshot cur;
             cur.heights = renderer_.terrain().heightmap().heights;
-            cur.splat   = renderer_.terrain().splatmap().data;
+            cur.splat   = renderer_.terrain().splatmap().AllData();
             if ((int)terrainUndo_.size() >= kMaxTerrainUndo)
                 terrainUndo_.erase(terrainUndo_.begin());
             terrainUndo_.push_back(std::move(cur));
             auto& next = terrainRedo_.back();
             renderer_.terrain().heightmap().heights = next.heights;
             renderer_.terrain().heightmap().InitGPU();
-            renderer_.terrain().splatmap().data  = next.splat;
-            renderer_.terrain().splatmap().dirty = true;
+            renderer_.terrain().splatmap().SetAllData(next.splat);
             terrainRedo_.pop_back();
         }
     }

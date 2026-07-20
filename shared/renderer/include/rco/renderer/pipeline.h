@@ -85,6 +85,27 @@ struct TerrainChunkSubmission {
     GLuint    heightmap_tex  = 0;               // R32F heightmap — read by vertex shader
     float     cell_size      = 2.0f;
     float     lod_level      = 0.0f;           // fractional LOD (0=full, 1=half, 2=quarter …)
+
+    // --- Phase 1: generalized N-material authoring path (GUE editor only) ---
+    // Populated exclusively by tools/gue/src/terrain/editable_terrain.cpp;
+    // the game client's own terrain submission (client/src/renderer/terrain/
+    // terrain.cpp) never touches these fields, so num_materials stays 0
+    // there and the shader falls back to the legacy 4-slot fields above,
+    // unchanged. Texture ARRAYS (one GL handle per role, N layers) keep this
+    // to a fixed handful of texture units regardless of material count,
+    // sidestepping the ~32-unit GL_MAX_TEXTURE_IMAGE_UNITS ceiling that the
+    // legacy per-material-unit scheme would hit past ~6 materials. See
+    // docs/TECH_DEBT.md "Terrain multi-material authoring (Phase 1)".
+    int    num_materials         = 0;    // 0 = legacy path; >0 = use ext_* below
+    GLuint ext_splatmap_array    = 0;    // GL_TEXTURE_2D_ARRAY, one layer per group of 4 materials
+    int    ext_num_splat_groups  = 0;
+    GLuint ext_mat_albedo_array    = 0;  // GL_TEXTURE_2D_ARRAY, one layer per material
+    GLuint ext_mat_normal_array    = 0;
+    GLuint ext_mat_roughness_array = 0;
+    GLuint ext_mat_ao_array        = 0;
+    GLuint ext_mat_height_array    = 0;
+    std::vector<float> ext_tilings;             // size == num_materials
+    std::vector<float> ext_mat_normal_strength; // size == num_materials
 };
 
 class Pipeline {

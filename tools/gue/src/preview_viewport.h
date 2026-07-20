@@ -134,6 +134,26 @@ public:
     void Clear();
     const std::string& CurrentPath() const { return current_path_; }
 
+    // Forces the next LoadModel(path) call to actually reload instead of
+    // early-returning because path == current_path_ — used to pick up model
+    // cache invalidation (ModelCacheInvalidate) without an app restart, e.g.
+    // after editing Bone Slots/Conventions for a model already shown here.
+    void ForceReload() { current_path_.clear(); }
+
+    // Re-invokes PlayActionEntry_ for whatever action is currently selected,
+    // which re-calls Actor::LoadAnim -> Model::AppendAnimationsFrom. Needed
+    // because bumping bone_alias_revision_ (SetBoneAliases /
+    // SetBoneRetargetOffsets) only marks an already-baked clip as stale —
+    // something still has to ask for that clip again for the rebuild to
+    // actually happen. Calling this right after editing a Retarget Offset
+    // slider (media.cpp) is what makes the change show up on THIS SAME
+    // frame's next Draw, without switching tabs or replaying manually.
+    // No-op if nothing is currently selected.
+    void RefreshCurrentAction() {
+        if (sel_action_ >= 0 && sel_action_ < (int)anim_actions_.size())
+            PlayActionEntry_(anim_actions_[sel_action_]);
+    }
+
     // Read-only access to the loaded model for diagnostic display in the
     // calling tab (e.g. checking which submeshes have missing albedo textures).
     const rco::renderer::Model& GetModel() const { return actor_.model(); }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <glad/glad.h>
 #include <sqlite3.h>
 
 #include <string>
@@ -183,10 +184,18 @@ private:
     std::vector<ProfileOption> profile_options_;
     std::vector<std::string> fx_keys_;
     std::vector<std::string> anim_vocab_names_;
-    // Icon picker options (migrateV53) — every image found under the
-    // existing "Item Icons" asset folder, as "assets/..." relative paths.
+    // Icon picker options (migrateV53) — every image found anywhere under
+    // dist/client/assets/, as "assets/..." relative paths (gue::ListTextureAssets).
     // Refreshed on FetchAbilities() and after importing a new icon.
     std::vector<std::string> icon_options_;
+
+    // Icon thumbnail preview — same safe lifecycle as MediaTab's
+    // preview_mat_tex_/preview_mat_tex_id_ (media.h/media.cpp): at most one
+    // texture alive at a time, freed before loading the next. Keyed by PATH
+    // (not id) since icons are chosen by file path, not a media_materials-
+    // style id.
+    GLuint      preview_icon_tex_  = 0;   // 0 = none loaded
+    std::string preview_icon_path_;       // path whose texture is in preview_icon_tex_
 
     int selected_ability_ = -1;
     int selected_loadout_ = -1;

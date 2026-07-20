@@ -160,10 +160,22 @@ void CompileAllShaders() {
         }));
     }
 
-    // Terrain G-buffer writer (triplanar + 4-material splat blend)
+    // Terrain G-buffer writer (triplanar + 4-material splat blend). Used by
+    // BOTH the game client and the GUE editor's exact-4-material path.
     Shader::shaders["terrainGBuffer"].emplace(Shader({
         {"terrainGBuffer.vs", GL_VERTEX_SHADER},
         {"terrainGBuffer.fs", GL_FRAGMENT_SHADER}
+    }));
+
+    // Terrain G-buffer writer, generalized N-material path (GUE editor
+    // authoring preview only — the game client always uses terrainGBuffer
+    // above). Separate program, own texture-unit budget, so it can never
+    // collide with or destabilize the legacy shader — see docs/TECH_DEBT.md
+    // "Terrain multi-material authoring (Phase 1)". Reuses the same vertex
+    // shader (identical vertex stage, only the fragment blend differs).
+    Shader::shaders["terrainGBufferExt"].emplace(Shader({
+        {"terrainGBuffer.vs",    GL_VERTEX_SHADER},
+        {"terrainGBufferExt.fs", GL_FRAGMENT_SHADER}
     }));
 
     // Brush overlay ring — used by tools/terrain-editor as forward pass

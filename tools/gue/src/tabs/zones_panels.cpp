@@ -1144,57 +1144,49 @@ void ZonesTab::DrawPanelTerrain(sqlite3* db, bool) {
     }
 
     // ── Paint material picker ─────────────────────────────────────────────
+    // Phase 1: no longer 4 fixed buttons — a searchable combo lists every
+    // material registered on this terrain (16-50+), matching the unbounded
+    // material catalog. See docs/TECH_DEBT.md "Terrain multi-material
+    // authoring (Phase 1)".
     if (brushMode_ == 4) {
         ImGui::Spacing();
         ImGui::SeparatorText("Material Layer");
 
-        // Per-channel accent colours (R G B A)
-        static const ImVec4 kChanCol[] = {
-            {0.75f, 0.28f, 0.22f, 0.90f},
-            {0.22f, 0.62f, 0.28f, 0.90f},
-            {0.22f, 0.42f, 0.78f, 0.90f},
-            {0.72f, 0.65f, 0.12f, 0.90f},
-        };
-        static const ImVec4 kChanHov[] = {
-            {0.90f, 0.40f, 0.35f, 1.00f},
-            {0.32f, 0.80f, 0.38f, 1.00f},
-            {0.32f, 0.55f, 1.00f, 1.00f},
-            {0.90f, 0.82f, 0.22f, 1.00f},
-        };
         const auto& mats = terrain.materials();
-        float btnW = (ImGui::GetContentRegionAvail().x - 4.f) * 0.5f;
-        for (int i = 0; i < 4; ++i) {
-            bool  has  = (i < (int)mats.size() && !mats[i].name.empty());
-            bool  sel  = (brushMaterial_ == i && has);
-            const char* label = has ? mats[i].name.c_str() : "(empty)";
-
-            if (i & 1) ImGui::SameLine(0, 4.f);
-
-            ImVec4 bg  = has ? kChanCol[i] : ImVec4(0.18f, 0.18f, 0.18f, 0.55f);
-            ImVec4 hov = has ? kChanHov[i] : ImVec4(0.28f, 0.28f, 0.28f, 0.75f);
-            ImVec4 act = sel ? hov : bg;
-            ImGui::PushStyleColor(ImGuiCol_Button,        act);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hov);
-            if (sel) ImGui::PushStyleColor(ImGuiCol_Text, {1.f, 1.f, 1.f, 1.f});
-            ImGui::PushID(100 + i);
-            if (ImGui::Button(label, {btnW, 30.f}) && has) brushMaterial_ = i;
-            ImGui::PopID();
-            if (sel) ImGui::PopStyleColor();
-            ImGui::PopStyleColor(2);
-        }
-        if ((int)mats.size() < 1)
+        if (mats.empty()) {
             ImGui::TextDisabled("Configure materials below.");
+        } else {
+            std::vector<std::pair<int, std::string>> items;
+            items.reserve(mats.size());
+            for (int i = 0; i < (int)mats.size(); ++i) {
+                std::string label = mats[i].name.empty()
+                    ? ("Slot " + std::to_string(i)) : mats[i].name;
+                items.emplace_back(i, label);
+            }
+            if (brushMaterial_ < 0 || brushMaterial_ >= (int)mats.size())
+                brushMaterial_ = 0;
+
+            ImGui::SetNextItemWidth(-1.f);
+            ui::SearchableComboId("Paint material##brushmat", brushMaterial_, items);
+        }
     }
 
     // ── Auto-paint by slope ───────────────────────────────────────────────
     ImGui::Spacing();
     if (ImGui::CollapsingHeader("Auto-paint Slope")) {
-        static const char* kLayerNames[] = {"Layer 0", "Layer 1", "Layer 2", "Layer 3"};
+        const auto& slopeMats = terrain.materials();
+        std::vector<std::pair<int, std::string>> slopeItems;
+        slopeItems.reserve(slopeMats.size());
+        for (int i = 0; i < (int)slopeMats.size(); ++i) {
+            std::string label = slopeMats[i].name.empty()
+                ? ("Slot " + std::to_string(i)) : slopeMats[i].name;
+            slopeItems.emplace_back(i, label);
+        }
 
         ImGui::SetNextItemWidth(-1.f);
-        ImGui::Combo("Flat layer##asl", &slopeFlatLayer_, kLayerNames, 4);
+        ui::SearchableComboId("Flat layer##asl", slopeFlatLayer_, slopeItems);
         ImGui::SetNextItemWidth(-1.f);
-        ImGui::Combo("Rock layer##asl", &slopeRockLayer_, kLayerNames, 4);
+        ui::SearchableComboId("Rock layer##asl", slopeRockLayer_, slopeItems);
 
         ImGui::Spacing();
         ImGui::SetNextItemWidth(-1.f);
@@ -1208,7 +1200,7 @@ void ZonesTab::DrawPanelTerrain(sqlite3* db, bool) {
             // Capture undo snapshot before the full-terrain operation
             TerrainSnapshot snap;
             snap.heights = terrain.heightmap().heights;
-            snap.splat   = terrain.splatmap().data;
+            snap.splat   = terrain.splatmap().AllData();
             if ((int)terrainUndo_.size() >= kMaxTerrainUndo)
                 terrainUndo_.erase(terrainUndo_.begin());
             terrainUndo_.push_back(std::move(snap));
@@ -1237,7 +1229,11 @@ void ZonesTab::DrawPanelTerrain(sqlite3* db, bool) {
 
         ImGui::Spacing();
 
-        static const char* kSlotNames[] = {"Layer 0  (R)", "Layer 1  (G)", "Layer 2  (B)", "Layer 3  (A)"};
+        // Phase 1: material count is no longer capped at 4 — slots are
+        // added/removed dynamically (16-50+ supported). Accent colour still
+        // cycles every 4 slots purely for visual grouping, it no longer
+        // implies an RGBA channel limit. See docs/TECH_DEBT.md "Terrain
+        // multi-material authoring (Phase 1)".
         static const ImVec4 kSlotAccent[] = {
             {0.75f, 0.28f, 0.22f, 1.f},
             {0.22f, 0.62f, 0.28f, 1.f},
@@ -1245,7 +1241,8 @@ void ZonesTab::DrawPanelTerrain(sqlite3* db, bool) {
             {0.72f, 0.65f, 0.12f, 1.f},
         };
 
-        for (int i = 0; i < EditableTerrain::kMaxMats; ++i) {
+        int removeSlot = -1;
+        for (int i = 0; i < terrain.NumMaterials(); ++i) {
             int curId = terrain.materialId(i);
 
             // Find current selection index in terrainMats_
@@ -1254,14 +1251,15 @@ void ZonesTab::DrawPanelTerrain(sqlite3* db, bool) {
                 if (terrainMats_[j].id == curId) { curIdx = j; break; }
 
             const char* preview = curIdx >= 0 ? terrainMats_[curIdx].name.c_str() : "(none)";
+            std::string slotLabel = "Slot " + std::to_string(i);
 
             // Coloured label
-            ImGui::PushStyleColor(ImGuiCol_Text, kSlotAccent[i]);
-            ImGui::TextUnformatted(kSlotNames[i]);
+            ImGui::PushStyleColor(ImGuiCol_Text, kSlotAccent[i % 4]);
+            ImGui::TextUnformatted(slotLabel.c_str());
             ImGui::PopStyleColor();
-            ImGui::SameLine(80.f);
+            ImGui::SameLine(60.f);
 
-            ImGui::SetNextItemWidth(-1.f);
+            ImGui::SetNextItemWidth(-28.f);
             ImGui::PushID(200 + i);
             if (ImGui::BeginCombo("##matslot", preview)) {
                 // "(none)" clears the slot back to fallback colour
@@ -1288,21 +1286,23 @@ void ZonesTab::DrawPanelTerrain(sqlite3* db, bool) {
                 }
                 ImGui::EndCombo();
             }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) removeSlot = i;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this material slot");
             ImGui::PopID();
+        }
+        if (removeSlot >= 0) terrain.RemoveMaterialSlot(removeSlot);
+
+        ImGui::Spacing();
+        if (ImGui::SmallButton("+ Add Material")) {
+            terrain.AddMaterialSlot(TerrainMatSpec{});
         }
 
         ImGui::Spacing();
-        ImGui::TextDisabled("Tiling per layer:");
-        static const char* kTilingLabels[] = {"L0", "L1", "L2", "L3"};
-        static const ImVec4 kTilingAccent[] = {
-            {0.75f, 0.28f, 0.22f, 1.f},
-            {0.22f, 0.62f, 0.28f, 1.f},
-            {0.22f, 0.42f, 0.78f, 1.f},
-            {0.72f, 0.65f, 0.12f, 1.f},
-        };
-        for (int i = 0; i < EditableTerrain::kMaxMats; ++i) {
-            ImGui::PushStyleColor(ImGuiCol_Text, kTilingAccent[i]);
-            ImGui::TextUnformatted(kTilingLabels[i]);
+        ImGui::TextDisabled("Tiling per slot:");
+        for (int i = 0; i < terrain.NumMaterials(); ++i) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kSlotAccent[i % 4]);
+            ImGui::Text("%d", i);
             ImGui::PopStyleColor();
             ImGui::SameLine(30.f);
             ImGui::PushID(500 + i);

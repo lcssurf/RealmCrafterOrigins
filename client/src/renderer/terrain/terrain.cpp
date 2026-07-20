@@ -366,11 +366,14 @@ bool Terrain::LoadFromEditor(const std::string& area_name) {
     RebuildChunksFromHmap();
 
     // --- Load splatmap ---
+    uint32_t dbg_smap_magic = 0;
+    int      dbg_smap_layers = 0;
     {
         std::ifstream f(smap_path, std::ios::binary);
         if (f) {
             uint32_t magic = 0;
             f.read(reinterpret_cast<char*>(&magic), 4);
+            dbg_smap_magic = magic;
             int sw, sh;
             f.read(reinterpret_cast<char*>(&sw), 4);
             f.read(reinterpret_cast<char*>(&sh), 4);
@@ -378,13 +381,42 @@ bool Terrain::LoadFromEditor(const std::string& area_name) {
             std::vector<uint8_t> sdata;
             bool ok = false;
 
-            if (magic == 0x32505352) {
-                // RSP2 — native uint8 format
+            splatmap_layers_.clear();
+            splatmap_w_ = sw;
+            splatmap_h_ = sh;
+
+            if (magic == 0x4E505352) {
+                // RSPN — GUE Phase 1 multi-layer format (magic|W|H|numLayers|
+                // layer0 data|layer1 data|...). ALL layers are read now (not
+                // just layer 0): layer 0 still feeds the legacy splatmap_tex_
+                // (used when materials_.size() <= 4), and every layer feeds
+                // splatmap_array_ (used when materials_.size() > 4, see
+                // RebuildMaterialArrays/Submit). See docs/TECH_DEBT.md
+                // "Terrain multi-material authoring (Phase 1)".
+                int numLayers = 0;
+                f.read(reinterpret_cast<char*>(&numLayers), 4);
+                if (f && numLayers > 0) {
+                    splatmap_layers_.reserve(numLayers);
+                    bool allOk = true;
+                    for (int li = 0; li < numLayers; ++li) {
+                        std::vector<uint8_t> layer((size_t)sw * sh * 4);
+                        f.read(reinterpret_cast<char*>(layer.data()), (std::streamsize)layer.size());
+                        if (!f) { allOk = false; break; }
+                        splatmap_layers_.push_back(std::move(layer));
+                    }
+                    if (allOk && !splatmap_layers_.empty()) {
+                        sdata = splatmap_layers_[0]; // layer 0 -> legacy splatmap_tex_ below
+                        ok = true;
+                    }
+                }
+            } else if (magic == 0x32505352) {
+                // RSP2 — native uint8 format (single layer, materials 0-3 only)
                 sdata.resize((size_t)sw * sh * 4);
                 f.read(reinterpret_cast<char*>(sdata.data()), (std::streamsize)sdata.size());
                 ok = (bool)f;
+                if (ok) splatmap_layers_.push_back(sdata);
             } else if (magic == 0x4D505352) {
-                // RSPM — legacy float format; convert on load
+                // RSPM — legacy float format; convert on load (single layer)
                 std::vector<float> ftmp((size_t)sw * sh * 4);
                 f.read(reinterpret_cast<char*>(ftmp.data()), (std::streamsize)(ftmp.size() * 4));
                 if (f) {
@@ -392,8 +424,10 @@ bool Terrain::LoadFromEditor(const std::string& area_name) {
                     for (size_t i = 0; i < ftmp.size(); i++)
                         sdata[i] = static_cast<uint8_t>(std::clamp(ftmp[i] * 255.f + 0.5f, 0.f, 255.f));
                     ok = true;
+                    splatmap_layers_.push_back(sdata);
                 }
             }
+            dbg_smap_layers = (int)splatmap_layers_.size();
 
             if (ok) {
                 if (splatmap_tex_ == 0) glGenTextures(1, &splatmap_tex_);
@@ -436,7 +470,12 @@ bool Terrain::LoadFromEditor(const std::string& area_name) {
         std::ifstream f(mats_path);
         if (f) {
             std::string line;
-            while (std::getline(f, line) && (int)materials_.size() < 4) {
+            // Phase 1: no longer capped at 4 — reads however many lines the
+            // GUE wrote. <=4 materials still take the legacy exact-4-slot
+            // shader path (see Submit()); >4 uses the generalized N-material
+            // path via the texture arrays built below. See docs/TECH_DEBT.md
+            // "Terrain multi-material authoring (Phase 1)".
+            while (std::getline(f, line)) {
                 line.erase(0, line.find_first_not_of(" \t\r\n"));
                 line.erase(line.find_last_not_of(" \t\r\n") + 1);
                 if (line.empty()) continue;
@@ -537,7 +576,83 @@ bool Terrain::LoadFromEditor(const std::string& area_name) {
         }
     }
 
+    // N-material path setup — only needed once there are actually more than
+    // 4 materials; <=4 keeps using splatmap_tex_/materials_[0..3] directly
+    // (legacy path in Submit(), untouched). See docs/TECH_DEBT.md "Terrain
+    // multi-material authoring (Phase 1)".
+    bool usedExtPath = materials_.size() > 4;
+    if (usedExtPath) {
+        if (splatmap_w_ > 0 && splatmap_h_ > 0 && !splatmap_layers_.empty())
+            splatmap_array_.Build(splatmap_w_, splatmap_h_, splatmap_layers_);
+        RebuildMaterialArrays();
+    } else {
+        splatmap_array_.Destroy();
+        mat_albedo_array_.Destroy();
+        mat_normal_array_.Destroy();
+        mat_roughness_array_.Destroy();
+        mat_ao_array_.Destroy();
+        mat_height_array_.Destroy();
+    }
+
+    // Single, one-shot diagnostic summary for the N-material path — see
+    // docs/TECH_DEBT.md "Terrain multi-material authoring (Phase 1)". Not
+    // per-frame: LoadFromEditor only runs once per area load.
+    {
+        char magicStr[5] = {
+            (char)(dbg_smap_magic & 0xFF), (char)((dbg_smap_magic >> 8) & 0xFF),
+            (char)((dbg_smap_magic >> 16) & 0xFF), (char)((dbg_smap_magic >> 24) & 0xFF), 0
+        };
+        std::fprintf(stderr,
+            "[terrain][diag] area='%s' materials_path=%s splatmap_path=%s "
+            "materials_parsed=%d splatmap_magic='%s' splatmap_layers=%d "
+            "branch=%s num_materials_sent=%d\n",
+            area_name.c_str(),
+            fs::absolute(mats_path).string().c_str(),
+            fs::absolute(smap_path).string().c_str(),
+            (int)materials_.size(),
+            magicStr, dbg_smap_layers,
+            usedExtPath ? "ext(N-materials)" : "legacy(<=4)",
+            usedExtPath ? (int)materials_.size() : 0);
+    }
+
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// RebuildMaterialArrays — builds the 5 N-material texture arrays (albedo/
+// normal/roughness/ao/height) from the already-loaded 2D GL textures in
+// materials_[i]. Mirrors EditableTerrain::RebuildMaterialArrays (GUE) byte
+// for byte — same MaterialTextureArray type, shared via
+// rco/renderer/material_texture_array.h. See docs/TECH_DEBT.md "Terrain
+// multi-material authoring (Phase 1)".
+// ---------------------------------------------------------------------------
+void Terrain::RebuildMaterialArrays() {
+    int n = (int)materials_.size();
+    if (n == 0) return;
+
+    mat_albedo_array_.Resize(n, /*srgb=*/true);
+    mat_normal_array_.Resize(n, false);
+    mat_roughness_array_.Resize(n, false);
+    mat_ao_array_.Resize(n, false);
+    mat_height_array_.Resize(n, false);
+
+    for (int i = 0; i < n; ++i) {
+        GLuint normal    = materials_[i].normal    ? materials_[i].normal    : def_normal_;
+        GLuint roughness = materials_[i].roughness ? materials_[i].roughness : def_roughness_;
+        GLuint ao        = materials_[i].ao        ? materials_[i].ao        : def_ao_;
+        GLuint height     = materials_[i].height    ? materials_[i].height    : def_height_;
+        mat_albedo_array_.SetLayerFromGLTexture(i, materials_[i].albedo);
+        mat_normal_array_.SetLayerFromGLTexture(i, normal);
+        mat_roughness_array_.SetLayerFromGLTexture(i, roughness);
+        mat_ao_array_.SetLayerFromGLTexture(i, ao);
+        mat_height_array_.SetLayerFromGLTexture(i, height);
+    }
+
+    mat_albedo_array_.GenerateMipmaps();
+    mat_normal_array_.GenerateMipmaps();
+    mat_roughness_array_.GenerateMipmaps();
+    mat_ao_array_.GenerateMipmaps();
+    mat_height_array_.GenerateMipmaps();
 }
 
 // ---------------------------------------------------------------------------
@@ -623,28 +738,53 @@ void Terrain::SetRenderTuning(const TerrainRenderTuning& tuning) {
 
 void Terrain::Submit(Pipeline& pipeline, const glm::vec3& cam_pos) const {
     TerrainChunkSubmission base{};
-    for (int i = 0; i < 4; ++i) {
-        if (i < (int)materials_.size()) {
-            base.mat_albedo[i]          = materials_[i].albedo;
-            base.mat_normal[i]          = materials_[i].normal    ? materials_[i].normal    : def_normal_;
-            base.mat_roughness[i]       = materials_[i].roughness ? materials_[i].roughness : def_roughness_;
-            base.mat_ao[i]              = materials_[i].ao        ? materials_[i].ao        : def_ao_;
-            base.mat_height[i]          = materials_[i].height    ? materials_[i].height    : def_height_;
-            base.mat_normal_strength[i] = materials_[i].normal_strength;
-        } else {
-            base.mat_albedo[i]          = 0;
-            base.mat_normal[i]          = def_normal_;
-            base.mat_roughness[i]       = def_roughness_;
-            base.mat_ao[i]              = def_ao_;
-            base.mat_height[i]          = def_height_;
-            base.mat_normal_strength[i] = 2.5f;
+
+    // Phase 1: >4 materials uses the generalized N-material shader path
+    // (terrainGBufferExt.fs) via the ext_* fields — exactly mirroring
+    // EditableTerrain::SubmitToPipeline (GUE). <=4 keeps the legacy
+    // exact-4-slot path (num_materials stays 0, default), unchanged from
+    // before this session — no regression for the common case. See
+    // docs/TECH_DEBT.md "Terrain multi-material authoring (Phase 1)".
+    if (materials_.size() > 4) {
+        base.num_materials           = (int)materials_.size();
+        base.ext_splatmap_array      = splatmap_array_.tex;
+        base.ext_num_splat_groups    = splatmap_array_.numGroups;
+        base.ext_mat_albedo_array    = mat_albedo_array_.tex;
+        base.ext_mat_normal_array    = mat_normal_array_.tex;
+        base.ext_mat_roughness_array = mat_roughness_array_.tex;
+        base.ext_mat_ao_array        = mat_ao_array_.tex;
+        base.ext_mat_height_array    = mat_height_array_.tex;
+        base.ext_tilings.reserve(materials_.size());
+        base.ext_mat_normal_strength.reserve(materials_.size());
+        for (const auto& m : materials_) {
+            base.ext_tilings.push_back(m.tiling * render_tuning_.tiling_mul);
+            base.ext_mat_normal_strength.push_back(m.normal_strength);
         }
+    } else {
+        for (int i = 0; i < 4; ++i) {
+            if (i < (int)materials_.size()) {
+                base.mat_albedo[i]          = materials_[i].albedo;
+                base.mat_normal[i]          = materials_[i].normal    ? materials_[i].normal    : def_normal_;
+                base.mat_roughness[i]       = materials_[i].roughness ? materials_[i].roughness : def_roughness_;
+                base.mat_ao[i]              = materials_[i].ao        ? materials_[i].ao        : def_ao_;
+                base.mat_height[i]          = materials_[i].height    ? materials_[i].height    : def_height_;
+                base.mat_normal_strength[i] = materials_[i].normal_strength;
+            } else {
+                base.mat_albedo[i]          = 0;
+                base.mat_normal[i]          = def_normal_;
+                base.mat_roughness[i]       = def_roughness_;
+                base.mat_ao[i]              = def_ao_;
+                base.mat_height[i]          = def_height_;
+                base.mat_normal_strength[i] = 2.5f;
+            }
+        }
+        base.tilings        = glm::vec4(
+            materials_.size() > 0 ? materials_[0].tiling : 4.0f,
+            materials_.size() > 1 ? materials_[1].tiling : 4.0f,
+            materials_.size() > 2 ? materials_[2].tiling : 4.0f,
+            materials_.size() > 3 ? materials_[3].tiling : 4.0f) * render_tuning_.tiling_mul;
     }
-    base.tilings        = glm::vec4(
-        materials_.size() > 0 ? materials_[0].tiling : 4.0f,
-        materials_.size() > 1 ? materials_[1].tiling : 4.0f,
-        materials_.size() > 2 ? materials_[2].tiling : 4.0f,
-        materials_.size() > 3 ? materials_[3].tiling : 4.0f) * render_tuning_.tiling_mul;
+
     base.macro_variation = macro_tex_ ? macro_tex_ : def_macro_;
     base.macro_strength  = glm::clamp(
         macro_strength_ * render_tuning_.macro_strength_mul,
@@ -756,6 +896,13 @@ void Terrain::Destroy() {
     if (macro_tex_)     { glDeleteTextures(1, &macro_tex_);     macro_tex_     = 0; }
     if (splatmap_tex_)  { glDeleteTextures(1, &splatmap_tex_);  splatmap_tex_  = 0; }
     if (hmap_tex_)      { glDeleteTextures(1, &hmap_tex_);      hmap_tex_      = 0; }
+    mat_albedo_array_.Destroy();
+    mat_normal_array_.Destroy();
+    mat_roughness_array_.Destroy();
+    mat_ao_array_.Destroy();
+    mat_height_array_.Destroy();
+    splatmap_array_.Destroy();
+    splatmap_layers_.clear();
 }
 
 } // namespace rco::renderer

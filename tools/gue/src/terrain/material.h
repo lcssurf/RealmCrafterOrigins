@@ -6,6 +6,15 @@
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
+#include "rco/renderer/material_texture_array.h"
+
+// MaterialTextureArray moved to shared/renderer (see
+// rco/renderer/material_texture_array.h) so the game client can build the
+// same N-material texture arrays as the GUE editor — see docs/TECH_DEBT.md
+// "Terrain multi-material authoring (Phase 1)". Brought into global scope
+// here since existing GUE code (editable_terrain.h/.cpp) refers to it
+// unqualified.
+using rco::renderer::MaterialTextureArray;
 
 // ---------------------------------------------------------------------------
 // Texture-role auto-detection from filenames

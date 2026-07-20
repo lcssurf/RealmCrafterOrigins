@@ -6,7 +6,6 @@
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
-#include <array>
 #include <string>
 #include <vector>
 #include <memory>
@@ -30,9 +29,11 @@ struct TerrainMatSpec {
 
 // Editable terrain used inside the GUE Zones tab.
 //
-// Wraps a Heightmap + Splatmap + materials and renders them with a simple
-// forward shader (splatmap-blended albedo + directional lighting). Not the
-// client's deferred PBR pipeline — just enough to edit zones visually.
+// Wraps a Heightmap + Splatmap + materials. Material count is NOT capped
+// (Phase 1: authoring supports as many materials as the dev registers, see
+// docs/TECH_DEBT.md "Terrain multi-material authoring (Phase 1)"); painting,
+// persistence (materials.txt, splatmap.bin) and the live PBR preview all
+// scale with however many are configured for the area.
 //
 // The layout is chunked (same topology as the terrain editor): 64×64 cells
 // per chunk, 65×65 vertices. Each chunk's VBO stores only world-space XZ
@@ -45,7 +46,6 @@ public:
     static constexpr int   kCells      = 64;
     static constexpr int   kVerts      = kCells + 1;
     static constexpr float kDefaultCS  = 2.f;
-    static constexpr int   kMaxMats    = 4;
 
     EditableTerrain() = default;
     ~EditableTerrain();
@@ -63,12 +63,24 @@ public:
     bool Loaded() const { return heightmap_.W > 0; }
     const std::string& Area() const { return areaName_; }
 
+    // Debug tool (F11 in the Zones viewport, see ZonesTab::DrawFloatingToolbar
+    // / DrawViewportContent): appends a single, on-demand report to `path` —
+    // splatmap weights at 8 spread-out points per layer, plus a center-texel
+    // sample per layer of the albedo material texture array. Each call
+    // appends a "--- DUMP N ---" separated block rather than overwriting, so
+    // a before/after pair (e.g. across adding a material) can be diffed in
+    // one file. See docs/TECH_DEBT.md "Terrain multi-material authoring
+    // (Phase 1)".
+    void DumpDebugReport(const std::string& path) const;
+
     // GPU upload of any dirty chunks + splatmap changes.
     void Update();
 
-    // Submit every chunk to the client's deferred pipeline
-    // so the Zones viewport can match the in-game terrain shading (PBR +
-    // shadows + SSAO + volumetrics). Caller is responsible for Begin/End.
+    // Submit every chunk to the client's deferred pipeline so the Zones
+    // viewport can preview shading (PBR + shadows + SSAO + volumetrics).
+    // Always goes through the generalized N-material path (texture arrays)
+    // regardless of material count — see docs/TECH_DEBT.md. Caller is
+    // responsible for Begin/End.
     void SubmitToPipeline(rco::renderer::Pipeline& pipeline,
                           const glm::vec3& cam_pos = glm::vec3(0.f));
 
@@ -80,7 +92,8 @@ public:
                     BrushMode mode, float flattenH = 0.f,
                     BrushFalloff falloff = BrushFalloff::Smooth);
 
-    // Paint one material layer into the splatmap.
+    // Paint one material layer into the splatmap. matIdx is unbounded — any
+    // material registered via SetMaterialSlot/AddMaterialSlot can be painted.
     void Paint(float wx, float wz, float radius, float strength, float dt, int matIdx,
                BrushFalloff falloff = BrushFalloff::Smooth);
 
@@ -94,14 +107,29 @@ public:
     Splatmap&        splatmap()        { return splatmap_; }
     const std::vector<Material>& materials() const { return materials_; }
 
-    // DB-backed per-slot material assignment.  Loads textures immediately.
+    // Number of material slots currently registered (>= 1). Not capped —
+    // Phase 1 authoring supports as many as the dev configures (16-50+).
+    int NumMaterials() const { return (int)materials_.size(); }
+
+    // Appends a brand-new material slot at the end. Returns its index.
+    int AddMaterialSlot(const TerrainMatSpec& spec);
+
+    // DB-backed per-slot material assignment. Loads textures immediately.
+    // `slot` may equal NumMaterials() to append a new slot in place.
     void SetMaterialSlot (int slot, const TerrainMatSpec& spec);
     void ClearMaterialSlot(int slot);
+
+    // Removes a slot entirely, shifting later slots down by one index.
+    // Splatmap weight data for the removed slot is left in the stack
+    // (simply unused) rather than redistributed — reloading the area later
+    // reclaims the unused capacity.
+    void RemoveMaterialSlot(int slot);
+
     int  materialId(int slot) const {
-        return (slot >= 0 && slot < kMaxMats) ? matIds_[slot] : 0;
+        return (slot >= 0 && slot < (int)matIds_.size()) ? matIds_[slot] : 0;
     }
     float materialNormalStrength(int slot) const {
-        return (slot >= 0 && slot < kMaxMats) ? matNormalStrengths_[slot] : 2.5f;
+        return (slot >= 0 && slot < (int)matNormalStrengths_.size()) ? matNormalStrengths_[slot] : 2.5f;
     }
 
     // Legacy: set materials by folder name (scans dist/client/data/terrain/materials/<n>/).
@@ -109,8 +137,10 @@ public:
     void SetMaterialNames(const std::vector<std::string>& names);
     const std::vector<std::string>& materialNames() const { return materialNames_; }
 
-    // Per-layer tiling values (UV scale divisor) used by the shader.
-    std::array<float, kMaxMats> tilings = {8.f, 8.f, 8.f, 8.f};
+    // Per-material tiling values (UV scale divisor) used by the shader.
+    // Sized to NumMaterials(); grows/shrinks alongside the other per-slot
+    // vectors (matIds_, matAlbedoPaths_, ...).
+    std::vector<float> tilings;
 
     // Macro variation — breaks tiling repetition. 0 = off.
     float macroStrength = 0.0f;
@@ -137,14 +167,37 @@ private:
     std::string               areaName_;
     Heightmap                 heightmap_;
     Splatmap                  splatmap_;
-    std::vector<Material>     materials_;      // currently-loaded textures (<= kMaxMats)
-    std::vector<std::string>  materialNames_;  // source names for persistence
+    std::vector<Material>     materials_;      // currently-loaded textures, one per slot
+    std::vector<std::string>  materialNames_;  // source names for persistence (legacy format)
 
-    std::array<int, kMaxMats>         matIds_           = {};    // media_materials.id per slot, 0 = none
-    std::array<std::string, kMaxMats> matAlbedoPaths_   = {};    // relative to dist/ root
-    std::array<std::string, kMaxMats> matNormalPaths_   = {};
-    std::array<std::string, kMaxMats> matOrmPaths_      = {};
-    std::array<float, kMaxMats>       matNormalStrengths_ = {2.5f, 2.5f, 2.5f, 2.5f};
+    std::vector<int>         matIds_;              // media_materials.id per slot, 0 = none
+    std::vector<std::string> matAlbedoPaths_;      // relative to dist/ root
+    std::vector<std::string> matNormalPaths_;
+    std::vector<std::string> matOrmPaths_;
+    std::vector<float>       matNormalStrengths_;
+
+    // Tracks whether each slot has a REAL material assigned (DB pick with a
+    // non-empty spec, or a legacy folder name that actually resolved to
+    // texture files) vs. still being an unconfigured placeholder (debug
+    // solid colour, e.g. the green kSlotRGB[0] a freshly-added "+ Add
+    // Material" slot starts with). Used to keep unconfigured trailing slots
+    // out of the N-material shader path entirely — see SubmitToPipeline and
+    // docs/TECH_DEBT.md "Terrain multi-material authoring (Phase 1)".
+    std::vector<bool>       matConfigured_;
+
+    // GPU texture arrays feeding the shader's generalized N-material path —
+    // one array layer per material slot, rebuilt whenever materials_ changes.
+    MaterialTextureArray matAlbedoArray_;
+    MaterialTextureArray matNormalArray_;
+    MaterialTextureArray matRoughnessArray_;
+    MaterialTextureArray matAoArray_;
+    MaterialTextureArray matHeightArray_;
+    void RebuildMaterialArrays();
+
+    // Grows materials_ and every parallel per-slot vector (+ the splatmap
+    // stack) so index `slot` is valid, seeding new slots with a placeholder
+    // debug colour. No-op if already large enough.
+    void EnsureSlotCapacity(int slot);
 
     std::vector<Chunk>        chunks_;
     GLuint                    ebo_       = 0;

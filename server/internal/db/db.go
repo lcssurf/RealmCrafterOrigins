@@ -499,6 +499,8 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV51(ctx)
 	d.migrateV52(ctx)
 	d.migrateV53(ctx)
+	d.migrateV54(ctx)
+	d.migrateV55(ctx)
 
 	return d, nil
 }
@@ -9483,6 +9485,364 @@ func (d *DB) migrateV52(ctx context.Context) {
 func (d *DB) migrateV53(ctx context.Context) {
 	d.addColumnIfMissing(ctx, "item_templates", "icon_path", "TEXT NOT NULL DEFAULT ''")
 	d.addColumnIfMissing(ctx, "ability_templates", "icon_path", "TEXT NOT NULL DEFAULT ''")
+}
+
+// CanonicalBoneSlots is the fixed vocabulary of ~19 humanoid retargeting
+// slots (Unreal/Unity-style "Humanoid Rig" semantic roles), shared by the
+// GUE's Bone Slots (per-model) and Bone Conventions (global) editors and by
+// the Mixamo seed below. A compile-time constant, not a DB table — same
+// "small fixed vocabulary duplicated per language" pattern already used for
+// ActorSlot/kSlotTypes (media.h / items.cpp).
+var CanonicalBoneSlots = []string{
+	"Hips", "Spine", "Chest", "Neck", "Head",
+	"Clavicle_L", "Clavicle_R",
+	"UpperArm_L", "UpperArm_R",
+	"Forearm_L", "Forearm_R",
+	"Hand_L", "Hand_R",
+	"Thigh_L", "Thigh_R",
+	"Calf_L", "Calf_R",
+	"Foot_L", "Foot_R",
+}
+
+// mixamoSeed maps each canonical slot to its standard Mixamo bone name.
+// Seeded once into external_bone_conventions (convention_name='Mixamo') by
+// migrateV54 — DATA, not code the retargeting path reads directly; the
+// engine (shared/renderer) only ever consumes the flat map BuildBoneAliasMap
+// produces after joining this against a model's own model_bone_slots rows.
+var mixamoSeed = map[string]string{
+	"Hips":       "mixamorig:Hips",
+	"Spine":      "mixamorig:Spine",
+	"Chest":      "mixamorig:Spine2",
+	"Neck":       "mixamorig:Neck",
+	"Head":       "mixamorig:Head",
+	"Clavicle_L": "mixamorig:LeftShoulder",
+	"Clavicle_R": "mixamorig:RightShoulder",
+	"UpperArm_L": "mixamorig:LeftArm",
+	"UpperArm_R": "mixamorig:RightArm",
+	"Forearm_L":  "mixamorig:LeftForeArm",
+	"Forearm_R":  "mixamorig:RightForeArm",
+	"Hand_L":     "mixamorig:LeftHand",
+	"Hand_R":     "mixamorig:RightHand",
+	"Thigh_L":    "mixamorig:LeftUpLeg",
+	"Thigh_R":    "mixamorig:RightUpLeg",
+	"Calf_L":     "mixamorig:LeftLeg",
+	"Calf_R":     "mixamorig:RightLeg",
+	"Foot_L":     "mixamorig:LeftFoot",
+	"Foot_R":     "mixamorig:RightFoot",
+}
+
+// migrateV54 creates the generic bone-retargeting system, replacing the
+// earlier "one alias table per model" idea with two independent tables so a
+// naming convention (e.g. "Mixamo") is taught to the engine ONCE, globally,
+// and reused by any model:
+//
+//   - model_bone_slots: PER MODEL. Which of this model's own bones plays
+//     each canonical slot (e.g. model 7's "Chest" slot -> internal bone
+//     "Bip01 Neck"). A model only rows the slots that apply to it.
+//   - external_bone_conventions: GLOBAL, not scoped to any model. How a
+//     naming convention labels each canonical slot (e.g. "Mixamo"'s "Chest"
+//     slot -> external name "mixamorig:Spine2"). Editable so future
+//     conventions (other retarget tools) can be added without touching code.
+//
+// BuildBoneAliasMap (below) joins the two by slot for one (model_id,
+// convention) pair, producing the flat external_name -> internal_bone_name
+// map Model::SetBoneAliases (shared/renderer) expects. Nothing about the
+// retargeting fallback in AppendAnimationsFrom changes because of this
+// schema — only how the map handed to SetBoneAliases gets built.
+func (d *DB) migrateV54(ctx context.Context) {
+	if d.driver == "postgres" {
+		d.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS model_bone_slots (
+			id                 SERIAL  PRIMARY KEY,
+			model_id           INTEGER NOT NULL DEFAULT 0,
+			slot               TEXT    NOT NULL DEFAULT '',
+			internal_bone_name TEXT    NOT NULL DEFAULT '',
+			UNIQUE(model_id, slot)
+		)`)
+		d.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS external_bone_conventions (
+			id              SERIAL  PRIMARY KEY,
+			convention_name TEXT    NOT NULL DEFAULT '',
+			slot            TEXT    NOT NULL DEFAULT '',
+			external_name   TEXT    NOT NULL DEFAULT '',
+			UNIQUE(convention_name, slot)
+		)`)
+	} else {
+		d.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS model_bone_slots (
+			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+			model_id           INTEGER NOT NULL DEFAULT 0,
+			slot               TEXT    NOT NULL DEFAULT '',
+			internal_bone_name TEXT    NOT NULL DEFAULT '',
+			UNIQUE(model_id, slot)
+		)`)
+		d.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS external_bone_conventions (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			convention_name TEXT    NOT NULL DEFAULT '',
+			slot            TEXT    NOT NULL DEFAULT '',
+			external_name   TEXT    NOT NULL DEFAULT '',
+			UNIQUE(convention_name, slot)
+		)`)
+	}
+	d.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_model_bone_slots ON model_bone_slots(model_id)`)
+	d.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_external_bone_conventions ON external_bone_conventions(convention_name)`)
+
+	// Seed the Mixamo convention once. Idempotent via the UNIQUE(convention_name,
+	// slot) constraint — safe to run on every boot.
+	for _, slot := range CanonicalBoneSlots {
+		name, ok := mixamoSeed[slot]
+		if !ok {
+			continue
+		}
+		if d.driver == "postgres" {
+			d.db.ExecContext(ctx, `INSERT INTO external_bone_conventions (convention_name, slot, external_name)
+				VALUES ('Mixamo', $1, $2) ON CONFLICT (convention_name, slot) DO NOTHING`, slot, name)
+		} else {
+			d.db.ExecContext(ctx, `INSERT OR IGNORE INTO external_bone_conventions (convention_name, slot, external_name)
+				VALUES ('Mixamo', ?, ?)`, slot, name)
+		}
+	}
+}
+
+// ModelBoneSlot mirrors one row in model_bone_slots.
+type ModelBoneSlot struct {
+	ID               int
+	ModelID          int
+	Slot             string
+	InternalBoneName string
+}
+
+// LoadModelBoneSlots returns all bone-slot mappings configured for one model.
+func (d *DB) LoadModelBoneSlots(ctx context.Context, modelID int) ([]ModelBoneSlot, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(
+		`SELECT id, model_id, slot, internal_bone_name
+		 FROM model_bone_slots WHERE model_id = ? ORDER BY slot`), modelID)
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadModelBoneSlots: %w", err)
+	}
+	defer rows.Close()
+	var out []ModelBoneSlot
+	for rows.Next() {
+		var s ModelBoneSlot
+		if err := rows.Scan(&s.ID, &s.ModelID, &s.Slot, &s.InternalBoneName); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// SaveModelBoneSlot upserts one (model_id, slot) row.
+func (d *DB) SaveModelBoneSlot(ctx context.Context, modelID int, slot, internalBoneName string) error {
+	if d.driver == "postgres" {
+		_, err := d.db.ExecContext(ctx, `
+			INSERT INTO model_bone_slots (model_id, slot, internal_bone_name)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (model_id, slot) DO UPDATE SET internal_bone_name = excluded.internal_bone_name`,
+			modelID, slot, internalBoneName)
+		return err
+	}
+	_, err := d.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO model_bone_slots (model_id, slot, internal_bone_name) VALUES (?, ?, ?)`,
+		modelID, slot, internalBoneName)
+	return err
+}
+
+// ExternalBoneConvention mirrors one row in external_bone_conventions.
+type ExternalBoneConvention struct {
+	ID             int
+	ConventionName string
+	Slot           string
+	ExternalName   string
+}
+
+// LoadExternalBoneConventions returns every (convention, slot, external_name)
+// row, for every convention — global, not scoped to any model.
+func (d *DB) LoadExternalBoneConventions(ctx context.Context) ([]ExternalBoneConvention, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(
+		`SELECT id, convention_name, slot, external_name
+		 FROM external_bone_conventions ORDER BY convention_name, slot`))
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadExternalBoneConventions: %w", err)
+	}
+	defer rows.Close()
+	var out []ExternalBoneConvention
+	for rows.Next() {
+		var c ExternalBoneConvention
+		if err := rows.Scan(&c.ID, &c.ConventionName, &c.Slot, &c.ExternalName); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// SaveExternalBoneConvention upserts one (convention_name, slot) row.
+func (d *DB) SaveExternalBoneConvention(ctx context.Context, conventionName, slot, externalName string) error {
+	if d.driver == "postgres" {
+		_, err := d.db.ExecContext(ctx, `
+			INSERT INTO external_bone_conventions (convention_name, slot, external_name)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (convention_name, slot) DO UPDATE SET external_name = excluded.external_name`,
+			conventionName, slot, externalName)
+		return err
+	}
+	_, err := d.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO external_bone_conventions (convention_name, slot, external_name) VALUES (?, ?, ?)`,
+		conventionName, slot, externalName)
+	return err
+}
+
+// migrateV55 adds model_retarget_offsets — a calibratable per-bone rotation
+// offset (quaternion), scoped by (model_id, slot, convention_name), inspired
+// by Unreal's IK Retargeter "Retarget Pose" bone offsets
+// (FIKRetargetPose::BoneRotationOffsets). Unlike model_bone_slots (which is
+// scoped only by model_id, since a bone's SLOT ASSIGNMENT doesn't depend on
+// which external convention is animating it), a rotation offset genuinely
+// depends on which convention's rig axes are being reconciled against this
+// model's rig axes — Mixamo may need a different offset than some other
+// future tool's export for the exact same (model, slot). Defaults to the
+// identity quaternion (0,0,0,1): the retargeting formula must be provably a
+// no-op with an all-identity offset table (see BuildBoneAliasMap and the
+// C++/model.cpp retargeting formula — this is a documented invariant, not
+// just a convention).
+func (d *DB) migrateV55(ctx context.Context) {
+	if d.driver == "postgres" {
+		d.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS model_retarget_offsets (
+			id              SERIAL  PRIMARY KEY,
+			model_id        INTEGER NOT NULL DEFAULT 0,
+			slot            TEXT    NOT NULL DEFAULT '',
+			convention_name TEXT    NOT NULL DEFAULT '',
+			offset_x        REAL    NOT NULL DEFAULT 0,
+			offset_y        REAL    NOT NULL DEFAULT 0,
+			offset_z        REAL    NOT NULL DEFAULT 0,
+			offset_w        REAL    NOT NULL DEFAULT 1,
+			UNIQUE(model_id, slot, convention_name)
+		)`)
+	} else {
+		d.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS model_retarget_offsets (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			model_id        INTEGER NOT NULL DEFAULT 0,
+			slot            TEXT    NOT NULL DEFAULT '',
+			convention_name TEXT    NOT NULL DEFAULT '',
+			offset_x        REAL    NOT NULL DEFAULT 0,
+			offset_y        REAL    NOT NULL DEFAULT 0,
+			offset_z        REAL    NOT NULL DEFAULT 0,
+			offset_w        REAL    NOT NULL DEFAULT 1,
+			UNIQUE(model_id, slot, convention_name)
+		)`)
+	}
+	d.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_model_retarget_offsets ON model_retarget_offsets(model_id, convention_name)`)
+}
+
+// ModelRetargetOffset mirrors one row in model_retarget_offsets — a
+// calibratable rotation offset (quaternion) that corrects for axis-convention
+// differences between this model's rig and one external naming convention's
+// rig, for one canonical bone slot.
+type ModelRetargetOffset struct {
+	ID             int
+	ModelID        int
+	Slot           string
+	ConventionName string
+	OffsetX        float32
+	OffsetY        float32
+	OffsetZ        float32
+	OffsetW        float32
+}
+
+// LoadModelRetargetOffsets returns every offset row for one (model, convention).
+func (d *DB) LoadModelRetargetOffsets(ctx context.Context, modelID int, conventionName string) ([]ModelRetargetOffset, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(
+		`SELECT id, model_id, slot, convention_name, offset_x, offset_y, offset_z, offset_w
+		 FROM model_retarget_offsets WHERE model_id = ? AND convention_name = ? ORDER BY slot`),
+		modelID, conventionName)
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadModelRetargetOffsets: %w", err)
+	}
+	defer rows.Close()
+	var out []ModelRetargetOffset
+	for rows.Next() {
+		var o ModelRetargetOffset
+		if err := rows.Scan(&o.ID, &o.ModelID, &o.Slot, &o.ConventionName,
+			&o.OffsetX, &o.OffsetY, &o.OffsetZ, &o.OffsetW); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// SaveModelRetargetOffset upserts one (model_id, slot, convention_name) row.
+func (d *DB) SaveModelRetargetOffset(ctx context.Context, modelID int, slot, conventionName string, x, y, z, w float32) error {
+	if d.driver == "postgres" {
+		_, err := d.db.ExecContext(ctx, `
+			INSERT INTO model_retarget_offsets (model_id, slot, convention_name, offset_x, offset_y, offset_z, offset_w)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			ON CONFLICT (model_id, slot, convention_name) DO UPDATE SET
+				offset_x = excluded.offset_x, offset_y = excluded.offset_y,
+				offset_z = excluded.offset_z, offset_w = excluded.offset_w`,
+			modelID, slot, conventionName, x, y, z, w)
+		return err
+	}
+	_, err := d.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO model_retarget_offsets
+		 (model_id, slot, convention_name, offset_x, offset_y, offset_z, offset_w) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		modelID, slot, conventionName, x, y, z, w)
+	return err
+}
+
+// BuildBoneRetargetOffsetMap joins external_bone_conventions and
+// model_retarget_offsets by slot, for one (model_id, convention_name) pair,
+// producing internal_bone_name -> offset quaternion. Rows with no calibrated
+// offset simply don't appear — callers must default missing entries to the
+// identity quaternion (0,0,0,1), never treat a missing entry as an error.
+func (d *DB) BuildBoneRetargetOffsetMap(ctx context.Context, modelID int, conventionName string) (map[string][4]float32, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT s.internal_bone_name, o.offset_x, o.offset_y, o.offset_z, o.offset_w
+		  FROM model_retarget_offsets o
+		  JOIN model_bone_slots s ON s.slot = o.slot AND s.model_id = o.model_id
+		 WHERE o.model_id = ? AND o.convention_name = ? AND s.internal_bone_name != ''`),
+		modelID, conventionName)
+	if err != nil {
+		return nil, fmt.Errorf("db: BuildBoneRetargetOffsetMap: %w", err)
+	}
+	defer rows.Close()
+	out := map[string][4]float32{}
+	for rows.Next() {
+		var boneName string
+		var x, y, z, w float32
+		if err := rows.Scan(&boneName, &x, &y, &z, &w); err != nil {
+			return nil, err
+		}
+		out[boneName] = [4]float32{x, y, z, w}
+	}
+	return out, rows.Err()
+}
+
+// BuildBoneAliasMap joins external_bone_conventions and model_bone_slots by
+// slot, for one model + one naming convention, producing the flat
+// external_name -> internal_bone_name map that Model::SetBoneAliases
+// (shared/renderer) expects. This is the ONLY place the two tables meet —
+// everything upstream (GUE editors) and downstream (the retargeting
+// fallback in AppendAnimationsFrom, model.cpp) stays unaware of the
+// two-table split.
+func (d *DB) BuildBoneAliasMap(ctx context.Context, modelID int, conventionName string) (map[string]string, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(`
+		SELECT c.external_name, s.internal_bone_name
+		  FROM external_bone_conventions c
+		  JOIN model_bone_slots s ON s.slot = c.slot AND s.model_id = ?
+		 WHERE c.convention_name = ? AND s.internal_bone_name != '' AND c.external_name != ''`),
+		modelID, conventionName)
+	if err != nil {
+		return nil, fmt.Errorf("db: BuildBoneAliasMap: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var externalName, internalName string
+		if err := rows.Scan(&externalName, &internalName); err != nil {
+			return nil, err
+		}
+		out[externalName] = internalName
+	}
+	return out, rows.Err()
 }
 
 // PlayerSpawn is a named world position where players spawn or respawn.

@@ -73,6 +73,22 @@ public:
     EditableTerrain& terrain() { return terrain_; }
     const EditableTerrain& terrain() const { return terrain_; }
 
+    // Debug tool (F11 in the Zones viewport, see ZonesTab::DrawViewportContent):
+    // appends one report to `path` — terrain_.DumpDebugReport()'s splatmap
+    // weight / material albedo array section, PLUS a new section reading the
+    // actual rendered G-buffer (gAlbedo/gNormal/gRMA) back from the GPU at
+    // two SCREEN-SPACE points: dead center of the viewport, and — if
+    // `mouseViewportPx` is a valid in-bounds pixel (viewport-relative,
+    // top-down; pass {-1,-1} if the mouse wasn't over the viewport) — the
+    // exact pixel the mouse was over when F11 was pressed, so the dev can
+    // aim at a specific visually-gray spot and sample precisely that point.
+    // (Earlier version sampled 8 fixed screen percentages, which could land
+    // on sky/background with no correlation to the splatmap's texture-space
+    // points — replaced for reliability.) Only valid when the PBR engine has
+    // been initialised (i.e. at least one frame rendered in PBR mode). See
+    // docs/TECH_DEBT.md "Terrain multi-material authoring (Phase 1)".
+    void DumpDebugReport(const std::string& path, glm::ivec2 mouseViewportPx = {-1, -1}) const;
+
     // Draw a Unity-style move gizmo at `pos` — three axis arrows (X=red,
     // Y=green, Z=blue). `highlightAxis` in [0,2] highlights one axis in yellow
     // while dragging. `camPos` is used to keep gizmo screen-size roughly constant.

@@ -18,6 +18,7 @@
 
 #include "rco/renderer/col_bake.h"
 #include "rco/renderer/pipeline.h"
+#include "rco/renderer/model_cache.h"
 
 namespace gue {
 
@@ -585,6 +586,84 @@ void MediaTab::EnsureTables(sqlite3* db) {
     sqlite3_exec(db,
         "ALTER TABLE media_models ADD COLUMN black_cutout INTEGER NOT NULL DEFAULT 0",
         nullptr, nullptr, nullptr);
+
+    // Bone retargeting (migrateV54-equivalent for the GUE): two independent
+    // tables — model_bone_slots (per model) and external_bone_conventions
+    // (global) — joined at query time by BuildBoneAliasMap. See media.h's
+    // kCanonicalBoneSlots doc comment for the design rationale.
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS model_bone_slots ("
+        "  id                 INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  model_id           INTEGER NOT NULL DEFAULT 0,"
+        "  slot               TEXT    NOT NULL DEFAULT '',"
+        "  internal_bone_name TEXT    NOT NULL DEFAULT '',"
+        "  UNIQUE(model_id, slot)"
+        ")",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "CREATE INDEX IF NOT EXISTS idx_model_bone_slots ON model_bone_slots(model_id)",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS external_bone_conventions ("
+        "  id              INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  convention_name TEXT    NOT NULL DEFAULT '',"
+        "  slot            TEXT    NOT NULL DEFAULT '',"
+        "  external_name   TEXT    NOT NULL DEFAULT '',"
+        "  UNIQUE(convention_name, slot)"
+        ")",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "CREATE INDEX IF NOT EXISTS idx_external_bone_conventions ON external_bone_conventions(convention_name)",
+        nullptr, nullptr, nullptr);
+
+    // Seed the Mixamo convention once — idempotent via the UNIQUE(convention_name,
+    // slot) constraint (INSERT OR IGNORE), safe to run on every GUE launch.
+    // DATA, not a translation table the engine reads — just pre-filled rows
+    // in external_bone_conventions the dev can review/edit like any other.
+    {
+        static const std::pair<const char*, const char*> kMixamoSeed[] = {
+            {"Hips", "mixamorig:Hips"}, {"Spine", "mixamorig:Spine"},
+            {"Chest", "mixamorig:Spine2"}, {"Neck", "mixamorig:Neck"},
+            {"Head", "mixamorig:Head"},
+            {"Clavicle_L", "mixamorig:LeftShoulder"}, {"Clavicle_R", "mixamorig:RightShoulder"},
+            {"UpperArm_L", "mixamorig:LeftArm"}, {"UpperArm_R", "mixamorig:RightArm"},
+            {"Forearm_L", "mixamorig:LeftForeArm"}, {"Forearm_R", "mixamorig:RightForeArm"},
+            {"Hand_L", "mixamorig:LeftHand"}, {"Hand_R", "mixamorig:RightHand"},
+            {"Thigh_L", "mixamorig:LeftUpLeg"}, {"Thigh_R", "mixamorig:RightUpLeg"},
+            {"Calf_L", "mixamorig:LeftLeg"}, {"Calf_R", "mixamorig:RightLeg"},
+            {"Foot_L", "mixamorig:LeftFoot"}, {"Foot_R", "mixamorig:RightFoot"},
+        };
+        for (const auto& [slot, ext] : kMixamoSeed) {
+            sqlite3_stmt* seed_stmt = nullptr;
+            if (sqlite3_prepare_v2(db,
+                "INSERT OR IGNORE INTO external_bone_conventions (convention_name, slot, external_name)"
+                " VALUES ('Mixamo', ?, ?)", -1, &seed_stmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_text(seed_stmt, 1, slot, -1, SQLITE_STATIC);
+                sqlite3_bind_text(seed_stmt, 2, ext,  -1, SQLITE_STATIC);
+                sqlite3_step(seed_stmt);
+                sqlite3_finalize(seed_stmt);
+            }
+        }
+    }
+
+    // migrateV55-equivalent — calibratable per-bone Retarget Pose offset, see
+    // media.h's ModelRetargetOffset doc comment.
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS model_retarget_offsets ("
+        "  id              INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  model_id        INTEGER NOT NULL DEFAULT 0,"
+        "  slot            TEXT    NOT NULL DEFAULT '',"
+        "  convention_name TEXT    NOT NULL DEFAULT '',"
+        "  offset_x        REAL    NOT NULL DEFAULT 0,"
+        "  offset_y        REAL    NOT NULL DEFAULT 0,"
+        "  offset_z        REAL    NOT NULL DEFAULT 0,"
+        "  offset_w        REAL    NOT NULL DEFAULT 1,"
+        "  UNIQUE(model_id, slot, convention_name)"
+        ")",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db,
+        "CREATE INDEX IF NOT EXISTS idx_model_retarget_offsets ON model_retarget_offsets(model_id, convention_name)",
+        nullptr, nullptr, nullptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -644,6 +723,7 @@ void MediaTab::FetchAll(sqlite3* db) {
     actor_defs_.clear();
 
     LoadAnimVocabNames(db);
+    LoadBoneConventions(db);
 
     sqlite3_stmt* stmt = nullptr;
 
@@ -789,17 +869,6 @@ void MediaTab::FetchAll(sqlite3* db) {
             s.offset_rot_y = (float)sqlite3_column_double(stmt, 10);
             s.offset_rot_z = (float)sqlite3_column_double(stmt, 11);
             s.offset_scale = (float)sqlite3_column_double(stmt, 12);
-            // TEMP DEBUG (Gremlin Helm-never-draws investigation, point 1 —
-            // confirms the row actually loaded FROM the DB has a non-empty
-            // bone_name, i.e. it's not just SaveMeshSlot writing it but the
-            // read-back losing it (column mismatch, wrong index, etc).
-            if (s.slot != 0) {
-                std::fprintf(stderr,
-                    "[mesh-attach-dbg] Fetch: loaded mesh id=%d actor_def_id=%d slot=%d "
-                    "bone_name='%s' (empty=%s)\n",
-                    s.id, s.actor_def_id, s.slot, s.bone_name.c_str(),
-                    s.bone_name.empty() ? "yes" : "no");
-            }
             for (auto& d : actor_defs_) {
                 if (d.id == s.actor_def_id) { d.mesh_slots.push_back(s); break; }
             }
@@ -1121,6 +1190,331 @@ void MediaTab::DeleteModelShape(sqlite3* db, int id) {
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     LoadShapesForModel(db, shapes_model_id_);
+}
+
+// ---------------------------------------------------------------------------
+// CRUD — Bone retargeting (model_bone_slots + external_bone_conventions)
+// ---------------------------------------------------------------------------
+
+void MediaTab::LoadBoneSlotsForModel(sqlite3* db, int model_id) {
+    model_bone_slots_.clear();
+    bone_slots_model_id_ = model_id;
+
+    // Always exactly kCanonicalBoneSlotCount rows, one per slot — unlike
+    // shapes (a free list), the slot vocabulary is fixed, so there's nothing
+    // to "add"; a slot with an empty internal_bone_name just means "not
+    // mapped for this model yet".
+    for (int i = 0; i < kCanonicalBoneSlotCount; ++i) {
+        ModelBoneSlot s;
+        s.model_id = model_id;
+        s.slot     = kCanonicalBoneSlots[i];
+        model_bone_slots_.push_back(std::move(s));
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, slot, internal_bone_name FROM model_bone_slots WHERE model_id=?",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, model_id);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            int id = sqlite3_column_int(stmt, 0);
+            std::string slot = colText(stmt, 1);
+            std::string internal = colText(stmt, 2);
+            for (auto& s : model_bone_slots_) {
+                if (s.slot == slot) { s.id = id; s.internal_bone_name = internal; break; }
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+}
+
+void MediaTab::SaveBoneSlot(sqlite3* db, int model_id, const std::string& slot,
+                            const std::string& internal_bone_name) {
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO model_bone_slots (model_id, slot, internal_bone_name)"
+        " VALUES (?, ?, ?)", -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Save bone slot error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    sqlite3_bind_int (stmt, 1, model_id);
+    sqlite3_bind_text(stmt, 2, slot.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, internal_bone_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    // Force the Actor Def preview to re-inject bone_aliases_ next frame even
+    // though the Body model's file_path didn't change (see
+    // preview_last_bone_slots_revision_ in media.h for why this is needed).
+    ++bone_slots_revision_;
+}
+
+void MediaTab::LoadBoneConventions(sqlite3* db) {
+    external_bone_conventions_.clear();
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, convention_name, slot, external_name"
+        " FROM external_bone_conventions ORDER BY convention_name, slot",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            ExternalBoneConvention c;
+            c.id = sqlite3_column_int(stmt, 0);
+            c.convention_name = colText(stmt, 1);
+            c.slot            = colText(stmt, 2);
+            c.external_name   = colText(stmt, 3);
+            external_bone_conventions_.push_back(std::move(c));
+        }
+        sqlite3_finalize(stmt);
+    }
+}
+
+void MediaTab::SaveBoneConventionRow(sqlite3* db, const std::string& convention_name,
+                                     const std::string& slot, const std::string& external_name) {
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO external_bone_conventions (convention_name, slot, external_name)"
+        " VALUES (?, ?, ?)", -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Save convention error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    sqlite3_bind_text(stmt, 1, convention_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, slot.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, external_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    LoadBoneConventions(db);
+    ++bone_slots_revision_; // convention rows feed BuildBoneAliasMap too
+}
+
+void MediaTab::DeleteBoneConvention(sqlite3* db, const std::string& convention_name) {
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "DELETE FROM external_bone_conventions WHERE convention_name=?",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, convention_name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+    LoadBoneConventions(db);
+    if (selected_bone_convention_ == convention_name) selected_bone_convention_.clear();
+    ++bone_slots_revision_;
+}
+
+// Joins external_bone_conventions x model_bone_slots by slot, for one
+// (model_id, convention_name) pair — GUE-local mirror of db.go's
+// BuildBoneAliasMap. Produces the flat map Model::SetBoneAliases expects.
+std::unordered_map<std::string, std::string> MediaTab::BuildBoneAliasMap(
+    sqlite3* db, int model_id, const std::string& convention_name) {
+    std::unordered_map<std::string, std::string> out;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT c.external_name, s.internal_bone_name"
+        "  FROM external_bone_conventions c"
+        "  JOIN model_bone_slots s ON s.slot = c.slot AND s.model_id = ?"
+        " WHERE c.convention_name = ? AND s.internal_bone_name != '' AND c.external_name != ''",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int (stmt, 1, model_id);
+        sqlite3_bind_text(stmt, 2, convention_name.c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            out[colText(stmt, 0)] = colText(stmt, 1);
+        }
+        sqlite3_finalize(stmt);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// CRUD — Retarget Pose offsets (model_retarget_offsets)
+// ---------------------------------------------------------------------------
+
+void MediaTab::LoadRetargetOffsets(sqlite3* db, int model_id, const std::string& convention_name) {
+    model_retarget_offsets_.clear();
+    // Seed a row (identity offset) for every slot the model has actually
+    // mapped, so the UI has something to draw/edit even before any offset
+    // has been saved or estimated.
+    for (auto& s : model_bone_slots_) {
+        if (s.internal_bone_name.empty()) continue;
+        ModelRetargetOffset o;
+        o.model_id        = model_id;
+        o.slot            = s.slot;
+        o.convention_name = convention_name;
+        model_retarget_offsets_.push_back(std::move(o));
+    }
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, slot, offset_x, offset_y, offset_z, offset_w"
+        " FROM model_retarget_offsets WHERE model_id=? AND convention_name=?",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int (stmt, 1, model_id);
+        sqlite3_bind_text(stmt, 2, convention_name.c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            int id = sqlite3_column_int(stmt, 0);
+            std::string slot = colText(stmt, 1);
+            for (auto& o : model_retarget_offsets_) {
+                if (o.slot == slot) {
+                    o.id = id;
+                    o.x = (float)sqlite3_column_double(stmt, 2);
+                    o.y = (float)sqlite3_column_double(stmt, 3);
+                    o.z = (float)sqlite3_column_double(stmt, 4);
+                    o.w = (float)sqlite3_column_double(stmt, 5);
+                    break;
+                }
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+    retarget_offsets_model_id_  = model_id;
+    retarget_offsets_convention_ = convention_name;
+}
+
+void MediaTab::SaveRetargetOffset(sqlite3* db, int model_id, const std::string& slot,
+                                   const std::string& convention_name,
+                                   float x, float y, float z, float w) {
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO model_retarget_offsets"
+        " (model_id, slot, convention_name, offset_x, offset_y, offset_z, offset_w)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)", -1, &stmt, nullptr) != SQLITE_OK) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_), "Save retarget offset error: %s", sqlite3_errmsg(db));
+        return;
+    }
+    sqlite3_bind_int   (stmt, 1, model_id);
+    sqlite3_bind_text  (stmt, 2, slot.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text  (stmt, 3, convention_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 4, x);
+    sqlite3_bind_double(stmt, 5, y);
+    sqlite3_bind_double(stmt, 6, z);
+    sqlite3_bind_double(stmt, 7, w);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    ++bone_slots_revision_; // offsets feed the retargeting formula too
+}
+
+// GUE-local mirror of db.go's BuildBoneRetargetOffsetMap — joins
+// model_retarget_offsets x model_bone_slots by slot, producing
+// internal_bone_name -> offset quaternion for Model::SetBoneRetargetOffsets.
+static std::unordered_map<std::string, glm::quat> BuildBoneRetargetOffsetMapLocal(
+    sqlite3* db, int model_id, const std::string& convention_name) {
+    std::unordered_map<std::string, glm::quat> out;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT s.internal_bone_name, o.offset_x, o.offset_y, o.offset_z, o.offset_w"
+        "  FROM model_retarget_offsets o"
+        "  JOIN model_bone_slots s ON s.slot = o.slot AND s.model_id = o.model_id"
+        " WHERE o.model_id = ? AND o.convention_name = ? AND s.internal_bone_name != ''",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int (stmt, 1, model_id);
+        sqlite3_bind_text(stmt, 2, convention_name.c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            std::string bone = colText(stmt, 0);
+            float x = (float)sqlite3_column_double(stmt, 1);
+            float y = (float)sqlite3_column_double(stmt, 2);
+            float z = (float)sqlite3_column_double(stmt, 3);
+            float w = (float)sqlite3_column_double(stmt, 4);
+            out[bone] = glm::quat(w, x, y, z); // glm::quat ctor is (w,x,y,z)
+        }
+        sqlite3_finalize(stmt);
+    }
+    return out;
+}
+
+// Estimates a starting rotation offset for every mapped slot by comparing
+// the FULL COMPOSED ORIENTATION of each bone's PARENT FRAME (root-composed,
+// bind pose only — never an animated/runtime pose) between the model's own
+// hierarchy (Model::GetBindParentWorldRotation, on the currently-loaded
+// preview model) and a reference file sharing the convention's rest pose
+// (Model::ParentBindWorldRotationsUnoptimized, a throwaway parse — never
+// touches the live preview Model).
+//
+// This REPLACES an earlier bone-DIRECTION-vector approach
+// (FindBetweenNormals on parent->child bind positions): a single direction
+// vector only pins down two of the three rotational degrees of freedom —
+// rotation of that bone's own frame AROUND that direction (twist) is left
+// ambiguous. Composing the parent frame's full rotation from the root down
+// uses every bit of rotational information the bind pose actually encodes,
+// eliminating that ambiguity.
+//
+// overwrite=false only fills slots whose current offset is still identity
+// (0,0,0,1) or unset; overwrite=true replaces every mapped slot's offset.
+// The per-slot Euler sliders in the GUE remain available afterward for
+// manual fine-tuning either way. Returns how many slots were estimated.
+int MediaTab::EstimateRetargetOffsets(sqlite3* db, int model_id, const std::string& convention_name,
+                                       const std::string& reference_file_path, bool overwrite) {
+    if (!preview_ || preview_->CurrentPath().empty()) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                       "Estimate Offsets: load this model in the preview first.");
+        return 0;
+    }
+    auto origin_parent_rots = rco::renderer::Model::ParentBindWorldRotationsUnoptimized(
+        ResolveClientAsset(reference_file_path).c_str());
+    if (origin_parent_rots.empty()) {
+        std::snprintf(statusMsg_, sizeof(statusMsg_),
+                       "Estimate Offsets: could not read reference file '%s'.",
+                       reference_file_path.c_str());
+        return 0;
+    }
+
+    // slot -> external_name, for this convention (needed to look up origin_parent_rots).
+    std::unordered_map<std::string, std::string> slot_to_external;
+    for (const auto& c : external_bone_conventions_)
+        if (c.convention_name == convention_name) slot_to_external[c.slot] = c.external_name;
+
+    // slot -> internal_bone_name, for this model (already loaded in model_bone_slots_).
+    std::unordered_map<std::string, std::string> slot_to_internal;
+    for (const auto& s : model_bone_slots_)
+        if (!s.internal_bone_name.empty()) slot_to_internal[s.slot] = s.internal_bone_name;
+
+    int estimated = 0;
+    for (auto& o : model_retarget_offsets_) {
+        auto int_it = slot_to_internal.find(o.slot);
+        auto ext_it = slot_to_external.find(o.slot);
+        if (int_it == slot_to_internal.end() || ext_it == slot_to_external.end())
+            continue; // slot not mapped for this model or this convention — nothing to estimate
+
+        bool already_calibrated = !(o.x == 0.f && o.y == 0.f && o.z == 0.f && o.w == 1.f);
+        if (already_calibrated && !overwrite) continue;
+
+        auto origin_it = origin_parent_rots.find(ext_it->second);
+        if (origin_it == origin_parent_rots.end()) {
+            std::fprintf(stderr,
+                "[retarget-offset-dbg] slot '%s': SKIPPED (external name '%s' not "
+                "found in reference file's hierarchy) — left at identity, needs "
+                "manual calibration\n",
+                o.slot.c_str(), ext_it->second.c_str());
+            continue;
+        }
+        glm::quat dest_parent_world;
+        if (!preview_->GetModel().GetBindParentWorldRotation(int_it->second, &dest_parent_world)) {
+            std::fprintf(stderr,
+                "[retarget-offset-dbg] slot '%s': SKIPPED (internal bone '%s' not "
+                "found in this model's hierarchy) — left at identity, needs manual "
+                "calibration\n",
+                o.slot.c_str(), int_it->second.c_str());
+            continue;
+        }
+
+        const glm::quat& origin_parent_world = origin_it->second;
+        glm::quat offset = dest_parent_world * glm::inverse(origin_parent_world);
+        o.x = offset.x; o.y = offset.y; o.z = offset.z; o.w = offset.w;
+        SaveRetargetOffset(db, model_id, o.slot, convention_name, o.x, o.y, o.z, o.w);
+        ++estimated;
+
+        if (o.slot == "UpperArm_L") {
+            auto deg = [](const glm::quat& q) { return glm::degrees(glm::eulerAngles(q)); };
+            glm::vec3 eo = deg(origin_parent_world), ed = deg(dest_parent_world), eoff = deg(offset);
+            std::fprintf(stderr,
+                "[retarget-offset-verify-dbg] slot 'UpperArm_L' (external='%s', internal='%s'):\n"
+                "  origin_parent_world euler_deg=(%.1f,%.1f,%.1f)\n"
+                "  dest_parent_world   euler_deg=(%.1f,%.1f,%.1f)\n"
+                "  offset              euler_deg=(%.1f,%.1f,%.1f)  <- reference expectation ~(-99.8,21.4,-171.7)\n",
+                ext_it->second.c_str(), int_it->second.c_str(),
+                eo.x, eo.y, eo.z, ed.x, ed.y, ed.z, eoff.x, eoff.y, eoff.z);
+        }
+    }
+    std::snprintf(statusMsg_, sizeof(statusMsg_),
+                  "Estimate Offsets: %d slot(s) estimated (of %zu mapped).",
+                  estimated, model_retarget_offsets_.size());
+    return estimated;
 }
 
 // ---------------------------------------------------------------------------
@@ -1459,16 +1853,6 @@ void MediaTab::SaveMeshSlot(sqlite3* db, ActorMeshSlot& s) {
             "[actor-mat] SaveMeshSlot: slot=%s model_id=%d material_id=%d (%s) -> %s\n",
             ActorSlotName(s.slot), s.model_id, s.material_id,
             mat_name.c_str(), ok ? "SAVED" : "DB ERROR");
-        // TEMP DEBUG (Gremlin Helm-never-draws investigation, point 1 — confirms
-        // whether bone_name/offsets actually reach the DB on Save, or the row
-        // saved has an empty bone_name (e.g. combo selection never wrote to s).
-        std::fprintf(stderr,
-            "[mesh-attach-dbg] SaveMeshSlot: id=%d slot=%d bone_name='%s' "
-            "offset_pos=(%.2f,%.2f,%.2f) offset_rot=(%.1f,%.1f,%.1f) offset_scale=%.2f -> %s\n",
-            s.id, s.slot, s.bone_name.c_str(),
-            s.offset_pos_x, s.offset_pos_y, s.offset_pos_z,
-            s.offset_rot_x, s.offset_rot_y, s.offset_rot_z, s.offset_scale,
-            ok ? "SAVED" : "DB ERROR");
     }
 
     // Replace per-submesh material overrides (DELETE + INSERT, idempotent).
@@ -2279,6 +2663,201 @@ void MediaTab::DrawModels(sqlite3* db) {
                 sel_shape_ = -1;
             }
             ImGui::PopStyleColor();
+        }
+
+        // ── Bone Slots (retargeting) ─────────────────────────────────────
+        // Per-model: which of THIS model's own bones plays each canonical
+        // humanoid slot. Paired at query time (BuildBoneAliasMap) against a
+        // GLOBAL naming convention (Bone Conventions sub-tab) to retarget
+        // animation files with different bone names (e.g. Mixamo exports)
+        // onto this model — see AppendAnimationsFrom's fallback,
+        // shared/renderer/src/model.cpp:~1561.
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextColored({0.6f, 0.9f, 1.f, 1.f}, "Bone Slots (retargeting)");
+        ImGui::TextDisabled("Maps this model's own bones to canonical slots, so external animation");
+        ImGui::TextDisabled("files with different bone names (see Bone Conventions tab) can retarget onto it.");
+
+        if (bone_slots_model_id_ != editModel_.id)
+            LoadBoneSlotsForModel(db, editModel_.id);
+
+        // AllNodeNamesUnoptimized(), not preview_->GetModel().AllNodeNames():
+        // the live preview Model is loaded WITH aiProcess_OptimizeGraph (an
+        // established invariant of Model::Load — skinning/pipeline depends
+        // on it), which merges leaf transform-only nodes like L_Shin/R_Shin
+        // into their parent before node_map_ is ever built. This combo needs
+        // the RAW, un-collapsed hierarchy, so it reads the file a second time
+        // through a separate, throwaway Assimp parse (no OptimizeGraph) that
+        // never touches the real Model used for rendering/animation — see
+        // Model::AllNodeNamesUnoptimized in model.cpp/model.h. This also
+        // means the combo no longer depends on the model being loaded in the
+        // preview first.
+        if (bone_slot_node_names_model_id_ != editModel_.id) {
+            bone_slot_node_names_cache_ = editModel_.file_path.empty()
+                ? std::vector<std::string>()
+                : rco::renderer::Model::AllNodeNamesUnoptimized(
+                      ResolveClientAsset(editModel_.file_path).c_str());
+            bone_slot_node_names_model_id_ = editModel_.id;
+        }
+        const std::vector<std::string>& model_bone_names = bone_slot_node_names_cache_;
+        if (model_bone_names.empty())
+            ImGui::TextDisabled("Bone list unavailable — check the model's file path.");
+
+        if (ImGui::BeginTable("##bone_slot_tbl", 2,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed, 110);
+            ImGui::TableSetupColumn("Internal Bone");
+            ImGui::TableHeadersRow();
+            for (auto& s : model_bone_slots_) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(s.slot.c_str());
+                ImGui::TableNextColumn();
+                ImGui::PushID(s.slot.c_str());
+                ImGui::SetNextItemWidth(-1);
+                if (ui::SearchableComboString("##bone", s.internal_bone_name, model_bone_names, "(none)")) {
+                    SaveBoneSlot(db, editModel_.id, s.slot, s.internal_bone_name);
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+
+        // Quick live-preview of retargeting: pick a convention already
+        // configured (Bone Conventions tab) and inject the flattened alias
+        // map straight into the preview's loaded model, so a Mixamo clip can
+        // be test-played against this model without touching the wire/
+        // network path at all.
+        {
+            if (preview_bone_convention_model_id_ != editModel_.id) {
+                preview_bone_convention_.clear();
+                preview_bone_convention_model_id_ = editModel_.id;
+            }
+
+            std::vector<std::string> convention_names;
+            for (const auto& c : external_bone_conventions_)
+                if (std::find(convention_names.begin(), convention_names.end(), c.convention_name)
+                    == convention_names.end())
+                    convention_names.push_back(c.convention_name);
+            ImGui::SetNextItemWidth(160.f);
+            ui::SearchableComboString("Preview with convention", preview_bone_convention_,
+                                       convention_names, "(none)");
+            ImGui::SameLine();
+            ImGui::BeginDisabled(preview_bone_convention_.empty() || !preview_
+                || preview_->CurrentPath() != editModel_.file_path);
+            if (ImGui::Button("Apply for Preview")) {
+                auto alias_map  = BuildBoneAliasMap(db, editModel_.id, preview_bone_convention_);
+                auto offset_map = BuildBoneRetargetOffsetMapLocal(db, editModel_.id, preview_bone_convention_);
+                auto& mdl_ref = const_cast<rco::renderer::Model&>(preview_->GetModel());
+                mdl_ref.SetBoneAliases(std::move(alias_map));
+                mdl_ref.SetBoneRetargetOffsets(std::move(offset_map));
+                preview_->RefreshCurrentAction(); // see the offset-slider callback below for why this is needed
+                std::snprintf(statusMsg_, sizeof(statusMsg_),
+                              "Bone aliases + retarget offsets for convention '%s' injected into preview.",
+                              preview_bone_convention_.c_str());
+            }
+            ImGui::EndDisabled();
+        }
+
+        // Retarget Pose offsets — calibratable per-bone rotation correction
+        // for this convention (see ModelRetargetOffset's doc comment, media.h).
+        if (!preview_bone_convention_.empty()) {
+            if (retarget_offsets_model_id_ != editModel_.id ||
+                retarget_offsets_convention_ != preview_bone_convention_)
+                LoadRetargetOffsets(db, editModel_.id, preview_bone_convention_);
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::TextColored({0.6f, 0.9f, 1.f, 1.f}, "Retarget Offsets (%s)", preview_bone_convention_.c_str());
+            ImGui::TextDisabled("Per-bone rotation correction for axis-convention differences vs this");
+            ImGui::TextDisabled("convention's rig (e.g. Mixamo's PreRotation-heavy axes). Identity = no change.");
+
+            std::string& ref_file = retarget_reference_file_by_convention_[preview_bone_convention_];
+            // Suggest a default: the Source File of the first configured
+            // clip (any Actor Def) whose Body slot uses this model — the
+            // dev almost certainly already picked a Mixamo file for some
+            // action, no reason to make them browse for one again. Only
+            // fills in an EMPTY field (session-only, so this runs once per
+            // convention until the dev clears it) — never overwrites a
+            // manual choice.
+            if (ref_file.empty()) {
+                for (const auto& def : actor_defs_) {
+                    bool has_body_slot = false;
+                    for (const auto& s : def.mesh_slots)
+                        if (s.slot == 0 && s.model_id == editModel_.id) { has_body_slot = true; break; }
+                    if (!has_body_slot) continue;
+                    for (const auto& a : def.anim_map) {
+                        if (!a.source_path.empty()) { ref_file = a.source_path; break; }
+                    }
+                    if (!ref_file.empty()) break;
+                }
+            }
+            if (PathField("Reference Pose File", ref_file, "Animation", "glb,fbx,dae,b3d", "anims")) {
+                // dev changed it manually — nothing else to do, PathField
+                // already wrote the resolved path into ref_file.
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Any file exported with this convention's rig (e.g. any Mixamo FBX) — "
+                                   "only its REST POSE is read, not its animation. Not persisted, session-only. "
+                                   "Pre-filled from this model's first configured clip Source File, if any.");
+            {
+                std::string resolved = ResolveClientAsset(ref_file);
+                if (!ref_file.empty() && !std::filesystem::exists(resolved)) {
+                    ImGui::TextColored({1.f, 0.4f, 0.3f, 1.f},
+                                        "File not found on disk: '%s' — pick a valid file before estimating.",
+                                        resolved.c_str());
+                }
+            }
+            if (ImGui::Button("Estimate (fill empty)"))
+                EstimateRetargetOffsets(db, editModel_.id, preview_bone_convention_, ref_file, false);
+            ImGui::SameLine();
+            if (ImGui::Button("Estimate (overwrite all)"))
+                EstimateRetargetOffsets(db, editModel_.id, preview_bone_convention_, ref_file, true);
+
+            if (ImGui::BeginTable("##retarget_offset_tbl", 2,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+                ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed, 110);
+                ImGui::TableSetupColumn("Offset (Euler XYZ, degrees)");
+                ImGui::TableHeadersRow();
+                for (auto& o : model_retarget_offsets_) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(o.slot.c_str());
+                    ImGui::TableNextColumn();
+                    ImGui::PushID(o.slot.c_str());
+                    glm::quat q(o.w, o.x, o.y, o.z);
+                    glm::vec3 euler_deg = glm::degrees(glm::eulerAngles(q));
+                    ImGui::SetNextItemWidth(-1);
+                    if (ImGui::DragFloat3("##euler", &euler_deg.x, 0.5f, -180.f, 180.f, "%.1f")) {
+                        glm::quat nq(glm::radians(euler_deg));
+                        o.x = nq.x; o.y = nq.y; o.z = nq.z; o.w = nq.w;
+                        SaveRetargetOffset(db, editModel_.id, o.slot, preview_bone_convention_,
+                                            o.x, o.y, o.z, o.w);
+                        // Real-time preview feedback: re-inject the whole
+                        // offset map immediately, no reload/restart needed —
+                        // same "don't require a model swap" fix already
+                        // applied to bone_aliases_ (bone_slots_revision_).
+                        if (preview_ && preview_->CurrentPath() == editModel_.file_path) {
+                            auto offset_map = BuildBoneRetargetOffsetMapLocal(
+                                db, editModel_.id, preview_bone_convention_);
+                            const_cast<rco::renderer::Model&>(preview_->GetModel())
+                                .SetBoneRetargetOffsets(std::move(offset_map));
+                            // Bumping bone_alias_revision_ (inside
+                            // SetBoneRetargetOffsets) only marks whatever
+                            // clip is currently baked in clips_ as STALE —
+                            // AppendAnimationsFrom won't actually rebuild it
+                            // until something asks for that clip again. Ask
+                            // right now, so the slider's effect shows up on
+                            // THIS model's next frame instead of needing a
+                            // trip to Actor Def (or anywhere else that calls
+                            // LoadAnim) first.
+                            preview_->RefreshCurrentAction();
+                        }
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndTable();
+            }
         }
     } else {
         ImGui::TextDisabled("Select a model, or click \"New Model\".");
@@ -3638,24 +4217,6 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
     if (!preview_init_ok_) {
         ImGui::TextDisabled("Preview unavailable (shader load failed).");
     } else if (selActorDef_ >= 0 && selActorDef_ < (int)actor_defs_.size()) {
-        // TEMP DEBUG (Gremlin Helm-not-drawn investigation, remove after diagnosis):
-        // dump every mesh slot this actor def actually has, so we can see
-        // whether the Helm slot even exists in editActorDef_ at this point
-        // and what model_id it points at.
-        {
-            std::fprintf(stderr, "[preview-slots] actor_def=%d slot_count=%zu\n",
-                         editActorDef_.id, editActorDef_.mesh_slots.size());
-            for (const auto& s : editActorDef_.mesh_slots) {
-                const MediaModel* sm = nullptr;
-                for (auto& m : models_) if (m.id == s.model_id) { sm = &m; break; }
-                std::fprintf(stderr,
-                    "[preview-slots]   slot=%d (%s) model_id=%d model_path='%s' found=%s\n",
-                    s.slot, ActorSlotName(s.slot), s.model_id,
-                    sm ? sm->file_path.c_str() : "(none)",
-                    sm ? "yes" : "no");
-            }
-        }
-
         // Resolve the Body slot mesh + material from the edit state.
         const ActorMeshSlot* body = nullptr;
         for (auto& s : editActorDef_.mesh_slots) {
@@ -3664,16 +4225,6 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         if (!body && !editActorDef_.mesh_slots.empty())
             body = &editActorDef_.mesh_slots.front();
 
-        // TEMP DEBUG (Gremlin Helm-not-drawn investigation, remove after diagnosis):
-        // this is the ONLY slot this function ever loads/submits to preview_ —
-        // every other slot in editActorDef_.mesh_slots (Helm included) is
-        // simply never looked at again below. Logging this makes that
-        // explicit rather than inferred from reading the code.
-        std::fprintf(stderr,
-            "[preview-slots] SUBMITTED-TO-DRAW slot=%d (%s) -- all other slots SKIPPED "
-            "(this preview only ever draws one slot)\n",
-            body ? body->slot : -1, body ? ActorSlotName(body->slot) : "(none)");
-
         if (!body) {
             preview_->Clear();
             ImGui::TextDisabled("Add a Body slot to see the actor.");
@@ -3681,26 +4232,83 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
             const MediaModel* mdl = nullptr;
             for (auto& m : models_) if (m.id == body->model_id) { mdl = &m; break; }
 
-            // TEMP DEBUG (Gremlin Helm-not-drawn investigation, remove after diagnosis):
-            std::fprintf(stderr,
-                "[preview-slots] body model resolve: model_id=%d -> %s (path='%s')\n",
-                body->model_id, mdl ? "FOUND" : "NOT FOUND",
-                mdl ? mdl->file_path.c_str() : "");
-
             if (!mdl || mdl->file_path.empty()) {
                 preview_->Clear();
                 ImGui::TextDisabled("Body slot points to an invalid model.");
             } else {
                 bool model_changed = preview_->CurrentPath() != mdl->file_path;
                 if (model_changed) {
-                    // TEMP DEBUG (Gremlin Helm-not-drawn investigation, remove after diagnosis):
-                    bool loaded_ok = preview_->LoadModel(mdl->file_path);
-                    std::fprintf(stderr,
-                        "[preview-slots] LoadModel('%s') -> %s\n",
-                        mdl->file_path.c_str(), loaded_ok ? "OK" : "FAILED");
+                    preview_->LoadModel(mdl->file_path);
                     preview_last_material_id_ = -1;    // force re-apply below
                     preview_last_model_id_    = -1;    // force re-apply mapping
                 }
+
+                // Re-inject bone retargeting aliases whenever the Body model
+                // changes OR Bone Slots / Bone Conventions were edited since
+                // the last injection (bone_slots_revision_, bumped by
+                // SaveBoneSlot / SaveBoneConventionRow / DeleteBoneConvention
+                // — see media.h). Gating this on model_changed alone meant
+                // editing Bone Slots for a model already showing in this
+                // preview never took effect until the whole app was
+                // restarted (PreviewViewport::LoadModel early-returns when
+                // the path is unchanged, and the underlying Model itself is
+                // shared process-wide via ModelCacheGet's path-keyed cache —
+                // see model_cache.cpp — so bone_aliases_ set on it persists
+                // across "reloads" within the same process unless we
+                // explicitly recall SetBoneAliases). No manual "Apply for
+                // Preview" click needed either: that button (Models tab)
+                // targets a SEPARATE PreviewViewport instance, which is why
+                // bone_aliases_ was empty here to begin with, before an
+                // earlier fix added this auto-injection block. Different
+                // conventions don't collide (their external_name
+                // vocabularies are disjoint — "mixamorig:X" vs whatever
+                // another tool uses), so merging all of them is safe.
+                if (model_changed || preview_last_bone_slots_revision_ != bone_slots_revision_) {
+                    std::unordered_map<std::string, std::string> body_bone_aliases;
+                    std::unordered_map<std::string, glm::quat> body_retarget_offsets;
+                    std::vector<std::string> conventions_seen;
+                    for (const auto& c : external_bone_conventions_) {
+                        if (std::find(conventions_seen.begin(), conventions_seen.end(),
+                                      c.convention_name) != conventions_seen.end())
+                            continue;
+                        conventions_seen.push_back(c.convention_name);
+                        auto per_convention = BuildBoneAliasMap(db, body->model_id, c.convention_name);
+                        body_bone_aliases.insert(per_convention.begin(), per_convention.end());
+                        auto per_convention_offsets = BuildBoneRetargetOffsetMapLocal(db, body->model_id, c.convention_name);
+                        body_retarget_offsets.insert(per_convention_offsets.begin(), per_convention_offsets.end());
+                    }
+                    auto& mdl_ref = const_cast<rco::renderer::Model&>(preview_->GetModel());
+                    mdl_ref.SetBoneAliases(std::move(body_bone_aliases));
+                    mdl_ref.SetBoneRetargetOffsets(std::move(body_retarget_offsets));
+                    preview_last_bone_slots_revision_ = bone_slots_revision_;
+                    // Force whatever action is currently playing to re-run
+                    // through Actor::LoadAnim -> AppendAnimationsFrom — same
+                    // reasoning as the Retarget Offsets slider callback
+                    // (Models tab): bumping the revision alone only marks the
+                    // already-baked clip stale, it doesn't rebuild it.
+                    preview_->RefreshCurrentAction();
+                }
+
+                // Manual escape hatch: forces a full reload of the Body
+                // model from disk (ModelCacheInvalidate drops the cached
+                // shared_ptr<Model> so ModelCacheGet re-parses it, and
+                // ForceReload() clears the preview's tracked path so
+                // model_changed evaluates true again next frame, re-running
+                // both the reload and the alias-injection block above). Use
+                // this after editing the source model file itself (e.g. a
+                // node was added/renamed in the .b3d) — Bone Slot/Convention
+                // edits alone don't need it, those already auto-refresh above.
+                if (ImGui::Button("Refresh Retargeting")) {
+                    // ModelCacheGet's cache key is the RESOLVED path (see
+                    // PreviewViewport::LoadModel), not the raw DB file_path —
+                    // must match it here or the invalidate is a silent no-op.
+                    rco::renderer::ModelCacheInvalidate(ResolveClientAsset(mdl->file_path));
+                    preview_->ForceReload();
+                    ++bone_slots_revision_;
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Force-reloads the Body model from disk and "
+                                       "re-injects bone retargeting aliases.");
 
                 // Apply the Model's persisted per-aiMaterial mapping first
                 // so multi-part models (e.g. 44-submesh dwarf) show up with
@@ -3833,34 +4441,12 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                 // the same bone-attach primitive. body->slot is excluded since
                 // it's already the primary preview_ actor, not an attachment.
                 {
-                    // TEMP DEBUG (Gremlin Helm-never-draws investigation, point 5 —
-                    // confirms this block actually runs every frame the Actor Def
-                    // editor is drawn, and dumps every non-Body slot considered so
-                    // we can see exactly which ones get dropped (bone_name empty vs
-                    // model not found) before ever reaching SetMeshSlotAttachments.
-                    std::fprintf(stderr,
-                        "[mesh-attach-dbg] preview block: actor_def=%d mesh_slots=%zu\n",
-                        editActorDef_.id, editActorDef_.mesh_slots.size());
                     std::vector<PreviewViewport::MeshSlotAttachment> meshAttachments;
                     for (const auto& s : editActorDef_.mesh_slots) {
-                        if (s.slot == 0) continue;
-                        if (s.bone_name.empty()) {
-                            std::fprintf(stderr,
-                                "[mesh-attach-dbg]   slot=%d DROPPED (bone_name empty)\n", s.slot);
-                            continue;
-                        }
+                        if (s.slot == 0 || s.bone_name.empty()) continue;
                         const MediaModel* smdl = nullptr;
                         for (auto& m : models_) if (m.id == s.model_id) { smdl = &m; break; }
-                        if (!smdl || smdl->file_path.empty()) {
-                            std::fprintf(stderr,
-                                "[mesh-attach-dbg]   slot=%d bone_name='%s' DROPPED "
-                                "(model_id=%d not found or empty file_path)\n",
-                                s.slot, s.bone_name.c_str(), s.model_id);
-                            continue;
-                        }
-                        std::fprintf(stderr,
-                            "[mesh-attach-dbg]   slot=%d bone_name='%s' model='%s' -> QUEUED\n",
-                            s.slot, s.bone_name.c_str(), smdl->file_path.c_str());
+                        if (!smdl || smdl->file_path.empty()) continue;
                         PreviewViewport::MeshSlotAttachment e;
                         e.model_path    = smdl->file_path;
                         e.bone_name     = s.bone_name;
@@ -3873,9 +4459,6 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                         e.offset_scale  = s.offset_scale;
                         meshAttachments.push_back(std::move(e));
                     }
-                    std::fprintf(stderr,
-                        "[mesh-attach-dbg] preview block: calling SetMeshSlotAttachments with %zu entr%s\n",
-                        meshAttachments.size(), meshAttachments.size() == 1 ? "y" : "ies");
                     preview_->SetMeshSlotAttachments(std::move(meshAttachments));
                 }
 
@@ -4409,6 +4992,117 @@ void MediaTab::DrawFolderDeleteModal_(sqlite3* db)
     ImGui::EndPopup();
 }
 
+// ---------------------------------------------------------------------------
+// Bone Conventions — GLOBAL sub-tab, not scoped to any model. Teaches the
+// engine how one external naming convention (e.g. "Mixamo") labels each
+// canonical humanoid slot. Paired against a model's own Bone Slots (Models
+// sub-tab) at query time by BuildBoneAliasMap — this tab never references a
+// model_id at all.
+// ---------------------------------------------------------------------------
+
+void MediaTab::DrawBoneConventions(sqlite3* db) {
+    ImGui::TextColored({0.6f, 0.9f, 1.f, 1.f}, "External Bone Conventions");
+    ImGui::TextDisabled("Global — teaches a naming convention (e.g. Mixamo) once, for every model.");
+    ImGui::TextDisabled("Pair with a model's own \"Bone Slots\" (Models tab) to retarget animation files.");
+    ImGui::Spacing();
+
+    std::vector<std::string> convention_names;
+    for (const auto& c : external_bone_conventions_)
+        if (std::find(convention_names.begin(), convention_names.end(), c.convention_name)
+            == convention_names.end())
+            convention_names.push_back(c.convention_name);
+
+    ImGui::BeginChild("##conv_list", {220.f, 0}, true);
+    for (const auto& name : convention_names) {
+        bool sel = (name == selected_bone_convention_);
+        if (ImGui::Selectable(name.c_str(), sel)) selected_bone_convention_ = name;
+    }
+    ImGui::Separator();
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputText("##new_conv", new_bone_convention_name_, sizeof(new_bone_convention_name_));
+    if (ImGui::Button("+ Add Convention") && new_bone_convention_name_[0] != '\0') {
+        std::string name = new_bone_convention_name_;
+        bool exists = std::find(convention_names.begin(), convention_names.end(), name)
+                      != convention_names.end();
+        if (!exists) {
+            // Seed with one empty row so the convention shows up in the list
+            // immediately (rows with empty external_name are excluded from
+            // BuildBoneAliasMap, so this is harmless until the dev fills them in).
+            SaveBoneConventionRow(db, name, kCanonicalBoneSlots[0], "");
+        }
+        selected_bone_convention_ = name;
+        new_bone_convention_name_[0] = '\0';
+    }
+    if (!selected_bone_convention_.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Button, {0.65f, 0.1f, 0.1f, 1.f});
+        if (ImGui::Button("Delete Convention")) {
+            DeleteBoneConvention(db, selected_bone_convention_);
+        }
+        ImGui::PopStyleColor();
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("##conv_edit", {0, 0}, true);
+    if (selected_bone_convention_.empty()) {
+        ImGui::TextDisabled("Select a convention, or add a new one.");
+    } else {
+        ImGui::Text("Editing: %s", selected_bone_convention_.c_str());
+        ImGui::SameLine();
+        if (ImGui::Button("Load Mixamo Names")) {
+            // Pure UI convenience: pre-fills the external_name TEXT field of
+            // every slot with the standard Mixamo string, for THIS
+            // convention (handy when starting a new/variant convention from
+            // the Mixamo names as a template). Not a translation table the
+            // engine reads — just default text the dev can edit before
+            // saving, same as any other row.
+            static const std::pair<const char*, const char*> kMixamoNames[] = {
+                {"Hips", "mixamorig:Hips"}, {"Spine", "mixamorig:Spine"},
+                {"Chest", "mixamorig:Spine2"}, {"Neck", "mixamorig:Neck"},
+                {"Head", "mixamorig:Head"},
+                {"Clavicle_L", "mixamorig:LeftShoulder"}, {"Clavicle_R", "mixamorig:RightShoulder"},
+                {"UpperArm_L", "mixamorig:LeftArm"}, {"UpperArm_R", "mixamorig:RightArm"},
+                {"Forearm_L", "mixamorig:LeftForeArm"}, {"Forearm_R", "mixamorig:RightForeArm"},
+                {"Hand_L", "mixamorig:LeftHand"}, {"Hand_R", "mixamorig:RightHand"},
+                {"Thigh_L", "mixamorig:LeftUpLeg"}, {"Thigh_R", "mixamorig:RightUpLeg"},
+                {"Calf_L", "mixamorig:LeftLeg"}, {"Calf_R", "mixamorig:RightLeg"},
+                {"Foot_L", "mixamorig:LeftFoot"}, {"Foot_R", "mixamorig:RightFoot"},
+            };
+            for (const auto& [slot, ext] : kMixamoNames)
+                SaveBoneConventionRow(db, selected_bone_convention_, slot, ext);
+        }
+        ImGui::Separator();
+
+        if (ImGui::BeginTable("##conv_tbl", 2,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed, 110);
+            ImGui::TableSetupColumn("External Name");
+            ImGui::TableHeadersRow();
+            for (int i = 0; i < kCanonicalBoneSlotCount; ++i) {
+                const char* slot = kCanonicalBoneSlots[i];
+                std::string external_name;
+                for (const auto& c : external_bone_conventions_)
+                    if (c.convention_name == selected_bone_convention_ && c.slot == slot) {
+                        external_name = c.external_name;
+                        break;
+                    }
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(slot);
+                ImGui::TableNextColumn();
+                ImGui::PushID(slot);
+                ImGui::SetNextItemWidth(-1);
+                if (InputString("##ext", external_name, 128)) {
+                    SaveBoneConventionRow(db, selected_bone_convention_, slot, external_name);
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+    }
+    ImGui::EndChild();
+}
+
 void MediaTab::Draw(sqlite3* db) {
     if (needFetch_) {
         // Before refetch, remember which actor def is currently being edited
@@ -4441,6 +5135,7 @@ void MediaTab::Draw(sqlite3* db) {
         // inside each Actor Def (action + source file + clip name). The
         // media_anim_clips table is still used under the hood by SaveAnimMap.
         if (ImGui::BeginTabItem("Actor Defs")) { DrawActorDefs (db); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Bone Conventions")) { DrawBoneConventions(db); ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
     // Modal lives outside the tab bar so OpenPopup + BeginPopupModal share the

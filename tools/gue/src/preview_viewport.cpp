@@ -416,16 +416,6 @@ void PreviewViewport::SetMeshSlotAttachments(std::vector<MeshSlotAttachment> ent
             rco::renderer::MaterialManager* mm = engine_ ? &engine_->materials() : nullptr;
             rt.mesh_actor->Destroy();
             rt.mesh_actor->Init("", resolved.c_str(), mm);
-            // TEMP DEBUG (Gremlin Helm-never-draws investigation, point 3 —
-            // confirms whether the slot's model actually loaded (stbi/model
-            // parse ok?) at the resolved path, or silently failed leaving
-            // IsLoaded()==false — in which case the later submit loop skips
-            // it entirely and nothing ever reaches SubmitWithMatrix.
-            std::fprintf(stderr,
-                "[mesh-attach-dbg] SetMeshSlotAttachments: bone='%s' model_path='%s' "
-                "resolved='%s' -> IsLoaded=%s\n",
-                entries[i].bone_name.c_str(), rt.model_path.c_str(), resolved.c_str(),
-                rt.mesh_actor->IsLoaded() ? "true" : "false");
             if (engine_) engine_->MarkMaterialsDirty();
         }
         rt.spec = entries[i];
@@ -660,31 +650,11 @@ void PreviewViewport::RenderToEngineFrame_(int w, int h, float dt) {
     // Rigid mesh-slot attachments (SetMeshSlotAttachments) — independent of
     // has_attachment_/attachment_ above (Items tab). Same two primitives
     // (GetBoneWorldTransform + SubmitWithMatrix), a separate list of Actors.
-    // TEMP DEBUG (Gremlin Helm-never-draws investigation, points 2+4): throttled
-    // to ~once/2s per call (not every frame) to avoid flooding stderr, same
-    // pattern already used elsewhere in this file for the ripple diagnostic.
-    static float s_meshAttachLastLog = -1000.f;
-    const bool logMeshAttachThisFrame = (anim_t_ - s_meshAttachLastLog > 2.0f);
-    if (logMeshAttachThisFrame) s_meshAttachLastLog = anim_t_;
     for (auto& rt : mesh_slot_runtime_) {
-        if (!rt.mesh_actor || !rt.mesh_actor->IsLoaded() || rt.spec.bone_name.empty()) {
-            if (logMeshAttachThisFrame)
-                std::fprintf(stderr,
-                    "[mesh-attach-dbg] draw-skip: bone='%s' actor_loaded=%s "
-                    "reason=%s\n",
-                    rt.spec.bone_name.c_str(),
-                    (rt.mesh_actor && rt.mesh_actor->IsLoaded()) ? "true" : "false",
-                    !rt.mesh_actor ? "no-actor" :
-                    (!rt.mesh_actor->IsLoaded() ? "model-not-loaded" : "empty-bone-name"));
+        if (!rt.mesh_actor || !rt.mesh_actor->IsLoaded() || rt.spec.bone_name.empty())
             continue;
-        }
         glm::mat4 boneMat(1.0f);
-        bool boneFound = actor_.GetBoneWorldTransform(rt.spec.bone_name, &boneMat);
-        if (logMeshAttachThisFrame)
-            std::fprintf(stderr,
-                "[mesh-attach-dbg] point2: GetBoneWorldTransform('%s') on Body actor -> %s\n",
-                rt.spec.bone_name.c_str(), boneFound ? "TRUE" : "FALSE (bone not found in Body model)");
-        if (!boneFound)
+        if (!actor_.GetBoneWorldTransform(rt.spec.bone_name, &boneMat))
             continue; // unknown bone name — skip rather than draw at the origin
 
         glm::mat4 actorModel(1.0f);
@@ -701,20 +671,7 @@ void PreviewViewport::RenderToEngineFrame_(int w, int h, float dt) {
         local = glm::rotate(local, glm::radians(rt.spec.offset_rot_z), glm::vec3(0.f, 0.f, 1.f));
         local = glm::scale(local, glm::vec3(rt.spec.offset_scale));
 
-        glm::mat4 world = actorModel * boneMat * local;
-        if (logMeshAttachThisFrame) {
-            glm::vec3 worldPos = glm::vec3(world[3]);
-            bool hasNaN = std::isnan(worldPos.x) || std::isnan(worldPos.y) || std::isnan(worldPos.z);
-            std::fprintf(stderr,
-                "[mesh-attach-dbg] point4: about to SubmitWithMatrix bone='%s' "
-                "world_pos=(%.3f,%.3f,%.3f) hasNaN=%s\n",
-                rt.spec.bone_name.c_str(), worldPos.x, worldPos.y, worldPos.z,
-                hasNaN ? "true" : "false");
-        }
-        rt.mesh_actor->SubmitWithMatrix(*pipeline_, world);
-        if (logMeshAttachThisFrame)
-            std::fprintf(stderr, "[mesh-attach-dbg] point4: SubmitWithMatrix CALLED for bone='%s'\n",
-                         rt.spec.bone_name.c_str());
+        rt.mesh_actor->SubmitWithMatrix(*pipeline_, actorModel * boneMat * local);
     }
 
     rco::renderer::Pipeline::EndConfig cfg{};

@@ -670,6 +670,80 @@ void ZoneRenderer::LoadTerrain(const std::string& areaName) {
     terrain_.LoadArea(areaName);
 }
 
+// ─── Debug dump (F11) ────────────────────────────────────────────────────────
+
+void ZoneRenderer::DumpDebugReport(const std::string& path, glm::ivec2 mouseViewportPx) const {
+    terrain_.DumpDebugReport(path);
+
+    FILE* f = std::fopen(path.c_str(), "a");
+    if (!f) return;
+
+    if (!fullEngine_) {
+        std::fprintf(f, "-- G-buffer: PBR engine not initialised yet (never rendered a frame in PBR mode) --\n");
+        std::fclose(f);
+        return;
+    }
+
+    int w = fullEngine_->width(), h = fullEngine_->height();
+
+    // Fixed 8-percentage screen points were unreliable — the editor camera
+    // may not be framing the terrain the same way the splatmap's
+    // texture-space points imply, so a "black" result there could just mean
+    // "pointed at the sky/background", not "terrain not drawing". Sample two
+    // much more reliable points instead:
+    //   1. Dead center of the viewport — the editor camera typically frames
+    //      whatever it's looking at (the terrain) around the center.
+    //   2. The mouse cursor's CURRENT position at the moment F11 is pressed
+    //      (if it was over the viewport) — lets the dev aim directly at the
+    //      exact spot where the gray/flat area is visible on screen and
+    //      sample that precise pixel, guaranteeing correlation.
+    // mouseViewportPx is in viewport-relative pixel coords, top-down (ImGui
+    // convention); GL textures are stored bottom-up, so Y is flipped below.
+    struct Pt { int x, y; const char* name; bool valid; };
+    Pt pts[2] = {
+        { w / 2, h / 2, "center (50%,50%)", true },
+        { mouseViewportPx.x, h - 1 - mouseViewportPx.y, "mouse cursor @ F11 press", false },
+    };
+    pts[1].valid = mouseViewportPx.x >= 0 && mouseViewportPx.y >= 0
+                && mouseViewportPx.x < w  && mouseViewportPx.y < h;
+
+    std::fprintf(f, "-- G-buffer (screen-space, viewport %dx%d): gAlbedo=%u gNormal=%u gRMA=%u --\n",
+                 w, h, fullEngine_->gAlbedo(), fullEngine_->gNormal(), fullEngine_->gRMA());
+    for (const auto& p : pts) {
+        if (!p.valid) {
+            std::fprintf(f, "  %-26s SKIPPED (mouse was not over the viewport when F11 was pressed)\n", p.name);
+            continue;
+        }
+
+        // gAlbedo_: GL_RGBA8 — straight unsigned bytes.
+        uint8_t albedo[4] = {0, 0, 0, 0};
+        glGetTextureSubImage(fullEngine_->gAlbedo(), 0, p.x, p.y, 0, 1, 1, 1,
+                              GL_RGBA, GL_UNSIGNED_BYTE, sizeof(albedo), albedo);
+
+        // gNormal_: GL_RG8_SNORM (oct-encoded) — read as float to avoid
+        // manual [-128,127] -> [-1,1] conversion.
+        float normal[2] = {0.f, 0.f};
+        glGetTextureSubImage(fullEngine_->gNormal(), 0, p.x, p.y, 0, 1, 1, 1,
+                              GL_RG, GL_FLOAT, sizeof(normal), normal);
+
+        // gRMA_: GL_RGB10_A2 (R=roughness, G=metallic, B=AO) — read as float,
+        // GL handles the packed-format conversion.
+        float rma[4] = {0.f, 0.f, 0.f, 0.f};
+        glGetTextureSubImage(fullEngine_->gRMA(), 0, p.x, p.y, 0, 1, 1, 1,
+                              GL_RGBA, GL_FLOAT, sizeof(rma), rma);
+
+        std::fprintf(f,
+            "  (%4d,%4d) %-26s albedo R=%3u G=%3u B=%3u A=%3u | normal(oct) X=%+.3f Y=%+.3f | "
+            "RMA rough=%.3f metal=%.3f ao=%.3f\n",
+            p.x, p.y, p.name,
+            albedo[0], albedo[1], albedo[2], albedo[3],
+            normal[0], normal[1],
+            rma[0], rma[1], rma[2]);
+    }
+
+    std::fclose(f);
+}
+
 // ─── Draw helpers ─────────────────────────────────────────────────────────────
 
 void ZoneRenderer::DrawSphere(const glm::vec3& pos, float r,

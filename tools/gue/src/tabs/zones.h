@@ -378,7 +378,7 @@ private:
     float brushRadius_    = 10.f;
     float brushStrength_  = 1.0f;
     float brushFlattenH_  = 10.f;
-    int   brushMaterial_  = 0;     // 0..3 — splatmap channel when painting
+    int   brushMaterial_  = 0;     // material slot index when painting (unbounded — Phase 1)
     bool  brushActive_    = false; // true while LMB is held in terrain mode
 
     // Brush cursor (terrain mode) — updated every frame via hover raycast

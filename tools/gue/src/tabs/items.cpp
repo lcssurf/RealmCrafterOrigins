@@ -2,9 +2,11 @@
 #include "../attribute_list.h"
 #include "../ui_widgets.h"
 #include "../file_import.h"
+#include "../asset_path.h"
 #include "rco/renderer/engine.h"
 #include "rco/renderer/pipeline.h"
 #include <imgui.h>
+#include <stb_image.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstring>
@@ -371,6 +373,8 @@ void ItemsTab::Fetch(sqlite3* db) {
     items_.clear();
     selected_ = -1;
     iconOptions_ = gue::ListTextureAssets();
+    if (preview_icon_tex_) { glDeleteTextures(1, &preview_icon_tex_); preview_icon_tex_ = 0; }
+    preview_icon_path_.clear();
 
     sqlite3_stmt* stmt = nullptr;
     const char* sql =
@@ -706,6 +710,45 @@ bool ItemsTab::DrawFields(ItemTemplate& t) {
             iconOptions_ = gue::ListTextureAssets();
             changed = true;
         }
+    }
+
+    // Icon thumbnail preview — same safe lifecycle as MediaTab's albedo
+    // preview (media.cpp): reload only when the path actually changes, at
+    // most one texture alive at a time, freed before the next load.
+    if (t.icon_path != preview_icon_path_) {
+        if (preview_icon_tex_) { glDeleteTextures(1, &preview_icon_tex_); preview_icon_tex_ = 0; }
+        preview_icon_path_ = t.icon_path;
+        if (!preview_icon_path_.empty()) {
+            std::string abs = ResolveClientAsset(preview_icon_path_);
+            // stbi_set_flip_vertically_on_load is process-global, mutable
+            // state — other loaders in this file/tool leave it in whatever
+            // state suits THEM (e.g. material textures want it flipped).
+            // Must be reset right before this call, matching the one
+            // convention already proven correct for ImGui::Image() display
+            // (rco::ui::UITextureCache::loadGL, client/src/ui/ui_texture.cpp)
+            // — without this, the icon inherits the previous caller's flag
+            // and renders upside-down.
+            stbi_set_flip_vertically_on_load(0);
+            int w = 0, h = 0, ch = 0;
+            unsigned char* px = stbi_load(abs.c_str(), &w, &h, &ch, 4);
+            if (px) {
+                glGenTextures(1, &preview_icon_tex_);
+                glBindTexture(GL_TEXTURE_2D, preview_icon_tex_);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
+                             GL_RGBA, GL_UNSIGNED_BYTE, px);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glBindTexture(GL_TEXTURE_2D, 0);
+                stbi_image_free(px);
+            }
+        }
+    }
+    if (preview_icon_tex_) {
+        ImGui::Image((ImTextureID)(intptr_t)preview_icon_tex_, ImVec2(64.f, 64.f));
+    } else if (!t.icon_path.empty()) {
+        ImGui::TextDisabled("(preview load failed)");
+    } else {
+        ImGui::TextDisabled("(no icon)");
     }
 
     if (socketVocab_.empty()) {

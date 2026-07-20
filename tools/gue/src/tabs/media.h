@@ -32,6 +32,66 @@ struct ModelShape {
     float detail_b = 0.f;
 };
 
+// ---------------------------------------------------------------------------
+// Bone retargeting — canonical slots (Unreal/Unity "Humanoid Rig" style)
+// ---------------------------------------------------------------------------
+
+// Fixed vocabulary of ~19 humanoid retargeting slots. A compile-time
+// constant, not a DB table — mirrored in server/internal/db/db.go's
+// CanonicalBoneSlots (same "small fixed vocabulary duplicated per language"
+// pattern as kSlotTypes/ActorSlot). Used to populate both the per-model
+// "Bone Slots" editor and the global "Bone Conventions" editor with
+// identical rows, so a slot name always means the same thing everywhere.
+inline const char* const kCanonicalBoneSlots[] = {
+    "Hips", "Spine", "Chest", "Neck", "Head",
+    "Clavicle_L", "Clavicle_R",
+    "UpperArm_L", "UpperArm_R",
+    "Forearm_L", "Forearm_R",
+    "Hand_L", "Hand_R",
+    "Thigh_L", "Thigh_R",
+    "Calf_L", "Calf_R",
+    "Foot_L", "Foot_R",
+};
+constexpr int kCanonicalBoneSlotCount =
+    (int)(sizeof(kCanonicalBoneSlots) / sizeof(kCanonicalBoneSlots[0]));
+
+// Mirrors one row in model_bone_slots — PER MODEL: which of this model's own
+// bones plays a given canonical slot. Empty internal_bone_name = slot not
+// applicable to this model (e.g. a model with no separate Chest bone).
+struct ModelBoneSlot {
+    int         id       = 0;
+    int         model_id = 0;
+    std::string slot;               // one of kCanonicalBoneSlots
+    std::string internal_bone_name; // "" = unset; else a name from BoneNames()
+};
+
+// Mirrors one row in external_bone_conventions — GLOBAL, not scoped to any
+// model: how a naming convention (e.g. "Mixamo") labels a given canonical
+// slot. Editable in the GUE so future conventions can be added as data.
+struct ExternalBoneConvention {
+    int         id = 0;
+    std::string convention_name; // e.g. "Mixamo"
+    std::string slot;            // one of kCanonicalBoneSlots
+    std::string external_name;   // e.g. "mixamorig:LeftArm"
+};
+
+// Mirrors one row in model_retarget_offsets — a calibratable rotation offset
+// (quaternion, x,y,z,w) that corrects for axis-convention differences between
+// this model's rig and one external convention's rig, for one slot. Scoped by
+// (model_id, slot, convention_name): unlike ModelBoneSlot, the offset
+// genuinely depends on WHICH external convention is being reconciled (a
+// different tool's rig could need a different correction for the exact same
+// bone). Defaults to identity (0,0,0,1) — see BuildBoneRetargetOffsetMap in
+// db.go and the retargeting formula in shared/renderer/src/model.cpp for the
+// documented "identity offset == old behavior, unchanged" invariant.
+struct ModelRetargetOffset {
+    int         id = 0;
+    int         model_id = 0;
+    std::string slot;            // one of kCanonicalBoneSlots
+    std::string convention_name; // e.g. "Mixamo"
+    float       x = 0.f, y = 0.f, z = 0.f, w = 1.f;
+};
+
 struct MediaModel {
     int         id = 0;
     std::string name;
@@ -298,6 +358,55 @@ private:
     void SaveModelShape      (sqlite3* db, ModelShape& s);
     void DeleteModelShape    (sqlite3* db, int id);
 
+    // Bone retargeting — per-model slots + global conventions (see
+    // media.h's kCanonicalBoneSlots / ModelBoneSlot / ExternalBoneConvention
+    // doc comments for the two-table design).
+    void LoadBoneSlotsForModel (sqlite3* db, int model_id);
+    void SaveBoneSlot          (sqlite3* db, int model_id, const std::string& slot,
+                                const std::string& internal_bone_name);
+    void LoadBoneConventions   (sqlite3* db);
+    void SaveBoneConventionRow (sqlite3* db, const std::string& convention_name,
+                                const std::string& slot, const std::string& external_name);
+    void DeleteBoneConvention  (sqlite3* db, const std::string& convention_name);
+    // Joins external_bone_conventions x model_bone_slots for one (model_id,
+    // convention_name) pair — the GUE-local mirror of db.go's
+    // BuildBoneAliasMap, used to inject a live preview via
+    // preview_->GetModel().SetBoneAliases(...) so "Load Mixamo Names" is
+    // testable immediately without restarting anything.
+    std::unordered_map<std::string, std::string> BuildBoneAliasMap(
+        sqlite3* db, int model_id, const std::string& convention_name);
+    void DrawBoneConventions(sqlite3* db);
+
+    // Retarget Pose offsets — calibratable per-bone rotation correction,
+    // scoped by (model_id, slot, convention_name). See ModelRetargetOffset's
+    // doc comment (this header) and TECH_DEBT.md for the design rationale
+    // (inspired by Unreal's IK Retargeter "Retarget Pose" bone offsets).
+    void LoadRetargetOffsets(sqlite3* db, int model_id, const std::string& convention_name);
+    void SaveRetargetOffset (sqlite3* db, int model_id, const std::string& slot,
+                              const std::string& convention_name, float x, float y, float z, float w);
+    // Estimates a starting offset for every mapped slot of (model_id,
+    // convention_name) by comparing each bone's PARENT FRAME's full composed
+    // bind-pose orientation (root-to-parent, rco::renderer::Model::
+    // GetBindParentWorldRotation / ParentBindWorldRotationsUnoptimized)
+    // between the model's own hierarchy and a reference pose file for that
+    // convention (any exported file sharing that convention's rest pose/rig
+    // proportions — e.g. any Mixamo FBX). Uses the full parent-frame
+    // rotation rather than a single bone-direction vector so there's no
+    // twist ambiguity (a direction vector alone only pins 2 of 3 rotational
+    // degrees of freedom). overwrite=false only fills slots that don't
+    // already have a non-identity offset saved; overwrite=true replaces
+    // everything. Returns the number of slots estimated.
+    int EstimateRetargetOffsets(sqlite3* db, int model_id, const std::string& convention_name,
+                                 const std::string& reference_file_path, bool overwrite);
+    std::vector<ModelRetargetOffset> model_retarget_offsets_;
+    int         retarget_offsets_model_id_ = -1;
+    std::string retarget_offsets_convention_;
+    // Session-only (not persisted) — the dev pastes/browses any file that
+    // shares the convention's rest pose here, used only when "Estimate
+    // Offsets" is clicked. Keyed by convention_name so switching conventions
+    // remembers each one's last-used reference file within this session.
+    std::unordered_map<std::string, std::string> retarget_reference_file_by_convention_;
+
     // Animation vocabulary (Phase A.1/A.2) — flat list of action names for
     // the actor anim editor's strict combo. Loaded independently from
     // SettingsTab (same anim_vocabulary table).
@@ -360,6 +469,34 @@ private:
     bool       dirty_shape_          = false;
     ModelShape pending_shape_;
     bool       new_shape_            = false;
+
+    // Bone Slots (per model) — always exactly kCanonicalBoneSlotCount rows
+    // (loaded/defaulted from model_bone_slots for the selected model; unset
+    // slots just have an empty internal_bone_name, no add/remove UI needed).
+    std::vector<ModelBoneSlot> model_bone_slots_;
+    int bone_slots_model_id_ = -1; // model_id whose slots are loaded into model_bone_slots_
+
+    // Caches Model::AllNodeNamesUnoptimized's result for the Bone Slots combo
+    // so the throwaway Assimp re-parse only happens when the selected model
+    // changes, not every ImGui frame.
+    std::vector<std::string> bone_slot_node_names_cache_;
+    int bone_slot_node_names_model_id_ = -1;
+
+    // "Preview with convention" combo selection (Bone Slots section, next to
+    // "Apply for Preview"). Previously a function-local `static std::string`
+    // inside DrawModels — that's process-lifetime storage in C++ so it isn't
+    // destroyed by switching tabs, but it also wasn't scoped to any model, so
+    // it could show a stale convention name left over from a PREVIOUSLY
+    // selected model. Now a real member, reset only when the selected model
+    // (editModel_.id) changes — not on every redraw or Bone Conventions reload.
+    std::string preview_bone_convention_;
+    int         preview_bone_convention_model_id_ = -1;
+
+    // Bone Conventions (global, not per-model) — every convention's full set
+    // of (slot, external_name) rows, loaded once and refreshed on save.
+    std::vector<ExternalBoneConvention> external_bone_conventions_;
+    std::string selected_bone_convention_; // convention_name currently shown, "" = none yet
+    char new_bone_convention_name_[64] = {};
 
     // --- Materials sub-tab state ---
     int           selMat_  = -1;
@@ -435,6 +572,18 @@ private:
     // Set whenever materials_ changes — forces the Models preview to
     // re-resolve name-based material bindings next frame.
     bool     materialsDirtyForPreview_ = true;
+
+    // Bumped by SaveBoneSlot (and available for a manual "Refresh
+    // Retargeting" button) so the Actor Def preview can re-inject
+    // bone_aliases_ even when the Body model itself hasn't changed. Without
+    // this, editing Bone Slots while an Actor Def preview is already showing
+    // that model would never re-fire SetBoneAliases: the injection below was
+    // previously gated only on `model_changed` (preview_->CurrentPath() !=
+    // mdl->file_path), which Bone Slot edits never touch. The stale alias map
+    // then persists for the rest of the process — matching the reported bug
+    // where changes only took effect after restarting the whole app.
+    int      bone_slots_revision_               = 0;
+    int      preview_last_bone_slots_revision_   = -1;
 
     // Revision counter. Bumped by SaveModel / SaveMaterial / DeleteMaterial
     // / the import flow. Read via MediaRevision() by other tabs.

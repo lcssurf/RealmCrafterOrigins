@@ -278,7 +278,7 @@ void ZonesTab::LoadZone(sqlite3* db, MediaTab* media, const std::string& name) {
     // Apply terrain material IDs saved in materials.txt via DB lookup
     LoadTerrainMats(db);
     auto& ter = renderer_.terrain();
-    for (int i = 0; i < EditableTerrain::kMaxMats; ++i) {
+    for (int i = 0; i < ter.NumMaterials(); ++i) {
         int id = ter.materialId(i);
         if (id <= 0) continue;
         for (auto& tm : terrainMats_) {

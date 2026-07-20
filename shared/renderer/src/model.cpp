@@ -9,6 +9,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/quaternion.hpp> // glm::dot(quat,quat) — FixQuaternionHemisphereContinuity
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -53,7 +54,18 @@ struct RawAnimClip {
     float                       fps          = 30.f;
     std::vector<RawAnimChannel> channels;
 };
-struct AnimFileCache { std::vector<RawAnimClip> clips; };
+struct AnimFileCache {
+    std::vector<RawAnimClip> clips;
+    // Rest/bind rotation of every named node in the SOURCE file's own
+    // hierarchy (pipe-prefix stripped, same convention as RawAnimChannel::name),
+    // captured once at parse time from aiNode::mTransformation — i.e. BEFORE
+    // any animation is applied. Needed to retarget by DELTA rather than
+    // absolute value: a raw channel's rotation is expressed relative to that
+    // bone's OWN rest orientation in the source rig, which generally does not
+    // match the destination skeleton's rest orientation for the "same" bone
+    // (Mixamo's rig axes/pre-rotation differ from Male_01's Biped rig).
+    std::unordered_map<std::string, glm::quat> origin_bind_rot;
+};
 static std::unordered_map<std::string, std::shared_ptr<AnimFileCache>> g_anim_file_cache;
 
 // ---------------------------------------------------------------------------
@@ -207,6 +219,21 @@ static glm::mat4 ToGLM(const aiMatrix4x4& m) {
 
 static glm::quat ToGLM(const aiQuaternion& q) {
     return glm::quat(q.w, q.x, q.y, q.z);
+}
+
+// q and -q represent the identical rotation, but interpolating between two
+// keyframes whose stored quaternions land in opposite 4D hemispheres takes
+// the LONG way around (a visible 150°+ snap) instead of the short one. FBX/
+// glTF exporters don't guarantee consecutive keys share a hemisphere, so fix
+// it up once at parse time: walk the keys in time order and negate the
+// current one whenever it points away from the (already-fixed) previous key.
+// Must run sequentially — each key is only ever compared to the one right
+// before it, already corrected, never in parallel/out of order.
+static void FixQuaternionHemisphereContinuity(std::vector<AnimKeyQ>* keys) {
+    for (size_t k = 1; k < keys->size(); ++k) {
+        if (glm::dot((*keys)[k - 1].v, (*keys)[k].v) < 0.f)
+            (*keys)[k].v = -(*keys)[k].v;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -563,6 +590,123 @@ void Model::BuildNodeTree(aiNode* node, int parent_idx) {
         BuildNodeTree(node->mChildren[i], idx);
 }
 
+namespace {
+void CollectNodeNamesUnoptimized(const aiNode* node, std::vector<std::string>* out) {
+    out->push_back(node->mName.C_Str());
+    for (unsigned i = 0; i < node->mNumChildren; ++i)
+        CollectNodeNamesUnoptimized(node->mChildren[i], out);
+}
+} // namespace
+
+// Throwaway parse (see model.h) — importer/scene live only in this function's
+// scope and are never touched again after the name list is extracted.
+std::vector<std::string> Model::AllNodeNamesUnoptimized(const char* path) {
+    std::vector<std::string> out;
+    Assimp::Importer importer;
+    importer.SetPropertyFloat(AI_CONFIG_GLOBAL_SCALE_FACTOR_KEY, 1.0f);
+    importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, false);
+    const aiScene* scene = importer.ReadFile(path,
+        aiProcess_Triangulate | aiProcess_GlobalScale); // no OptimizeGraph
+    if (!scene || !scene->mRootNode) return out;
+    CollectNodeNamesUnoptimized(scene->mRootNode, &out);
+    return out;
+}
+
+// Forward decl — full definition (and doc comment) further down this file,
+// near ComputeBlendedBones; needed here too for the Retarget Pose offset
+// helpers below.
+static void BindPoseRS(const glm::mat4& local, glm::quat& r_out, glm::vec3& s_out);
+
+bool Model::GetBindWorldTransform(const std::string& name, glm::mat4* out) const {
+    auto it = node_map_.find(name);
+    if (it == node_map_.end()) return false;
+    // anim_nodes_ is parent-before-child ordered (BuildNodeTree pushes a node
+    // before recursing into its children), so walking parent indices upward
+    // from `it->second` and replaying them root-to-leaf gives the correct
+    // composition order: global = ...*grandparent.local*parent.local*self.local.
+    std::vector<int> chain;
+    for (int idx = it->second; idx >= 0; idx = anim_nodes_[idx].parent)
+        chain.push_back(idx);
+    glm::mat4 global(1.f);
+    for (auto rit = chain.rbegin(); rit != chain.rend(); ++rit)
+        global = global * anim_nodes_[*rit].local;
+    *out = global;
+    return true;
+}
+
+namespace {
+void CollectBindWorldPositions(const aiNode* node, const glm::mat4& parent_global,
+                                std::unordered_map<std::string, glm::vec3>* out) {
+    glm::mat4 global = parent_global * ToGLM(node->mTransformation);
+    std::string raw_name = node->mName.C_Str();
+    size_t pipe = raw_name.rfind('|');
+    std::string name = (pipe != std::string::npos) ? raw_name.substr(pipe + 1) : raw_name;
+    (*out)[name] = glm::vec3(global[3]);
+    for (unsigned i = 0; i < node->mNumChildren; ++i)
+        CollectBindWorldPositions(node->mChildren[i], global, out);
+}
+} // namespace
+
+// Throwaway parse (see model.h) — same pattern as AllNodeNamesUnoptimized.
+std::unordered_map<std::string, glm::vec3> Model::BindWorldPositionsUnoptimized(const char* path) {
+    std::unordered_map<std::string, glm::vec3> out;
+    Assimp::Importer importer;
+    importer.SetPropertyFloat(AI_CONFIG_GLOBAL_SCALE_FACTOR_KEY, 1.0f);
+    importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, false);
+    const aiScene* scene = importer.ReadFile(path,
+        aiProcess_Triangulate | aiProcess_GlobalScale); // no OptimizeGraph
+    if (!scene || !scene->mRootNode) return out;
+    CollectBindWorldPositions(scene->mRootNode, glm::mat4(1.f), &out);
+    return out;
+}
+
+bool Model::GetBindParentWorldRotation(const std::string& name, glm::quat* out) const {
+    auto it = node_map_.find(name);
+    if (it == node_map_.end()) return false;
+    int parent_idx = anim_nodes_[it->second].parent;
+    if (parent_idx < 0) { *out = glm::quat(1.f, 0.f, 0.f, 0.f); return true; }
+    glm::mat4 parent_world;
+    if (!GetBindWorldTransform(anim_nodes_[parent_idx].name, &parent_world)) return false;
+    glm::vec3 scl;
+    BindPoseRS(parent_world, *out, scl);
+    return true;
+}
+
+namespace {
+// parent_world is the WORLD rotation of `node`'s parent (identity at the
+// root call). Stores that value keyed by `node`'s OWN (pipe-stripped) name —
+// i.e. out[name] ends up holding the world rotation of name's PARENT, not of
+// name itself. Deliberately walks every ancestor exactly as authored,
+// including synthetic "_$AssimpFbx$_..." nodes when one is the immediate
+// parent — unlike ComposedOriginBindRotation, nothing here is skipped.
+void CollectParentWorldRotations(const aiNode* node, const glm::quat& parent_world,
+                                  std::unordered_map<std::string, glm::quat>* out) {
+    std::string raw_name = node->mName.C_Str();
+    size_t pipe = raw_name.rfind('|');
+    std::string name = (pipe != std::string::npos) ? raw_name.substr(pipe + 1) : raw_name;
+    (*out)[name] = parent_world;
+
+    glm::quat own_rot; glm::vec3 own_scl;
+    BindPoseRS(ToGLM(node->mTransformation), own_rot, own_scl);
+    glm::quat own_world = parent_world * own_rot;
+    for (unsigned i = 0; i < node->mNumChildren; ++i)
+        CollectParentWorldRotations(node->mChildren[i], own_world, out);
+}
+} // namespace
+
+// Throwaway parse (see model.h) — same pattern as BindWorldPositionsUnoptimized.
+std::unordered_map<std::string, glm::quat> Model::ParentBindWorldRotationsUnoptimized(const char* path) {
+    std::unordered_map<std::string, glm::quat> out;
+    Assimp::Importer importer;
+    importer.SetPropertyFloat(AI_CONFIG_GLOBAL_SCALE_FACTOR_KEY, 1.0f);
+    importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, false);
+    const aiScene* scene = importer.ReadFile(path,
+        aiProcess_Triangulate | aiProcess_GlobalScale); // no OptimizeGraph
+    if (!scene || !scene->mRootNode) return out;
+    CollectParentWorldRotations(scene->mRootNode, glm::quat(1.f, 0.f, 0.f, 0.f), &out);
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Animation clips
 // ---------------------------------------------------------------------------
@@ -574,6 +718,15 @@ void Model::LoadAnimations(const aiScene* scene) {
         double tps = src->mTicksPerSecond > 0.0 ? src->mTicksPerSecond : 25.0;
         clip.duration_sec = float(src->mDuration / tps);
         clip.fps          = float(tps);
+        // Embedded clips never go through bone_aliases_/bone_retarget_offsets_
+        // retargeting (their channel names already match this body's own
+        // node_map_ by construction) — stamping the CURRENT revision here
+        // means AppendAnimationsFrom's name-match guard correctly treats them
+        // as fresh, not stale, as long as no alias/offset change happened
+        // between Load() and the first AppendAnimationsFrom call (the common
+        // case; see that guard's comment for the narrow edge case where it
+        // doesn't).
+        clip.built_with_alias_revision = bone_alias_revision_;
 
         for (unsigned ci = 0; ci < src->mNumChannels; ++ci) {
             const aiNodeAnim* ch = src->mChannels[ci];
@@ -587,6 +740,7 @@ void Model::LoadAnimations(const aiScene* scene) {
             for (unsigned k = 0; k < ch->mNumRotationKeys; ++k)
                 bc.rot.push_back({ch->mRotationKeys[k].mTime / tps,
                     ToGLM(ch->mRotationKeys[k].mValue)});
+            FixQuaternionHemisphereContinuity(&bc.rot);
             for (unsigned k = 0; k < ch->mNumScalingKeys; ++k)
                 bc.scl.push_back({ch->mScalingKeys[k].mTime / tps,
                     {ch->mScalingKeys[k].mValue.x,
@@ -1280,6 +1434,13 @@ bool Model::Load(const char* path, MaterialManager* mm) {
     // does via bBakePivotInVertex = false.
     importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, false);
 
+    // aiProcess_OptimizeGraph is an established invariant of this load path —
+    // skinning/pipeline code depends on the transform-collapsed graph it
+    // produces. Do NOT remove it here to fix a node-listing problem; see
+    // AllNodeNamesForSlotUI() below (and its own separate, discardable
+    // Importer::ReadFile call) for how leaf nodes it collapses (e.g.
+    // Male_01.b3d's L_Shin/R_Shin) are still surfaced to the Bone Slots combo
+    // without touching the real, in-game Model.
     const aiScene* scene = importer.ReadFile(path,
         aiProcess_Triangulate      |
         aiProcess_FlipUVs          |
@@ -1307,6 +1468,13 @@ bool Model::Load(const char* path, MaterialManager* mm) {
     // Build the node hierarchy first (needed for bone→node linking in ProcessMesh).
     BuildNodeTree(scene->mRootNode, -1);
     global_inv_ = glm::inverse(ToGLM(scene->mRootNode->mTransformation));
+
+    if (VerboseAssetLogsEnabled()) {
+        std::fprintf(stderr, "[body-load] '%s' node_map_ has %zu nodes:\n",
+                     path, node_map_.size());
+        for (const auto& [name, idx] : node_map_)
+            std::fprintf(stderr, "[body-load]   node[%d] = '%s'\n", idx, name.c_str());
+    }
 
     {
         auto nit = node_map_.find("mixamorig:Hips");
@@ -1435,14 +1603,111 @@ bool Model::Load(const char* path, MaterialManager* mm) {
     return true;
 }
 
+namespace {
+// With AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS=false, Assimp still leaves the
+// pivot-correction nodes ("_$AssimpFbx$_PreRotation", "..._Translation", etc.)
+// in the STATIC hierarchy as immediate ancestors of the "real" named bone —
+// it just stops animating them separately. Except for bones with no pivot
+// correction (e.g. Mixamo's Hips), the named bone's OWN local transform is
+// identity; the actual rest rotation lives entirely in that synthetic parent
+// chain. Compose them in: walk up via mParent while the ancestor's name
+// contains "_$AssimpFbx$_", accumulating rotations parent-then-child order
+// (matching how local transforms compose down the hierarchy), stopping at
+// the first ancestor that is NOT a synthetic pivot node.
+// NOT currently called from anywhere (kept for reference/possible future
+// use — e.g. a debug UI that wants to display a bone's TRUE composed rest
+// orientation). Do NOT wire this into the per-keyframe delta formula in
+// AppendAnimationsFrom: that formula needs bind_origin in the SAME reference
+// frame as the raw animated channel (rc.rot), which Assimp always expresses
+// relative to the node's IMMEDIATE parent (the synthetic PreRotation node
+// itself, when one exists) — NEVER composed with it. Using this composed
+// value there was the exact bug diagnosed via [idle-invariant-dbg]: even for
+// a near-motionless Idle clip, inverse(composed_bind_origin) * animated left
+// a large spurious rotation on every bone with a PreRotation ancestor
+// (everything except Hips, which has none) — the two operands were
+// expressed in different reference frames, not "nearly identity - nearly
+// identity ≈ identity" as intended. See CollectBindRotations below for the
+// value actually used in the delta formula (deliberately NOT composed).
+// The position-based offset estimator (GUE's EstimateRetargetOffsets /
+// Model::BindWorldPositionsUnoptimized) doesn't need this at all — full
+// ancestor composition of TRANSLATIONS doesn't have this frame-mismatch
+// problem, since positions are always compared already-composed on both
+// the origin and destination side.
+[[maybe_unused]] glm::quat ComposedOriginBindRotation(const aiNode* node) {
+    glm::quat rot; glm::vec3 scl;
+    BindPoseRS(ToGLM(node->mTransformation), rot, scl);
+    glm::quat total = rot;
+    const aiNode* p = node->mParent;
+    while (p && std::string(p->mName.C_Str()).find("_$AssimpFbx$_") != std::string::npos) {
+        glm::quat prot; glm::vec3 pscl;
+        BindPoseRS(ToGLM(p->mTransformation), prot, pscl);
+        total = prot * total; // parent's rotation applies BEFORE (outside) the child's
+        p = p->mParent;
+    }
+    return total;
+}
+
+// Walks the SOURCE file's own node hierarchy collecting each REAL bone's OWN
+// (NOT ancestor-composed) rest rotation — deliberately just
+// BindPoseRS(node->mTransformation), matching the exact reference frame
+// Assimp uses for that same node's animated channel (rc.rot): both are
+// relative to the node's immediate parent, synthetic PreRotation node or
+// not. Keyed by the same pipe-stripped name convention as
+// RawAnimChannel::name ("Armature|Hips" -> "Hips") so a lookup by rc.name
+// always matches. This is the value the per-keyframe delta formula in
+// AppendAnimationsFrom actually needs — see ComposedOriginBindRotation's
+// comment above for why the COMPOSED version broke the Idle invariant.
+void CollectBindRotations(const aiNode* node,
+                           std::unordered_map<std::string, glm::quat>* out) {
+    std::string raw_name = node->mName.C_Str();
+    size_t pipe = raw_name.rfind('|');
+    std::string name = (pipe != std::string::npos) ? raw_name.substr(pipe + 1) : raw_name;
+    glm::quat rot; glm::vec3 scl;
+    BindPoseRS(ToGLM(node->mTransformation), rot, scl);
+    (*out)[name] = rot;
+    for (unsigned i = 0; i < node->mNumChildren; ++i)
+        CollectBindRotations(node->mChildren[i], out);
+}
+} // namespace
+
 // ---------------------------------------------------------------------------
 // AppendAnimationsFrom — load clips from a separate file, with FBX parse cache
 // ---------------------------------------------------------------------------
 int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
+    // If THIS model already has a clip named exactly name_override AND it was
+    // built with the CURRENT bone_aliases_/bone_retarget_offsets_ (i.e.
+    // clips_[i].built_with_alias_revision == bone_alias_revision_), reuse it
+    // without ever reopening `path` — cheap fast path, and correct as long as
+    // nothing that affects retargeting changed since it was baked.
+    //
+    // If the name matches but the revision is STALE (SetBoneAliases or
+    // SetBoneRetargetOffsets ran after this clip was appended — e.g. the dev
+    // tweaked a Retarget Offset slider), do NOT return the stale clip. Fall
+    // through to the normal parse+retarget path below, but remember this
+    // index so the freshly rebuilt clip OVERWRITES it in place instead of
+    // appending a duplicate (see stale_reappend_idx usage near the bottom of
+    // this function). This is what fixes "the preview only updates after
+    // visiting Actor Def and back" — previously ANY name match short-
+    // circuited unconditionally, so a clip appended once (with whatever
+    // aliases/offsets were active at that moment) stayed frozen for the rest
+    // of the process, and the only way to see a change was for a DIFFERENT
+    // code path (e.g. a fresh clip name never appended before) to trigger a
+    // real reparse.
+    int stale_reappend_idx = -1;
     if (name_override && name_override[0] != '\0') {
         for (int i = 0; i < (int)clips_.size(); ++i) {
-            if (clips_[i].name == name_override)
-                return i;
+            if (clips_[i].name == name_override) {
+                if (clips_[i].built_with_alias_revision == bone_alias_revision_) {
+                    return i;
+                }
+                std::fprintf(stderr,
+                    "[anim-retarget-dbg] AppendAnimationsFrom('%s', name_override='%s'): "
+                    "clip at index %d is STALE (built_with_alias_revision=%d, current=%d) "
+                    "— re-parsing and re-retargeting instead of reusing it.\n",
+                    path, name_override, i, clips_[i].built_with_alias_revision, bone_alias_revision_);
+                stale_reappend_idx = i;
+                break;
+            }
         }
     }
 
@@ -1500,7 +1765,25 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
                 }
             }
 
+            // TEMP DEBUG (Mixamo retarget-not-working investigation, remove
+            // after diagnosis): how many animations Assimp actually found in
+            // this file, and their raw/native names. Mixamo "Without Skin"
+            // exports typically carry exactly 1, named "mixamo.com" or
+            // "Armature|mixamo.com".
+            std::fprintf(stderr,
+                "[anim-retarget-dbg] '%s': scene->mNumAnimations=%u\n",
+                path, scene->mNumAnimations);
+            for (unsigned ai = 0; ai < scene->mNumAnimations; ++ai) {
+                std::fprintf(stderr,
+                    "[anim-retarget-dbg]   [%u] name='%s' duration=%.3f ticks (%.1f tps) channels=%u\n",
+                    ai, scene->mAnimations[ai]->mName.C_Str(),
+                    scene->mAnimations[ai]->mDuration,
+                    scene->mAnimations[ai]->mTicksPerSecond,
+                    scene->mAnimations[ai]->mNumChannels);
+            }
+
             fcache = std::make_shared<AnimFileCache>();
+            CollectBindRotations(scene->mRootNode, &fcache->origin_bind_rot);
             for (unsigned ai = 0; ai < scene->mNumAnimations; ++ai) {
                 const aiAnimation* src = scene->mAnimations[ai];
                 RawAnimClip raw;
@@ -1524,6 +1807,9 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
                     for (unsigned k = 0; k < ch->mNumRotationKeys; ++k)
                         rc.rot.push_back({ch->mRotationKeys[k].mTime / tps,
                             ToGLM(ch->mRotationKeys[k].mValue)});
+
+                    FixQuaternionHemisphereContinuity(&rc.rot);
+
                     for (unsigned k = 0; k < ch->mNumScalingKeys; ++k)
                         rc.scl.push_back({ch->mScalingKeys[k].mTime / tps,
                             {ch->mScalingKeys[k].mValue.x,
@@ -1546,6 +1832,30 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
             if (dur > longest) { longest = dur; target_ai = ai; }
         }
     }
+    // TEMP DEBUG (Mixamo retarget-not-working investigation, remove after
+    // diagnosis): confirms whether name_override ("Clip Name"/clip_override,
+    // or the action name when clip_override is blank — see Actor::LoadAnim
+    // call sites) was empty at all, and if not, WHICH clip got picked and by
+    // what rule. Selection here is ALWAYS "longest clip", never a name match
+    // against the file's own raw animation names (raw.fbx_name) — so a
+    // mismatched/blank "Clip Name" does not by itself explain a skipped clip.
+    if (!name_override || name_override[0] == '\0') {
+        std::fprintf(stderr,
+            "[anim-retarget-dbg] '%s': name_override EMPTY -> no longest-clip filtering, "
+            "ALL %zu clip(s) in the file will be appended (each keeping its own raw.fbx_name)\n",
+            path, fcache->clips.size());
+    } else if (target_ai < 0) {
+        std::fprintf(stderr,
+            "[anim-retarget-dbg] '%s': name_override='%s' but target_ai=-1 "
+            "(file has zero clips?)\n", path, name_override);
+    } else {
+        std::fprintf(stderr,
+            "[anim-retarget-dbg] '%s': name_override='%s' -> picked clip[%d] "
+            "raw_name='%s' duration=%.3fs (longest-duration rule, NOT a name match)\n",
+            path, name_override, target_ai,
+            fcache->clips[target_ai].fbx_name.c_str(),
+            fcache->clips[target_ai].duration_sec);
+    }
 
     // ── Build AnimClip(s), filtering channels against this body's node_map_ ──
     int first = (int)clips_.size();
@@ -1554,27 +1864,224 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
 
         const RawAnimClip& raw = fcache->clips[ai];
         AnimClip clip;
-        clip.name         = (name_override && name_override[0] != '\0') ? name_override : raw.fbx_name;
-        clip.duration_sec = raw.duration_sec;
-        clip.fps          = raw.fps;
+        clip.name                      = (name_override && name_override[0] != '\0') ? name_override : raw.fbx_name;
+        clip.duration_sec              = raw.duration_sec;
+        clip.fps                       = raw.fps;
+        clip.built_with_alias_revision = bone_alias_revision_;
+
+        // TEMP DEBUG (Mixamo retarget-not-working investigation, remove
+        // after diagnosis): per-channel outcome counters, reported once
+        // after the loop below.
+        int dbg_direct_matches = 0, dbg_alias_matches = 0, dbg_discarded = 0;
+        std::fprintf(stderr,
+            "[anim-retarget-dbg] clip[%d] raw_name='%s' -> resolving %zu raw channel(s) "
+            "against node_map_ (%zu entries) + bone_aliases_ (%zu entries)\n",
+            ai, raw.fbx_name.c_str(), raw.channels.size(), node_map_.size(), bone_aliases_.size());
 
         for (const RawAnimChannel& rc : raw.channels) {
-            // Skip channels absent from this body's skeleton (e.g. extra finger bones).
-            if (node_map_.find(rc.name) == node_map_.end()) {
-                if (VerboseAssetLogsEnabled())
+            // Resolve this channel's name against the body's own skeleton.
+            // Exact match first (the common case — source and body already
+            // share bone names); if that fails, retry via bone_aliases_
+            // (external name -> this model's internal bone name, injected
+            // by SetBoneAliases). Only discard the channel if BOTH fail.
+            std::string resolved_name = rc.name;
+            bool was_retargeted = false;
+            if (node_map_.find(resolved_name) == node_map_.end()) {
+                auto alias_it = bone_aliases_.find(rc.name);
+                if (alias_it != bone_aliases_.end() &&
+                    node_map_.find(alias_it->second) != node_map_.end()) {
+                    resolved_name = alias_it->second;
+                    was_retargeted = true;
+                    ++dbg_alias_matches;
                     std::fprintf(stderr,
-                        "[anim-skip] clip='%s' channel='%s' (no matching bone in body)\n",
-                        clip.name.c_str(), rc.name.c_str());
-                continue;
+                        "[anim-retarget-dbg]   RETARGETED channel='%s' -> '%s' (via bone_aliases_)\n",
+                        rc.name.c_str(), resolved_name.c_str());
+                } else {
+                    ++dbg_discarded;
+                    std::fprintf(stderr,
+                        "[anim-retarget-dbg]   DISCARDED channel='%s' "
+                        "(no exact node_map_ match, %s)\n",
+                        rc.name.c_str(),
+                        bone_aliases_.empty() ? "bone_aliases_ is EMPTY (SetBoneAliases never called?)"
+                                               : "no alias registered for this name");
+                    continue;
+                }
+            } else {
+                ++dbg_direct_matches;
+                std::fprintf(stderr,
+                    "[anim-retarget-dbg]   DIRECT MATCH channel='%s'\n", rc.name.c_str());
             }
             BoneChannel bc;
-            bc.name = rc.name;
+            bc.name = resolved_name;
             bc.pos  = rc.pos;
             bc.rot  = rc.rot;
             bc.scl  = rc.scl;
+
+            // Retargeted channels only: a raw rotation keyframe is expressed
+            // relative to the SOURCE bone's own rest orientation (e.g. Mixamo's
+            // rig, whose axes/pre-rotation differ from Male_01's Biped rig —
+            // this is the root cause of the large single-frame swings/odd
+            // orientation reported earlier: applying that value directly as
+            // the destination bone's local rotation silently assumes the two
+            // rigs share a rest frame, which they don't). Convert to a delta
+            // relative to each rig's own bind pose instead:
+            //   delta          = inverse(bind_origin) * animated_origin_rot
+            //   final_dest_rot = bind_dest * delta
+            // Both bind quaternions are fixed per channel (computed once,
+            // outside the keyframe loop) — the same two constants are then
+            // applied to every keyframe via the identical formula. Left-
+            // multiplying by bind_dest and right-multiplying by
+            // inverse(bind_origin) are both unit-quaternion Hamilton products,
+            // which preserve inner products exactly — so the hemisphere
+            // continuity already established in rc.rot (fixed at raw-parse
+            // time by FixQuaternionHemisphereContinuity) carries over to
+            // bc.rot unchanged; no need to re-run the continuity fix here.
+            //
+            // bind_origin here MUST be the NON-composed rotation of the named
+            // node (CollectBindRotations — just BindPoseRS(node->mTransformation),
+            // no ancestor walk), NOT ComposedOriginBindRotation's PreRotation-
+            // composed value. animated_origin_rot (key.v below) is always
+            // Assimp's raw channel value, itself relative to the node's
+            // IMMEDIATE parent (a synthetic PreRotation node, when one
+            // exists) — never composed with it either. Using the composed
+            // bind_origin here was the bug diagnosed via [idle-invariant-dbg]:
+            // it put bind_origin and the animated value in different
+            // reference frames, so even a near-motionless Idle clip produced
+            // a large spurious delta on every bone with a PreRotation
+            // ancestor (i.e. everything except Hips).
+            if (was_retargeted) {
+                auto origin_it = fcache->origin_bind_rot.find(rc.name);
+                auto dest_it    = node_map_.find(resolved_name);
+                if (origin_it != fcache->origin_bind_rot.end() &&
+                    dest_it != node_map_.end()) {
+                    const glm::quat& bind_origin = origin_it->second;
+                    glm::quat bind_dest; glm::vec3 dest_scl;
+                    BindPoseRS(anim_nodes_[dest_it->second].local, bind_dest, dest_scl);
+                    glm::quat inv_origin = glm::inverse(bind_origin);
+
+                    // Retarget Pose offset (calibratable per bone, see
+                    // SetBoneRetargetOffsets / model_retarget_offsets_):
+                    // reinterprets the rotation delta from the SOURCE rig's
+                    // local axis convention into the DESTINATION rig's, via
+                    // conjugation (the standard change-of-basis for SO(3)
+                    // elements when two frames are related by a fixed
+                    // rotation). Missing entries default to identity, which
+                    // makes this conjugation a mathematical no-op —
+                    // offset * delta * inverse(offset) == delta when
+                    // offset == identity — so this is provably identical to
+                    // the pre-existing formula below when no offset has been
+                    // calibrated for a bone (see docs/TECH_DEBT.md).
+                    glm::quat offset(1.f, 0.f, 0.f, 0.f); // identity (w,x,y,z)
+                    auto offset_it = bone_retarget_offsets_.find(resolved_name);
+                    if (offset_it != bone_retarget_offsets_.end())
+                        offset = offset_it->second;
+                    glm::quat inv_offset = glm::inverse(offset);
+
+                    for (auto& key : bc.rot) {
+                        glm::quat delta_origin_frame = inv_origin * key.v;
+                        glm::quat delta_dest_frame   = offset * delta_origin_frame * inv_offset;
+                        key.v = bind_dest * delta_dest_frame;
+                    }
+
+                    // TEMP DEBUG (delta-retargeting verification, remove after
+                    // diagnosis): for the Hips channel, dump both bind poses
+                    // once and the resulting final rotation at 4 timeline
+                    // points, to confirm visually there are no more large
+                    // jumps AND no more odd/sideways orientation.
+                    std::string lower_rc = rc.name;
+                    for (auto& c : lower_rc) c = (char)std::tolower((unsigned char)c);
+                    const bool is_verify_channel = lower_rc.find("hips") != std::string::npos ||
+                                                    lower_rc.find("leftshoulder") != std::string::npos ||
+                                                    lower_rc.find("leftarm") != std::string::npos;
+
+                    // TEMP DEBUG (Idle-invariant investigation, remove after
+                    // diagnosis): for a channel that's nearly stationary at
+                    // its own bind pose (as any Idle clip's frame 0 should
+                    // be), verify each stage of the retargeting formula in
+                    // isolation — bind_origin, the RAW animated rotation
+                    // (rc.rot, untouched by the in-place bc.rot transform
+                    // above, since bc.rot was a separate copy), the resulting
+                    // delta_origin_frame, the calibrated offset, the
+                    // resulting delta_dest_frame, bind_dest, and the actual
+                    // final value already written into bc.rot. If
+                    // animated≈bind_origin (Idle-like), delta_origin_frame
+                    // should be ≈identity, delta_dest_frame should ALSO be
+                    // ≈identity (conjugating identity by anything is still
+                    // identity), and therefore final should be ≈bind_dest.
+                    if (lower_rc.find("leftarm") != std::string::npos && !rc.rot.empty() && !bc.rot.empty()) {
+                        auto deg = [](const glm::quat& q) { return glm::degrees(glm::eulerAngles(q)); };
+                        glm::quat animated0        = rc.rot[0].v; // pre-transform, untouched
+                        glm::quat delta_origin0    = inv_origin * animated0;
+                        glm::quat delta_dest0      = offset * delta_origin0 * inv_offset;
+                        glm::quat expected_final0  = bind_dest * delta_dest0;
+                        glm::quat actual_final0    = bc.rot[0].v; // already transformed above
+                        float dot_final_vs_bind_dest = glm::dot(glm::normalize(actual_final0), glm::normalize(bind_dest));
+                        float dot_expected_vs_actual  = glm::dot(glm::normalize(expected_final0), glm::normalize(actual_final0));
+                        std::fprintf(stderr,
+                            "[idle-invariant-dbg] channel '%s'->'%s' key[0]@%.3fs:\n"
+                            "  bind_origin        euler_deg=(%.2f,%.2f,%.2f)\n"
+                            "  animated(rc.rot[0]) euler_deg=(%.2f,%.2f,%.2f)  <- should be close to bind_origin if Idle\n"
+                            "  delta_origin_frame  euler_deg=(%.2f,%.2f,%.2f)  <- should be close to (0,0,0)=identity\n"
+                            "  offset (calibrated) euler_deg=(%.2f,%.2f,%.2f)\n"
+                            "  delta_dest_frame    euler_deg=(%.2f,%.2f,%.2f)  <- should STILL be close to identity\n"
+                            "  bind_dest           euler_deg=(%.2f,%.2f,%.2f)  <- Male_01's own rest pose for this bone\n"
+                            "  expected_final (recomputed) euler_deg=(%.2f,%.2f,%.2f)\n"
+                            "  actual_final (bc.rot[0], as written into the clip) euler_deg=(%.2f,%.2f,%.2f)\n"
+                            "  dot(actual_final, bind_dest)=%.4f (1.0=identical, <0.9 = clearly NOT bind_dest)\n"
+                            "  dot(expected_final, actual_final)=%.4f (should be ~1.0 — sanity check that the loop above computed exactly this formula)\n",
+                            rc.name.c_str(), resolved_name.c_str(), rc.rot[0].t,
+                            deg(bind_origin).x, deg(bind_origin).y, deg(bind_origin).z,
+                            deg(animated0).x, deg(animated0).y, deg(animated0).z,
+                            deg(delta_origin0).x, deg(delta_origin0).y, deg(delta_origin0).z,
+                            deg(offset).x, deg(offset).y, deg(offset).z,
+                            deg(delta_dest0).x, deg(delta_dest0).y, deg(delta_dest0).z,
+                            deg(bind_dest).x, deg(bind_dest).y, deg(bind_dest).z,
+                            deg(expected_final0).x, deg(expected_final0).y, deg(expected_final0).z,
+                            deg(actual_final0).x, deg(actual_final0).y, deg(actual_final0).z,
+                            dot_final_vs_bind_dest, dot_expected_vs_actual);
+                    }
+
+                    if (is_verify_channel && !bc.rot.empty()) {
+                        auto deg = [](const glm::quat& q) { return glm::degrees(glm::eulerAngles(q)); };
+                        glm::vec3 eo = deg(bind_origin), ed = deg(bind_dest);
+                        std::fprintf(stderr,
+                            "[delta-retarget-dbg] channel '%s'->'%s': bind_origin_euler_deg="
+                            "(%.1f,%.1f,%.1f) bind_dest_euler_deg=(%.1f,%.1f,%.1f)\n",
+                            rc.name.c_str(), resolved_name.c_str(), eo.x, eo.y, eo.z, ed.x, ed.y, ed.z);
+                        for (int p = 0; p <= 3; ++p) {
+                            double t = clip.duration_sec * (p / 3.0);
+                            size_t best = 0;
+                            double best_dt = std::abs(bc.rot[0].t - t);
+                            for (size_t k = 1; k < bc.rot.size(); ++k) {
+                                double dt = std::abs(bc.rot[k].t - t);
+                                if (dt < best_dt) { best_dt = dt; best = k; }
+                            }
+                            glm::vec3 ef = deg(bc.rot[best].v);
+                            std::fprintf(stderr,
+                                "[delta-retarget-dbg]   t=%5.2fs key[%zu]@%.3fs "
+                                "final_euler_deg=(%.1f,%.1f,%.1f)\n",
+                                t, best, bc.rot[best].t, ef.x, ef.y, ef.z);
+                        }
+                    }
+                } else {
+                    std::fprintf(stderr,
+                        "[anim-retarget-dbg]   WARNING: no bind rotation found for "
+                        "channel='%s' -> '%s' (origin_found=%d dest_found=%d) — "
+                        "using raw rotation unmodified\n",
+                        rc.name.c_str(), resolved_name.c_str(),
+                        origin_it != fcache->origin_bind_rot.end(),
+                        dest_it != node_map_.end());
+                }
+            }
+
             clip.chan_map[bc.name] = (int)clip.channels.size();
             clip.channels.push_back(std::move(bc));
         }
+        std::fprintf(stderr,
+            "[anim-retarget-dbg] clip[%d] '%s' done: %d direct + %d retargeted = %d applied, "
+            "%d discarded (of %zu total)\n",
+            ai, clip.name.c_str(), dbg_direct_matches, dbg_alias_matches,
+            dbg_direct_matches + dbg_alias_matches, dbg_discarded, raw.channels.size());
 
         {
             auto hit = clip.chan_map.find("mixamorig:Hips");
@@ -1585,6 +2092,7 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
                                  clip.name.c_str(), hc.pos[0].v.x, hc.pos[0].v.y, hc.pos[0].v.z);
             }
         }
+
         if (log_bones) {
             std::fprintf(stderr, "[model] Appended clip '%s' (%.2fs) from '%s'\n",
                          clip.name.c_str(), clip.duration_sec, path);
@@ -1593,7 +2101,16 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
             for (int ci = 0; ci < (int)clip.channels.size(); ++ci)
                 std::fprintf(stderr, "  ch[%d]  '%s'\n", ci, clip.channels[ci].name.c_str());
         }
-        clips_.push_back(std::move(clip));
+        // Overwrite the stale entry IN PLACE (never append a duplicate, never
+        // shift other clips' indices — PreviewViewport/Actor re-resolve clip
+        // indices by NAME after every LoadAnim, but other callers might hold
+        // a numeric index across calls, so index stability matters here).
+        if (stale_reappend_idx >= 0) {
+            clips_[stale_reappend_idx] = std::move(clip);
+            first = stale_reappend_idx;
+        } else {
+            clips_.push_back(std::move(clip));
+        }
     }
     {
         auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(
