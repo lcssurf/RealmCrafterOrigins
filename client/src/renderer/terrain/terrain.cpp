@@ -507,16 +507,47 @@ bool Terrain::LoadFromEditor(const std::string& area_name) {
                     m.ao        = def_ao_;
                     m.height    = def_height_;
 
-                    if (!albedo_rel.empty() && albedo_rel != "-")
+                    if (!albedo_rel.empty() && albedo_rel != "-") {
                         m.albedo = LoadSRGBTex(albedo_rel);
-                    if (!normal_rel.empty() && normal_rel != "-")
+                        if (!m.albedo)
+                            std::fprintf(stderr,
+                                "[terrain][matload] FAILED albedo id=%s path=%s (resolved=%s) -- "
+                                "falling back to solid placeholder\n",
+                                first.c_str(), albedo_rel.c_str(),
+                                fs::absolute(albedo_rel).string().c_str());
+                    }
+                    if (!normal_rel.empty() && normal_rel != "-") {
                         m.normal = LoadLinearTex(normal_rel);
+                        if (!m.normal) {
+                            std::fprintf(stderr,
+                                "[terrain][matload] FAILED normal id=%s path=%s (resolved=%s) -- "
+                                "falling back to default normal\n",
+                                first.c_str(), normal_rel.c_str(),
+                                fs::absolute(normal_rel).string().c_str());
+                            m.normal = def_normal_;
+                        }
+                    }
                     if (!orm_rel.empty() && orm_rel != "-") {
-                        m.roughness = LoadLinearTex(orm_rel);
-                        m.ao = m.roughness;  // same ORM: R=AO, G=Roughness, B=Metallic
+                        GLuint orm = LoadLinearTex(orm_rel);
+                        if (!orm) {
+                            std::fprintf(stderr,
+                                "[terrain][matload] FAILED orm id=%s path=%s (resolved=%s) -- "
+                                "falling back to default roughness/ao\n",
+                                first.c_str(), orm_rel.c_str(),
+                                fs::absolute(orm_rel).string().c_str());
+                        } else {
+                            m.roughness = orm;
+                            m.ao = orm;  // same ORM: R=AO, G=Roughness, B=Metallic
+                        }
                     }
 
-                    if (!m.albedo) m.albedo = MakeSolidTex(200, 200, 200);
+                    if (!m.albedo) {
+                        std::fprintf(stderr,
+                            "[terrain][matload] material id=%s has NO usable albedo -- "
+                            "rendering as solid gray placeholder (200,200,200)\n",
+                            first.c_str());
+                        m.albedo = MakeSolidTex(200, 200, 200);
+                    }
                     materials_.push_back(m);
                     continue;
                 }

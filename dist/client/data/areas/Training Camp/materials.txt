@@ -1,6 +1,5 @@
 1808 8 assets/materials/Grass004_1K_JPG/Grass004_1K-JPG_Albedo.jpg assets/materials/Grass004_1K_JPG/Grass004_1K-JPG_Normal.png assets/materials/Grass004_1K_JPG/Grass004_1K-JPG_ORM.png 2.5
 1809 2 assets/materials/Ground037_1K_JPG/Ground037_1K-JPG_Albedo.jpg assets/materials/Ground037_1K_JPG/Ground037_1K-JPG_Normal.png assets/materials/Ground037_1K_JPG/Ground037_1K-JPG_ORM.png 2.5
-1808 4 assets/materials/Grass004_1K_JPG/Grass004_1K-JPG_Albedo.jpg assets/materials/Grass004_1K_JPG/Grass004_1K-JPG_Normal.png assets/materials/Grass004_1K_JPG/Grass004_1K-JPG_ORM.png 2.5
-1809 4 assets/materials/Ground037_1K_JPG/Ground037_1K-JPG_Albedo.jpg assets/materials/Ground037_1K_JPG/Ground037_1K-JPG_Normal.png assets/materials/Ground037_1K_JPG/Ground037_1K-JPG_ORM.png 2.5
-1809 4 assets/materials/Ground037_1K_JPG/Ground037_1K-JPG_Albedo.jpg assets/materials/Ground037_1K_JPG/Ground037_1K-JPG_Normal.png assets/materials/Ground037_1K_JPG/Ground037_1K-JPG_ORM.png 2.5
-1323 3 assets/textures/textures/Dialog BG/Playing Cards/H1.png - - 2.5
+1813 4 assets/materials/rocks_ground_02_1k/textures/rocks_ground_02_Albedo.jpg - assets/materials/rocks_ground_02_1k/textures/rocks_ground_02_ORM.png 2.5
+1658 15 assets/textures/textures/Particles/a_smoke_01.png - - 2.5
+938 4 assets/textures/textures/Actors/Interaction/cheese.png - - 2.5
