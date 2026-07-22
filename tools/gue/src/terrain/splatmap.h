@@ -296,14 +296,35 @@ private:
     }
 };
 
-// Paint one material layer onto the splatmap stack at world-space (wx, wz).
-// matIdx is unbounded (Phase 1: N materials, not just 4) — redistributes
-// lost weight proportionally across every OTHER active material slot in the
-// whole stack, not just the 4 sharing matIdx's RGBA layer.
+// Paint (or, if `erase` is true, erase) one material layer onto the splatmap
+// stack at world-space (wx, wz). matIdx is unbounded (Phase 1: N materials,
+// not just 4) — redistributes weight proportionally across every OTHER
+// active material slot in the whole stack, not just the 4 sharing matIdx's
+// RGBA layer.
+//
+// erase=false (paint, default): matIdx gains weight; the gain is taken from
+// every other slot proportional to ITS OWN current share.
+// erase=true: matIdx loses weight; the freed amount is given back to every
+// other slot proportional to ITS OWN current share (the exact symmetric
+// inverse) — if every other slot is currently at 0 (matIdx fully dominates
+// the pixel), the freed weight has nowhere proportional to go and is simply
+// dropped, matching the existing paint side's identical no-op in that same
+// edge case (see the `others > 1e-6f` guard on both sides).
+//
+// maxOpacity (paint side only, ignored when erase=true) caps how high matIdx
+// can go at any texel — default 1.0 means "no cap", identical to the
+// pre-existing behaviour. A lower value lets the dev lock in a permanent
+// partial blend (e.g. 0.5 = this material never fully covers the ones
+// underneath, however many times the brush passes over it): once a texel's
+// weight reaches the cap, repeated strokes stop increasing it there but
+// never reduce it either.
 inline void PaintSplatmap(Splatmap& smap, float wx, float wz,
                            float radius, float strength, float dt,
                            int matIdx, float terrainW, float terrainH,
-                           BrushFalloff falloff = BrushFalloff::Smooth)
+                           BrushFalloff falloff = BrushFalloff::Smooth,
+                           BrushShape shape = BrushShape::Circle,
+                           float hardness = 0.f, float noiseAmount = 0.f,
+                           bool erase = false, float maxOpacity = 1.f)
 {
     const int numSlots = smap.NumMaterialSlots();
     if (matIdx < 0 || matIdx >= numSlots) return;
@@ -317,38 +338,126 @@ inline void PaintSplatmap(Splatmap& smap, float wx, float wz,
 
     int x0 = std::max(0, cx - r), x1 = std::min(smap.W - 1, cx + r);
     int z0 = std::max(0, cz - r), z1 = std::min(smap.H - 1, cz + r);
+    float noiseScale = std::max(pixR * 0.5f, 1e-4f);
 
     std::vector<float> ch(numSlots);
 
     for (int z = z0; z <= z1; z++) {
         for (int x = x0; x <= x1; x++) {
             float dx   = (float)(x - cx), dz = (float)(z - cz);
-            float dist = std::sqrt(dx*dx + dz*dz);
+            float dist = ShapeDistance(dx, dz, shape);
             if (dist > pixR) continue;
 
-            float w = CalcFalloff(dist, pixR, falloff) * strength * dt * 2.5f;
-            w = std::min(w, 1.f);
+            float w = CalcFalloff(dist, pixR, falloff, hardness);
+            if (noiseAmount > 0.f) {
+                float nv01 = ValueNoise2D(dx / noiseScale, dz / noiseScale) * 0.5f + 0.5f;
+                w *= glm::mix(1.f, nv01, noiseAmount);
+            }
+            w = std::min(w * strength * dt * 2.5f, 1.f);
 
             // Read every active slot as float first to avoid per-channel
             // uint8 rounding during the redistribute step.
             for (int i = 0; i < numSlots; i++) ch[i] = smap.GetWeight(x, z, i);
 
             float prev = ch[matIdx];
-            float newV = std::min(prev + w * (1.f - prev), 1.f);
+            float newV;
+            if (erase) {
+                newV = std::max(prev - w * prev, 0.f);
+            } else if (prev >= maxOpacity) {
+                newV = prev;   // already at/above the cap — hold, don't reduce
+            } else {
+                newV = std::min(prev + w * (1.f - prev), maxOpacity);
+            }
             ch[matIdx] = newV;
 
-            // Redistribute lost weight proportionally across every other
-            // material slot in the whole stack (not just its own RGBA group).
-            float gain   = newV - prev;
+            // Redistribute the delta proportionally across every other
+            // material slot in the whole stack (not just its own RGBA
+            // group) — symmetric in both directions: painting takes from
+            // others proportional to their own share, erasing gives back
+            // proportional to their own share.
+            float delta  = newV - prev;   // >0 painting, <0 erasing
             float others = 0.f;
             for (int i = 0; i < numSlots; i++) if (i != matIdx) others += ch[i];
             if (others > 1e-6f) {
-                float ratio = gain / others;
+                float ratio = delta / others;
                 for (int i = 0; i < numSlots; i++)
-                    if (i != matIdx) ch[i] = std::max(ch[i] - ch[i] * ratio, 0.f);
+                    if (i != matIdx) ch[i] = std::clamp(ch[i] - ch[i] * ratio, 0.f, 1.f);
             }
 
             for (int i = 0; i < numSlots; i++) smap.SetWeight(x, z, i, ch[i]);
+        }
+    }
+    smap.dirty = true;
+}
+
+// Smooths (blurs) splatmap weights across ALL material slots inside the
+// brush radius — paralleling BrushMode::Smooth for the heightmap
+// (brush.h:100-104): each texel is pulled toward the 4-neighbour average of
+// its own slot, scaled by the brush weight. Unlike a plain neighbour-average
+// blur, the per-texel result is explicitly RE-NORMALIZED after blending so
+// the weights keep summing to ~1 — a bare average of already-normalized
+// neighbour vectors is itself normalized in theory, but per-channel uint8
+// quantization (SplatLayer::SetWeight rounds to the nearest 1/255) and
+// edge-of-map neighbour clamping both introduce small drift that would
+// otherwise accumulate over repeated brush strokes.
+inline void SmoothSplatmap(Splatmap& smap, float wx, float wz,
+                            float radius, float strength, float dt,
+                            float terrainW, float terrainH,
+                            BrushFalloff falloff = BrushFalloff::Smooth,
+                            BrushShape shape = BrushShape::Circle,
+                            float hardness = 0.f, float noiseAmount = 0.f)
+{
+    const int numSlots = smap.NumMaterialSlots();
+    if (numSlots <= 0) return;
+
+    float scaleX = smap.W / terrainW;
+    float scaleZ = smap.H / terrainH;
+    int   cx     = (int)(wx * scaleX);
+    int   cz     = (int)(wz * scaleZ);
+    float pixR   = radius * scaleX;
+    int   r      = (int)std::ceil(pixR) + 1;
+
+    int x0 = std::max(0, cx - r), x1 = std::min(smap.W - 1, cx + r);
+    int z0 = std::max(0, cz - r), z1 = std::min(smap.H - 1, cz + r);
+    float noiseScale = std::max(pixR * 0.5f, 1e-4f);
+
+    std::vector<float> cur(numSlots), avg(numSlots);
+
+    for (int z = z0; z <= z1; z++) {
+        for (int x = x0; x <= x1; x++) {
+            float dx   = (float)(x - cx), dz = (float)(z - cz);
+            float dist = ShapeDistance(dx, dz, shape);
+            if (dist > pixR) continue;
+
+            float w = CalcFalloff(dist, pixR, falloff, hardness);
+            if (noiseAmount > 0.f) {
+                float nv01 = ValueNoise2D(dx / noiseScale, dz / noiseScale) * 0.5f + 0.5f;
+                w *= glm::mix(1.f, nv01, noiseAmount);
+            }
+            float t = std::min(w * strength * dt * 4.f, 1.f);
+            if (t <= 0.f) continue;
+
+            // Neighbour coords clamped into the map — Splatmap::GetWeight
+            // does not bounds-check x/z itself (only the material index).
+            int xm = std::clamp(x - 1, 0, smap.W - 1), xp = std::clamp(x + 1, 0, smap.W - 1);
+            int zm = std::clamp(z - 1, 0, smap.H - 1), zp = std::clamp(z + 1, 0, smap.H - 1);
+
+            float sum = 0.f;
+            for (int i = 0; i < numSlots; i++) {
+                cur[i] = smap.GetWeight(x, z, i);
+                avg[i] = (smap.GetWeight(xm, z, i) + smap.GetWeight(xp, z, i) +
+                          smap.GetWeight(x, zm, i) + smap.GetWeight(x, zp, i)) * 0.25f;
+                cur[i] = cur[i] + (avg[i] - cur[i]) * t;
+                sum   += cur[i];
+            }
+
+            // Re-normalize so the per-texel weights keep summing to ~1.
+            if (sum > 1e-6f) {
+                float inv = 1.f / sum;
+                for (int i = 0; i < numSlots; i++) cur[i] *= inv;
+            }
+
+            for (int i = 0; i < numSlots; i++) smap.SetWeight(x, z, i, cur[i]);
         }
     }
     smap.dirty = true;

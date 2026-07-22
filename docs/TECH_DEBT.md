@@ -2187,3 +2187,229 @@ subir na ponte.
 **Quando atacar:** próxima sessão dedicada a colisão/movimentação do
 jogador.
 
+## 126. Viewport input priority chain (GUE Zones tab)
+
+**Estado:** investigado e corrigido nesta sessão (`tools/gue/src/tabs/zones_viewport.cpp`, `zones.h`).
+
+**Causa raiz:** `DrawViewport()` tinha ~5 blocos consumindo o mesmo clique
+LMB (gizmo, colocação de objeto, seleção, brush de terreno, brush de
+foliage), cada um testando sua própria fatia de estado (`xformMode_` vs
+`zoneMode_` vs `scnArmed`) sem nenhum conhecimento dos outros — permitindo
+que um único clique disparasse mais de uma ação (ex: selecionar um objeto E
+pintar terreno no mesmo clique).
+
+**Correção:**
+- Árbitro único de prioridade por clique (`lmbGestureOwner_`, enum
+  `LmbOwner`): decidido uma vez no frame de press, mantido durante toda a
+  gesture (enquanto LMB seguir pressionado). Ordem: gizmo > colocar objeto >
+  seleção (só se acertou algo) > ferramenta do `zoneMode_`.
+- Seleção de objeto não exige mais `xformMode_ == kXFormSelect` — clica em
+  qualquer modo, como Unreal/Unity.
+- Hover todo frame (não só no clique): `gizmoHoverAxis_` (eixo do gizmo sob o
+  cursor) e `hoverObjID_`/`hoverObjType_` (objeto sob o cursor, com anel de
+  destaque sutil), com throttle a cada 2 frames pro raycast de objetos.
+- Snap do gizmo (Move, handles de plano XY/XZ/YZ e Scale) passou a operar
+  sempre sobre o DELTA acumulado desde o início do arrasto, nunca sobre a
+  posição/escala absoluta — eliminando o salto que acontecia quando o valor
+  contínuo cruzava uma fronteira de grid. Scale uniforme ganhou
+  `gizmoScaleAccumUniform_` (mesmo padrão do `gizmoRotAccumDeg_` já existente
+  pro Rotate) já que `gizmoStartScale_` não é mais re-basado a cada frame.
+- Atalhos de teclado de ferramenta (Q/W/E/R, F1-F4, T, Y) suspensos enquanto
+  `mouseLook_`/`altOrbit_`/`altDolly_`/`mmbPan_` (navegação com botão do
+  mouse pressionado) estiver ativo — W/E/Q também são teclas de voo durante
+  o freelook (RMB), então digitar W pra voar pra frente não deve mais trocar
+  o gizmo pra Move.
+
+**Bug 126.1 — scenery não selecionável no viewport (raio pra caixa errada):**
+`raycastObjects`, `tryGetBounds` e o candidate-test de face-snap
+(`zones_viewport.cpp`) usavam `ZScenery::scale` diretamente como o TAMANHO da
+caixa de hit-test (`half = s.scale * 0.5f`), sem transformação alguma. Mas
+`scale` é um multiplicador aplicado sobre o modelo (default `{1,1,1}`, muitos
+modelos reais usam algo como `0.02`) — não um tamanho de mundo, ao contrário
+de `ZWater::scale`/`ZColBox::scale`, que já representam dimensões literais.
+Isso deixava a caixa de teste minúscula (ou enorme) e desconectada do
+tamanho real do modelo — luzes e água funcionavam porque seus campos de
+escala já são world-space; scenery não.
+- **Correção**: novo `ZoneRenderer::SceneryModelLocalBounds(sceneryId, ...)`
+  expõe os bounds locais (bind-pose) do `Model` já carregado no
+  `sceneryActors_`. O raycast agora transforma os 8 cantos locais pela MESMA
+  matriz usada pra desenhar o objeto (`T(pos)*Ry*Rx*Rz*S(scale)`,
+  `zone_renderer.cpp` scenery draw loop) e testa contra a AABB resultante —
+  uma AABB de cantos transformados é um superset conservador da OBB real
+  (nunca menor que o modelo, um pouco mais generosa numa rotação diagonal),
+  o que é a troca certa pra um hit-test de clique sem precisar de
+  interseção ray/OBB completa. Fallback pro comportamento antigo (clamped a
+  0.05) se o modelo ainda não carregou (sem ator ainda).
+- `tryGetBounds`/face-snap (que só suportam caixa axis-aligned centrada em
+  `pos`, sem rotação) ganharam o mesmo fix de escala, mas continuam sem
+  suportar rotação/offset — suficiente pra dimensionar o snap, não pro
+  hit-test em si.
+
+**Bug 126.2 — hover virou outline (caixa 3D projetada), não círculo:**
+substituído o anel/círculo do objeto sob o cursor por um wireframe da AABB
+mundo do objeto projetada em tela (12 arestas via `ImDrawList`) —
+`worldAABBFor`/`drawWorldBoxOutline` (`zones_viewport.cpp`). Escolhido em
+vez de um outline 3D de verdade (stencil/silhueta) porque esse exigiria um
+passe de render novo na pipeline (FBO/shader extra, detecção de borda
+ciente de profundidade) por um ganho de usabilidade marginal — a caixa já
+comunica sem ambiguidade "este é o objeto sob o cursor" e acompanha
+posição/rotação/tamanho reais (reaproveitando o fix de bounds de scenery do
+126.1). Hover fica fino/translúcido (1.25px, alpha 165); scenery selecionado
+(único tipo sem feedback de seleção próprio no `RenderFramePBR_` — os
+outros já ganham tint vermelho/branco nos primitivos de debug) ganhou um
+outline bold equivalente (2.5px, alpha 235, branco) pra nunca se confundir
+com o hover.
+
+**Melhoria 126.3 — auto-switch pra Move ao selecionar:** clicar num objeto
+enquanto `xformMode_ == kXFormSelect` agora troca automaticamente pra
+`kXFormMove` (gizmo de mover aparece na hora, padrão Unreal) — mas só a
+partir de Select; se o dev já estiver em Rotate/Scale, a ferramenta escolhida
+não é sobrescrita.
+
+**Melhoria 126.4 — marquee (retângulo) de multi-seleção:** infraestrutura de
+seleção múltipla já existia inteira (`selectedRefs_`/`AddSelection`/
+`RemoveSelection`/`ActiveSelection()`, gizmo multi-objeto via
+`gizmoSelectionStart_`, `DeleteSelected`/`DuplicateSelected` já iteram
+`ActiveSelection()`) — só faltava o mecanismo de INPUT do retângulo em si.
+Adicionado `kLmbOwnerMarquee` (prioridade mais baixa da cadeia, só assume
+quando nada mais quis o clique) + `marqueeActive_`/`marqueeStart_`
+(`zones_viewport.cpp`). Ao soltar, seleciona por overlap da AABB projetada
+em tela (não só o centro — objeto parcialmente dentro do retângulo também
+entra, como na maioria dos editores) via `screenRectFor` (reaproveita
+`worldAABBFor` do item 126.2). Modificadores: sem tecla = substitui,
+Shift = adiciona, Ctrl = remove. Corrigido também um bug que o marquee teria
+introduzido: a lógica pré-existente de "clique vazio limpa seleção" rodava
+no frame de PRESS antes do drag terminar — precisou excluir
+`kLmbOwnerMarquee` dela, senão Shift+arrastar limpava a seleção existente
+antes mesmo de terminar o gesto.
+
+**Melhoria 126.5 — Ctrl/Shift no clique do viewport, espelhando a lista
+lateral:** a lista lateral (`zones_sidebar.cpp` `DrawGroup`, linha ~182) já
+fazia `if (ctrlSelect) ToggleSelection(...) else SelectSingle(...)` pra todo
+tipo (exceto scenery, que tem range-select por Shift ancorado na ordem
+visual da lista — sem equivalente sensato num clique 3D, que não tem
+"ordem"). O clique do viewport agora reusa as MESMAS chamadas
+(`ToggleSelection`/`AddSelection`/`SelectSingle`, não reimplementadas):
+Ctrl = alterna só aquele objeto; Shift = adiciona (`AddSelection`, já que
+plain-add é o mirror mais sensato do que Shift significa na sidebar sem um
+conceito de "intervalo"); sem modificador = substitui (inalterado). O
+auto-switch pra Move (126.3) só dispara no clique sem modificador — Ctrl/
+Shift estão estendendo uma seleção existente, não escolhendo algo novo pra
+trabalhar. Clique vazio sem acertar nada só limpa a seleção se nem Ctrl nem
+Shift estiverem segurados (evita perder a seleção por errar o clique). O
+marquee (126.4) já tratava Shift=adiciona desde que foi implementado —
+nenhuma mudança necessária lá.
+
+## 127. Atmosphere Volumes — regiões de atmosfera com transição suave (COMPLETO)
+
+**Estado: Fase 1 + Fase 2 completas e testadas.** Volumes plaçáveis (AABB ou
+esfera) que sobrescrevem os parâmetros visuais da área (sol, névoa,
+intensidade de céu) quando o jogador entra, com transição suave nos dois
+sentidos — entrada E saída — e ao trocar direto de um volume pra outro sem
+passar pelo normal no meio. Caso de uso motivador: um castelo com clima de
+terror só ali dentro, dentro de um mapa aberto normal.
+
+**Fase 1 — schema + GUE + rede:**
+- Tabela `zone_atmosphere_volumes` (criada pela GUE, `zone_scene.cpp`
+  `EnsureTables` — mesma convenção de `zone_lights`/`zone_scenery`, servidor
+  só lê): shape (0=AABB/1=esfera), pos, size, priority, transition_seconds,
+  mais os mesmos ~33 campos de atmosfera de `area_config` (sun_*, fog_r/g/b,
+  fog_density_mul, ambient_*, volumetrics, char_*, scene_*, color_*) —
+  **exceto** `skybox_hdr` e `terrain_*` (ver limitações abaixo).
+- `ZAtmosphereVolume`/`ZAtmosphere` (`zone_scene.h`), objeto plaçável seguindo
+  exatamente o padrão já estabelecido por Point Light/Player Spawn/ColBox:
+  marcador na viewport (`zone_renderer.cpp`, caixa/esfera semi-transparente,
+  cor violeta, mais opaca quando selecionado), hit-test/hover/gizmo
+  Move+Scale (`zones_viewport.cpp`, mesmo tratamento de AABB do ColBox),
+  entrada na lista lateral, painel de propriedades.
+- Rede: pacote novo `PAtmosphereVolumes` (id 142), mesmo padrão de
+  `PZoneLights`/`PZoneWater` (`server/internal/net/client.go`
+  `sendAtmosphereVolumes`, `server/internal/world/frame.go`
+  `AtmosphereVolumesPayload`) — enviado nos dois pontos de entrada de área já
+  existentes. Cliente armazena em `rco::renderer::AtmosphereVolumeManager`
+  (`shared/renderer/include/rco/renderer/atmosphere_volume_manager.h`).
+
+**Fase 2 — teste de volume + interpolação no cliente:**
+- A cada frame (`client/src/core/main.cpp`, logo após `pipeline->Begin(...)`,
+  antes de `SetSceneLook`/`SetAtmosphereFog`/`SetSun`): testa a posição do
+  jogador contra cada volume (ponto-em-AABB ou ponto-em-esfera), escolhe o de
+  maior `priority` entre os que contêm o jogador.
+- **Crossfade genuíno** (`atmo_from_`/`atmo_to_`/`atmo_t_`), não um lerp fixo
+  área↔volume: sempre que o alvo muda (entrar, sair, ou trocar direto de um
+  volume pro outro), `atmo_from_` captura o blend ATUAL — não reseta pro
+  baseline — e `atmo_t_` reinicia em 0 rumo ao novo alvo, à taxa
+  `dt / transition_seconds`. Isso corrigiu um bug real do primeiro
+  rascunho da Fase 2 (transição funcionava só ao entrar; ao sair, o efeito
+  cortava seco porque o código só aplicava o lerp quando havia um volume
+  vencedor não-nulo, mesmo com o peso decaindo suavemente por baixo) e faz a
+  troca direta entre volumes adjacentes interpolar do estado atual em
+  direção ao novo, em vez de visivelmente voltar ao normal no meio do
+  caminho.
+- Saída usa a MESMA duração de transição que a entrada daquele volume usou
+  (simétrico). `atmo_to_` é recalculado todo frame com o valor AO VIVO da
+  área quando não há volume vencedor — sem volumes plaçados (ou jogador fora
+  de todos), o resultado é bit-a-bit idêntico ao valor cru da área, sem
+  regressão pra quem não usa volumes.
+- Estado do crossfade é resetado nos 3 pontos onde
+  `atmosphere_manager.Clear()` já roda (troca de área/portal/desconexão) —
+  evita carregar blend ou ponteiro de volume da área anterior pra dentro da
+  nova.
+
+**Limitações conhecidas (conscientes, fora do escopo desta entrega):**
+- **Skybox/HDR não interpola** — troca de céu é uma recarga real de textura
+  HDR + reconvolução IBL, cara demais pra rodar/interpolar todo frame (não dá
+  pra fazer um lerp simples de duas texturas). Cross-fade de IBL de verdade
+  (dois ambientes bindados simultaneamente, blend no shader) fica como Fase
+  3 opcional, só se algum dia for necessário.
+- **Volumes sem rotação** — sempre axis-aligned (`pos ± size/2` ou raio),
+  mesma limitação que ColBox já tem nesta base; hit-test/gizmo/face-snap
+  nunca precisaram lidar com OBB pra esse tipo.
+- **Sem Duplicate (Ctrl+D) e sem Undo de mover/escalar** — só Undo de criação
+  foi implementado (delete ao desfazer um "place"). Restaurar posição/escala
+  no undo e suportar duplicação seriam mecânicos de adicionar (mesmo padrão
+  já usado por ColBox/Light), mas ficaram fora do escopo desta entrega pelo
+  tamanho do diff.
+- `color_*`/`char_*` do volume (contraste/saturação/vibrance/rim/shadow
+  lift etc.) são configuráveis no painel mas **sem efeito ao vivo ainda** —
+  `SetColorGrading`/`SetCharacterReadability` não rodam todo frame hoje (só
+  na troca de área), diferente de `SetSceneLook`/`SetAtmosphereFog`/`SetSun`
+  que já eram chamados todo frame antes da Fase 2 existir. Só sun/céu/névoa
+  de fato interpolam.
+
+**Melhoria bônus — Environment tab ganhou UI que faltava:** durante a Fase 1,
+descobri que a aba Environment nunca teve controles pros campos
+sun_*/scene_*/color_*/char_* — eles só existiam como colunas em
+`area_config` com valores default, nunca editáveis pelo GUE (só
+fog_near/far/density, ambient RGB, weather, music, gravity tinham slider).
+Corrigido com uma função compartilhada `DrawAtmosphereFields(ZAtmosphere&)`
+(`zones_panels.cpp`) usada por AMBOS `DrawPanelEnviro` (edita
+`scene_.env.atmo`, a base da área) e `DrawPanelAtmosphereVolume` (edita
+`v.atmo`, o override do volume) — nenhuma UI duplicada entre os dois. Também
+corrigiu um bug latente: o `INSERT OR REPLACE INTO area_config` do
+Environment só listava as colunas antigas, então salvar qualquer mudança ali
+resetava silenciosamente todos os campos novos pro DEFAULT do schema — a
+UPSERT foi estendida pra incluir as ~33 colunas novas.
+
+**Sistema de visibilidade ("olhinho") — genérico, não específico de
+atmosfera:** implementado como uma tabela única `zone_object_visibility
+(area_name, obj_type, obj_id)` (presença de linha = escondido, ausência =
+visível — objetos visíveis, a maioria, nunca escrevem nada) em vez de um
+campo `visible` duplicado em cada um dos 14 structs de objeto. `ZoneScene`
+ganhou `IsHidden(type,id)`/`SetHidden(db,type,id,bool)` funcionando pra
+QUALQUER `ZSelType` existente ou futuro. UI: ícone de olho + botão "Hide
+all" por grupo, ambos genéricos em `DrawGroup` (`zones_sidebar.cpp`), cobrem
+todos os tipos automaticamente. Objeto escondido não desenha marcador
+(`zone_renderer.cpp`) nem captura clique (`raycastObjects`,
+`zones_viewport.cpp`) — só a lista lateral continua mostrando, pra poder
+trazer de volta.
+
+**Arquivos tocados** (referência): `server/internal/db/db.go`,
+`server/internal/world/area.go`, `server/internal/world/frame.go`,
+`server/internal/net/client.go`, `server/internal/protocol/packets.go`,
+`server/cmd/server/main.go`, `tools/gue/src/zone_scene.h/.cpp`,
+`tools/gue/src/zone_renderer.h/.cpp`, `tools/gue/src/tabs/zones.h/.cpp`,
+`tools/gue/src/tabs/zones_panels.cpp`, `tools/gue/src/tabs/zones_sidebar.cpp`,
+`tools/gue/src/tabs/zones_viewport.cpp`,
+`shared/renderer/include/rco/renderer/atmosphere_volume_manager.h`,
+`client/src/core/main.cpp`, `client/src/net/protocol.h`.
+

@@ -43,12 +43,27 @@ void ZonesTab::DrawTopBar(sqlite3* db, MediaTab* media) {
     ImGui::SameLine(0, 24.f);
     ImGui::TextDisabled("Mode:");
     ImGui::SameLine();
-    static const char* kModeLabels[kModeCount] = {
+    // Size is INFERRED from the initializer list (no explicit [kModeCount])
+    // on purpose: the previous version declared this as `[kModeCount]` with
+    // only 17 of 18 string literals after ZoneMode gained
+    // kModeAtmosphereVolume/bumped kModeCount to 18. A brace-init list
+    // shorter than an explicitly-sized array is legal C++ — the trailing
+    // element just zero-initializes to nullptr — so it compiled cleanly and
+    // only crashed at runtime, the instant the combo tried to render that
+    // null-labelled entry via ImGui::Selectable(). Letting the compiler
+    // count the initializers instead, then static_asserting that count
+    // against kModeCount, turns the same mistake into a COMPILE ERROR next
+    // time someone adds a ZoneMode without adding its label here. See
+    // docs/TECH_DEBT.md "Atmosphere volumes".
+    static const char* kModeLabels[] = {
         "Scenery","Terrain","Emitters","Water","ColBox",
         "Sound","Trigger","Waypoint","Portal","NPC",
         "Enviro","Other","SpawnPt","ColSphere","PlayerSpawn",
-        "Foliage","Light"
+        "Foliage","Light","Atmosphere Volume"
     };
+    static_assert(sizeof(kModeLabels) / sizeof(kModeLabels[0]) == kModeCount,
+                  "kModeLabels must have exactly kModeCount entries, in ZoneMode's enum order — "
+                  "add a new label here every time a new ZoneMode value is added");
     ImGui::SetNextItemWidth(120.f);
     if (ImGui::BeginCombo("##zmode", kModeLabels[zoneMode_])) {
         for (int i = 0; i < kModeCount; ++i) {
@@ -155,9 +170,32 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
                         ImGuiTreeNodeFlags_DefaultOpen |
                         ImGuiTreeNodeFlags_SpanFullWidth);
         ImGui::PopStyleColor();
+        // "Hide all" / "Show all" for this whole group — bonus from the
+        // visibility pass (see docs/TECH_DEBT.md "Atmosphere volumes").
+        // Placed on the same line as the header, right-aligned.
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - 26.f);
+        ImGui::PushID(label);
+        if (ImGui::SmallButton("H")) {
+            for (auto& obj : vec) scene_.SetHidden(db, selType, obj.id, true);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hide all %s", label);
+        ImGui::PopID();
         if (!open) return;
         for (auto& obj : vec) {
             bool sel = IsInSelection(selType, obj.id);
+            bool hidden = scene_.IsHidden(selType, obj.id);
+            ImGui::PushID(obj.id);
+            // Eye toggle — "O" (open eye, visible) / "o" (closed, hidden).
+            // Hidden objects: no marker in the viewport, no raycast hit —
+            // this list row is the ONLY way to find/re-show them.
+            if (ImGui::SmallButton(hidden ? "o" : "O")) {
+                scene_.SetHidden(db, selType, obj.id, !hidden);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(hidden ? "Hidden — click to show" : "Visible — click to hide");
+            ImGui::SameLine();
+            ImGui::PopID();
+
             ImGuiTreeNodeFlags flags =
                 ImGuiTreeNodeFlags_Leaf |
                 ImGuiTreeNodeFlags_NoTreePushOnOpen |
@@ -167,6 +205,7 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
                 ImGui::PushStyleColor(ImGuiCol_Header,
                                       {0.25f, 0.55f, 0.90f, 0.60f});
             }
+            if (hidden) ImGui::PushStyleColor(ImGuiCol_Text, {0.5f, 0.5f, 0.5f, 1.f});
             // Build item label
             char lbl[64];
             if constexpr (requires { obj.name; }) {
@@ -178,6 +217,7 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
                 std::snprintf(lbl, 64, "#%d", obj.id);
             }
             ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s", lbl);
+            if (hidden) ImGui::PopStyleColor();
             if (sel) ImGui::PopStyleColor();
             if (ImGui::IsItemClicked()) {
                 if (ctrlSelect) ToggleSelection(selType, obj.id);
@@ -199,6 +239,7 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
     DrawGroup("~", "Water",      scene_.water,      kSelWater,     {0.10f,0.70f,1.00f,1.f});
     DrawGroup("E", "Emitters",   scene_.emitters,   kSelEmitter,   {0.80f,1.00f,0.20f,1.f});
     DrawGroup("L", "Lights",     scene_.lights,     kSelLight,     {1.00f,0.85f,0.50f,1.f});
+    DrawGroup("A", "Atmosphere Volumes", scene_.atmosphereVolumes, kSelAtmosphereVolume, {0.75f,0.45f,0.95f,1.f});
     // Scenery: use model name instead of bare id, grouped by ZScenery::folder.
     // Root/ungrouped items (folder=="") render directly under "Scenery";
     // named folders get their own sub-node with click-to-select-all, a
@@ -297,6 +338,7 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
 
         auto drawSceneryItem = [&](const ZScenery& obj) {
             bool sel = IsInSelection(kSelScenery, obj.id);
+            bool hidden = scene_.IsHidden(kSelScenery, obj.id);
             ImGuiTreeNodeFlags flags =
                 ImGuiTreeNodeFlags_Leaf |
                 ImGuiTreeNodeFlags_NoTreePushOnOpen |
@@ -315,7 +357,15 @@ void ZonesTab::DrawSceneSidebar(sqlite3* db, MediaTab* media) {
                 std::snprintf(lbl, sizeof(lbl), "model%d #%d",
                               obj.modelId, obj.id);
             ImGui::PushID(obj.id);
+            if (ImGui::SmallButton(hidden ? "o" : "O")) {
+                scene_.SetHidden(db, kSelScenery, obj.id, !hidden);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(hidden ? "Hidden — click to show" : "Visible — click to hide");
+            ImGui::SameLine();
+            if (hidden) ImGui::PushStyleColor(ImGuiCol_Text, {0.5f, 0.5f, 0.5f, 1.f});
             ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s", lbl);
+            if (hidden) ImGui::PopStyleColor();
             if (sel) ImGui::PopStyleColor();
             // IsItemClicked() fires on mouse-DOWN, i.e. the very first frame
             // of a potential drag gesture too. If we always collapsed the
@@ -590,6 +640,7 @@ void ZonesTab::DrawInspector(sqlite3* db, MediaTab* media) {
         case kSelPlayerSpawn: DrawPanelPlayerSpawn(db,       false); return;
         case kSelEmitter:   DrawPanelEmitters (db,        false); return;
         case kSelLight:     DrawPanelLight    (db,        false); return;
+        case kSelAtmosphereVolume: DrawPanelAtmosphereVolume(db, false); return;
         case kSelWater:     DrawPanelWater    (db, media, false); return;
         case kSelScenery:   DrawPanelScenery  (db, media, false); return;
         default: break;
@@ -613,6 +664,7 @@ void ZonesTab::DrawInspector(sqlite3* db, MediaTab* media) {
     case kModePlayerSpawn: DrawPanelPlayerSpawn(db,       true); break;
     case kModeFoliage:    DrawPanelFoliage  (db, media, true); break;
     case kModeLight:      DrawPanelLight    (db,        true); break;
+    case kModeAtmosphereVolume: DrawPanelAtmosphereVolume(db, true); break;
     case kModeEnviro:     DrawPanelEnviro   (db); break;
     case kModeOther:     DrawPanelOther    (db); break;
     default:

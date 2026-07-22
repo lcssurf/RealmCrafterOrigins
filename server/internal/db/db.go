@@ -10307,6 +10307,135 @@ func (d *DB) LoadZoneWater(ctx context.Context) ([]*ZoneWater, error) {
 	return out, rows.Err()
 }
 
+// AtmosphereVolume is a placed region ("Post Process Volume" style) that
+// overrides an area's atmosphere (sun/fog/ambient/scene-look/color-grading)
+// while the player is inside it, blending smoothly on enter/exit — Fase 1
+// (this struct + editor) is data-only; the client-side point-in-volume test
+// and blend is Fase 2 (docs/TECH_DEBT.md "Atmosphere volumes"). Field set
+// mirrors AreaConfig's authoritative render-tuning section exactly (see
+// sendAreaConfig in server/internal/net/client.go) so a volume can override
+// any subset of what the area itself already sends — NOT skybox_hdr (a real
+// HDR texture reload, too expensive to blend per-frame — see Fase 3 note in
+// TECH_DEBT.md) and NOT the terrain_* tuning (that's a shader-tiling knob,
+// not "atmosphere"/mood).
+type AtmosphereVolume struct {
+	ID       int
+	AreaName string
+	Name     string
+	Shape    int // 0=AABB (pos±size/2) 1=sphere (radius=SizeX/2)
+
+	PosX, PosY, PosZ    float32
+	SizeX, SizeY, SizeZ float32 // AABB: full size. Sphere: only SizeX used, as diameter.
+
+	Priority          int     // highest priority wins when volumes overlap
+	TransitionSeconds float32 // fade in/out duration, Fase 2
+
+	// Same fields/defaults as AreaConfig's render-tuning section.
+	SunDirX, SunDirY, SunDirZ       float32
+	SunColorR, SunColorG, SunColorB float32
+	SunIntensityMul                 float32
+	SkyIntensityMul                 float32
+	FogDensityMul                   float32
+	FogR, FogG, FogB                float32
+	AmbientR, AmbientG, AmbientB    uint8
+	Volumetrics                     bool
+
+	CharShadowLift   float32
+	CharRimStrength  float32
+	CharRimExponent  float32
+	CharMinNdotL     float32
+	CharAmbientBoost float32
+
+	SceneIblIntensity       float32
+	SceneSkyIntensity       float32
+	SceneWorldShadowLift    float32
+	SceneDirectScale        float32
+	SceneAmbientScale       float32
+	SceneFlatAmbient        float32
+	SceneWorldMinNdotL      float32
+	SceneAlbedoMinLuma      float32
+	SceneAlbedoLiftStrength float32
+	SceneSpecularScale      float32
+	SceneExposureFactor     float32
+	SceneSunIntensity       float32
+
+	ColorContrast         float32
+	ColorSaturation       float32
+	ColorVibrance         float32
+	ColorBlackPoint       float32
+	ColorVignetteStrength float32
+	ColorVignetteSoftness float32
+}
+
+// LoadAtmosphereVolumes returns all placed atmosphere volumes across every
+// area. The zone_atmosphere_volumes table is created entirely by the GUE
+// (tools/gue/src/zone_scene.cpp EnsureTables), same convention as
+// zone_lights/zone_water/zone_scenery — the server doesn't create or
+// migrate it itself, so a fresh DB the GUE has never touched yields a query
+// error here; the caller (main.go) logs and continues with zero volumes,
+// matching how LoadZoneLights/LoadZoneWater are already handled.
+func (d *DB) LoadAtmosphereVolumes(ctx context.Context) ([]*AtmosphereVolume, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(
+		`SELECT id, area_name, name, shape, pos_x, pos_y, pos_z, size_x, size_y, size_z,
+		        priority, transition_seconds,
+		        sun_dir_x, sun_dir_y, sun_dir_z, sun_color_r, sun_color_g, sun_color_b,
+		        sun_intensity_mul, sky_intensity_mul, fog_density_mul, fog_r, fog_g, fog_b,
+		        ambient_r, ambient_g, ambient_b, volumetrics,
+		        char_shadow_lift, char_rim_strength, char_rim_exponent, char_min_ndotl, char_ambient_boost,
+		        scene_ibl_intensity, scene_sky_intensity, scene_world_shadow_lift, scene_direct_scale,
+		        scene_ambient_scale, scene_flat_ambient, scene_world_min_ndotl, scene_albedo_min_luma,
+		        scene_albedo_lift_strength, scene_specular_scale, scene_exposure_factor, scene_sun_intensity,
+		        color_contrast, color_saturation, color_vibrance, color_black_point,
+		        color_vignette_strength, color_vignette_softness
+		 FROM zone_atmosphere_volumes ORDER BY area_name, id`))
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadAtmosphereVolumes: %w", err)
+	}
+	defer rows.Close()
+	var out []*AtmosphereVolume
+	for rows.Next() {
+		v := &AtmosphereVolume{}
+		var px, py, pz, sx, sy, sz, transitionSec float64
+		var sdx, sdy, sdz, scr, scg, scb, sim, skm, fdm, fr, fg, fb float64
+		var ar, ag, ab int
+		var volumetrics int
+		var csl, crs, cre, cmn, cab float64
+		var sib, ssk, sws, sds, sas, sfa, swm, salm, sals, ssp, sef, ssi float64
+		var cc, cs, cv, cbp, cvs, cvsoft float64
+		if err := rows.Scan(&v.ID, &v.AreaName, &v.Name, &v.Shape, &px, &py, &pz, &sx, &sy, &sz,
+			&v.Priority, &transitionSec,
+			&sdx, &sdy, &sdz, &scr, &scg, &scb,
+			&sim, &skm, &fdm, &fr, &fg, &fb,
+			&ar, &ag, &ab, &volumetrics,
+			&csl, &crs, &cre, &cmn, &cab,
+			&sib, &ssk, &sws, &sds, &sas, &sfa, &swm, &salm, &sals, &ssp, &sef, &ssi,
+			&cc, &cs, &cv, &cbp, &cvs, &cvsoft); err != nil {
+			return nil, fmt.Errorf("db: LoadAtmosphereVolumes scan: %w", err)
+		}
+		v.PosX, v.PosY, v.PosZ = float32(px), float32(py), float32(pz)
+		v.SizeX, v.SizeY, v.SizeZ = float32(sx), float32(sy), float32(sz)
+		v.TransitionSeconds = float32(transitionSec)
+		v.SunDirX, v.SunDirY, v.SunDirZ = float32(sdx), float32(sdy), float32(sdz)
+		v.SunColorR, v.SunColorG, v.SunColorB = float32(scr), float32(scg), float32(scb)
+		v.SunIntensityMul = float32(sim)
+		v.SkyIntensityMul = float32(skm)
+		v.FogDensityMul = float32(fdm)
+		v.FogR, v.FogG, v.FogB = float32(fr), float32(fg), float32(fb)
+		v.AmbientR, v.AmbientG, v.AmbientB = uint8(ar), uint8(ag), uint8(ab)
+		v.Volumetrics = volumetrics != 0
+		v.CharShadowLift, v.CharRimStrength, v.CharRimExponent = float32(csl), float32(crs), float32(cre)
+		v.CharMinNdotL, v.CharAmbientBoost = float32(cmn), float32(cab)
+		v.SceneIblIntensity, v.SceneSkyIntensity, v.SceneWorldShadowLift = float32(sib), float32(ssk), float32(sws)
+		v.SceneDirectScale, v.SceneAmbientScale, v.SceneFlatAmbient = float32(sds), float32(sas), float32(sfa)
+		v.SceneWorldMinNdotL, v.SceneAlbedoMinLuma, v.SceneAlbedoLiftStrength = float32(swm), float32(salm), float32(sals)
+		v.SceneSpecularScale, v.SceneExposureFactor, v.SceneSunIntensity = float32(ssp), float32(sef), float32(ssi)
+		v.ColorContrast, v.ColorSaturation, v.ColorVibrance = float32(cc), float32(cs), float32(cv)
+		v.ColorBlackPoint, v.ColorVignetteStrength, v.ColorVignetteSoftness = float32(cbp), float32(cvs), float32(cvsoft)
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // migrateV15 adds random wander fields to npc_spawns.
 func (d *DB) migrateV15(ctx context.Context) {
 	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }

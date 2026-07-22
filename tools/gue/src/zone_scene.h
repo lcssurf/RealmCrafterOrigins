@@ -3,7 +3,9 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 #include <sqlite3.h>
 
 namespace gue {
@@ -191,6 +193,53 @@ struct ZPlayerSpawn {
     float       yaw    = 0.f;
 };
 
+// Shared "authoritative render tuning" field set — exactly what AreaConfig
+// sends the client via PAreaConfig (server/internal/net/client.go
+// sendAreaConfig), MINUS skybox_hdr (a real HDR reload, not a cheap runtime
+// value — see docs/TECH_DEBT.md "Atmosphere volumes" for the Fase 3 note)
+// and MINUS terrain_* (a shader tiling knob, not atmosphere/mood). Used by
+// BOTH ZEnvConfig (the area's own baseline) and ZAtmosphereVolume (a
+// region's override) so ONE UI function (DrawAtmosphereFields, in
+// zones_panels.cpp) can edit either — see docs/TECH_DEBT.md "Atmosphere
+// volumes" for why this struct exists instead of two copies of the same 33
+// fields. Defaults match sendAreaConfig's hardcoded fallback exactly.
+struct ZAtmosphere {
+    float sunDirX = 0.18f, sunDirY = 0.96f, sunDirZ = 0.20f;
+    float sunColorR = 1.14f, sunColorG = 1.12f, sunColorB = 1.05f;
+    float sunIntensityMul = 1.00f;
+    float skyIntensityMul = 1.00f;
+    float fogDensityMul   = 0.92f;
+    float fogR = 0.70f, fogG = 0.80f, fogB = 0.93f;
+    int   ambientR = 80, ambientG = 80, ambientB = 90;
+    bool  volumetrics = true;
+
+    float charShadowLift   = 0.30f;
+    float charRimStrength  = 0.18f;
+    float charRimExponent  = 2.40f;
+    float charMinNdotL     = 0.10f;
+    float charAmbientBoost = 0.12f;
+
+    float sceneIblIntensity       = 1.00f;
+    float sceneSkyIntensity       = 1.16f;
+    float sceneWorldShadowLift    = 0.10f;
+    float sceneDirectScale        = 1.32f;
+    float sceneAmbientScale       = 0.88f;
+    float sceneFlatAmbient        = 0.03f;
+    float sceneWorldMinNdotL      = 0.05f;
+    float sceneAlbedoMinLuma      = 0.18f;
+    float sceneAlbedoLiftStrength = 0.00f;
+    float sceneSpecularScale      = 0.88f;
+    float sceneExposureFactor     = 1.10f;
+    float sceneSunIntensity       = 1.36f;
+
+    float colorContrast         = 1.08f;
+    float colorSaturation       = 1.08f;
+    float colorVibrance         = 0.20f;
+    float colorBlackPoint       = 0.010f;
+    float colorVignetteStrength = 0.04f;
+    float colorVignetteSoftness = 0.55f;
+};
+
 struct ZEnvConfig {
     std::string name;
     int   musicTrack   = 1;
@@ -199,12 +248,12 @@ struct ZEnvConfig {
     bool  pvpEnabled   = false;
     float fogNear      = 300.f;
     float fogFar       = 600.f;
-    float fogR         = 0.70f;
-    float fogG         = 0.75f;
-    float fogB         = 0.80f;
-    int   ambientR     = 80;
-    int   ambientG     = 80;
-    int   ambientB     = 90;
+    // fogR/G/B and ambientR/G/B used to live here as separate top-level
+    // fields (duplicating the same area_config.fog_r/g/b + ambient_r/g/b
+    // columns also read into `atmo` below) — removed so there's a single
+    // source of truth; use atmo.fogR/fogG/fogB and atmo.ambientR/G/B.
+    // fogNear/fogFar/fogDensity above are a separate, older fog system
+    // (distance-based) untouched by this change.
     float gravity      = 1.0f;
     std::string entryScript, exitScript;
     int   weatherRain  = 0;
@@ -212,6 +261,35 @@ struct ZEnvConfig {
     int   weatherFog   = 0;
     int   weatherStorm = 0;
     int   weatherWind  = 0;
+
+    // Authoritative render tuning (sun/scene-look/color-grading/character
+    // readability) — previously only lived as area_config columns with no
+    // GUE UI at all (only fog/ambient/weather/music/gravity above were
+    // ever editable here). Added alongside ZAtmosphereVolume so the new
+    // "Atmosphere Volume" panel and this area's own Environment tab can
+    // share one drawing function instead of the volume inventing a second,
+    // slightly-different set of controls. See docs/TECH_DEBT.md
+    // "Atmosphere volumes".
+    ZAtmosphere atmo;
+};
+
+// A placed region ("Post Process Volume" style) that overrides the area's
+// atmosphere while the player is inside it — Fase 1 (this struct + editor)
+// is data-only; the client-side point-in-volume test + enter/exit blend is
+// Fase 2. Shape is either an AABB (pos ± size/2) or a sphere (radius =
+// size.x/2) — the editor's generic bounding-box math (hit-test, gizmo
+// pivot, face-snap) always uses the AABB form regardless of shape, same
+// simplification already used for scenery's projected-corners hit-test; see
+// docs/TECH_DEBT.md "Atmosphere volumes".
+struct ZAtmosphereVolume {
+    int         id       = 0;
+    std::string name;
+    int         shape    = 0;              // 0=AABB, 1=sphere
+    glm::vec3   pos       = {};
+    glm::vec3   size      = {10.f, 10.f, 10.f}; // AABB: full size. Sphere: size.x = diameter.
+    int         priority  = 0;             // highest priority wins when volumes overlap
+    float       transitionSeconds = 2.0f;  // fade in/out duration (Fase 2)
+    ZAtmosphere atmo;
 };
 
 // ─── Collision shape visualisation (per-scenery, from media_model_shapes) ────
@@ -247,6 +325,7 @@ struct ZoneScene {
     std::vector<ZNpcSpawn>    npcs;
     std::vector<ZSpawnPoint>  spawnPoints;
     std::vector<ZPlayerSpawn> playerSpawns;
+    std::vector<ZAtmosphereVolume> atmosphereVolumes;
     // Registry of scenery organizational folders (zone_scenery_folders) —
     // tracked independently of ZScenery::folder so a folder can exist (and
     // show up in the scene sidebar) even with zero objects in it yet.
@@ -260,6 +339,28 @@ struct ZoneScene {
     ColVisData colVis;
     bool       colVisDirty = true;
 
+    // ── Per-object editor visibility ("the eye icon") ─────────────────────
+    // Generic across every selectable type (ZSelType enum) — NOT a `bool
+    // visible` field duplicated on every ZScenery/ZLight/ZColBox/etc struct.
+    // A (type,id) pair present in this set means "hidden"; absence means
+    // visible (the common case, so nothing is written to the DB for
+    // ordinary visible objects — see zone_object_visibility's schema in
+    // zone_scene.cpp EnsureTables). Editor-only: never sent to the client/
+    // server, never affects gameplay — see docs/TECH_DEBT.md
+    // "Atmosphere volumes" (Fase 2 + visibility).
+    std::unordered_set<int64_t> hiddenObjects;
+
+    static int64_t VisKey(int type, int id) {
+        return (static_cast<int64_t>(type) << 32) | static_cast<uint32_t>(id);
+    }
+    bool IsHidden(int type, int id) const {
+        return hiddenObjects.count(VisKey(type, id)) != 0;
+    }
+    // Toggles hidden state and persists it: a hidden object gets one row
+    // inserted into zone_object_visibility; making it visible again deletes
+    // that row (so ordinary/visible objects never accumulate rows at all).
+    void SetHidden(sqlite3* db, int type, int id, bool hidden);
+
     void Clear() {
         areaName.clear();
         scenery.clear(); portals.clear(); triggers.clear();
@@ -268,7 +369,9 @@ struct ZoneScene {
         spawnPoints.clear();
         playerSpawns.clear();
         lights.clear();
+        atmosphereVolumes.clear();
         sceneryFolders.clear();
+        hiddenObjects.clear();
         env = {};
         dirty = false;
         colVis = {};

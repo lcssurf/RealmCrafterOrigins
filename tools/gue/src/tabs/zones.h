@@ -37,7 +37,8 @@ enum ZoneMode {
     kModePlayerSpawn = 14,
     kModeFoliage     = 15,
     kModeLight       = 16,
-    kModeCount       = 17,
+    kModeAtmosphereVolume = 17,
+    kModeCount       = 18,
 };
 
 // ── Lightweight cache entry for the terrain material picker ─────────────────
@@ -107,6 +108,7 @@ private:
     void DrawPanelPlayerSpawn (sqlite3*, bool placement);
     void DrawPanelFoliage     (sqlite3*, MediaTab*, bool placement);
     void DrawPanelLight       (sqlite3*, bool placement);
+    void DrawPanelAtmosphereVolume(sqlite3*, bool placement);
 
     // ── Undo ─────────────────────────────────────────────────────────────────
     enum UndoAction { kUndoCreate, kUndoDelete, kUndoMove, kUndoRotate, kUndoScale };
@@ -236,6 +238,34 @@ private:
     // Context menu pending placement position
     glm::vec3 pendingPlacePos_ = {};
 
+    // ── Unified LMB click-priority arbiter ────────────────────────────────
+    // Decided once, on the press frame, and held for the whole gesture (every
+    // subsequent held-LMB frame) so a single click/drag can only be "owned"
+    // by one of: gizmo grab, new-object placement, object selection, the
+    // active zoneMode_ tool (terrain/foliage brush), or — lowest priority,
+    // only when NOTHING else claimed the click — a marquee (rectangle)
+    // multi-select drag. See docs/TECH_DEBT.md "Viewport input priority
+    // chain".
+    enum LmbOwner { kLmbOwnerNone = 0, kLmbOwnerGizmo, kLmbOwnerPlacement,
+                    kLmbOwnerSelection, kLmbOwnerTool, kLmbOwnerMarquee };
+    int  lmbGestureOwner_ = kLmbOwnerNone;
+
+    // Marquee (rectangle) multi-select drag state.
+    bool   marqueeActive_ = false;
+    ImVec2 marqueeStart_  = {0.f, 0.f};
+
+    // Gizmo axis under the cursor THIS FRAME even when not clicking/dragging
+    // (-1 = none) — drives both the hover highlight and the click arbiter
+    // above. Recomputed every frame in the gizmo block further down.
+    int  gizmoHoverAxis_ = -1;
+
+    // Object under the cursor this frame, independent of selection state —
+    // drives a subtle hover highlight in the viewport. Recomputed every
+    // frame (throttled — see zones_viewport.cpp) rather than only on click.
+    int  hoverObjID_   = -1;
+    int  hoverObjType_ = kSelNone;
+    int  hoverThrottleCounter_ = 0;
+
     // ── Gizmo drag state (shared across Move / Rotate / Scale) ───────────────
     // `gizmoAxis_` is the active axis during a drag (-1 = idle). Drag type is
     // inferred from `xformMode_` so we don't track that twice.
@@ -247,6 +277,7 @@ private:
     glm::vec3 gizmoStartScale_ = {1,1,1};
     float     gizmoStartS_     = 0.f;  // cursor param at drag start (axis-local)
     float     gizmoRotAccumDeg_= 0.f;  // incremental rotate accumulator (avoids wrap jumps)
+    float     gizmoScaleAccumUniform_ = 0.f;  // raw (unsnapped) uniform-scale growth since drag start
     float     gizmoLastAngle_  = 0.f;  // last ring angle sample (radians)
     glm::vec3 gizmoPrePos_     = {};   // pre-drag snapshot for undo
     glm::vec3 gizmoPreRot_     = {};
@@ -373,23 +404,27 @@ private:
     bool  scnAutoRotate_  = false;  // auto-rotate yaw on face snap to nearest snapped angle
     bool  gizmoMoveRotChanged_ = false;
     // Terrain brush state
-    int   brushMode_      = 0;     // 0=Raise 1=Lower 2=Smooth 3=Flatten 4=Paint
+    int   brushMode_      = 0;     // 0=Raise 1=Lower 2=Smooth(height) 3=Flatten 4=Paint 5=Noise 6=Smooth(splat)
     int   brushFalloff_   = 0;     // 0=Smooth 1=Gaussian 2=Linear 3=Spherical
+    int   brushShape_     = 0;     // 0=Circle 1=Square — BrushShape
+    float brushHardness_  = 0.f;   // 0=curve as selected, 1=sharpened toward a hard edge
+    float brushNoise_     = 0.f;   // 0=smooth brush, 1=fully irregular/organic edge
     float brushRadius_    = 10.f;
     float brushStrength_  = 1.0f;
     float brushFlattenH_  = 10.f;
     int   brushMaterial_  = 0;     // material slot index when painting (unbounded — Phase 1)
+    bool  brushErase_     = false; // Paint mode toggle: remove weight instead of adding it
+    float brushMaxOpacity_ = 1.0f; // Paint mode cap: max weight matIdx can reach per texel (1 = no cap)
     bool  brushActive_    = false; // true while LMB is held in terrain mode
 
     // Brush cursor (terrain mode) — updated every frame via hover raycast
     glm::vec3 brushHitPos_     = {};
     bool      brushHoverValid_ = false;
 
-    // Auto-paint slope state
-    int   slopeFlatLayer_ = 0;
-    int   slopeRockLayer_ = 2;
-    float slopeMinDeg_    = 20.f;
-    float slopeMaxDeg_    = 40.f;
+    // Auto-paint rules state (ordered list — first match wins, see
+    // AutoPaintRule / EditableTerrain::AutoPaintByRules). Order in this
+    // vector IS the priority shown in the UI table.
+    std::vector<AutoPaintRule> autoPaintRules_;
 
     // Foliage brush state (scatter-paint trees/bushes/rocks as zone_scenery).
     // Candidate models are toggled on/off in the Asset Browser tiles while
@@ -444,6 +479,14 @@ private:
     float lightColor_[3]   = {1.0f, 0.8f, 0.5f};  // warm torch-ish default
     float lightIntensity_  = 1.0f;
     float lightRadius_     = 5.0f;
+
+    // Atmosphere volumes (Fase 1 — data + editor only, see docs/TECH_DEBT.md
+    // "Atmosphere volumes"). Placement-time defaults; the volume's own
+    // atmosphere fields (ZAtmosphereVolume::atmo) start at ZAtmosphere{}'s
+    // defaults, edited afterward via the property panel.
+    char  atmoVolName_[128] = {};
+    int   atmoVolShape_     = 0;  // 0=AABB, 1=sphere
+    float atmoVolSize_[3]   = {10.f, 10.f, 10.f};
 
     // Spawn Points
     float spawnPtRadius_      = 5.f;

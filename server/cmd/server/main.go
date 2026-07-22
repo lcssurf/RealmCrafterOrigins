@@ -641,6 +641,62 @@ func main() {
 		log.Printf("main: loaded %d water planes", len(zoneWater))
 	}
 
+	// Load atmosphere volumes ("Post Process Volume" style regions) and
+	// distribute to areas. Fase 1 — data only; the client just stores the
+	// list for now (Fase 2 does the point-in-volume test + enter/exit
+	// blend). See world.AtmosphereVolume and tools/gue/src/zone_scene.h
+	// ZAtmosphereVolume.
+	atmosphereVolumes, err := database.LoadAtmosphereVolumes(ctx)
+	if err != nil {
+		log.Printf("main: load zone_atmosphere_volumes: %v", err)
+	} else {
+		for _, av := range atmosphereVolumes {
+			area := gameWorld.GetOrCreateArea(av.AreaName)
+			area.Mu.Lock()
+			area.AtmosphereVolumes = append(area.AtmosphereVolumes, world.AtmosphereVolume{
+				Name:  av.Name,
+				Shape: av.Shape,
+				PosX:  av.PosX, PosY: av.PosY, PosZ: av.PosZ,
+				SizeX: av.SizeX, SizeY: av.SizeY, SizeZ: av.SizeZ,
+				Priority:          av.Priority,
+				TransitionSeconds: av.TransitionSeconds,
+				SunDirX:           av.SunDirX, SunDirY: av.SunDirY, SunDirZ: av.SunDirZ,
+				SunColorR: av.SunColorR, SunColorG: av.SunColorG, SunColorB: av.SunColorB,
+				SunIntensityMul: av.SunIntensityMul,
+				SkyIntensityMul: av.SkyIntensityMul,
+				FogDensityMul:   av.FogDensityMul,
+				FogR:            av.FogR, FogG: av.FogG, FogB: av.FogB,
+				AmbientR: av.AmbientR, AmbientG: av.AmbientG, AmbientB: av.AmbientB,
+				Volumetrics:      av.Volumetrics,
+				CharShadowLift:   av.CharShadowLift,
+				CharRimStrength:  av.CharRimStrength,
+				CharRimExponent:  av.CharRimExponent,
+				CharMinNdotL:     av.CharMinNdotL,
+				CharAmbientBoost: av.CharAmbientBoost,
+				SceneIblIntensity:       av.SceneIblIntensity,
+				SceneSkyIntensity:       av.SceneSkyIntensity,
+				SceneWorldShadowLift:    av.SceneWorldShadowLift,
+				SceneDirectScale:        av.SceneDirectScale,
+				SceneAmbientScale:       av.SceneAmbientScale,
+				SceneFlatAmbient:        av.SceneFlatAmbient,
+				SceneWorldMinNdotL:      av.SceneWorldMinNdotL,
+				SceneAlbedoMinLuma:      av.SceneAlbedoMinLuma,
+				SceneAlbedoLiftStrength: av.SceneAlbedoLiftStrength,
+				SceneSpecularScale:      av.SceneSpecularScale,
+				SceneExposureFactor:     av.SceneExposureFactor,
+				SceneSunIntensity:       av.SceneSunIntensity,
+				ColorContrast:           av.ColorContrast,
+				ColorSaturation:         av.ColorSaturation,
+				ColorVibrance:           av.ColorVibrance,
+				ColorBlackPoint:         av.ColorBlackPoint,
+				ColorVignetteStrength:   av.ColorVignetteStrength,
+				ColorVignetteSoftness:   av.ColorVignetteSoftness,
+			})
+			area.Mu.Unlock()
+		}
+		log.Printf("main: loaded %d atmosphere volumes", len(atmosphereVolumes))
+	}
+
 	// Spawn NPCs from spawn points (scatter within radius).
 	spawnPoints, err := database.LoadSpawnPoints(ctx)
 	if err != nil {

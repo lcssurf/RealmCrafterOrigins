@@ -622,33 +622,96 @@ bool EditableTerrain::Raycast(const glm::vec3& origin, const glm::vec3& dir,
 
 void EditableTerrain::ApplyBrush(float wx, float wz, float radius, float strength,
                                  float dt, BrushMode mode, float flattenH,
-                                 BrushFalloff falloff) {
-    ::ApplyBrush(heightmap_, wx, wz, radius, strength, dt, mode, flattenH, falloff);
+                                 BrushFalloff falloff, BrushShape shape,
+                                 float hardness, float noiseAmount) {
+    ::ApplyBrush(heightmap_, wx, wz, radius, strength, dt, mode, flattenH,
+                 falloff, shape, hardness, noiseAmount);
     MarkDirtyRegion(wx, wz, radius);
 }
 
 void EditableTerrain::Paint(float wx, float wz, float radius, float strength,
-                            float dt, int matIdx, BrushFalloff falloff) {
+                            float dt, int matIdx, BrushFalloff falloff,
+                            BrushShape shape, float hardness, float noiseAmount,
+                            bool erase, float maxOpacity) {
     if (matIdx < 0 || matIdx >= (int)materials_.size()) return;
     ::PaintSplatmap(splatmap_, wx, wz, radius, strength, dt, matIdx,
-                    WorldW(), WorldH(), falloff);
+                    WorldW(), WorldH(), falloff, shape, hardness, noiseAmount,
+                    erase, maxOpacity);
 }
 
-void EditableTerrain::AutoPaintBySlope(int flat, int rock, float mn, float mx) {
-    int n = (int)materials_.size();
-    if (flat < 0 || flat >= n || rock < 0 || rock >= n || flat == rock) return;
+void EditableTerrain::SmoothPaint(float wx, float wz, float radius, float strength,
+                                  float dt, BrushFalloff falloff, BrushShape shape,
+                                  float hardness, float noiseAmount) {
+    ::SmoothSplatmap(splatmap_, wx, wz, radius, strength, dt,
+                     WorldW(), WorldH(), falloff, shape, hardness, noiseAmount);
+}
+
+void EditableTerrain::AutoPaintByRules(const std::vector<AutoPaintRule>& rules) {
+    if (rules.empty()) return;
     float cs = heightmap_.cell_size;
     int numSlots = splatmap_.NumMaterialSlots();
+
+    // Priority is realized as front-to-back alpha compositing: each rule
+    // claims `weight * remaining` of the pixel, where `weight` is a soft
+    // (smoothstep-edged) membership test against the rule's slope/height box
+    // — not a boolean in/out test. This is what keeps the result from being
+    // serrated: a rule at full priority still only reaches weight 1 in the
+    // core of its range; near its edges weight ramps down to 0 over a small
+    // margin, and whatever isn't claimed (`remaining`) falls through to the
+    // next rule in the list. Any weight still unclaimed after every rule has
+    // run is left as the pixel's PRE-EXISTING splatmap weights (scaled by the
+    // leftover `remaining`) instead of being zeroed — so unmatched pixels,
+    // and the unmatched fraction of partially-matched pixels, are untouched.
+    std::vector<float> accum(numSlots);
+    std::vector<float> existing(numSlots);
+
     for (int z = 0; z < splatmap_.H; z++) {
         for (int x = 0; x < splatmap_.W; x++) {
             float dhdx = (heightmap_.Get(x+1,z) - heightmap_.Get(x-1,z)) / (2.f * cs);
             float dhdz = (heightmap_.Get(x,z+1) - heightmap_.Get(x,z-1)) / (2.f * cs);
-            float slope = glm::degrees(std::atan(std::sqrt(dhdx*dhdx + dhdz*dhdz)));
-            float t = glm::smoothstep(mn, mx, slope);
-            splatmap_.SetWeight(x, z, flat, 1.f - t);
-            splatmap_.SetWeight(x, z, rock, t);
+            float slope  = glm::degrees(std::atan(std::sqrt(dhdx*dhdx + dhdz*dhdz)));
+            float height = heightmap_.Get(x, z);
+
+            std::fill(accum.begin(), accum.end(), 0.f);
+            float remaining = 1.f;
+
+            for (const AutoPaintRule& rule : rules) {
+                if (remaining <= 1e-5f) break;
+                if (rule.material < 0 || rule.material >= numSlots) continue;
+
+                // Soft-edged band membership on each axis (1 inside the
+                // core, ramping to 0 over `margin` at slopeMin/slopeMax or
+                // heightMin/heightMax). Margin is capped to half the band's
+                // own width so a narrow band never disappears entirely.
+                float slopeSpan   = std::max(rule.slopeMax - rule.slopeMin, 1e-3f);
+                float slopeMargin = std::min(3.f, slopeSpan * 0.5f);
+                float sLow  = glm::smoothstep(rule.slopeMin, rule.slopeMin + slopeMargin, slope);
+                float sHigh = 1.f - glm::smoothstep(rule.slopeMax - slopeMargin, rule.slopeMax, slope);
+                float sSlope = std::clamp(std::min(sLow, sHigh), 0.f, 1.f);
+                if (sSlope <= 0.f) continue;
+
+                float heightSpan   = std::max(rule.heightMax - rule.heightMin, 1e-3f);
+                float heightMargin = std::min(2.f, heightSpan * 0.5f);
+                float hLow  = glm::smoothstep(rule.heightMin, rule.heightMin + heightMargin, height);
+                float hHigh = 1.f - glm::smoothstep(rule.heightMax - heightMargin, rule.heightMax, height);
+                float sHeight = std::clamp(std::min(hLow, hHigh), 0.f, 1.f);
+                if (sHeight <= 0.f) continue;
+
+                float weight = sSlope * sHeight;
+                float contribution = weight * remaining;
+                accum[rule.material] += contribution;
+                remaining -= contribution;
+            }
+
+            if (remaining > 1e-5f) {
+                for (int i = 0; i < numSlots; i++)
+                    existing[i] = splatmap_.GetWeight(x, z, i);
+                for (int i = 0; i < numSlots; i++)
+                    accum[i] += existing[i] * remaining;
+            }
+
             for (int i = 0; i < numSlots; i++)
-                if (i != flat && i != rock) splatmap_.SetWeight(x, z, i, 0.f);
+                splatmap_.SetWeight(x, z, i, accum[i]);
         }
     }
     splatmap_.dirty = true;

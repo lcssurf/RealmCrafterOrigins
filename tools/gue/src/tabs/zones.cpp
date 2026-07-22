@@ -787,6 +787,35 @@ void ZonesTab::PlaceObject(const glm::vec3& wpos, sqlite3* db, MediaTab* media) 
         }
         break;
     }
+    case kModeAtmosphereVolume: {
+        ZAtmosphereVolume v;
+        v.name  = atmoVolName_[0] ? atmoVolName_ : "Atmosphere Volume";
+        v.shape = atmoVolShape_;
+        v.pos   = wpos;
+        v.size  = {atmoVolSize_[0], atmoVolSize_[1], atmoVolSize_[2]};
+        // Every atmosphere/priority/transition column is left at the
+        // table's own DEFAULT (which matches ZAtmosphere{}'s defaults
+        // exactly) — only shape/pos/size/name need explicit values here.
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT INTO zone_atmosphere_volumes"
+            " (area_name, name, shape, pos_x, pos_y, pos_z, size_x, size_y, size_z)"
+            " VALUES (?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, v.name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, 3, v.shape);
+            sqlite3_bind_double(stmt, 4, v.pos.x); sqlite3_bind_double(stmt, 5, v.pos.y); sqlite3_bind_double(stmt, 6, v.pos.z);
+            sqlite3_bind_double(stmt, 7, v.size.x); sqlite3_bind_double(stmt, 8, v.size.y); sqlite3_bind_double(stmt, 9, v.size.z);
+            sqlite3_step(stmt);
+            v.id = (int)sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(stmt);
+            scene_.atmosphereVolumes.push_back(v);
+            selectedID_ = v.id; selectedType_ = kSelAtmosphereVolume;
+            PushUndo(kUndoCreate, kSelAtmosphereVolume, v.id);
+            std::snprintf(statusMsg_, sizeof(statusMsg_), "Placed atmosphere volume id=%d.", v.id);
+        }
+        break;
+    }
     default: break;
     }
 }
@@ -1218,6 +1247,7 @@ void ZonesTab::Undo(sqlite3* db) {
         case kSelWater:       table = "zone_water";       break;
         case kSelScenery:     table = "zone_scenery";     break;
         case kSelPlayerSpawn: table = "player_spawns";    break;
+        case kSelAtmosphereVolume: table = "zone_atmosphere_volumes"; break;
         default: return;
         }
         char sql[128];
@@ -1244,6 +1274,7 @@ void ZonesTab::Undo(sqlite3* db) {
         case kSelWater:       rem(scene_.water);        break;
         case kSelScenery:     rem(scene_.scenery);      break;
         case kSelPlayerSpawn: rem(scene_.playerSpawns); needsSpawnReload_ = true; break;
+        case kSelAtmosphereVolume: rem(scene_.atmosphereVolumes); break;
         }
         std::snprintf(statusMsg_, sizeof(statusMsg_), "Undo: removed id=%d.", e.objectId);
         break;
@@ -1879,6 +1910,7 @@ void ZonesTab::DeleteSelected(sqlite3* db) {
     case kSelNpc:       table = "npc_spawns";       break;
     case kSelEmitter:   table = "zone_emitters";    break;
     case kSelLight:     table = "zone_lights";      break;
+    case kSelAtmosphereVolume: table = "zone_atmosphere_volumes"; break;
     case kSelSpawnPoint: {
         // Cascade-delete mobs first, then the point itself.
         char sql[128];
@@ -1942,6 +1974,7 @@ void ZonesTab::DeleteSelected(sqlite3* db) {
     case kSelWater:       del(scene_.water);        break;
     case kSelScenery:     del(scene_.scenery);      break;
     case kSelPlayerSpawn: del(scene_.playerSpawns); break;
+    case kSelAtmosphereVolume: del(scene_.atmosphereVolumes); break;
     }
     // Collision vis must be rebuilt whenever a scenery or col shape is removed.
     switch (selectedType_) {

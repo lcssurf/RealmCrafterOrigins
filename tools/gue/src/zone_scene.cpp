@@ -425,6 +425,73 @@ void ZoneScene::EnsureTables(sqlite3* db) {
         "  yaw       REAL    NOT NULL DEFAULT 0"
         ")");
 
+    // ── Atmosphere volumes ("Post Process Volume" style regions) ──────────
+    // Fase 1 (this table + GUE authoring) is data-only — see docs/TECH_DEBT.md
+    // "Atmosphere volumes". Overrides the area's own atmosphere while the
+    // player is inside; Fase 2 (client point-in-volume test + enter/exit
+    // blend using transition_seconds) is not implemented yet. Field set
+    // mirrors area_config's authoritative render-tuning section exactly
+    // (server/internal/db/db.go AreaConfig / sendAreaConfig in client.go)
+    // MINUS skybox_hdr (a real HDR reload, too expensive to blend per-frame
+    // — see TECH_DEBT.md for the Fase 3 note) and MINUS terrain_* (a shader
+    // tiling knob, not atmosphere/mood). Same defaults as sendAreaConfig's
+    // hardcoded fallback so an area with no volumes and a volume with every
+    // field left at default behave identically.
+    Exec(db,
+        "CREATE TABLE IF NOT EXISTS zone_atmosphere_volumes ("
+        "  id                         INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  area_name                  TEXT    NOT NULL DEFAULT '',"
+        "  name                       TEXT    NOT NULL DEFAULT '',"
+        "  shape                      INTEGER NOT NULL DEFAULT 0," // 0=AABB 1=sphere
+        "  pos_x                      REAL    NOT NULL DEFAULT 0,"
+        "  pos_y                      REAL    NOT NULL DEFAULT 0,"
+        "  pos_z                      REAL    NOT NULL DEFAULT 0,"
+        "  size_x                     REAL    NOT NULL DEFAULT 10,"
+        "  size_y                     REAL    NOT NULL DEFAULT 10,"
+        "  size_z                     REAL    NOT NULL DEFAULT 10,"
+        "  priority                   INTEGER NOT NULL DEFAULT 0,"
+        "  transition_seconds         REAL    NOT NULL DEFAULT 2.0,"
+        "  sun_dir_x                  REAL    NOT NULL DEFAULT 0.18,"
+        "  sun_dir_y                  REAL    NOT NULL DEFAULT 0.96,"
+        "  sun_dir_z                  REAL    NOT NULL DEFAULT 0.20,"
+        "  sun_color_r                REAL    NOT NULL DEFAULT 1.14,"
+        "  sun_color_g                REAL    NOT NULL DEFAULT 1.12,"
+        "  sun_color_b                REAL    NOT NULL DEFAULT 1.05,"
+        "  sun_intensity_mul          REAL    NOT NULL DEFAULT 1.00,"
+        "  sky_intensity_mul          REAL    NOT NULL DEFAULT 1.00,"
+        "  fog_density_mul            REAL    NOT NULL DEFAULT 0.92,"
+        "  fog_r                      REAL    NOT NULL DEFAULT 0.70,"
+        "  fog_g                      REAL    NOT NULL DEFAULT 0.80,"
+        "  fog_b                      REAL    NOT NULL DEFAULT 0.93,"
+        "  ambient_r                  INTEGER NOT NULL DEFAULT 80,"
+        "  ambient_g                  INTEGER NOT NULL DEFAULT 80,"
+        "  ambient_b                  INTEGER NOT NULL DEFAULT 90,"
+        "  volumetrics                INTEGER NOT NULL DEFAULT 1,"
+        "  char_shadow_lift           REAL    NOT NULL DEFAULT 0.30,"
+        "  char_rim_strength          REAL    NOT NULL DEFAULT 0.18,"
+        "  char_rim_exponent          REAL    NOT NULL DEFAULT 2.40,"
+        "  char_min_ndotl             REAL    NOT NULL DEFAULT 0.10,"
+        "  char_ambient_boost         REAL    NOT NULL DEFAULT 0.12,"
+        "  scene_ibl_intensity        REAL    NOT NULL DEFAULT 1.00,"
+        "  scene_sky_intensity        REAL    NOT NULL DEFAULT 1.16,"
+        "  scene_world_shadow_lift    REAL    NOT NULL DEFAULT 0.10,"
+        "  scene_direct_scale         REAL    NOT NULL DEFAULT 1.32,"
+        "  scene_ambient_scale        REAL    NOT NULL DEFAULT 0.88,"
+        "  scene_flat_ambient         REAL    NOT NULL DEFAULT 0.03,"
+        "  scene_world_min_ndotl      REAL    NOT NULL DEFAULT 0.05,"
+        "  scene_albedo_min_luma      REAL    NOT NULL DEFAULT 0.18,"
+        "  scene_albedo_lift_strength REAL    NOT NULL DEFAULT 0.00,"
+        "  scene_specular_scale       REAL    NOT NULL DEFAULT 0.88,"
+        "  scene_exposure_factor      REAL    NOT NULL DEFAULT 1.10,"
+        "  scene_sun_intensity        REAL    NOT NULL DEFAULT 1.36,"
+        "  color_contrast             REAL    NOT NULL DEFAULT 1.08,"
+        "  color_saturation           REAL    NOT NULL DEFAULT 1.08,"
+        "  color_vibrance             REAL    NOT NULL DEFAULT 0.20,"
+        "  color_black_point          REAL    NOT NULL DEFAULT 0.010,"
+        "  color_vignette_strength    REAL    NOT NULL DEFAULT 0.04,"
+        "  color_vignette_softness    REAL    NOT NULL DEFAULT 0.55"
+        ")");
+
     // ── Scenery (props) ───────────────────────────────────────────────────
     Exec(db,
         "CREATE TABLE IF NOT EXISTS zone_scenery ("
@@ -466,6 +533,46 @@ void ZoneScene::EnsureTables(sqlite3* db) {
         "  name      TEXT NOT NULL DEFAULT '',"
         "  UNIQUE(area_name, name)"
         ")");
+
+    // Per-object editor visibility ("the eye icon" — see ZoneScene::IsHidden/
+    // SetHidden in zone_scene.h). Generic across every ZSelType, not a
+    // `visible` column duplicated on every object table: a row here means
+    // "hidden", so ordinary (visible) objects — the vast majority — never
+    // write anything at all. Editor-only concept, never read by the server
+    // or client. See docs/TECH_DEBT.md "Atmosphere volumes".
+    Exec(db,
+        "CREATE TABLE IF NOT EXISTS zone_object_visibility ("
+        "  area_name TEXT    NOT NULL DEFAULT '',"
+        "  obj_type  INTEGER NOT NULL DEFAULT 0,"
+        "  obj_id    INTEGER NOT NULL DEFAULT 0,"
+        "  PRIMARY KEY (area_name, obj_type, obj_id)"
+        ")");
+}
+
+void ZoneScene::SetHidden(sqlite3* db, int type, int id, bool hidden) {
+    if (hidden) {
+        hiddenObjects.insert(VisKey(type, id));
+        sqlite3_stmt* s = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "INSERT OR IGNORE INTO zone_object_visibility (area_name, obj_type, obj_id) VALUES (?,?,?)",
+            -1, &s, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(s, 1, areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(s, 2, type);
+            sqlite3_bind_int(s, 3, id);
+            sqlite3_step(s); sqlite3_finalize(s);
+        }
+    } else {
+        hiddenObjects.erase(VisKey(type, id));
+        sqlite3_stmt* s = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "DELETE FROM zone_object_visibility WHERE area_name=? AND obj_type=? AND obj_id=?",
+            -1, &s, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(s, 1, areaName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(s, 2, type);
+            sqlite3_bind_int(s, 3, id);
+            sqlite3_step(s); sqlite3_finalize(s);
+        }
+    }
 }
 
 // ─── LoadFromDB ──────────────────────────────────────────────────────────────
@@ -478,12 +585,26 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
     sqlite3_stmt* stmt = nullptr;
 
     // ── Environment config ────────────────────────────────────────────────
+    // Extended (beyond the original music/fog/ambient/weather columns) to
+    // also load the sun/scene/color/char "authoritative render tuning"
+    // columns into env.atmo — these existed in area_config already (see
+    // server/internal/db/db.go AreaConfig) but had no GUE UI at all until
+    // ZAtmosphere/DrawAtmosphereFields (zones_panels.cpp) were added
+    // alongside Atmosphere Volumes. See docs/TECH_DEBT.md "Atmosphere volumes".
     if (sqlite3_prepare_v2(db,
         "SELECT music_track, fog_density, is_outdoor, pvp_enabled,"
         "       fog_near, fog_far, fog_r, fog_g, fog_b,"
         "       ambient_r, ambient_g, ambient_b, gravity,"
         "       entry_script, exit_script,"
-        "       weather_rain, weather_snow, weather_fog, weather_storm, weather_wind"
+        "       weather_rain, weather_snow, weather_fog, weather_storm, weather_wind,"
+        "       sun_dir_x, sun_dir_y, sun_dir_z, sun_color_r, sun_color_g, sun_color_b,"
+        "       sun_intensity_mul, sky_intensity_mul, fog_density_mul, volumetrics,"
+        "       char_shadow_lift, char_rim_strength, char_rim_exponent, char_min_ndotl, char_ambient_boost,"
+        "       scene_ibl_intensity, scene_sky_intensity, scene_world_shadow_lift, scene_direct_scale,"
+        "       scene_ambient_scale, scene_flat_ambient, scene_world_min_ndotl, scene_albedo_min_luma,"
+        "       scene_albedo_lift_strength, scene_specular_scale, scene_exposure_factor, scene_sun_intensity,"
+        "       color_contrast, color_saturation, color_vibrance, color_black_point,"
+        "       color_vignette_strength, color_vignette_softness"
         " FROM area_config WHERE name=?",
         -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, area.c_str(), -1, SQLITE_TRANSIENT);
@@ -495,12 +616,10 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
             env.pvpEnabled  = sqlite3_column_int(stmt, 3) != 0;
             env.fogNear     = (float)sqlite3_column_double(stmt, 4);
             env.fogFar      = (float)sqlite3_column_double(stmt, 5);
-            env.fogR        = (float)sqlite3_column_double(stmt, 6);
-            env.fogG        = (float)sqlite3_column_double(stmt, 7);
-            env.fogB        = (float)sqlite3_column_double(stmt, 8);
-            env.ambientR    = sqlite3_column_int(stmt, 9);
-            env.ambientG    = sqlite3_column_int(stmt, 10);
-            env.ambientB    = sqlite3_column_int(stmt, 11);
+            // fog_r/g/b and ambient_r/g/b (columns 6-11) live ONLY in
+            // env.atmo now (ZAtmosphere) — see below — not duplicated into
+            // a second top-level ZEnvConfig field, so there's a single
+            // source of truth for DrawAtmosphereFields to edit.
             env.gravity     = (float)sqlite3_column_double(stmt, 12);
             auto txt = [&](int col) -> std::string {
                 const char* t = (const char*)sqlite3_column_text(stmt, col);
@@ -513,6 +632,48 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
             env.weatherFog   = sqlite3_column_int(stmt, 17);
             env.weatherStorm = sqlite3_column_int(stmt, 18);
             env.weatherWind  = sqlite3_column_int(stmt, 19);
+
+            ZAtmosphere& a = env.atmo;
+            a.fogR = (float)sqlite3_column_double(stmt, 6);
+            a.fogG = (float)sqlite3_column_double(stmt, 7);
+            a.fogB = (float)sqlite3_column_double(stmt, 8);
+            a.ambientR = sqlite3_column_int(stmt, 9);
+            a.ambientG = sqlite3_column_int(stmt, 10);
+            a.ambientB = sqlite3_column_int(stmt, 11);
+            int c = 20;
+            a.sunDirX = (float)sqlite3_column_double(stmt, c++);
+            a.sunDirY = (float)sqlite3_column_double(stmt, c++);
+            a.sunDirZ = (float)sqlite3_column_double(stmt, c++);
+            a.sunColorR = (float)sqlite3_column_double(stmt, c++);
+            a.sunColorG = (float)sqlite3_column_double(stmt, c++);
+            a.sunColorB = (float)sqlite3_column_double(stmt, c++);
+            a.sunIntensityMul = (float)sqlite3_column_double(stmt, c++);
+            a.skyIntensityMul = (float)sqlite3_column_double(stmt, c++);
+            a.fogDensityMul   = (float)sqlite3_column_double(stmt, c++);
+            a.volumetrics = sqlite3_column_int(stmt, c++) != 0;
+            a.charShadowLift   = (float)sqlite3_column_double(stmt, c++);
+            a.charRimStrength  = (float)sqlite3_column_double(stmt, c++);
+            a.charRimExponent  = (float)sqlite3_column_double(stmt, c++);
+            a.charMinNdotL     = (float)sqlite3_column_double(stmt, c++);
+            a.charAmbientBoost = (float)sqlite3_column_double(stmt, c++);
+            a.sceneIblIntensity       = (float)sqlite3_column_double(stmt, c++);
+            a.sceneSkyIntensity       = (float)sqlite3_column_double(stmt, c++);
+            a.sceneWorldShadowLift    = (float)sqlite3_column_double(stmt, c++);
+            a.sceneDirectScale        = (float)sqlite3_column_double(stmt, c++);
+            a.sceneAmbientScale       = (float)sqlite3_column_double(stmt, c++);
+            a.sceneFlatAmbient        = (float)sqlite3_column_double(stmt, c++);
+            a.sceneWorldMinNdotL      = (float)sqlite3_column_double(stmt, c++);
+            a.sceneAlbedoMinLuma      = (float)sqlite3_column_double(stmt, c++);
+            a.sceneAlbedoLiftStrength = (float)sqlite3_column_double(stmt, c++);
+            a.sceneSpecularScale      = (float)sqlite3_column_double(stmt, c++);
+            a.sceneExposureFactor     = (float)sqlite3_column_double(stmt, c++);
+            a.sceneSunIntensity       = (float)sqlite3_column_double(stmt, c++);
+            a.colorContrast         = (float)sqlite3_column_double(stmt, c++);
+            a.colorSaturation       = (float)sqlite3_column_double(stmt, c++);
+            a.colorVibrance         = (float)sqlite3_column_double(stmt, c++);
+            a.colorBlackPoint       = (float)sqlite3_column_double(stmt, c++);
+            a.colorVignetteStrength = (float)sqlite3_column_double(stmt, c++);
+            a.colorVignetteSoftness = (float)sqlite3_column_double(stmt, c++);
         }
         sqlite3_finalize(stmt);
     }
@@ -850,6 +1011,95 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
             ps.pos.z = (float)sqlite3_column_double(stmt, 4);
             ps.yaw   = (float)sqlite3_column_double(stmt, 5);
             playerSpawns.push_back(ps);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    // ── Atmosphere volumes ──────────────────────────────────────────────────
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, name, shape, pos_x, pos_y, pos_z, size_x, size_y, size_z,"
+        "       priority, transition_seconds,"
+        "       sun_dir_x, sun_dir_y, sun_dir_z, sun_color_r, sun_color_g, sun_color_b,"
+        "       sun_intensity_mul, sky_intensity_mul, fog_density_mul, fog_r, fog_g, fog_b,"
+        "       ambient_r, ambient_g, ambient_b, volumetrics,"
+        "       char_shadow_lift, char_rim_strength, char_rim_exponent, char_min_ndotl, char_ambient_boost,"
+        "       scene_ibl_intensity, scene_sky_intensity, scene_world_shadow_lift, scene_direct_scale,"
+        "       scene_ambient_scale, scene_flat_ambient, scene_world_min_ndotl, scene_albedo_min_luma,"
+        "       scene_albedo_lift_strength, scene_specular_scale, scene_exposure_factor, scene_sun_intensity,"
+        "       color_contrast, color_saturation, color_vibrance, color_black_point,"
+        "       color_vignette_strength, color_vignette_softness"
+        " FROM zone_atmosphere_volumes WHERE area_name=? ORDER BY id",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, area.c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            ZAtmosphereVolume v;
+            int c = 0;
+            v.id       = sqlite3_column_int(stmt, c++);
+            v.name     = txt(stmt, c++);
+            v.shape    = sqlite3_column_int(stmt, c++);
+            v.pos.x    = (float)sqlite3_column_double(stmt, c++);
+            v.pos.y    = (float)sqlite3_column_double(stmt, c++);
+            v.pos.z    = (float)sqlite3_column_double(stmt, c++);
+            v.size.x   = (float)sqlite3_column_double(stmt, c++);
+            v.size.y   = (float)sqlite3_column_double(stmt, c++);
+            v.size.z   = (float)sqlite3_column_double(stmt, c++);
+            v.priority = sqlite3_column_int(stmt, c++);
+            v.transitionSeconds = (float)sqlite3_column_double(stmt, c++);
+            ZAtmosphere& a = v.atmo;
+            a.sunDirX = (float)sqlite3_column_double(stmt, c++);
+            a.sunDirY = (float)sqlite3_column_double(stmt, c++);
+            a.sunDirZ = (float)sqlite3_column_double(stmt, c++);
+            a.sunColorR = (float)sqlite3_column_double(stmt, c++);
+            a.sunColorG = (float)sqlite3_column_double(stmt, c++);
+            a.sunColorB = (float)sqlite3_column_double(stmt, c++);
+            a.sunIntensityMul = (float)sqlite3_column_double(stmt, c++);
+            a.skyIntensityMul = (float)sqlite3_column_double(stmt, c++);
+            a.fogDensityMul   = (float)sqlite3_column_double(stmt, c++);
+            a.fogR = (float)sqlite3_column_double(stmt, c++);
+            a.fogG = (float)sqlite3_column_double(stmt, c++);
+            a.fogB = (float)sqlite3_column_double(stmt, c++);
+            a.ambientR = sqlite3_column_int(stmt, c++);
+            a.ambientG = sqlite3_column_int(stmt, c++);
+            a.ambientB = sqlite3_column_int(stmt, c++);
+            a.volumetrics = sqlite3_column_int(stmt, c++) != 0;
+            a.charShadowLift   = (float)sqlite3_column_double(stmt, c++);
+            a.charRimStrength  = (float)sqlite3_column_double(stmt, c++);
+            a.charRimExponent  = (float)sqlite3_column_double(stmt, c++);
+            a.charMinNdotL     = (float)sqlite3_column_double(stmt, c++);
+            a.charAmbientBoost = (float)sqlite3_column_double(stmt, c++);
+            a.sceneIblIntensity       = (float)sqlite3_column_double(stmt, c++);
+            a.sceneSkyIntensity       = (float)sqlite3_column_double(stmt, c++);
+            a.sceneWorldShadowLift    = (float)sqlite3_column_double(stmt, c++);
+            a.sceneDirectScale        = (float)sqlite3_column_double(stmt, c++);
+            a.sceneAmbientScale       = (float)sqlite3_column_double(stmt, c++);
+            a.sceneFlatAmbient        = (float)sqlite3_column_double(stmt, c++);
+            a.sceneWorldMinNdotL      = (float)sqlite3_column_double(stmt, c++);
+            a.sceneAlbedoMinLuma      = (float)sqlite3_column_double(stmt, c++);
+            a.sceneAlbedoLiftStrength = (float)sqlite3_column_double(stmt, c++);
+            a.sceneSpecularScale      = (float)sqlite3_column_double(stmt, c++);
+            a.sceneExposureFactor     = (float)sqlite3_column_double(stmt, c++);
+            a.sceneSunIntensity       = (float)sqlite3_column_double(stmt, c++);
+            a.colorContrast         = (float)sqlite3_column_double(stmt, c++);
+            a.colorSaturation       = (float)sqlite3_column_double(stmt, c++);
+            a.colorVibrance         = (float)sqlite3_column_double(stmt, c++);
+            a.colorBlackPoint       = (float)sqlite3_column_double(stmt, c++);
+            a.colorVignetteStrength = (float)sqlite3_column_double(stmt, c++);
+            a.colorVignetteSoftness = (float)sqlite3_column_double(stmt, c++);
+            atmosphereVolumes.push_back(std::move(v));
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    // ── Per-object visibility ───────────────────────────────────────────────
+    hiddenObjects.clear();
+    if (sqlite3_prepare_v2(db,
+        "SELECT obj_type, obj_id FROM zone_object_visibility WHERE area_name=?",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, area.c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            int t = sqlite3_column_int(stmt, 0);
+            int id = sqlite3_column_int(stmt, 1);
+            hiddenObjects.insert(VisKey(t, id));
         }
         sqlite3_finalize(stmt);
     }

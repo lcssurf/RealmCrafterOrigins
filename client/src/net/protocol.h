@@ -83,6 +83,7 @@ constexpr uint16_t kPFXCatalog         = 138;
 constexpr uint16_t kPFullStats         = 139; // S->C: full stats sync (primary + vitals + 34 derived)
 constexpr uint16_t kPZoneLights        = 140; // S->C: static point lights (zone_lights) for current area
 constexpr uint16_t kPZoneWater         = 141; // S->C: static water planes (zone_water) for current area
+constexpr uint16_t kPAtmosphereVolumes = 142; // S->C: atmosphere volumes (zone_atmosphere_volumes) for current area — Fase 1, client just stores
 
 // ---------------------------------------------------------------------------
 // Result codes

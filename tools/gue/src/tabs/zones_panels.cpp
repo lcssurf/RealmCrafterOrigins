@@ -1095,10 +1095,11 @@ void ZonesTab::DrawPanelTerrain(sqlite3* db, bool) {
         {"= Flatten", "Flatten to a target height"},
         {"# Paint",   "Paint material layers"},
         {"* Noise",   "Apply random value-noise displacement"},
+        {"~# Splat Smooth", "Blur material weights (paralleling ~ Smooth, but for painted layers)"},
     };
 
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {3.f, 3.f});
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 7; ++i) {
         bool sel = (brushMode_ == i);
         if (sel) {
             ImGui::PushStyleColor(ImGuiCol_Button,        {0.20f, 0.50f, 0.85f, 1.f});
@@ -1126,8 +1127,32 @@ void ZonesTab::DrawPanelTerrain(sqlite3* db, bool) {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Shift + Scroll to adjust");
 
+    // Max Opacity only makes sense while actually painting weight onto a
+    // material (Paint mode, and not while Erase is toggled on) — Erase and
+    // Splat Smooth don't add weight to a specific material, so there's
+    // nothing for a per-material ceiling to cap there.
+    if (brushMode_ == 4 && !brushErase_) {
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::SliderFloat("##tmaxop", &brushMaxOpacity_, 0.f, 1.f, "Max Opacity  %.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Caps the painted material's weight at this texel — it never\nbrushes past this value, however many times you paint over it.\nUseful for permanent partial blends (e.g. 0.5 = always leaves\nroom for the layers underneath to show through). 1.0 = no cap.");
+    }
+
     ImGui::SetNextItemWidth(-1.f);
     ImGui::Combo("Falloff##tf", &brushFalloff_, "Smooth\0Gaussian\0Linear\0Spherical\0");
+
+    ImGui::SetNextItemWidth(-1.f);
+    ImGui::Combo("Shape##tsh", &brushShape_, "Circle\0Square\0");
+
+    ImGui::SetNextItemWidth(-1.f);
+    ImGui::SliderFloat("##thard", &brushHardness_, 0.f, 1.f, "Hardness  %.2f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Sharpens the falloff curve's edge toward a hard cut.\n0 = curve as selected above, 1 = hard edge.");
+
+    ImGui::SetNextItemWidth(-1.f);
+    ImGui::SliderFloat("##tnoise", &brushNoise_, 0.f, 1.f, "Noise  %.2f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Breaks up the brush edge with value-noise, for a less\nobviously circular/square result. 0 = smooth, 1 = fully irregular.");
 
     if (brushMode_ == 3) {
         ImGui::Spacing();
@@ -1152,6 +1177,10 @@ void ZonesTab::DrawPanelTerrain(sqlite3* db, bool) {
         ImGui::Spacing();
         ImGui::SeparatorText("Material Layer");
 
+        ImGui::Checkbox("Erase##brusherase", &brushErase_);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Removes weight from the selected material instead of adding it,\nreturning it proportionally to every other layer at this pixel.");
+
         const auto& mats = terrain.materials();
         if (mats.empty()) {
             ImGui::TextDisabled("Configure materials below.");
@@ -1171,32 +1200,80 @@ void ZonesTab::DrawPanelTerrain(sqlite3* db, bool) {
         }
     }
 
-    // ── Auto-paint by slope ───────────────────────────────────────────────
+    // ── Auto-paint by rules (slope + height, ordered priority list) ───────
     ImGui::Spacing();
-    if (ImGui::CollapsingHeader("Auto-paint Slope")) {
-        const auto& slopeMats = terrain.materials();
-        std::vector<std::pair<int, std::string>> slopeItems;
-        slopeItems.reserve(slopeMats.size());
-        for (int i = 0; i < (int)slopeMats.size(); ++i) {
-            std::string label = slopeMats[i].name.empty()
-                ? ("Slot " + std::to_string(i)) : slopeMats[i].name;
-            slopeItems.emplace_back(i, label);
+    if (ImGui::CollapsingHeader("Auto-paint Rules")) {
+        const auto& rmats = terrain.materials();
+        std::vector<std::pair<int, std::string>> ruleItems;
+        ruleItems.reserve(rmats.size());
+        for (int i = 0; i < (int)rmats.size(); ++i) {
+            std::string label = rmats[i].name.empty()
+                ? ("Slot " + std::to_string(i)) : rmats[i].name;
+            ruleItems.emplace_back(i, label);
         }
 
-        ImGui::SetNextItemWidth(-1.f);
-        ui::SearchableComboId("Flat layer##asl", slopeFlatLayer_, slopeItems);
-        ImGui::SetNextItemWidth(-1.f);
-        ui::SearchableComboId("Rock layer##asl", slopeRockLayer_, slopeItems);
+        // Real heightmap range for this area — sliders are scaled to it
+        // instead of an arbitrary fixed range, so the values on-screen are
+        // actually reachable on the loaded terrain.
+        float hmMin = 0.f, hmMax = 0.f;
+        if (terrain.Loaded()) {
+            const auto& heights = terrain.heightmap().heights;
+            if (!heights.empty()) {
+                auto mm = std::minmax_element(heights.begin(), heights.end());
+                hmMin = *mm.first;
+                hmMax = *mm.second;
+            }
+        }
+        if (hmMax <= hmMin) hmMax = hmMin + 1.f;
+
+        ImGui::TextDisabled("Terrain height range: %.1f .. %.1f m", hmMin, hmMax);
+        ImGui::TextDisabled("First matching rule wins each pixel (soft edges blend into the next).");
+        ImGui::Spacing();
+
+        int removeRule = -1;
+        for (int i = 0; i < (int)autoPaintRules_.size(); ++i) {
+            AutoPaintRule& rule = autoPaintRules_[i];
+            ImGui::PushID(300 + i);
+            ImGui::Separator();
+            ImGui::Text("Rule %d", i + 1);
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20.f);
+            if (ImGui::SmallButton("x")) removeRule = i;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this rule");
+
+            ImGui::SetNextItemWidth(-1.f);
+            ui::SearchableComboId("Material##rule", rule.material, ruleItems);
+
+            ImGui::SetNextItemWidth(-1.f);
+            ImGui::SliderFloat("##slopeMin", &rule.slopeMin, 0.f, 90.f, "Slope min  %.0f deg");
+            ImGui::SetNextItemWidth(-1.f);
+            ImGui::SliderFloat("##slopeMax", &rule.slopeMax, 0.f, 90.f, "Slope max  %.0f deg");
+            if (rule.slopeMax < rule.slopeMin) rule.slopeMax = rule.slopeMin;
+
+            ImGui::SetNextItemWidth(-1.f);
+            ImGui::SliderFloat("##heightMin", &rule.heightMin, hmMin, hmMax, "Height min  %.1f m");
+            ImGui::SetNextItemWidth(-1.f);
+            ImGui::SliderFloat("##heightMax", &rule.heightMax, hmMin, hmMax, "Height max  %.1f m");
+            if (rule.heightMax < rule.heightMin) rule.heightMax = rule.heightMin;
+
+            ImGui::PopID();
+        }
+        if (removeRule >= 0) autoPaintRules_.erase(autoPaintRules_.begin() + removeRule);
 
         ImGui::Spacing();
-        ImGui::SetNextItemWidth(-1.f);
-        ImGui::SliderFloat("##slopeMin", &slopeMinDeg_, 0.f, 89.f, "Flat below  %.0f deg");
-        ImGui::SetNextItemWidth(-1.f);
-        ImGui::SliderFloat("##slopeMax", &slopeMaxDeg_, 0.f, 89.f, "Rock above  %.0f deg");
-        if (slopeMaxDeg_ <= slopeMinDeg_) slopeMaxDeg_ = slopeMinDeg_ + 1.f;
+        if (ImGui::SmallButton("+ Add Rule")) {
+            AutoPaintRule rule;
+            rule.material  = !ruleItems.empty() ? ruleItems.front().first : -1;
+            // New rules default to the FULL height range of this area (not
+            // the struct's generic +/-1e6 default) so the height sliders
+            // start somewhere visible/meaningful instead of pinned at an
+            // extreme off the visible range.
+            rule.heightMin = hmMin;
+            rule.heightMax = hmMax;
+            autoPaintRules_.push_back(rule);
+        }
 
         ImGui::Spacing();
-        if (ImGui::Button("Apply##asl", {-1.f, 0.f}) && terrain.Loaded()) {
+        if (ImGui::Button("Apply##rules", {-1.f, 0.f}) && terrain.Loaded() && !autoPaintRules_.empty()) {
             // Capture undo snapshot before the full-terrain operation
             TerrainSnapshot snap;
             snap.heights = terrain.heightmap().heights;
@@ -1206,11 +1283,10 @@ void ZonesTab::DrawPanelTerrain(sqlite3* db, bool) {
             terrainUndo_.push_back(std::move(snap));
             terrainRedo_.clear();
 
-            terrain.AutoPaintBySlope(slopeFlatLayer_, slopeRockLayer_,
-                                     slopeMinDeg_, slopeMaxDeg_);
+            terrain.AutoPaintByRules(autoPaintRules_);
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Paints the entire terrain based on slope angle.\nCtrl+Z to undo.");
+            ImGui::SetTooltip("Paints the entire terrain based on the rule list above.\nCtrl+Z to undo.");
     }
 
     // ── Material layer configuration (DB-backed) ──────────────────────────
@@ -1499,6 +1575,124 @@ void ZonesTab::DrawPanelLight(sqlite3* db, bool placement) {
     ImGui::TextDisabled("Ctrl+D to duplicate (same shortcut as every other object).");
 }
 
+// Forward declaration — defined further down (shared by DrawPanelEnviro),
+// used here first. See docs/TECH_DEBT.md "Atmosphere volumes".
+static bool DrawAtmosphereFields(ZAtmosphere& a);
+
+// ─── Atmosphere Volume panel (Fase 1 — data + editor only) ───────────────────
+// See docs/TECH_DEBT.md "Atmosphere volumes". Same placement/editing
+// convention as every other placeable type (DrawPanelLight etc. above); the
+// atmosphere fields themselves are drawn via the SAME DrawAtmosphereFields
+// function the area's own Environment tab uses, so this panel is never a
+// second, drifted copy of those controls.
+void ZonesTab::DrawPanelAtmosphereVolume(sqlite3* db, bool placement) {
+    if (placement || selectedType_ != kSelAtmosphereVolume) {
+        ImGui::TextColored({0.75f, 0.45f, 0.95f, 1.f}, "Atmosphere Volume placement");
+        ImGui::Separator();
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##atmovolname", "Name (optional, e.g. \"Castle Interior\")",
+                                 atmoVolName_, sizeof(atmoVolName_));
+        ImGui::Combo("Shape##atmovolp", &atmoVolShape_, "AABB\0Sphere\0");
+        ImGui::InputFloat3("Size##atmovolp", atmoVolSize_);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("AABB: full size on each axis. Sphere: only X used, as diameter.");
+        ImGui::Spacing();
+        ImGui::TextDisabled("RMB in viewport to place. Configure atmosphere overrides after placing.");
+        return;
+    }
+
+    auto it = std::find_if(scene_.atmosphereVolumes.begin(), scene_.atmosphereVolumes.end(),
+                           [&](auto& v){ return v.id == selectedID_; });
+    if (it == scene_.atmosphereVolumes.end()) return;
+    ZAtmosphereVolume& v = *it;
+
+    ImGui::TextColored({0.75f, 0.45f, 0.95f, 1.f}, "Atmosphere Volume [id=%d]", v.id);
+    ImGui::Separator();
+    bool changed = false;
+
+    char nameBuf[128];
+    std::strncpy(nameBuf, v.name.c_str(), sizeof(nameBuf) - 1);
+    nameBuf[sizeof(nameBuf) - 1] = 0;
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::InputText("Name##atmovolo", nameBuf, sizeof(nameBuf))) { v.name = nameBuf; changed = true; }
+
+    if (ImGui::Combo("Shape##atmovolo", &v.shape, "AABB\0Sphere\0")) changed = true;
+
+    float pw = (ImGui::GetContentRegionAvail().x - 8) * 0.5f;
+    ImGui::SetNextItemWidth(pw); if (ImGui::InputFloat("X##atmovolo",&v.pos.x,0,0,"%.2f")) changed=true;
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1); if (ImGui::InputFloat("Z##atmovolo",&v.pos.z,0,0,"%.2f")) changed=true;
+    ImGui::SetNextItemWidth(pw); if (ImGui::InputFloat("Y##atmovolo",&v.pos.y,0,0,"%.2f")) changed=true;
+
+    float size[3] = {v.size.x, v.size.y, v.size.z};
+    if (ImGui::InputFloat3(v.shape == 1 ? "Diameter (X only)##atmovolo" : "Size##atmovolo", size)) {
+        v.size = {size[0], size[1], size[2]}; changed = true;
+    }
+
+    if (ImGui::InputInt("Priority##atmovolo", &v.priority)) changed = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("When volumes overlap, the highest priority wins (Fase 2).");
+    if (ImGui::SliderFloat("Transition (s)##atmovolo", &v.transitionSeconds, 0.1f, 20.f, "%.1f")) changed = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Fade in/out duration when the player enters/exits this volume (Fase 2).");
+
+    ImGui::Separator();
+    ImGui::TextColored({0.75f,0.85f,1.0f,1.f}, "Atmosphere override:");
+    if (DrawAtmosphereFields(v.atmo)) changed = true;
+
+    if (changed) {
+        sqlite3_stmt* s = nullptr;
+        sqlite3_prepare_v2(db,
+            "UPDATE zone_atmosphere_volumes SET"
+            " name=?, shape=?, pos_x=?, pos_y=?, pos_z=?, size_x=?, size_y=?, size_z=?,"
+            " priority=?, transition_seconds=?,"
+            " sun_dir_x=?, sun_dir_y=?, sun_dir_z=?, sun_color_r=?, sun_color_g=?, sun_color_b=?,"
+            " sun_intensity_mul=?, sky_intensity_mul=?, fog_density_mul=?, fog_r=?, fog_g=?, fog_b=?,"
+            " ambient_r=?, ambient_g=?, ambient_b=?, volumetrics=?,"
+            " char_shadow_lift=?, char_rim_strength=?, char_rim_exponent=?, char_min_ndotl=?, char_ambient_boost=?,"
+            " scene_ibl_intensity=?, scene_sky_intensity=?, scene_world_shadow_lift=?, scene_direct_scale=?,"
+            " scene_ambient_scale=?, scene_flat_ambient=?, scene_world_min_ndotl=?, scene_albedo_min_luma=?,"
+            " scene_albedo_lift_strength=?, scene_specular_scale=?, scene_exposure_factor=?, scene_sun_intensity=?,"
+            " color_contrast=?, color_saturation=?, color_vibrance=?, color_black_point=?,"
+            " color_vignette_strength=?, color_vignette_softness=?"
+            " WHERE id=?",
+            -1, &s, nullptr);
+        int i = 1;
+        const ZAtmosphere& a = v.atmo;
+        sqlite3_bind_text(s, i++, v.name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(s, i++, v.shape);
+        sqlite3_bind_double(s, i++, v.pos.x); sqlite3_bind_double(s, i++, v.pos.y); sqlite3_bind_double(s, i++, v.pos.z);
+        sqlite3_bind_double(s, i++, v.size.x); sqlite3_bind_double(s, i++, v.size.y); sqlite3_bind_double(s, i++, v.size.z);
+        sqlite3_bind_int(s, i++, v.priority);
+        sqlite3_bind_double(s, i++, v.transitionSeconds);
+        sqlite3_bind_double(s, i++, a.sunDirX); sqlite3_bind_double(s, i++, a.sunDirY); sqlite3_bind_double(s, i++, a.sunDirZ);
+        sqlite3_bind_double(s, i++, a.sunColorR); sqlite3_bind_double(s, i++, a.sunColorG); sqlite3_bind_double(s, i++, a.sunColorB);
+        sqlite3_bind_double(s, i++, a.sunIntensityMul); sqlite3_bind_double(s, i++, a.skyIntensityMul);
+        sqlite3_bind_double(s, i++, a.fogDensityMul);
+        sqlite3_bind_double(s, i++, a.fogR); sqlite3_bind_double(s, i++, a.fogG); sqlite3_bind_double(s, i++, a.fogB);
+        sqlite3_bind_int(s, i++, a.ambientR); sqlite3_bind_int(s, i++, a.ambientG); sqlite3_bind_int(s, i++, a.ambientB);
+        sqlite3_bind_int(s, i++, a.volumetrics?1:0);
+        sqlite3_bind_double(s, i++, a.charShadowLift); sqlite3_bind_double(s, i++, a.charRimStrength);
+        sqlite3_bind_double(s, i++, a.charRimExponent); sqlite3_bind_double(s, i++, a.charMinNdotL);
+        sqlite3_bind_double(s, i++, a.charAmbientBoost);
+        sqlite3_bind_double(s, i++, a.sceneIblIntensity); sqlite3_bind_double(s, i++, a.sceneSkyIntensity);
+        sqlite3_bind_double(s, i++, a.sceneWorldShadowLift); sqlite3_bind_double(s, i++, a.sceneDirectScale);
+        sqlite3_bind_double(s, i++, a.sceneAmbientScale); sqlite3_bind_double(s, i++, a.sceneFlatAmbient);
+        sqlite3_bind_double(s, i++, a.sceneWorldMinNdotL); sqlite3_bind_double(s, i++, a.sceneAlbedoMinLuma);
+        sqlite3_bind_double(s, i++, a.sceneAlbedoLiftStrength); sqlite3_bind_double(s, i++, a.sceneSpecularScale);
+        sqlite3_bind_double(s, i++, a.sceneExposureFactor); sqlite3_bind_double(s, i++, a.sceneSunIntensity);
+        sqlite3_bind_double(s, i++, a.colorContrast); sqlite3_bind_double(s, i++, a.colorSaturation);
+        sqlite3_bind_double(s, i++, a.colorVibrance); sqlite3_bind_double(s, i++, a.colorBlackPoint);
+        sqlite3_bind_double(s, i++, a.colorVignetteStrength); sqlite3_bind_double(s, i++, a.colorVignetteSoftness);
+        sqlite3_bind_int(s, i++, v.id);
+        sqlite3_step(s); sqlite3_finalize(s);
+    }
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Button,{0.65f,0.1f,0.1f,1.f});
+    if (ImGui::Button("Delete atmosphere volume")) DeleteSelected(db);
+    ImGui::PopStyleColor();
+}
+
 // ─── Water panel (Phase 8) ────────────────────────────────────────────────────
 
 void ZonesTab::DrawPanelWater(sqlite3* db, MediaTab* media, bool placement) {
@@ -1701,6 +1895,80 @@ void ZonesTab::DrawPanelWater(sqlite3* db, MediaTab* media, bool placement) {
     ImGui::PopStyleColor();
 }
 
+// Shared atmosphere controls — used by BOTH the area's Environment tab
+// (DrawPanelEnviro, operating on scene_.env.atmo) and the Atmosphere Volume
+// panel (DrawPanelAtmosphereVolume, operating on a volume's own atmo), so
+// the two never duplicate/diverge (per docs/TECH_DEBT.md "Atmosphere
+// volumes" — the volume overrides the exact same knobs the area itself has,
+// via the exact same widgets). Field set mirrors what AreaConfig sends via
+// PAreaConfig (server/internal/net/client.go sendAreaConfig) — everything
+// except skybox_hdr (real HDR reload, not a cheap slider) and terrain_*
+// (shader tiling, not atmosphere).
+static bool DrawAtmosphereFields(ZAtmosphere& a) {
+    bool changed = false;
+
+    ImGui::TextUnformatted("Fog:");
+    float fc[3] = {a.fogR, a.fogG, a.fogB};
+    if (ImGui::ColorEdit3("Fog color##atmo", fc)) { a.fogR=fc[0]; a.fogG=fc[1]; a.fogB=fc[2]; changed=true; }
+    if (ImGui::SliderFloat("Fog density mul##atmo", &a.fogDensityMul, 0.f, 2.f, "%.2f")) changed = true;
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Ambient light:");
+    int ac[3] = {a.ambientR, a.ambientG, a.ambientB};
+    if (ImGui::SliderInt3("Ambient RGB##atmo", ac, 0, 255)) {
+        a.ambientR=ac[0]; a.ambientG=ac[1]; a.ambientB=ac[2]; changed=true;
+    }
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Sun:");
+    float sunDir[3] = {a.sunDirX, a.sunDirY, a.sunDirZ};
+    if (ImGui::SliderFloat3("Sun direction##atmo", sunDir, -1.f, 1.f, "%.2f")) {
+        a.sunDirX=sunDir[0]; a.sunDirY=sunDir[1]; a.sunDirZ=sunDir[2]; changed=true;
+    }
+    float sunCol[3] = {a.sunColorR, a.sunColorG, a.sunColorB};
+    if (ImGui::ColorEdit3("Sun color##atmo", sunCol,
+                          ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float)) {
+        a.sunColorR=sunCol[0]; a.sunColorG=sunCol[1]; a.sunColorB=sunCol[2]; changed=true;
+    }
+    if (ImGui::SliderFloat("Sun intensity mul##atmo", &a.sunIntensityMul, 0.f, 2.f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Sky intensity mul##atmo", &a.skyIntensityMul, 0.f, 2.f, "%.2f")) changed = true;
+    if (ImGui::Checkbox("Volumetrics##atmo", &a.volumetrics)) changed = true;
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Character readability:");
+    if (ImGui::SliderFloat("Shadow lift##atmo_char",   &a.charShadowLift,   0.f, 1.f,  "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Rim strength##atmo_char",  &a.charRimStrength,  0.f, 1.f,  "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Rim exponent##atmo_char",  &a.charRimExponent,  1.f, 6.f,  "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Min NdotL##atmo_char",     &a.charMinNdotL,     0.f, 0.5f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Ambient boost##atmo_char", &a.charAmbientBoost, 0.f, 0.5f, "%.2f")) changed = true;
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Scene look:");
+    if (ImGui::SliderFloat("IBL intensity##atmo_scene",         &a.sceneIblIntensity,       0.00f, 2.00f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Sky intensity##atmo_scene",         &a.sceneSkyIntensity,       0.00f, 2.00f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("World shadow lift##atmo_scene",     &a.sceneWorldShadowLift,    0.00f, 0.95f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Direct scale##atmo_scene",          &a.sceneDirectScale,        0.00f, 2.00f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Ambient scale##atmo_scene",         &a.sceneAmbientScale,       0.00f, 3.00f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Flat ambient##atmo_scene",          &a.sceneFlatAmbient,        0.00f, 2.00f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("World min NdotL##atmo_scene",       &a.sceneWorldMinNdotL,      0.00f, 1.00f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Albedo min luma##atmo_scene",       &a.sceneAlbedoMinLuma,      0.00f, 1.00f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Albedo lift strength##atmo_scene",  &a.sceneAlbedoLiftStrength, 0.00f, 1.00f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Specular scale##atmo_scene",        &a.sceneSpecularScale,      0.00f, 2.00f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Exposure factor##atmo_scene",       &a.sceneExposureFactor,     0.05f, 2.00f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Sun intensity##atmo_scene",         &a.sceneSunIntensity,       0.00f, 2.00f, "%.2f")) changed = true;
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Color grading:");
+    if (ImGui::SliderFloat("Contrast##atmo_color",           &a.colorContrast,         0.80f, 1.35f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Saturation##atmo_color",         &a.colorSaturation,       0.80f, 1.40f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Vibrance##atmo_color",           &a.colorVibrance,        -0.30f, 0.60f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Black point##atmo_color",        &a.colorBlackPoint,       0.00f, 0.06f, "%.3f")) changed = true;
+    if (ImGui::SliderFloat("Vignette strength##atmo_color",  &a.colorVignetteStrength, 0.00f, 0.20f, "%.2f")) changed = true;
+    if (ImGui::SliderFloat("Vignette softness##atmo_color",  &a.colorVignetteSoftness, 0.00f, 1.00f, "%.2f")) changed = true;
+
+    return changed;
+}
+
 void ZonesTab::DrawPanelEnviro(sqlite3* db) {
     if (scene_.areaName.empty()) { ImGui::TextDisabled("Load a zone first."); return; }
     ZEnvConfig& e = scene_.env;
@@ -1713,17 +1981,9 @@ void ZonesTab::DrawPanelEnviro(sqlite3* db) {
     if (ImGui::Checkbox("Is outdoor##env",  &e.isOutdoor))  changed = true;
     if (ImGui::Checkbox("PvP enabled##env", &e.pvpEnabled)) changed = true;
     ImGui::Separator();
-    ImGui::TextUnformatted("Fog:");
+    ImGui::TextUnformatted("Fog distance (legacy, separate from fog color/density mul below):");
     if (ImGui::InputFloat("Near##env",    &e.fogNear,  10.f, 50.f, "%.0f")) changed = true;
     if (ImGui::InputFloat("Far##env",     &e.fogFar,   10.f, 50.f, "%.0f")) changed = true;
-    float fc[3] = {e.fogR, e.fogG, e.fogB};
-    if (ImGui::ColorEdit3("Fog color##env", fc)) { e.fogR=fc[0];e.fogG=fc[1];e.fogB=fc[2]; changed=true; }
-    ImGui::Separator();
-    ImGui::TextUnformatted("Ambient light:");
-    int ac[3] = {e.ambientR, e.ambientG, e.ambientB};
-    if (ImGui::SliderInt3("Ambient RGB##env", ac, 0, 255)) {
-        e.ambientR=ac[0]; e.ambientG=ac[1]; e.ambientB=ac[2]; changed=true;
-    }
     ImGui::Separator();
     if (ImGui::InputFloat("Gravity##env",  &e.gravity,  0.05f, 0.2f, "%.2f")) changed = true;
     ImGui::Separator();
@@ -1734,25 +1994,68 @@ void ZonesTab::DrawPanelEnviro(sqlite3* db) {
     if (ImGui::SliderInt("Storm##env", &e.weatherStorm, 0,100)) changed = true;
     if (ImGui::SliderInt("Wind##env",  &e.weatherWind,  0,100)) changed = true;
 
+    // Fog color/density-mul, ambient, sun, scene-look, color-grading, and
+    // character-readability tuning — the SAME widgets the Atmosphere Volume
+    // panel uses (DrawAtmosphereFields), so a volume's override controls
+    // are never a second, drifted copy of these.
+    ImGui::Separator();
+    ImGui::TextColored({0.7f,0.85f,1.0f,1.f}, "Atmosphere (base — volumes can override):");
+    if (DrawAtmosphereFields(e.atmo)) changed = true;
+
     if (changed) {
         sqlite3_stmt* s = nullptr;
         sqlite3_prepare_v2(db,
             "INSERT OR REPLACE INTO area_config"
             " (name, music_track, fog_density, is_outdoor, pvp_enabled,"
-            "  fog_near, fog_far, fog_r, fog_g, fog_b,"
-            "  ambient_r, ambient_g, ambient_b, gravity,"
-            "  weather_rain, weather_snow, weather_fog, weather_storm, weather_wind)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "  fog_near, fog_far, gravity,"
+            "  weather_rain, weather_snow, weather_fog, weather_storm, weather_wind,"
+            "  fog_r, fog_g, fog_b, ambient_r, ambient_g, ambient_b,"
+            "  sun_dir_x, sun_dir_y, sun_dir_z, sun_color_r, sun_color_g, sun_color_b,"
+            "  sun_intensity_mul, sky_intensity_mul, fog_density_mul, volumetrics,"
+            "  char_shadow_lift, char_rim_strength, char_rim_exponent, char_min_ndotl, char_ambient_boost,"
+            "  scene_ibl_intensity, scene_sky_intensity, scene_world_shadow_lift, scene_direct_scale,"
+            "  scene_ambient_scale, scene_flat_ambient, scene_world_min_ndotl, scene_albedo_min_luma,"
+            "  scene_albedo_lift_strength, scene_specular_scale, scene_exposure_factor, scene_sun_intensity,"
+            "  color_contrast, color_saturation, color_vibrance, color_black_point,"
+            "  color_vignette_strength, color_vignette_softness)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,"
+            "         ?,?,?,?,?,?,"
+            "         ?,?,?,?,?,?,"
+            "         ?,?,?,?,"
+            "         ?,?,?,?,?,"
+            "         ?,?,?,?,"
+            "         ?,?,?,?,"
+            "         ?,?,?,?,"
+            "         ?,?,?,?,"
+            "         ?,?)",
             -1, &s, nullptr);
-        sqlite3_bind_text(s, 1, e.name.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(s,2,e.musicTrack); sqlite3_bind_double(s,3,e.fogDensity);
-        sqlite3_bind_int(s,4,e.isOutdoor?1:0); sqlite3_bind_int(s,5,e.pvpEnabled?1:0);
-        sqlite3_bind_double(s,6,e.fogNear); sqlite3_bind_double(s,7,e.fogFar);
-        sqlite3_bind_double(s,8,e.fogR); sqlite3_bind_double(s,9,e.fogG); sqlite3_bind_double(s,10,e.fogB);
-        sqlite3_bind_int(s,11,e.ambientR); sqlite3_bind_int(s,12,e.ambientG); sqlite3_bind_int(s,13,e.ambientB);
-        sqlite3_bind_double(s,14,e.gravity);
-        sqlite3_bind_int(s,15,e.weatherRain); sqlite3_bind_int(s,16,e.weatherSnow);
-        sqlite3_bind_int(s,17,e.weatherFog); sqlite3_bind_int(s,18,e.weatherStorm); sqlite3_bind_int(s,19,e.weatherWind);
+        int i = 1;
+        const ZAtmosphere& a = e.atmo;
+        sqlite3_bind_text(s, i++, e.name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(s, i++, e.musicTrack); sqlite3_bind_double(s, i++, e.fogDensity);
+        sqlite3_bind_int(s, i++, e.isOutdoor?1:0); sqlite3_bind_int(s, i++, e.pvpEnabled?1:0);
+        sqlite3_bind_double(s, i++, e.fogNear); sqlite3_bind_double(s, i++, e.fogFar);
+        sqlite3_bind_double(s, i++, e.gravity);
+        sqlite3_bind_int(s, i++, e.weatherRain); sqlite3_bind_int(s, i++, e.weatherSnow);
+        sqlite3_bind_int(s, i++, e.weatherFog); sqlite3_bind_int(s, i++, e.weatherStorm); sqlite3_bind_int(s, i++, e.weatherWind);
+        sqlite3_bind_double(s, i++, a.fogR); sqlite3_bind_double(s, i++, a.fogG); sqlite3_bind_double(s, i++, a.fogB);
+        sqlite3_bind_int(s, i++, a.ambientR); sqlite3_bind_int(s, i++, a.ambientG); sqlite3_bind_int(s, i++, a.ambientB);
+        sqlite3_bind_double(s, i++, a.sunDirX); sqlite3_bind_double(s, i++, a.sunDirY); sqlite3_bind_double(s, i++, a.sunDirZ);
+        sqlite3_bind_double(s, i++, a.sunColorR); sqlite3_bind_double(s, i++, a.sunColorG); sqlite3_bind_double(s, i++, a.sunColorB);
+        sqlite3_bind_double(s, i++, a.sunIntensityMul); sqlite3_bind_double(s, i++, a.skyIntensityMul);
+        sqlite3_bind_double(s, i++, a.fogDensityMul); sqlite3_bind_int(s, i++, a.volumetrics?1:0);
+        sqlite3_bind_double(s, i++, a.charShadowLift); sqlite3_bind_double(s, i++, a.charRimStrength);
+        sqlite3_bind_double(s, i++, a.charRimExponent); sqlite3_bind_double(s, i++, a.charMinNdotL);
+        sqlite3_bind_double(s, i++, a.charAmbientBoost);
+        sqlite3_bind_double(s, i++, a.sceneIblIntensity); sqlite3_bind_double(s, i++, a.sceneSkyIntensity);
+        sqlite3_bind_double(s, i++, a.sceneWorldShadowLift); sqlite3_bind_double(s, i++, a.sceneDirectScale);
+        sqlite3_bind_double(s, i++, a.sceneAmbientScale); sqlite3_bind_double(s, i++, a.sceneFlatAmbient);
+        sqlite3_bind_double(s, i++, a.sceneWorldMinNdotL); sqlite3_bind_double(s, i++, a.sceneAlbedoMinLuma);
+        sqlite3_bind_double(s, i++, a.sceneAlbedoLiftStrength); sqlite3_bind_double(s, i++, a.sceneSpecularScale);
+        sqlite3_bind_double(s, i++, a.sceneExposureFactor); sqlite3_bind_double(s, i++, a.sceneSunIntensity);
+        sqlite3_bind_double(s, i++, a.colorContrast); sqlite3_bind_double(s, i++, a.colorSaturation);
+        sqlite3_bind_double(s, i++, a.colorVibrance); sqlite3_bind_double(s, i++, a.colorBlackPoint);
+        sqlite3_bind_double(s, i++, a.colorVignetteStrength); sqlite3_bind_double(s, i++, a.colorVignetteSoftness);
         sqlite3_step(s); sqlite3_finalize(s);
     }
 }

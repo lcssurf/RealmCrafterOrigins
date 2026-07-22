@@ -33,6 +33,7 @@ enum ZSelType {
     kSelColSphere   = 10,
     kSelPlayerSpawn = 11,
     kSelLight       = 12,
+    kSelAtmosphereVolume = 13,
 };
 
 // Off-screen FBO renderer for the zone editor viewport.
@@ -122,6 +123,17 @@ public:
         glm::mat3 local_axes     = glm::mat3(1.f); // columns = X/Y/Z
     };
     void SetGizmo(const GizmoState& g) { gizmo_ = g; }
+
+    // Local-space (bind-pose) model bounding box for a placed scenery
+    // instance, read from its loaded Actor's Model — used by the viewport's
+    // object hit-test and gizmo face-snap bounds, which need to transform
+    // this by the scenery's own pos/rot/scale (see zones_viewport.cpp) to
+    // get a world-space box, instead of misusing ZScenery::scale directly as
+    // if it were a world-space size (scale is a mesh-scale MULTIPLIER,
+    // typically far from 1 — e.g. 0.02 — for models authored at a different
+    // native scale). Returns false (outMin/outMax untouched) if the scenery
+    // id has no actor yet or its model hasn't finished loading.
+    bool SceneryModelLocalBounds(int sceneryId, glm::vec3& outMin, glm::vec3& outMax) const;
 
     // Binding info passed per model when syncing scene caches. `file_path`
     // is relative to dist/client/ (or "" to skip). `material_map` is the

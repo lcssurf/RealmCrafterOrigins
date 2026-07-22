@@ -58,6 +58,7 @@
 #include "rco/renderer/particles.h"
 #include "rco/renderer/light_manager.h"
 #include "rco/renderer/water_manager.h"
+#include "rco/renderer/atmosphere_volume_manager.h"
 #include "rco/renderer/ripple_sim.h"
 #include "../renderer/anim_controller.h"
 #include "../input/input_system.h"
@@ -1291,6 +1292,12 @@ int main() {
     // kPZoneWater (area entry / portal change) and cleared on area change /
     // disconnect, same lifecycle as light_manager.
     rco::renderer::WaterManager   water_manager;
+    // Atmosphere volumes (Fase 1 — data storage only, see docs/TECH_DEBT.md
+    // "Atmosphere volumes"). Replaced wholesale on kPAtmosphereVolumes (area
+    // entry / portal change) and cleared on area change / disconnect, same
+    // lifecycle as light_manager/water_manager. Nothing reads
+    // atmosphere_manager yet — Fase 2 does the point-in-volume test + blend.
+    rco::renderer::AtmosphereVolumeManager atmosphere_manager;
     // Ripple Sim — Hugo Elias height-field ping-pong buffer, player-
     // following world window (RippleSim::UpdateWindow), sampled by
     // water.vs/water.fs (WaterManager::Render passes it only to the water
@@ -1454,6 +1461,45 @@ int main() {
         ResolveAreaLightingProfile("training_camp", area_lighting_fallback_config);
     std::string pending_area_skybox_hdr;
     bool area_environment_pending_apply = false;
+
+    // Atmosphere volume crossfade (Fase 2 — see docs/TECH_DEBT.md
+    // "Atmosphere volumes"). A genuine crossfade, not a fixed
+    // area<->volume lerp: atmo_from_/atmo_to_ are snapshots of the
+    // sun/fog/intensity values being blended FROM and TO, atmo_t_ is 0..1
+    // progress between them (ramping at dt/atmo_transition_secs_). Whenever
+    // the "current target" changes for ANY reason (entering a volume,
+    // leaving back to the area baseline, or walking directly from one
+    // volume into another) — see the frame loop below — atmo_from_ is
+    // re-captured as WHATEVER the blend currently looks like (not reset to
+    // the area baseline), atmo_to_ becomes the new target, and atmo_t_
+    // restarts at 0. This is what makes leaving a volume fade back out
+    // smoothly instead of snapping (the earlier weight-based version
+    // stopped referencing the volume's values the instant the player left
+    // it, even though its own weight scalar was still decaying — the
+    // number moved smoothly but nothing was reading it) and makes
+    // volume-to-volume transitions blend from the current look toward the
+    // new volume instead of visibly resetting to normal in between.
+    struct AtmoBlendState {
+        glm::vec3 sunDir{0.18f, 0.96f, 0.20f};
+        glm::vec3 sunColor{1.f};
+        glm::vec3 fogColor{1.f};
+        float     fogDensityMul   = 1.f;
+        float     sunIntensityMul = 1.f;
+        float     skyIntensityMul = 1.f;
+    };
+    AtmoBlendState atmo_from_{};
+    AtmoBlendState atmo_to_{};
+    float atmo_t_ = 1.f;               // 1 = settled at atmo_to_, nothing pending
+    float atmo_transition_secs_ = 2.f;
+    // Identity of the volume atmo_to_ currently represents (nullptr = area
+    // baseline) — compared by pointer against this frame's winner to detect
+    // "the target changed". Safe to compare by raw pointer across frames
+    // ONLY because atmosphere_manager's vector is never mutated except by
+    // SetVolumes() on area/portal change, and every one of those call sites
+    // also resets this whole block (see the three light_manager.Clear()/
+    // atmosphere_manager.Clear() sites) — so a stale pointer from a
+    // previous area's (by-then-destroyed) vector is never compared against.
+    const rco::renderer::AtmosphereVolumeEntry* atmo_prev_target_ = nullptr;
 
     // World-enter timing (Etapa A / Fase 2 baseline):
     // StartGame sent -> PStartGame received -> renderer_ready (first playable frame).
@@ -2133,6 +2179,11 @@ int main() {
                 world_static_objects.clear();
                 light_manager.Clear();
                 water_manager.Clear();
+                atmosphere_manager.Clear();
+                atmo_prev_target_ = nullptr;
+                atmo_from_ = AtmoBlendState{};
+                atmo_to_ = AtmoBlendState{};
+                atmo_t_ = 1.f;
                 world_entry_loading = false;
                 world_entry_world_objects_received = false;
                 world_entry_core_indices.clear();
@@ -2605,6 +2656,11 @@ int main() {
                 world_static_objects.clear();
                 light_manager.Clear();
                 water_manager.Clear();
+                atmosphere_manager.Clear();
+                atmo_prev_target_ = nullptr;
+                atmo_from_ = AtmoBlendState{};
+                atmo_to_ = AtmoBlendState{};
+                atmo_t_ = 1.f;
                 world_entry_loading = false;
                 world_entry_world_objects_received = false;
                 world_entry_core_indices.clear();
@@ -3391,6 +3447,75 @@ int main() {
                 break;
             }
 
+            case rco::net::kPAtmosphereVolumes: {
+                // Placed atmosphere volumes for the current area — Fase 1,
+                // data only (see docs/TECH_DEBT.md "Atmosphere volumes").
+                // Wire format mirrors PZoneLights/PZoneWater: count(u16) +
+                // per-entry fields, see
+                // server/internal/world/frame.go AtmosphereVolumesPayload.
+                // Nothing reads atmosphere_manager yet — Fase 2 does the
+                // point-in-volume test + enter/exit blend.
+                uint16_t vol_count = r.ReadU16();
+                std::vector<rco::renderer::AtmosphereVolumeEntry> volumes;
+                volumes.reserve(vol_count);
+                for (uint16_t vi = 0; vi < vol_count && r.OK(); ++vi) {
+                    rco::renderer::AtmosphereVolumeEntry e;
+                    e.name = r.ReadString();
+                    e.shape = r.ReadU8();
+                    e.pos.x = r.ReadF32();
+                    e.pos.y = r.ReadF32();
+                    e.pos.z = r.ReadF32();
+                    e.size.x = r.ReadF32();
+                    e.size.y = r.ReadF32();
+                    e.size.z = r.ReadF32();
+                    e.priority = static_cast<int32_t>(r.ReadU32());
+                    e.transitionSeconds = r.ReadF32();
+                    e.sunDir.x = r.ReadF32();
+                    e.sunDir.y = r.ReadF32();
+                    e.sunDir.z = r.ReadF32();
+                    e.sunColor.r = r.ReadF32();
+                    e.sunColor.g = r.ReadF32();
+                    e.sunColor.b = r.ReadF32();
+                    e.sunIntensityMul = r.ReadF32();
+                    e.skyIntensityMul = r.ReadF32();
+                    e.fogDensityMul = r.ReadF32();
+                    e.fogColor.r = r.ReadF32();
+                    e.fogColor.g = r.ReadF32();
+                    e.fogColor.b = r.ReadF32();
+                    (void)r.ReadU8(); // ambient_r — not consumed client-side yet (Fase 2)
+                    (void)r.ReadU8(); // ambient_g
+                    (void)r.ReadU8(); // ambient_b
+                    e.volumetrics = r.ReadBool();
+                    e.charShadowLift = r.ReadF32();
+                    e.charRimStrength = r.ReadF32();
+                    e.charRimExponent = r.ReadF32();
+                    e.charMinNdotL = r.ReadF32();
+                    e.charAmbientBoost = r.ReadF32();
+                    e.sceneIblIntensity = r.ReadF32();
+                    e.sceneSkyIntensity = r.ReadF32();
+                    e.sceneWorldShadowLift = r.ReadF32();
+                    e.sceneDirectScale = r.ReadF32();
+                    e.sceneAmbientScale = r.ReadF32();
+                    e.sceneFlatAmbient = r.ReadF32();
+                    e.sceneWorldMinNdotL = r.ReadF32();
+                    e.sceneAlbedoMinLuma = r.ReadF32();
+                    e.sceneAlbedoLiftStrength = r.ReadF32();
+                    e.sceneSpecularScale = r.ReadF32();
+                    e.sceneExposureFactor = r.ReadF32();
+                    e.sceneSunIntensity = r.ReadF32();
+                    e.colorContrast = r.ReadF32();
+                    e.colorSaturation = r.ReadF32();
+                    e.colorVibrance = r.ReadF32();
+                    e.colorBlackPoint = r.ReadF32();
+                    e.colorVignetteStrength = r.ReadF32();
+                    e.colorVignetteSoftness = r.ReadF32();
+                    if (!r.OK()) break;
+                    volumes.push_back(std::move(e));
+                }
+                atmosphere_manager.SetVolumes(std::move(volumes));
+                break;
+            }
+
             case rco::net::kPXPUpdate: {
                 const uint8_t version_or_level_lo = r.ReadU8();
                 uint16_t lvl = 1;
@@ -4031,6 +4156,11 @@ int main() {
             world_static_objects.clear();
             light_manager.Clear();
             water_manager.Clear();
+            atmosphere_manager.Clear();
+            atmo_prev_target_ = nullptr;
+            atmo_from_ = AtmoBlendState{};
+            atmo_to_ = AtmoBlendState{};
+            atmo_t_ = 1.f;
             world_entry_loading = false;
             world_entry_world_objects_received = false;
             world_entry_core_indices.clear();
@@ -5082,13 +5212,102 @@ int main() {
                 }
                 pipeline->Begin(view, proj, camera.Position(), static_cast<float>(dt));
                 auto area_scene_look = active_scene_look_tuning;
+
+                // ── Atmosphere volumes (Fase 2 — see docs/TECH_DEBT.md
+                // "Atmosphere volumes"). Find the highest-priority volume
+                // containing the player, then crossfade (atmo_from_ ->
+                // atmo_to_ over atmo_t_ 0..1) toward whichever atmosphere
+                // (area baseline, or the winning volume's) is the current
+                // target, feeding the RESULT into SetSceneLook/
+                // SetAtmosphereFog/SetSun below instead of area_light's raw
+                // values. With no volumes placed (or the player outside all
+                // of them), the target is always the area baseline, atmo_t_
+                // settles at 1, and effective_* is bit-for-bit area_light's
+                // own value — i.e. IDENTICAL to pre-Fase-2 behaviour, no
+                // regression for areas that don't use volumes.
+                glm::vec3 player_pos{player.x, player.y, player.z};
+                const rco::renderer::AtmosphereVolumeEntry* atmo_winner = nullptr;
+                for (const auto& v : atmosphere_manager.Volumes()) {
+                    bool inside;
+                    if (v.shape == 1) {
+                        float r = (std::max)(0.01f, v.size.x * 0.5f);
+                        inside = glm::length(player_pos - v.pos) <= r;
+                    } else {
+                        glm::vec3 half = (glm::max)(glm::abs(v.size) * 0.5f, glm::vec3(0.01f));
+                        glm::vec3 d = glm::abs(player_pos - v.pos);
+                        inside = (d.x <= half.x && d.y <= half.y && d.z <= half.z);
+                    }
+                    if (inside && (!atmo_winner || v.priority > atmo_winner->priority)) atmo_winner = &v;
+                }
+
+                // Snapshot of the area's own baseline, in AtmoBlendState
+                // shape, used as the target whenever nothing contains the
+                // player (and as the crossfade source's "identity" when
+                // re-targeting away from a volume).
+                AtmoBlendState atmo_area_state{};
+                atmo_area_state.sunDir           = sun;
+                atmo_area_state.sunColor         = area_light.sun_color;
+                atmo_area_state.fogColor         = area_light.fog_color;
+                atmo_area_state.fogDensityMul    = area_light.fog_density_mul;
+                atmo_area_state.sunIntensityMul  = area_light.sun_intensity_mul;
+                atmo_area_state.skyIntensityMul  = area_light.sky_intensity_mul;
+
+                // Re-target: whenever the winning volume differs from what
+                // atmo_to_ currently represents — entering a volume from
+                // baseline, leaving a volume back to baseline, OR walking
+                // directly from one volume into another — capture whatever
+                // the blend CURRENTLY looks like as the new atmo_from_ (not
+                // a reset to baseline) and restart atmo_t_ from 0 toward the
+                // new target. This is what makes leaving a volume fade back
+                // out (instead of cutting instantly the moment atmo_winner
+                // becomes null) and makes volume-to-volume transitions
+                // blend from the current look rather than visibly resetting
+                // to normal in between.
+                if (atmo_winner != atmo_prev_target_) {
+                    float tEase = glm::clamp(atmo_t_, 0.f, 1.f);
+                    AtmoBlendState current;
+                    current.sunDir           = glm::normalize(glm::mix(atmo_from_.sunDir, atmo_to_.sunDir, tEase));
+                    current.sunColor         = glm::mix(atmo_from_.sunColor, atmo_to_.sunColor, tEase);
+                    current.fogColor         = glm::mix(atmo_from_.fogColor, atmo_to_.fogColor, tEase);
+                    current.fogDensityMul    = glm::mix(atmo_from_.fogDensityMul, atmo_to_.fogDensityMul, tEase);
+                    current.sunIntensityMul  = glm::mix(atmo_from_.sunIntensityMul, atmo_to_.sunIntensityMul, tEase);
+                    current.skyIntensityMul  = glm::mix(atmo_from_.skyIntensityMul, atmo_to_.skyIntensityMul, tEase);
+                    atmo_from_ = current;
+                    // Leaving back to baseline keeps atmo_transition_secs_
+                    // unchanged (still whatever the volume being left used
+                    // to fade in) — so the fade-out takes the same duration
+                    // as the fade-in did, symmetric in both directions.
+                    if (atmo_winner) atmo_transition_secs_ = (std::max)(0.05f, atmo_winner->transitionSeconds);
+                    atmo_t_ = 0.f;
+                    atmo_prev_target_ = atmo_winner;
+                }
+                // Refreshed every frame regardless of whether a re-target
+                // just happened above: while settled on the area baseline
+                // (the common case — no volumes, or player outside all of
+                // them) this keeps atmo_to_ tracking the LIVE area_light
+                // value frame to frame, exactly like the pre-Fase-2 code
+                // that read area_light directly — not a frozen snapshot
+                // from whenever a volume was last left.
+                atmo_to_ = atmo_winner
+                    ? AtmoBlendState{atmo_winner->sunDir, atmo_winner->sunColor, atmo_winner->fogColor,
+                                     atmo_winner->fogDensityMul, atmo_winner->sunIntensityMul, atmo_winner->skyIntensityMul}
+                    : atmo_area_state;
+                atmo_t_ = glm::clamp(atmo_t_ + static_cast<float>(dt) / atmo_transition_secs_, 0.f, 1.f);
+
+                glm::vec3 effective_sun_dir           = glm::normalize(glm::mix(atmo_from_.sunDir, atmo_to_.sunDir, atmo_t_));
+                glm::vec3 effective_sun_color         = glm::mix(atmo_from_.sunColor, atmo_to_.sunColor, atmo_t_);
+                glm::vec3 effective_fog_color         = glm::mix(atmo_from_.fogColor, atmo_to_.fogColor, atmo_t_);
+                float     effective_fog_density_mul   = glm::mix(atmo_from_.fogDensityMul, atmo_to_.fogDensityMul, atmo_t_);
+                float     effective_sun_intensity_mul = glm::mix(atmo_from_.sunIntensityMul, atmo_to_.sunIntensityMul, atmo_t_);
+                float     effective_sky_intensity_mul = glm::mix(atmo_from_.skyIntensityMul, atmo_to_.skyIntensityMul, atmo_t_);
+
                 area_scene_look.sunIntensity =
-                    glm::clamp(active_scene_look_tuning.sunIntensity * area_light.sun_intensity_mul, 0.0f, 2.0f);
+                    glm::clamp(active_scene_look_tuning.sunIntensity * effective_sun_intensity_mul, 0.0f, 2.0f);
                 area_scene_look.skyIntensity =
-                    glm::clamp(active_scene_look_tuning.skyIntensity * area_light.sky_intensity_mul, 0.0f, 2.0f);
+                    glm::clamp(active_scene_look_tuning.skyIntensity * effective_sky_intensity_mul, 0.0f, 2.0f);
                 pipeline->SetSceneLook(area_scene_look);
-                pipeline->SetAtmosphereFog(area_light.fog_color, area_light.fog_density_mul);
-                pipeline->SetSun(-sun, area_light.sun_color * area_scene_look.sunIntensity);
+                pipeline->SetAtmosphereFog(effective_fog_color, effective_fog_density_mul);
+                pipeline->SetSun(-effective_sun_dir, effective_sun_color * area_scene_look.sunIntensity);
                 terrain.Submit(*pipeline, camera.Position());
 
                 // Render local player

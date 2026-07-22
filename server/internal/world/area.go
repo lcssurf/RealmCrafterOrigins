@@ -81,6 +81,61 @@ type Water struct {
 	FoamR, FoamG, FoamB float32
 }
 
+// AtmosphereVolume is a placed region ("Post Process Volume" style) that
+// overrides the area's atmosphere while the player is inside it. Fase 1
+// (this struct + editor + wire format) is data-only — sent to the client on
+// area load same as Lights/Water, but the client only stores it for now; the
+// point-in-volume test and the enter/exit blend (using TransitionSeconds)
+// are Fase 2. Field set mirrors Area's own Fog*/Ambient* plus the fuller
+// render-tuning section AreaConfig sends via PAreaConfig (sun/scene/color/
+// char) — see server/internal/db/db.go AtmosphereVolume for the DB side and
+// tools/gue/src/zone_scene.h ZAtmosphereVolume for the authoring side.
+type AtmosphereVolume struct {
+	Name  string
+	Shape int // 0=AABB (pos±size/2) 1=sphere (radius=SizeX/2)
+
+	PosX, PosY, PosZ    float32
+	SizeX, SizeY, SizeZ float32
+
+	Priority          int
+	TransitionSeconds float32
+
+	SunDirX, SunDirY, SunDirZ       float32
+	SunColorR, SunColorG, SunColorB float32
+	SunIntensityMul                 float32
+	SkyIntensityMul                 float32
+	FogDensityMul                   float32
+	FogR, FogG, FogB                float32
+	AmbientR, AmbientG, AmbientB    uint8
+	Volumetrics                     bool
+
+	CharShadowLift   float32
+	CharRimStrength  float32
+	CharRimExponent  float32
+	CharMinNdotL     float32
+	CharAmbientBoost float32
+
+	SceneIblIntensity       float32
+	SceneSkyIntensity       float32
+	SceneWorldShadowLift    float32
+	SceneDirectScale        float32
+	SceneAmbientScale       float32
+	SceneFlatAmbient        float32
+	SceneWorldMinNdotL      float32
+	SceneAlbedoMinLuma      float32
+	SceneAlbedoLiftStrength float32
+	SceneSpecularScale      float32
+	SceneExposureFactor     float32
+	SceneSunIntensity       float32
+
+	ColorContrast         float32
+	ColorSaturation       float32
+	ColorVibrance         float32
+	ColorBlackPoint       float32
+	ColorVignetteStrength float32
+	ColorVignetteSoftness float32
+}
+
 // Trigger is a script-activated zone volume (XZ cylinder).
 type Trigger struct {
 	ID          int
@@ -103,6 +158,7 @@ type Area struct {
 	Objects   []WorldObject
 	Lights    []Light
 	Water     []Water
+	AtmosphereVolumes []AtmosphereVolume
 
 	// Environment config (loaded from area_config at startup)
 	PvPEnabled                   bool

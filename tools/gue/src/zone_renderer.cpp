@@ -397,6 +397,16 @@ void ZoneRenderer::DrawWater(const ZWater& w, bool selected, const glm::mat4& vp
 
 // ResolveClientAsset is shared via asset_path.h.
 
+bool ZoneRenderer::SceneryModelLocalBounds(int sceneryId, glm::vec3& outMin, glm::vec3& outMax) const {
+    auto it = sceneryActors_.find(sceneryId);
+    if (it == sceneryActors_.end() || !it->second) return false;
+    const auto& model = it->second->model();
+    if (!model.IsLoaded()) return false;
+    outMin = model.BoundsMin();
+    outMax = model.BoundsMax();
+    return true;
+}
+
 void ZoneRenderer::SyncSceneryModels(const std::vector<ZScenery>& scenery,
                                       const std::unordered_map<int, ModelBind>& binds) {
     // Actors require the full engine + pipeline. If the caller hasn't invoked
@@ -875,6 +885,7 @@ void ZoneRenderer::RenderFramePBR_(const ZoneCamera& cam, const ZoneScene& scene
     // Scenery — one Actor per ZScenery id (see sceneryActors_). Each carries
     // its own bone SSBOs, material mapping, etc. — the same class Media uses.
     for (const auto& s : scene.scenery) {
+        if (scene.IsHidden(kSelScenery, s.id)) continue;
         auto it = sceneryActors_.find(s.id);
         if (it == sceneryActors_.end() || !it->second || !it->second->IsLoaded()) continue;
         glm::mat4 m = glm::translate(glm::mat4(1.f), s.pos);
@@ -889,6 +900,7 @@ void ZoneRenderer::RenderFramePBR_(const ZoneCamera& cam, const ZoneScene& scene
     // editor viewport (same behaviour as Media preview). Actor-level scale
     // comes from the ActorDef via npcActorScale_ (synced in SyncNpcModels).
     for (const auto& n : scene.npcs) {
+        if (scene.IsHidden(kSelNpc, n.id)) continue;
         auto it = npcActors_.find(n.id);
         if (it == npcActors_.end() || !it->second || !it->second->IsLoaded()) continue;
         auto sit = npcActorScale_.find(n.id);
@@ -953,30 +965,35 @@ void ZoneRenderer::DrawForwardOverlays_(const ZoneScene& scene, int selectedID,
     // — same overlays as the simple renderer. NPC meshes are NOT drawn here
     // because they went through the G-buffer path above.
     for (auto& p : scene.portals) {
+        if (scene.IsHidden(kSelPortal, p.id)) continue;
         bool sel = (selectedType == kSelPortal && selectedID == p.id);
         glm::vec4 col = sel ? glm::vec4(1.f, 0.2f, 0.2f, 0.7f)
                             : glm::vec4(0.2f, 0.4f, 1.0f, 0.5f);
         DrawSphere({p.pos.x, p.pos.y + p.radius, p.pos.z}, p.radius, col, vp);
     }
     for (auto& t : scene.triggers) {
+        if (scene.IsHidden(kSelTrigger, t.id)) continue;
         bool sel = (selectedType == kSelTrigger && selectedID == t.id);
         glm::vec4 col = sel ? glm::vec4(1.f, 0.2f, 0.2f, 0.7f)
                             : glm::vec4(1.0f, 0.5f, 0.0f, 0.4f);
         DrawSphere({t.x, 0.f, t.z}, t.radius, col, vp);
     }
     for (auto& s : scene.soundZones) {
+        if (scene.IsHidden(kSelSoundZone, s.id)) continue;
         bool sel = (selectedType == kSelSoundZone && selectedID == s.id);
         glm::vec4 col = sel ? glm::vec4(1.f, 0.2f, 0.2f, 0.7f)
                             : glm::vec4(1.0f, 1.0f, 0.0f, 0.4f);
         DrawSphere({s.x, 0.f, s.z}, s.radius, col, vp);
     }
     for (auto& c : scene.colBoxes) {
+        if (scene.IsHidden(kSelColBox, c.id)) continue;
         bool sel = (selectedType == kSelColBox && selectedID == c.id);
         glm::vec4 col = sel ? glm::vec4(1.f, 0.2f, 0.2f, 0.8f)
                             : glm::vec4(0.8f, 0.1f, 0.1f, 0.4f);
         DrawBox(c.pos, c.scale, col, vp);
     }
     for (auto& s : scene.colSpheres) {
+        if (scene.IsHidden(kSelColSphere, s.id)) continue;
         bool sel = (selectedType == kSelColSphere && selectedID == s.id);
         glm::vec4 col = sel ? glm::vec4(1.f, 0.2f, 0.2f, 0.8f)
                             : glm::vec4(1.0f, 0.4f, 0.0f, 0.45f);
@@ -991,10 +1008,12 @@ void ZoneRenderer::DrawForwardOverlays_(const ZoneScene& scene, int selectedID,
         glUseProgram(primProg_);  // restore for subsequent draw calls
     }
     for (auto& w : scene.water) {
+        if (scene.IsHidden(kSelWater, w.id)) continue;
         bool sel = (selectedType == kSelWater && selectedID == w.id);
         DrawWater(w, sel, vp);
     }
     for (auto& e : scene.emitters) {
+        if (scene.IsHidden(kSelEmitter, e.id)) continue;
         bool sel = (selectedType == kSelEmitter && selectedID == e.id);
         glm::vec4 col = sel ? glm::vec4(1.f, 0.2f, 0.2f, 0.7f)
                             : glm::vec4(0.8f, 1.0f, 0.2f, 0.6f);
@@ -1004,6 +1023,7 @@ void ZoneRenderer::DrawForwardOverlays_(const ZoneScene& scene, int selectedID,
     // eyeball warm/cool at a glance) plus a faint ring at the falloff radius,
     // same visual language as ColSphere/SpawnPoint's radius indicator.
     for (auto& l : scene.lights) {
+        if (scene.IsHidden(kSelLight, l.id)) continue;
         bool sel = (selectedType == kSelLight && selectedID == l.id);
         glm::vec4 col = {l.color.r, l.color.g, l.color.b, sel ? 1.0f : 0.85f};
         DrawSphere(l.pos, 0.3f, col, vp);
@@ -1016,6 +1036,7 @@ void ZoneRenderer::DrawForwardOverlays_(const ZoneScene& scene, int selectedID,
         {1.0f, 0.2f, 0.1f, 0.35f}, {0.7f, 0.3f, 1.0f, 0.35f},
     };
     for (auto& n : scene.npcs) {
+        if (scene.IsHidden(kSelNpc, n.id)) continue;
         bool sel = (selectedType == kSelNpc && selectedID == n.id);
         int ci = std::clamp(n.aggressiveness, 0, 3);
         if (n.aggressiveness == 1 || n.aggressiveness == 2)
@@ -1026,6 +1047,7 @@ void ZoneRenderer::DrawForwardOverlays_(const ZoneScene& scene, int selectedID,
                          {1.f, 1.f, 1.f, 0.35f}, vp);
     }
     for (auto& sp : scene.spawnPoints) {
+        if (scene.IsHidden(kSelSpawnPoint, sp.id)) continue;
         bool sel = (selectedType == kSelSpawnPoint && selectedID == sp.id);
         glm::vec4 colSphere = sel ? glm::vec4(1.f, 0.9f, 0.1f, 0.9f)
                                   : glm::vec4(0.1f, 0.9f, 0.2f, 0.7f);
@@ -1035,6 +1057,7 @@ void ZoneRenderer::DrawForwardOverlays_(const ZoneScene& scene, int selectedID,
         DrawCircleXZ({sp.pos.x, sp.pos.z}, sp.radius, sp.pos.y + 0.1f, colCircle, vp);
     }
     for (auto& ps : scene.playerSpawns) {
+        if (scene.IsHidden(kSelPlayerSpawn, ps.id)) continue;
         bool sel = (selectedType == kSelPlayerSpawn && selectedID == ps.id);
         glm::vec4 col = sel ? glm::vec4(1.f, 0.95f, 0.1f, 1.0f)
                             : glm::vec4(1.0f, 0.70f, 0.0f, 0.85f);
@@ -1044,6 +1067,23 @@ void ZoneRenderer::DrawForwardOverlays_(const ZoneScene& scene, int selectedID,
         float dz = std::cos(glm::radians(ps.yaw)) * 0.8f;
         glm::vec3 tip = ps.pos + glm::vec3(dx, 0.f, dz);
         DrawLine(ps.pos, tip, col, vp);
+    }
+    // Atmosphere volumes ("Post Process Volume" style) — Fase 1 is data +
+    // editor only (no in-game effect yet, see docs/TECH_DEBT.md "Atmosphere
+    // volumes"), so the marker here is purely an authoring aid: a wireframe
+    // box (or sphere, using size.x as diameter) in a distinct violet hue,
+    // brighter/more opaque when selected — same selected/unselected tinting
+    // convention as every other debug-primitive type above.
+    for (auto& v : scene.atmosphereVolumes) {
+        if (scene.IsHidden(kSelAtmosphereVolume, v.id)) continue;
+        bool sel = (selectedType == kSelAtmosphereVolume && selectedID == v.id);
+        glm::vec4 col = sel ? glm::vec4(0.85f, 0.55f, 1.0f, 0.9f)
+                             : glm::vec4(0.55f, 0.30f, 0.85f, 0.5f);
+        if (v.shape == 1) {
+            DrawSphere(v.pos, std::max(0.05f, v.size.x * 0.5f), col, vp);
+        } else {
+            DrawBox(v.pos, v.size, col, vp);
+        }
     }
     for (auto& w : scene.waypoints) {
         bool sel = (selectedType == kSelWaypoint && selectedID == w.id);

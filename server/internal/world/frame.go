@@ -426,3 +426,72 @@ func WaterPayload(water []Water) []byte {
 	}
 	return []byte(p)
 }
+
+// AtmosphereVolumesPayload encodes a slice of atmosphere volumes for
+// PAtmosphereVolumes. Fase 1 — client only stores this list for now (Fase 2
+// does the point-in-volume test + enter/exit blend). Format: count(u16) +
+// for each: name(str)+shape(u8)+pos_x/y/z(f32)+size_x/y/z(f32)+
+// priority(i32)+transition_seconds(f32)+ the same sun/fog/ambient/scene/
+// color fields AreaConfig sends via PAreaConfig, in the same order (see
+// sendAreaConfig in client.go).
+func AtmosphereVolumesPayload(volumes []AtmosphereVolume) []byte {
+	var p pb
+	n := len(volumes)
+	if n > 0xFFFF {
+		n = 0xFFFF
+	}
+	p.u16(uint16(n))
+	for i := 0; i < n; i++ {
+		v := &volumes[i]
+		p.str(v.Name)
+		p.u8(uint8(v.Shape))
+		p.f32(v.PosX)
+		p.f32(v.PosY)
+		p.f32(v.PosZ)
+		p.f32(v.SizeX)
+		p.f32(v.SizeY)
+		p.f32(v.SizeZ)
+		p.i32(int32(v.Priority))
+		p.f32(v.TransitionSeconds)
+		p.f32(v.SunDirX)
+		p.f32(v.SunDirY)
+		p.f32(v.SunDirZ)
+		p.f32(v.SunColorR)
+		p.f32(v.SunColorG)
+		p.f32(v.SunColorB)
+		p.f32(v.SunIntensityMul)
+		p.f32(v.SkyIntensityMul)
+		p.f32(v.FogDensityMul)
+		p.f32(v.FogR)
+		p.f32(v.FogG)
+		p.f32(v.FogB)
+		p.u8(v.AmbientR)
+		p.u8(v.AmbientG)
+		p.u8(v.AmbientB)
+		p.u8(boolU8(v.Volumetrics))
+		p.f32(v.CharShadowLift)
+		p.f32(v.CharRimStrength)
+		p.f32(v.CharRimExponent)
+		p.f32(v.CharMinNdotL)
+		p.f32(v.CharAmbientBoost)
+		p.f32(v.SceneIblIntensity)
+		p.f32(v.SceneSkyIntensity)
+		p.f32(v.SceneWorldShadowLift)
+		p.f32(v.SceneDirectScale)
+		p.f32(v.SceneAmbientScale)
+		p.f32(v.SceneFlatAmbient)
+		p.f32(v.SceneWorldMinNdotL)
+		p.f32(v.SceneAlbedoMinLuma)
+		p.f32(v.SceneAlbedoLiftStrength)
+		p.f32(v.SceneSpecularScale)
+		p.f32(v.SceneExposureFactor)
+		p.f32(v.SceneSunIntensity)
+		p.f32(v.ColorContrast)
+		p.f32(v.ColorSaturation)
+		p.f32(v.ColorVibrance)
+		p.f32(v.ColorBlackPoint)
+		p.f32(v.ColorVignetteStrength)
+		p.f32(v.ColorVignetteSoftness)
+	}
+	return []byte(p)
+}

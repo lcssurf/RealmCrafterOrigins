@@ -27,6 +27,21 @@ struct TerrainMatSpec {
     float       normal_strength = 2.5f;
 };
 
+// Slope+height painting rule for EditableTerrain::AutoPaintByRules. Order in
+// the vector IS the priority — the first rule in the list "wins" a pixel,
+// with the runner-up rules only showing through in the soft transition zone
+// at each rule's edges (see editable_terrain.cpp for the compositing that
+// keeps this from producing a serrated/binary result). heightMin/heightMax
+// default to a huge range so a rule with only slopeMin/slopeMax set behaves
+// exactly like a slope-only rule.
+struct AutoPaintRule {
+    int   material  = -1;
+    float slopeMin  = 0.f;
+    float slopeMax  = 90.f;
+    float heightMin = -1e6f;
+    float heightMax = 1e6f;
+};
+
 // Editable terrain used inside the GUE Zones tab.
 //
 // Wraps a Heightmap + Splatmap + materials. Material count is NOT capped
@@ -90,16 +105,41 @@ public:
     // Brush operations — caller provides the world-space hit point from Raycast.
     void ApplyBrush(float wx, float wz, float radius, float strength, float dt,
                     BrushMode mode, float flattenH = 0.f,
-                    BrushFalloff falloff = BrushFalloff::Smooth);
+                    BrushFalloff falloff = BrushFalloff::Smooth,
+                    BrushShape shape = BrushShape::Circle,
+                    float hardness = 0.f, float noiseAmount = 0.f);
 
     // Paint one material layer into the splatmap. matIdx is unbounded — any
     // material registered via SetMaterialSlot/AddMaterialSlot can be painted.
+    // `erase` inverts the operation: removes weight from matIdx and returns it
+    // proportionally to every other slot, instead of adding to matIdx and
+    // taking from the rest. `maxOpacity` (paint side only, ignored when
+    // erase=true) caps how high matIdx's weight can go at any texel — default
+    // 1.0 = no cap, identical to pre-existing behaviour; a lower value locks
+    // in a permanent partial blend no amount of brushing can push past.
     void Paint(float wx, float wz, float radius, float strength, float dt, int matIdx,
-               BrushFalloff falloff = BrushFalloff::Smooth);
+               BrushFalloff falloff = BrushFalloff::Smooth,
+               BrushShape shape = BrushShape::Circle,
+               float hardness = 0.f, float noiseAmount = 0.f,
+               bool erase = false, float maxOpacity = 1.f);
 
-    // Fill splatmap based on terrain slope. Pixels below minDeg get flatLayer,
-    // above maxDeg get rockLayer; blends smoothly between. All other layers → 0.
-    void AutoPaintBySlope(int flatLayer, int rockLayer, float minDeg, float maxDeg);
+    // Smooths (blurs) the splatmap weights across all material slots inside
+    // the brush radius — paralleling BrushMode::Smooth for the heightmap.
+    // Weights are re-normalized per-texel after blending so they keep summing
+    // to ~1 (a plain neighbour-average blur alone doesn't guarantee that).
+    void SmoothPaint(float wx, float wz, float radius, float strength, float dt,
+                      BrushFalloff falloff = BrushFalloff::Smooth,
+                      BrushShape shape = BrushShape::Circle,
+                      float hardness = 0.f, float noiseAmount = 0.f);
+
+    // Fill splatmap based on an ordered list of slope+height rules (see
+    // AutoPaintRule above). Order is priority — earlier rules take precedence
+    // — but adjacent rules still blend smoothly across their soft edges
+    // rather than producing a hard per-pixel cut. Pixels not covered by any
+    // rule (or only partially covered, via a rule's soft edge) keep their
+    // pre-existing splatmap weights for the uncovered fraction — nothing is
+    // zeroed out.
+    void AutoPaintByRules(const std::vector<AutoPaintRule>& rules);
 
     // Accessors
     Heightmap&       heightmap()       { return heightmap_; }

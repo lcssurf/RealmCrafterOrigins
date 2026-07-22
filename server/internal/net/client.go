@@ -620,6 +620,9 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	// Send static water planes for this area.
 	c.sendZoneWater(area)
 
+	// Send atmosphere volumes for this area (Fase 1 — data only).
+	c.sendAtmosphereVolumes(area)
+
 	// Send any dropped items already in the area.
 	c.sendWorldItems(area)
 
@@ -934,6 +937,21 @@ func (c *ClientConn) sendZoneWater(area *world.Area) {
 	c.actor.Send(buildFramedPacket(protocol.PZoneWater, world.WaterPayload(water)))
 }
 
+// sendAtmosphereVolumes sends the area's placed atmosphere volumes (Post
+// Process Volume-style regions — Fase 1: data only, client just stores the
+// list; Fase 2 does the point-in-volume test and enter/exit blend). Mirrors
+// sendZoneLights/sendZoneWater exactly; called from the same two places
+// (initial area entry and portal/area change).
+func (c *ClientConn) sendAtmosphereVolumes(area *world.Area) {
+	area.Mu.RLock()
+	volumes := area.AtmosphereVolumes
+	area.Mu.RUnlock()
+	if len(volumes) == 0 {
+		return
+	}
+	c.actor.Send(buildFramedPacket(protocol.PAtmosphereVolumes, world.AtmosphereVolumesPayload(volumes)))
+}
+
 func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) error {
 	// Cooldown: 3 s between portal uses.
 	c.actor.Mu.Lock()
@@ -986,6 +1004,7 @@ func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) er
 	c.sendWorldObjects(newArea)
 	c.sendZoneLights(newArea)
 	c.sendZoneWater(newArea)
+	c.sendAtmosphereVolumes(newArea)
 	c.sendWorldItems(newArea)
 
 	// Resend known spells — the client clears its spellbar on PChangeArea,

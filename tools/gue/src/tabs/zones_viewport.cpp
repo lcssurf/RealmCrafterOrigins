@@ -15,8 +15,18 @@ namespace gue {
 // ─── Floating toolbar (overlaid inside viewport) ──────────────────────────────
 
 void ZonesTab::DrawFloatingToolbar() {
-    // Keyboard shortcuts (Q/W/E/R and F1-F4)
-    if (vpHovered_) {
+    // Keyboard shortcuts (Q/W/E/R, F1-F4, T, Y) — suspended while the dev is
+    // actively navigating with a mouse button held (RMB freelook/fly,
+    // Alt+LMB orbit, Alt+RMB dolly, MMB pan). WASD (and Q/E/R specifically)
+    // double as camera-fly keys during RMB freelook (see the "Freelook (RMB
+    // held)" block above in DrawViewport), so leaving these tool shortcuts
+    // live during navigation meant pressing W to fly forward also silently
+    // swapped the active gizmo tool to Move. All of mouseLook_/altOrbit_/
+    // altDolly_/mmbPan_ are resolved earlier in DrawViewport (this function
+    // is called from partway through it), so they're already up to date for
+    // this frame. See docs/TECH_DEBT.md "Viewport input priority chain".
+    const bool navigating = mouseLook_ || altOrbit_ || altDolly_ || mmbPan_;
+    if (vpHovered_ && !navigating) {
         const bool ctrlDown = ImGui::IsKeyDown(ImGuiKey_LeftCtrl)
                            || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
         if (ImGui::IsKeyPressed(ImGuiKey_Q, false)) xformMode_ = kXFormSelect;
@@ -357,6 +367,526 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_None);
     }
 
+    // ── Shared object raycast (selection hit-test + hover highlight) ───────
+    // Ray-sphere / ray-AABB test against every pickable scene category.
+    // Used BOTH by the click arbiter below (does this click land on an
+    // object?) and, every frame, to drive a subtle "object under cursor"
+    // hover highlight (see item 3) — one raycast serves both, since a click
+    // frame's cursor position and that same frame's hover position are
+    // identical.
+    auto raycastObjects = [&](int& outID, int& outType) {
+        outID = -1; outType = kSelNone;
+        if (!vpHovered_) return;
+        ImVec2 mp = ImGui::GetMousePos();
+        float vpX = mp.x - vpOrigin_.x;
+        float vpY = mp.y - vpOrigin_.y;
+        float ndcX =  (vpX / vpSize_.x) * 2.f - 1.f;
+        float ndcY = -((vpY / vpSize_.y) * 2.f - 1.f);
+        float aspect = vpSize_.x / std::max(vpSize_.y, 1.f);
+        glm::vec3 orig = cam_.pos;
+        glm::vec3 dir  = cam_.NDCRay(ndcX, ndcY, aspect);
+
+        auto raySphere = [](const glm::vec3& ro, const glm::vec3& rd,
+                            const glm::vec3& center, float r) -> float {
+            glm::vec3 oc = ro - center;
+            float b = glm::dot(oc, rd);
+            float c = glm::dot(oc, oc) - r*r;
+            float disc = b*b - c;
+            if (disc < 0.f) return -1.f;
+            return -b - std::sqrt(disc);
+        };
+        auto rayAABB = [](const glm::vec3& ro, const glm::vec3& rd,
+                          const glm::vec3& mn, const glm::vec3& mx) -> float {
+            glm::vec3 invD = 1.f / rd;
+            glm::vec3 t0   = (mn - ro) * invD;
+            glm::vec3 t1   = (mx - ro) * invD;
+            glm::vec3 tmin = glm::min(t0, t1);
+            glm::vec3 tmax = glm::max(t0, t1);
+            float tenter = std::max({tmin.x, tmin.y, tmin.z});
+            float texit  = std::min({tmax.x, tmax.y, tmax.z});
+            if (texit < tenter || texit < 0.f) return -1.f;
+            return tenter;
+        };
+
+        float bestT = 1e9f;
+        for (auto& p : scene_.portals) {
+            if (scene_.IsHidden(kSelPortal, p.id)) continue;
+            glm::vec3 c = {p.pos.x, p.radius, p.pos.z};
+            float t = raySphere(orig, dir, c, p.radius);
+            if (t > 0.f && t < bestT) { bestT = t; outID = p.id; outType = kSelPortal; }
+        }
+        for (auto& t : scene_.triggers) {
+            if (scene_.IsHidden(kSelTrigger, t.id)) continue;
+            float tt = raySphere(orig, dir, {t.x, 0.f, t.z}, t.radius);
+            if (tt > 0.f && tt < bestT) { bestT = tt; outID = t.id; outType = kSelTrigger; }
+        }
+        for (auto& s : scene_.soundZones) {
+            if (scene_.IsHidden(kSelSoundZone, s.id)) continue;
+            float tt = raySphere(orig, dir, {s.x, 0.f, s.z}, s.radius);
+            if (tt > 0.f && tt < bestT) { bestT = tt; outID = s.id; outType = kSelSoundZone; }
+        }
+        for (auto& c : scene_.colBoxes) {
+            if (scene_.IsHidden(kSelColBox, c.id)) continue;
+            glm::vec3 half = c.scale * 0.5f;
+            float tt = rayAABB(orig, dir, c.pos - half, c.pos + half);
+            if (tt > 0.f && tt < bestT) { bestT = tt; outID = c.id; outType = kSelColBox; }
+        }
+        for (auto& s : scene_.colSpheres) {
+            if (scene_.IsHidden(kSelColSphere, s.id)) continue;
+            float tt = raySphere(orig, dir, s.pos, s.radius);
+            if (tt > 0.f && tt < bestT) { bestT = tt; outID = s.id; outType = kSelColSphere; }
+        }
+        for (auto& w : scene_.waypoints) {
+            if (scene_.IsHidden(kSelWaypoint, w.id)) continue;
+            float tt = raySphere(orig, dir, w.pos, 0.8f);
+            if (tt > 0.f && tt < bestT) { bestT = tt; outID = w.id; outType = kSelWaypoint; }
+        }
+        for (auto& n : scene_.npcs) {
+            if (scene_.IsHidden(kSelNpc, n.id)) continue;
+            glm::vec3 mn = n.pos - glm::vec3(0.35f, 0.f, 0.35f);
+            glm::vec3 mx = n.pos + glm::vec3(0.35f, 1.0f, 0.35f);
+            float tt = rayAABB(orig, dir, mn, mx);
+            if (tt > 0.f && tt < bestT) { bestT = tt; outID = n.id; outType = kSelNpc; }
+        }
+        for (auto& e : scene_.emitters) {
+            if (scene_.IsHidden(kSelEmitter, e.id)) continue;
+            glm::vec3 mn = e.pos - glm::vec3(0.4f, 0.f, 0.4f);
+            glm::vec3 mx = e.pos + glm::vec3(0.4f, 1.5f, 0.4f);
+            float tt = rayAABB(orig, dir, mn, mx);
+            if (tt > 0.f && tt < bestT) { bestT = tt; outID = e.id; outType = kSelEmitter; }
+        }
+        for (auto& w : scene_.water) {
+            if (scene_.IsHidden(kSelWater, w.id)) continue;
+            glm::vec3 mn = {w.pos.x - w.scale.x*0.5f, w.pos.y - 0.1f, w.pos.z - w.scale.y*0.5f};
+            glm::vec3 mx = {w.pos.x + w.scale.x*0.5f, w.pos.y + 0.2f, w.pos.z + w.scale.y*0.5f};
+            float tt = rayAABB(orig, dir, mn, mx);
+            if (tt > 0.f && tt < bestT) { bestT = tt; outID = w.id; outType = kSelWater; }
+        }
+        for (auto& s : scene_.scenery) {
+            if (scene_.IsHidden(kSelScenery, s.id)) continue;
+            // s.scale is a MESH-SCALE MULTIPLIER (often far from 1 — many
+            // models here use 0.02), not a world-space box size — using it
+            // directly as a box (the old code) made the hit-test box tiny
+            // for any model authored at a different native scale, which is
+            // why scenery was unselectable while lights/water (whose scale
+            // fields genuinely ARE world-space sizes) worked fine. Get the
+            // model's real local-space bind-pose bounds and transform them
+            // by the object's full pos/rot/scale (same matrix used to draw
+            // it — see ZoneRenderer::RenderFramePBR_'s scenery loop).
+            glm::vec3 lmn, lmx;
+            if (renderer_.SceneryModelLocalBounds(s.id, lmn, lmx)) {
+                glm::mat4 m = glm::translate(glm::mat4(1.f), s.pos);
+                m = glm::rotate(m, glm::radians(s.rot.y), {0.f, 1.f, 0.f});
+                m = glm::rotate(m, glm::radians(s.rot.x), {1.f, 0.f, 0.f});
+                m = glm::rotate(m, glm::radians(s.rot.z), {0.f, 0.f, 1.f});
+                m = glm::scale(m, s.scale);
+                // Transform all 8 local corners and take the resulting
+                // world AABB. The model's true rotated bounds are an
+                // oriented box (OBB); this AABB is a conservative superset
+                // of it — never smaller than the visible model, at most a
+                // bit generous on a diagonal rotation — which is the right
+                // trade-off for a click hit-test versus a full ray/OBB
+                // intersection. See docs/TECH_DEBT.md "Viewport input
+                // priority chain".
+                glm::vec3 wmn(1e9f), wmx(-1e9f);
+                for (int i = 0; i < 8; ++i) {
+                    glm::vec3 corner((i & 1) ? lmx.x : lmn.x,
+                                      (i & 2) ? lmx.y : lmn.y,
+                                      (i & 4) ? lmx.z : lmn.z);
+                    glm::vec3 wc = glm::vec3(m * glm::vec4(corner, 1.f));
+                    wmn = glm::min(wmn, wc);
+                    wmx = glm::max(wmx, wc);
+                }
+                float tt = rayAABB(orig, dir, wmn, wmx);
+                if (tt > 0.f && tt < bestT) { bestT = tt; outID = s.id; outType = kSelScenery; }
+            } else {
+                // Model not loaded yet (or no actor) — fall back to the old
+                // approximation so the object isn't completely unselectable
+                // while it streams in, clamped to a sane minimum.
+                glm::vec3 half = glm::max(glm::abs(s.scale) * 0.5f, glm::vec3(0.05f));
+                float tt = rayAABB(orig, dir, s.pos - half, s.pos + half);
+                if (tt > 0.f && tt < bestT) { bestT = tt; outID = s.id; outType = kSelScenery; }
+            }
+        }
+        for (auto& l : scene_.lights) {
+            if (scene_.IsHidden(kSelLight, l.id)) continue;
+            float tt = raySphere(orig, dir, l.pos, 0.3f);
+            if (tt > 0.f && tt < bestT) { bestT = tt; outID = l.id; outType = kSelLight; }
+        }
+        // Atmosphere volumes — same AABB-hit-test convention as colBoxes
+        // (pos ± size/2), regardless of `shape` (sphere volumes still get a
+        // box hit-test for editor click purposes — see docs/TECH_DEBT.md
+        // "Atmosphere volumes").
+        for (auto& v : scene_.atmosphereVolumes) {
+            if (scene_.IsHidden(kSelAtmosphereVolume, v.id)) continue;
+            glm::vec3 half = glm::max(glm::abs(v.size) * 0.5f, glm::vec3(0.05f));
+            float tt = rayAABB(orig, dir, v.pos - half, v.pos + half);
+            if (tt > 0.f && tt < bestT) { bestT = tt; outID = v.id; outType = kSelAtmosphereVolume; }
+        }
+    };
+
+    // scnArmed: a scenery model is picked and ready to place on LMB click.
+    // Computed here (rather than down by the placement block) so the click
+    // arbiter below can see it.
+    const bool scnArmed = (zoneMode_ == kModeScenery && scnModelId_ != 0
+                           && xformMode_ == kXFormSelect && !mouseLook_);
+
+    // paintToolActive mirrors the terrain/foliage brush blocks' OWN outer
+    // gate exactly (zoneMode_ + !mouseLook_ + terrain loaded). Hoisted up
+    // here (used to live only down by the click arbiter, further below) so
+    // BOTH the click arbiter AND the object-hover suppression right below
+    // read the exact same condition — reused, not duplicated. See
+    // docs/TECH_DEBT.md "Viewport input priority chain".
+    const bool paintToolActive = (zoneMode_ == kModeTerrain || zoneMode_ == kModeFoliage) &&
+                                  !mouseLook_ && renderer_.terrain().Loaded();
+
+    // Object hover — every frame, throttled to every-other-frame except on
+    // an actual click (which always needs a same-frame-fresh result for the
+    // arbiter below, so a click landing directly on an object still resolves
+    // to Selection even while paintToolActive — see the arbiter's own
+    // priority order: Selection outranks the zoneMode_ tool there). Cost:
+    // one ray-sphere/ray-AABB test per pickable object in the scene, no
+    // spatial structure — trivially cheap at ordinary GUE zone sizes (tens
+    // to low hundreds of objects); the throttle exists so a very large zone
+    // doesn't pay for it on every single render frame for a purely cosmetic
+    // highlight.
+    //
+    // While a paint tool is active, the HOVER-ONLY refresh (not the
+    // click-frame one) is suppressed outright: no object hover, no outline,
+    // regardless of whether the cursor happens to be over an object — the
+    // dev's whole mental model while sculpting/painting is "I'm painting",
+    // and a highlight flickering under the brush cursor was pure noise. This
+    // is a deliberately SIMPLER rule than the full click arbiter (which
+    // still lets a literal click on an object win) — it only governs the
+    // passive visual feedback, not what a click actually resolves to.
+    const bool lmbClickedNow = vpHovered_ && ImGui::IsMouseClicked(0) && !altDown;
+    int rcID = hoverObjID_, rcType = hoverObjType_;
+    if (!vpHovered_ || (paintToolActive && !lmbClickedNow)) {
+        rcID = -1; rcType = kSelNone;
+        hoverObjID_ = -1; hoverObjType_ = kSelNone;
+    } else if (lmbClickedNow || (hoverThrottleCounter_ % 2) == 0) {
+        raycastObjects(rcID, rcType);
+        hoverObjID_   = rcID;
+        hoverObjType_ = rcType;
+    }
+    ++hoverThrottleCounter_;
+
+    // World-space AABB lookup shared by the hover outline below. Approach
+    // chosen: (a) screen-space wireframe box — project the object's world
+    // AABB corners and draw the 12 edges as an ImGui overlay, same
+    // screen-space-overlay technique as the terrain brush cursor above. NOT
+    // (b) a true 3D silhouette outline (stencil/edge-detect render pass) —
+    // that needs a new render pass wired into the deferred pipeline (extra
+    // FBO/shader, depth-aware edge detection or a stencil-mask-and-outline
+    // draw), real effort for a marginal usability gain over projecting the
+    // box: the box already tells you unambiguously "this is the object under
+    // the cursor" and follows its rotation/position/size, which is all this
+    // needs to do. Reuses the same scenery real-model-bounds fix as the
+    // raycast above (see docs/TECH_DEBT.md "Viewport input priority chain",
+    // bug 126.1) instead of the flawed scale-as-size shortcut.
+    auto worldAABBFor = [&](int type, int id, glm::vec3& outMin, glm::vec3& outMax) -> bool {
+        switch (type) {
+        case kSelPortal:
+            for (auto& o : scene_.portals) if (o.id == id) {
+                float r = std::max(0.05f, o.radius);
+                glm::vec3 c{o.pos.x, o.radius, o.pos.z};
+                outMin = c - glm::vec3(r); outMax = c + glm::vec3(r); return true;
+            }
+            break;
+        case kSelTrigger:
+            for (auto& o : scene_.triggers) if (o.id == id) {
+                float r = std::max(0.05f, o.radius);
+                glm::vec3 c{o.x, 0.f, o.z};
+                outMin = c - glm::vec3(r, 0.6f, r); outMax = c + glm::vec3(r, 0.6f, r); return true;
+            }
+            break;
+        case kSelSoundZone:
+            for (auto& o : scene_.soundZones) if (o.id == id) {
+                float r = std::max(0.05f, o.radius);
+                glm::vec3 c{o.x, 0.f, o.z};
+                outMin = c - glm::vec3(r, 0.6f, r); outMax = c + glm::vec3(r, 0.6f, r); return true;
+            }
+            break;
+        case kSelColBox:
+            for (auto& o : scene_.colBoxes) if (o.id == id) {
+                glm::vec3 h = glm::max(glm::abs(o.scale) * 0.5f, glm::vec3(0.05f));
+                outMin = o.pos - h; outMax = o.pos + h; return true;
+            }
+            break;
+        case kSelColSphere:
+            for (auto& o : scene_.colSpheres) if (o.id == id) {
+                float r = std::max(0.05f, o.radius);
+                outMin = o.pos - glm::vec3(r); outMax = o.pos + glm::vec3(r); return true;
+            }
+            break;
+        case kSelWaypoint:
+            for (auto& o : scene_.waypoints) if (o.id == id) {
+                outMin = o.pos - glm::vec3(0.5f); outMax = o.pos + glm::vec3(0.5f); return true;
+            }
+            break;
+        case kSelNpc:
+            for (auto& o : scene_.npcs) if (o.id == id) {
+                outMin = o.pos - glm::vec3(0.35f, 0.f, 0.35f);
+                outMax = o.pos + glm::vec3(0.35f, 1.f, 0.35f); return true;
+            }
+            break;
+        case kSelEmitter:
+            for (auto& o : scene_.emitters) if (o.id == id) {
+                outMin = o.pos - glm::vec3(0.4f, 0.f, 0.4f);
+                outMax = o.pos + glm::vec3(0.4f, 1.5f, 0.4f); return true;
+            }
+            break;
+        case kSelWater:
+            for (auto& o : scene_.water) if (o.id == id) {
+                outMin = {o.pos.x - o.scale.x * 0.5f, o.pos.y - 0.1f, o.pos.z - o.scale.y * 0.5f};
+                outMax = {o.pos.x + o.scale.x * 0.5f, o.pos.y + 0.2f, o.pos.z + o.scale.y * 0.5f};
+                return true;
+            }
+            break;
+        case kSelLight:
+            for (auto& o : scene_.lights) if (o.id == id) {
+                outMin = o.pos - glm::vec3(0.3f); outMax = o.pos + glm::vec3(0.3f); return true;
+            }
+            break;
+        case kSelAtmosphereVolume:
+            for (auto& o : scene_.atmosphereVolumes) if (o.id == id) {
+                glm::vec3 h = glm::max(glm::abs(o.size) * 0.5f, glm::vec3(0.05f));
+                outMin = o.pos - h; outMax = o.pos + h; return true;
+            }
+            break;
+        case kSelScenery:
+            for (auto& o : scene_.scenery) if (o.id == id) {
+                glm::vec3 lmn, lmx;
+                if (renderer_.SceneryModelLocalBounds(o.id, lmn, lmx)) {
+                    glm::mat4 m = glm::translate(glm::mat4(1.f), o.pos);
+                    m = glm::rotate(m, glm::radians(o.rot.y), {0.f, 1.f, 0.f});
+                    m = glm::rotate(m, glm::radians(o.rot.x), {1.f, 0.f, 0.f});
+                    m = glm::rotate(m, glm::radians(o.rot.z), {0.f, 0.f, 1.f});
+                    m = glm::scale(m, o.scale);
+                    glm::vec3 wmn(1e9f), wmx(-1e9f);
+                    for (int i = 0; i < 8; ++i) {
+                        glm::vec3 corner((i & 1) ? lmx.x : lmn.x,
+                                          (i & 2) ? lmx.y : lmn.y,
+                                          (i & 4) ? lmx.z : lmn.z);
+                        glm::vec3 wc = glm::vec3(m * glm::vec4(corner, 1.f));
+                        wmn = glm::min(wmn, wc); wmx = glm::max(wmx, wc);
+                    }
+                    outMin = wmn; outMax = wmx;
+                } else {
+                    glm::vec3 h = glm::max(glm::abs(o.scale) * 0.5f, glm::vec3(0.05f));
+                    outMin = o.pos - h; outMax = o.pos + h;
+                }
+                return true;
+            }
+            break;
+        default: break;
+        }
+        return false;
+    };
+
+    // Draws the 12 edges of a world-space AABB projected to screen — used
+    // for the hover outline (subtle: thin, low-opacity) below, and reusable
+    // later for a bolder "selected" outline if this object type doesn't
+    // already get one in the 3D scene (portals/triggers/colboxes/etc. do,
+    // via ZoneRenderer::RenderFramePBR_'s tinted debug primitives; scenery
+    // relies on the gizmo itself as its "selected" indicator).
+    auto drawWorldBoxOutline = [&](const glm::vec3& mn, const glm::vec3& mx,
+                                    ImU32 colOutline, ImU32 colShadow, float thickness) {
+        glm::mat4 vpMat = cam_.Proj(vpSize_.x / std::max(vpSize_.y, 1.f)) * cam_.View();
+        glm::vec3 corners[8];
+        for (int i = 0; i < 8; ++i)
+            corners[i] = glm::vec3((i & 1) ? mx.x : mn.x, (i & 2) ? mx.y : mn.y, (i & 4) ? mx.z : mn.z);
+        ImVec2 pts[8]; bool valid[8];
+        for (int i = 0; i < 8; ++i) {
+            glm::vec4 clip = vpMat * glm::vec4(corners[i], 1.f);
+            valid[i] = clip.w > 0.0001f;
+            if (valid[i]) {
+                clip /= clip.w;
+                pts[i] = {vpOrigin_.x + (clip.x * 0.5f + 0.5f) * vpSize_.x,
+                          vpOrigin_.y + (-clip.y * 0.5f + 0.5f) * vpSize_.y};
+            }
+        }
+        static const int kEdges[12][2] = {
+            {0,1},{0,2},{0,4},{1,3},{1,5},{2,3},
+            {2,6},{3,7},{4,5},{4,6},{5,7},{6,7},
+        };
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        for (auto& e : kEdges) {
+            if (!valid[e[0]] || !valid[e[1]]) continue;
+            dl->AddLine(pts[e[0]], pts[e[1]], colShadow, thickness + 2.f);
+        }
+        for (auto& e : kEdges) {
+            if (!valid[e[0]] || !valid[e[1]]) continue;
+            dl->AddLine(pts[e[0]], pts[e[1]], colOutline, thickness);
+        }
+    };
+
+    // Screen-space bounding rect of an object's projected world AABB — used
+    // by the marquee multi-select below (item 2: selects by projected AABB
+    // overlap, not just the object's centre point, matching how most
+    // editors' rectangle-select behave — an object partially inside the
+    // drag rectangle still gets picked up).
+    auto screenRectFor = [&](int type, int id, ImVec2& outMin, ImVec2& outMax) -> bool {
+        glm::vec3 mn, mx;
+        if (!worldAABBFor(type, id, mn, mx)) return false;
+        glm::mat4 vpMat = cam_.Proj(vpSize_.x / std::max(vpSize_.y, 1.f)) * cam_.View();
+        ImVec2 smn(1e9f, 1e9f), smx(-1e9f, -1e9f);
+        bool any = false;
+        for (int i = 0; i < 8; ++i) {
+            glm::vec3 corner((i & 1) ? mx.x : mn.x, (i & 2) ? mx.y : mn.y, (i & 4) ? mx.z : mn.z);
+            glm::vec4 clip = vpMat * glm::vec4(corner, 1.f);
+            if (clip.w <= 0.0001f) continue;
+            clip /= clip.w;
+            float sx = vpOrigin_.x + (clip.x * 0.5f + 0.5f) * vpSize_.x;
+            float sy = vpOrigin_.y + (-clip.y * 0.5f + 0.5f) * vpSize_.y;
+            smn.x = std::min(smn.x, sx); smn.y = std::min(smn.y, sy);
+            smx.x = std::max(smx.x, sx); smx.y = std::max(smx.y, sy);
+            any = true;
+        }
+        if (!any) return false;
+        outMin = smn; outMax = smx;
+        return true;
+    };
+
+    // Subtle hover outline — skipped while something is already selected the
+    // same way (the gizmo/selection's own feedback already covers that
+    // object) or while dragging the gizmo/navigating. Deliberately thinner
+    // and less opaque than a "selected" outline would be, so the two never
+    // read as the same strength of feedback (see item 3 of this change).
+    if (rcID >= 0 && !mouseLook_ && gizmoAxis_ < 0 &&
+        !(rcID == selectedID_ && rcType == selectedType_)) {
+        glm::vec3 mn, mx;
+        if (worldAABBFor(rcType, rcID, mn, mx)) {
+            drawWorldBoxOutline(mn, mx, IM_COL32(255, 220, 90, 165), IM_COL32(0, 0, 0, 90), 1.25f);
+        }
+    }
+
+    // Bold "selected" outline — scenery only. Every OTHER selectable type
+    // already gets its own strong selected-state feedback drawn straight
+    // into the 3D scene (a red/white tint on its debug sphere/box/circle —
+    // see ZoneRenderer::RenderFramePBR_'s per-type `sel` branches), but
+    // scenery (an actual G-buffer-rendered mesh, not a debug primitive) has
+    // none — its only prior "you selected this" feedback was the gizmo
+    // itself, which doesn't appear while xformMode_ is still Select. Clearly
+    // bolder than the hover outline above (thicker, more opaque, different
+    // hue) so the two can never be mistaken for each other.
+    if (selectedType_ == kSelScenery && selectedID_ >= 0) {
+        glm::vec3 mn, mx;
+        if (worldAABBFor(kSelScenery, selectedID_, mn, mx)) {
+            drawWorldBoxOutline(mn, mx, IM_COL32(255, 255, 255, 235), IM_COL32(0, 0, 0, 150), 2.5f);
+        }
+    }
+
+    // ── Unified LMB click-priority arbiter ──────────────────────────────
+    // Decided once per press, held for the whole gesture. Priority: gizmo
+    // handle > new-object placement > object selection (only if the ray
+    // actually hit something) > the active zoneMode_ tool (terrain/foliage
+    // brush, only while it would actually paint something) > marquee
+    // multi-select (lowest priority — only when NOTHING else claimed the
+    // click). Before this, each of those blocks tested only its own slice
+    // of state (xformMode_ / zoneMode_ / scnArmed) independently, so e.g.
+    // sculpting terrain (zoneMode_==kModeTerrain) and selecting an object
+    // (previously gated only on xformMode_==kXFormSelect, which defaults to
+    // true and nothing about entering Terrain mode changes it) could both
+    // fire on the very same click. See docs/TECH_DEBT.md "Viewport input
+    // priority chain".
+    //
+    // paintToolActive itself is computed earlier now (hoisted up alongside
+    // the object-hover suppression above — see that comment) — an empty
+    // click while Terrain/Foliage mode is active but the brush itself
+    // wouldn't do anything (e.g. no terrain loaded yet) correctly falls
+    // through to marquee instead of being silently swallowed as kLmbOwnerTool.
+    if (lmbClickedNow) {
+        if (xformMode_ != kXFormSelect && gizmoHoverAxis_ >= 0 && !mouseLook_) {
+            lmbGestureOwner_ = kLmbOwnerGizmo;
+        } else if (scnArmed) {
+            lmbGestureOwner_ = kLmbOwnerPlacement;
+        } else if (rcID >= 0) {
+            lmbGestureOwner_ = kLmbOwnerSelection;
+        } else if (paintToolActive) {
+            lmbGestureOwner_ = kLmbOwnerTool;
+        } else {
+            lmbGestureOwner_ = kLmbOwnerMarquee;
+        }
+    } else if (!ImGui::IsMouseDown(0)) {
+        lmbGestureOwner_ = kLmbOwnerNone;
+    }
+
+    // ── Marquee (rectangle) multi-select ────────────────────────────────
+    // Only starts when the click arbiter above found nothing else to claim
+    // it (lowest priority) — an empty click in Terrain/Foliage mode still
+    // goes to the brush (paintToolActive), never the marquee.
+    if (lmbClickedNow && lmbGestureOwner_ == kLmbOwnerMarquee) {
+        marqueeActive_ = true;
+        marqueeStart_  = ImGui::GetMousePos();
+    }
+    if (marqueeActive_) {
+        ImVec2 cur  = ImGui::GetMousePos();
+        ImVec2 rMin = {std::min(marqueeStart_.x, cur.x), std::min(marqueeStart_.y, cur.y)};
+        ImVec2 rMax = {std::max(marqueeStart_.x, cur.x), std::max(marqueeStart_.y, cur.y)};
+
+        if (ImGui::IsMouseDown(0)) {
+            // Same screen-space-overlay technique as the brush cursor/hover
+            // outline above — a translucent fill plus a crisp border.
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(rMin, rMax, IM_COL32(90, 160, 255, 35));
+            dl->AddRect(rMin, rMax, IM_COL32(130, 195, 255, 220), 0.f, 0, 1.5f);
+        } else {
+            // Released. A near-zero-area drag (a plain click that happened
+            // to land on empty space) is treated as a no-op here — it still
+            // falls through to the existing "empty click clears selection"
+            // logic further down, unaffected by this block.
+            marqueeActive_ = false;
+            constexpr float kMinDragPx = 3.f;
+            if ((rMax.x - rMin.x) >= kMinDragPx || (rMax.y - rMin.y) >= kMinDragPx) {
+                // Standard editor modifiers: plain drag replaces the
+                // selection, Shift adds to it, Ctrl removes from it.
+                const bool addMode    = shiftDown;
+                const bool removeMode = !shiftDown && ctrlSelect;
+
+                struct MarqueeHit { int type; int id; };
+                std::vector<MarqueeHit> hits;
+                auto collect = [&](auto& vec, int type) {
+                    for (auto& o : vec) {
+                        ImVec2 smn, smx;
+                        if (!screenRectFor(type, o.id, smn, smx)) continue;
+                        if (smx.x < rMin.x || smn.x > rMax.x ||
+                            smx.y < rMin.y || smn.y > rMax.y) continue;
+                        hits.push_back({type, o.id});
+                    }
+                };
+                collect(scene_.portals,    kSelPortal);
+                collect(scene_.triggers,   kSelTrigger);
+                collect(scene_.soundZones, kSelSoundZone);
+                collect(scene_.colBoxes,   kSelColBox);
+                collect(scene_.colSpheres, kSelColSphere);
+                collect(scene_.waypoints,  kSelWaypoint);
+                collect(scene_.npcs,       kSelNpc);
+                collect(scene_.emitters,   kSelEmitter);
+                collect(scene_.water,      kSelWater);
+                collect(scene_.scenery,    kSelScenery);
+                collect(scene_.lights,     kSelLight);
+                collect(scene_.atmosphereVolumes, kSelAtmosphereVolume);
+
+                if (!addMode && !removeMode) ClearSelection();
+                for (auto& h : hits) {
+                    if (removeMode) RemoveSelection(h.type, h.id);
+                    else            AddSelection(h.type, h.id, false);
+                }
+                if (!hits.empty()) {
+                    // Same auto-switch-to-Move rule as a single click (item 2
+                    // of the previous pass) — only from Select, never
+                    // overriding Rotate/Scale the dev chose on purpose.
+                    if (xformMode_ == kXFormSelect) xformMode_ = kXFormMove;
+                    std::snprintf(statusMsg_, sizeof(statusMsg_),
+                                  "%s %d object(s) via marquee.",
+                                  removeMode ? "Removed" : (addMode ? "Added" : "Selected"),
+                                  (int)hits.size());
+                }
+            }
+        }
+    }
+
     // MMB pan
     if (vpHovered_ && ImGui::IsMouseClicked(2)) mmbPan_ = true;
     if (!ImGui::IsMouseDown(2))                 mmbPan_ = false;
@@ -449,165 +979,108 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
 
     // mouseLook_ stays latched from the RMB gesture resolver above.
 
-    // Selection — LMB click (select mode)
-    if (vpHovered_ && ImGui::IsMouseClicked(0) && xformMode_ == kXFormSelect) {
-        ImVec2 mp = ImGui::GetMousePos();
-        float vpX = mp.x - vpOrigin_.x;
-        float vpY = mp.y - vpOrigin_.y;
-        float ndcX =  (vpX / vpSize_.x) * 2.f - 1.f;
-        float ndcY = -((vpY / vpSize_.y) * 2.f - 1.f);
-        float aspect = vpSize_.x / std::max(vpSize_.y, 1.f);
-        glm::vec3 orig = cam_.pos;
-        glm::vec3 dir  = cam_.NDCRay(ndcX, ndcY, aspect);
-
-        // Ray-sphere intersection helper
-        auto raySphere = [](const glm::vec3& ro, const glm::vec3& rd,
-                            const glm::vec3& center, float r) -> float {
-            glm::vec3 oc = ro - center;
-            float b = glm::dot(oc, rd);
-            float c = glm::dot(oc, oc) - r*r;
-            float disc = b*b - c;
-            if (disc < 0.f) return -1.f;
-            return -b - std::sqrt(disc);
-        };
-        // Ray-AABB intersection helper
-        auto rayAABB = [](const glm::vec3& ro, const glm::vec3& rd,
-                          const glm::vec3& mn, const glm::vec3& mx) -> float {
-            glm::vec3 invD = 1.f / rd;
-            glm::vec3 t0   = (mn - ro) * invD;
-            glm::vec3 t1   = (mx - ro) * invD;
-            glm::vec3 tmin = glm::min(t0, t1);
-            glm::vec3 tmax = glm::max(t0, t1);
-            float tenter = std::max({tmin.x, tmin.y, tmin.z});
-            float texit  = std::min({tmax.x, tmax.y, tmax.z});
-            if (texit < tenter || texit < 0.f) return -1.f;
-            return tenter;
-        };
-
-        float bestT = 1e9f;
-        int   bestID   = -1;
-        int   bestType = kSelNone;
-
-        // Test portals
-        for (auto& p : scene_.portals) {
-            glm::vec3 c = {p.pos.x, p.radius, p.pos.z};
-            float t = raySphere(orig, dir, c, p.radius);
-            if (t > 0.f && t < bestT) { bestT = t; bestID = p.id; bestType = kSelPortal; }
-        }
-        // Test triggers
-        for (auto& t : scene_.triggers) {
-            float r = t.radius;
-            float tt = raySphere(orig, dir, {t.x, 0.f, t.z}, r);
-            if (tt > 0.f && tt < bestT) { bestT = tt; bestID = t.id; bestType = kSelTrigger; }
-        }
-        // Test sound zones
-        for (auto& s : scene_.soundZones) {
-            float tt = raySphere(orig, dir, {s.x, 0.f, s.z}, s.radius);
-            if (tt > 0.f && tt < bestT) { bestT = tt; bestID = s.id; bestType = kSelSoundZone; }
-        }
-        // Test colboxes
-        for (auto& c : scene_.colBoxes) {
-            glm::vec3 half = c.scale * 0.5f;
-            float tt = rayAABB(orig, dir, c.pos - half, c.pos + half);
-            if (tt > 0.f && tt < bestT) { bestT = tt; bestID = c.id; bestType = kSelColBox; }
-        }
-        // Test colspheres
-        for (auto& s : scene_.colSpheres) {
-            float tt = raySphere(orig, dir, s.pos, s.radius);
-            if (tt > 0.f && tt < bestT) { bestT = tt; bestID = s.id; bestType = kSelColSphere; }
-        }
-        // Test waypoints
-        for (auto& w : scene_.waypoints) {
-            float tt = raySphere(orig, dir, w.pos, 0.8f);
-            if (tt > 0.f && tt < bestT) { bestT = tt; bestID = w.id; bestType = kSelWaypoint; }
-        }
-        // Test NPCs
-        for (auto& n : scene_.npcs) {
-            glm::vec3 mn = n.pos - glm::vec3(0.35f, 0.f, 0.35f);
-            glm::vec3 mx = n.pos + glm::vec3(0.35f, 1.0f, 0.35f);
-            float tt = rayAABB(orig, dir, mn, mx);
-            if (tt > 0.f && tt < bestT) { bestT = tt; bestID = n.id; bestType = kSelNpc; }
-        }
-        // Test emitters
-        for (auto& e : scene_.emitters) {
-            glm::vec3 mn = e.pos - glm::vec3(0.4f, 0.f, 0.4f);
-            glm::vec3 mx = e.pos + glm::vec3(0.4f, 1.5f, 0.4f);
-            float tt = rayAABB(orig, dir, mn, mx);
-            if (tt > 0.f && tt < bestT) { bestT = tt; bestID = e.id; bestType = kSelEmitter; }
-        }
-        // Test water
-        for (auto& w : scene_.water) {
-            glm::vec3 mn = {w.pos.x - w.scale.x*0.5f, w.pos.y - 0.1f, w.pos.z - w.scale.y*0.5f};
-            glm::vec3 mx = {w.pos.x + w.scale.x*0.5f, w.pos.y + 0.2f, w.pos.z + w.scale.y*0.5f};
-            float tt = rayAABB(orig, dir, mn, mx);
-            if (tt > 0.f && tt < bestT) { bestT = tt; bestID = w.id; bestType = kSelWater; }
-        }
-        // Test scenery (approximate AABB from scale)
-        for (auto& s : scene_.scenery) {
-            glm::vec3 half = s.scale * 0.5f;
-            float tt = rayAABB(orig, dir, s.pos - half, s.pos + half);
-            if (tt > 0.f && tt < bestT) { bestT = tt; bestID = s.id; bestType = kSelScenery; }
-        }
-        // Test point lights (marker sphere, not the light's falloff radius —
-        // picking against the actual attenuation radius would make large
-        // lights annoyingly easy to grab from far away).
-        for (auto& l : scene_.lights) {
-            float tt = raySphere(orig, dir, l.pos, 0.3f);
-            if (tt > 0.f && tt < bestT) { bestT = tt; bestID = l.id; bestType = kSelLight; }
-        }
-
-        if (bestID >= 0) {
-            // Waypoint link mode: clicking a waypoint sets nextA or nextB on the current selection
-            if (wpLinkMode_ && bestType == kSelWaypoint &&
-                selectedType_ == kSelWaypoint && selectedID_ >= 0 && bestID != selectedID_) {
-                for (auto& w : scene_.waypoints) {
-                    if (w.id == selectedID_) {
-                        if (wpLinkB_) w.nextB = bestID; else w.nextA = bestID;
-                        sqlite3_stmt* s = nullptr;
-                        sqlite3_prepare_v2(db,
-                            "UPDATE zone_waypoints SET next_a=?,next_b=? WHERE id=?",
-                            -1, &s, nullptr);
-                        sqlite3_bind_int(s,1,w.nextA); sqlite3_bind_int(s,2,w.nextB);
-                        sqlite3_bind_int(s,3,w.id);
-                        sqlite3_step(s); sqlite3_finalize(s);
-                        std::snprintf(statusMsg_, sizeof(statusMsg_),
-                                      "Linked WP #%d → %s WP #%d.", selectedID_,
-                                      wpLinkB_ ? "B" : "A", bestID);
-                        break;
-                    }
-                }
-                wpLinkMode_ = false;
-            } else {
-                if (ctrlSelect) {
-                    ToggleSelection(bestType, bestID);
-                } else {
-                    SelectSingle(bestType, bestID);
-                }
-                // Switch to mode matching selected object type
-                switch (bestType) {
-                case kSelPortal:    zoneMode_ = kModePortal;    break;
-                case kSelTrigger:   zoneMode_ = kModeTrigger;   break;
-                case kSelSoundZone: zoneMode_ = kModeSoundZone; break;
-                case kSelColBox:    zoneMode_ = kModeColBox;    break;
-                case kSelColSphere: zoneMode_ = kModeColSphere; break;
-                case kSelWaypoint:  zoneMode_ = kModeWaypoint;  break;
-                case kSelNpc:       zoneMode_ = kModeNPC;       break;
-                case kSelEmitter:   zoneMode_ = kModeEmitters;  break;
-                case kSelWater:     zoneMode_ = kModeWater;     break;
-                case kSelLight:     zoneMode_ = kModeLight;     break;
-                default: break;
+    // Selection — LMB click, ANY xform mode (Unreal/Unity-style: clicking an
+    // object always selects it, whichever gizmo tool is active) — only when
+    // the click arbiter above decided this click belongs to selection (i.e.
+    // neither the gizmo nor placement claimed it). Reuses the hit-test result
+    // (rcID/rcType) from the shared raycastObjects() call above instead of
+    // re-running the raycast.
+    if (lmbGestureOwner_ == kLmbOwnerSelection) {
+        int bestID = rcID, bestType = rcType;
+        // Waypoint link mode: clicking a waypoint sets nextA or nextB on the current selection
+        if (wpLinkMode_ && bestType == kSelWaypoint &&
+            selectedType_ == kSelWaypoint && selectedID_ >= 0 && bestID != selectedID_) {
+            for (auto& w : scene_.waypoints) {
+                if (w.id == selectedID_) {
+                    if (wpLinkB_) w.nextB = bestID; else w.nextA = bestID;
+                    sqlite3_stmt* s = nullptr;
+                    sqlite3_prepare_v2(db,
+                        "UPDATE zone_waypoints SET next_a=?,next_b=? WHERE id=?",
+                        -1, &s, nullptr);
+                    sqlite3_bind_int(s,1,w.nextA); sqlite3_bind_int(s,2,w.nextB);
+                    sqlite3_bind_int(s,3,w.id);
+                    sqlite3_step(s); sqlite3_finalize(s);
+                    std::snprintf(statusMsg_, sizeof(statusMsg_),
+                                  "Linked WP #%d → %s WP #%d.", selectedID_,
+                                  wpLinkB_ ? "B" : "A", bestID);
+                    break;
                 }
             }
+            wpLinkMode_ = false;
         } else {
-            if (!ctrlSelect) {
-                ClearSelection();
+            // Same Ctrl/Shift rules as the scene sidebar (zones_sidebar.cpp
+            // DrawGroup, ~line 182-185: `if (ctrlSelect) ToggleSelection(...)
+            // else SelectSingle(...)`), reusing the exact same
+            // ToggleSelection/AddSelection/SelectSingle calls rather than
+            // reimplementing the semantics here — so the two input paths
+            // can't quietly drift apart over time. Ctrl = toggle just this
+            // object, leaving the rest of the selection alone (identical to
+            // the sidebar). Shift = additive (the sidebar's scenery-only
+            // Shift range-select has no viewport equivalent — there's no
+            // "visual order" between two objects clicked in 3D space — so
+            // plain "add to selection" is the closest meaningful mirror of
+            // what Shift means there: extend the selection rather than
+            // replace it).
+            if (ctrlSelect) {
+                ToggleSelection(bestType, bestID);
+            } else if (shiftDown) {
+                AddSelection(bestType, bestID, /*makePrimary=*/true);
+            } else {
+                SelectSingle(bestType, bestID);
+                // Auto-switch to Move on selection (Unreal-style: the move
+                // gizmo appears immediately) — but ONLY on a plain click that
+                // starts a NEW selection, and only from Select. Ctrl/Shift
+                // clicks are extending/toggling an existing multi-selection,
+                // not "I just picked something new to work on" — forcing a
+                // tool swap there would be surprising, exactly what this
+                // whole input-priority-chain pass has been trying to remove.
+                // If the dev is already in Rotate or Scale, leave it alone
+                // regardless: they picked that tool on purpose. See
+                // docs/TECH_DEBT.md "Viewport input priority chain".
+                if (xformMode_ == kXFormSelect) {
+                    xformMode_ = kXFormMove;
+                }
+            }
+            // Switch to mode matching selected object type
+            switch (bestType) {
+            case kSelPortal:    zoneMode_ = kModePortal;    break;
+            case kSelTrigger:   zoneMode_ = kModeTrigger;   break;
+            case kSelSoundZone: zoneMode_ = kModeSoundZone; break;
+            case kSelColBox:    zoneMode_ = kModeColBox;    break;
+            case kSelColSphere: zoneMode_ = kModeColSphere; break;
+            case kSelWaypoint:  zoneMode_ = kModeWaypoint;  break;
+            case kSelNpc:       zoneMode_ = kModeNPC;       break;
+            case kSelEmitter:   zoneMode_ = kModeEmitters;  break;
+            case kSelWater:     zoneMode_ = kModeWater;     break;
+            case kSelLight:     zoneMode_ = kModeLight;     break;
+            case kSelAtmosphereVolume: zoneMode_ = kModeAtmosphereVolume; break;
+            default: break;
             }
         }
+    } else if (lmbClickedNow && rcID < 0 && !ctrlSelect && !shiftDown &&
+               lmbGestureOwner_ != kLmbOwnerGizmo && lmbGestureOwner_ != kLmbOwnerPlacement &&
+               lmbGestureOwner_ != kLmbOwnerMarquee) {
+        // Clicking empty space still clears the current selection (existing
+        // UX, preserved) — this is a side effect, not a competing "action",
+        // so it doesn't need to go through the owner gate above: it only
+        // runs when nothing else claimed the click AND the raycast found no
+        // object, i.e. exactly the fall-through-to-tool case. Excludes
+        // kLmbOwnerMarquee: a marquee drag decides add/replace/remove itself
+        // at release (Shift/Ctrl-aware) — clearing here on the PRESS frame
+        // would wipe out the existing selection before a Shift+drag ever
+        // got a chance to add to it. Also skipped with Ctrl OR Shift held
+        // (missing the object and hitting empty space by accident shouldn't
+        // blow away an existing multi-selection when a modifier signals the
+        // dev meant to add/toggle, not replace).
+        ClearSelection();
     }
 
     // ── Terrain brush (LMB-drag in Terrain mode) ─────────────────────────
+    // Gated on lmbGestureOwner_==kLmbOwnerTool (lowest priority in the click
+    // arbiter above) so a click that grabbed the gizmo, placed an object, or
+    // selected something else this gesture does NOT also sculpt/paint.
     if (zoneMode_ == kModeTerrain && !mouseLook_ && renderer_.terrain().Loaded()) {
-        if (vpHovered_ && ImGui::IsMouseDown(0)) {
+        if (vpHovered_ && ImGui::IsMouseDown(0) && lmbGestureOwner_ == kLmbOwnerTool) {
             // Capture one snapshot at the start of each brush stroke
             if (!terrainStrokeActive_) {
                 terrainStrokeActive_ = true;
@@ -633,7 +1106,20 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                 if (brushMode_ == 4) {
                     renderer_.terrain().Paint(hit.x, hit.z, brushRadius_,
                                               brushStrength_, dt, brushMaterial_,
-                                              (BrushFalloff)brushFalloff_);
+                                              (BrushFalloff)brushFalloff_,
+                                              (BrushShape)brushShape_,
+                                              brushHardness_, brushNoise_,
+                                              brushErase_, brushMaxOpacity_);
+                } else if (brushMode_ == 6) {
+                    // UI index 6 = Splat Smooth — blurs painted weights,
+                    // paralleling BrushMode::Smooth (index 2) for the
+                    // heightmap. Not a BrushMode value: it operates on the
+                    // splatmap, not the heightmap, via SmoothPaint.
+                    renderer_.terrain().SmoothPaint(hit.x, hit.z, brushRadius_,
+                                                    brushStrength_, dt,
+                                                    (BrushFalloff)brushFalloff_,
+                                                    (BrushShape)brushShape_,
+                                                    brushHardness_, brushNoise_);
                 } else {
                     // UI index 5 = Noise → BrushMode::Noise (enum value 4)
                     BrushMode bm = (brushMode_ == 5) ? BrushMode::Noise
@@ -641,7 +1127,9 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                     renderer_.terrain().ApplyBrush(hit.x, hit.z, brushRadius_,
                                                    brushStrength_, dt, bm,
                                                    brushFlattenH_,
-                                                   (BrushFalloff)brushFalloff_);
+                                                   (BrushFalloff)brushFalloff_,
+                                                   (BrushShape)brushShape_,
+                                                   brushHardness_, brushNoise_);
                 }
                 brushActive_ = true;
             }
@@ -657,8 +1145,9 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
     }
 
     // ── Foliage brush (LMB-drag in Foliage mode; Shift+LMB erases) ────────
+    // Same owner gate as the terrain brush above.
     if (zoneMode_ == kModeFoliage && !mouseLook_ && renderer_.terrain().Loaded()) {
-        if (vpHovered_ && ImGui::IsMouseDown(0)) {
+        if (vpHovered_ && ImGui::IsMouseDown(0) && lmbGestureOwner_ == kLmbOwnerTool) {
             ImVec2 mp  = ImGui::GetMousePos();
             float  vpX = mp.x - vpOrigin_.x;
             float  vpY = mp.y - vpOrigin_.y;
@@ -864,12 +1353,17 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         else if (selectedType_ == kSelColBox)    { allowScale = 0b111; }
         else if (selectedType_ == kSelColSphere) { allowScale = 0b001; }   // uniform — X drives radius
         else if (selectedType_ == kSelWater)     { allowScale = 0b101; }
+        else if (selectedType_ == kSelAtmosphereVolume) { allowScale = 0b111; }
 
         // Tell the renderer to draw the active gizmo inside its forward pass
-        // (so it lands on the same FBO as the rest of the scene).
+        // (so it lands on the same FBO as the rest of the scene). gz.axis is
+        // assigned further down, once the hover test has run (item 3) — it
+        // used to be gizmoAxis_ (only non-idle while actively dragging), so
+        // the highlight never appeared before a click; now it also reflects
+        // the hovered-but-not-yet-grabbed axis. renderer_.SetGizmo(gz) is
+        // likewise called after that, once gz.axis is final.
         ZoneRenderer::GizmoState gz;
         gz.pos        = gizmoPos;
-        gz.axis       = gizmoAxis_;
         gz.use_local_axes = useLocalAxes;
         gz.local_axes[0] = kAxes[0];
         gz.local_axes[1] = kAxes[1];
@@ -884,7 +1378,6 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             gz.mode = ZoneRenderer::kGizmoScale;
             gz.allow_axes = allowScale;
         }
-        renderer_.SetGizmo(gz);
 
         // Build current ray
         ImVec2 mp  = ImGui::GetMousePos();
@@ -929,6 +1422,77 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             return true;
         };
 
+        // ── Hover test (item 3) — same hit-test math as the press-time latch
+        // below, but run EVERY FRAME regardless of click, so the gizmo can be
+        // highlighted before the user commits to a click. Kept as a separate
+        // read-only pass (rather than merged into the press-time block) so
+        // the existing, already-relied-upon grab logic below is untouched —
+        // the cost is a small amount of duplicated geometry math between the
+        // two, which is fine: it's a handful of dot products per axis/plane,
+        // not a scene-wide search like the object raycast above.
+        auto findHoverAxis = [&]() -> int {
+            if (mouseLook_) return -1;
+            if (xformMode_ == kXFormMove) {
+                int best = -1; float bestDist = pickRadius;
+                for (int a = 0; a < 3; ++a) {
+                    float s, d; rayAxis(kAxes[a], s, d);
+                    if (s >= -axisLen * 0.2f && s <= axisLen * 1.2f && d < bestDist) {
+                        bestDist = d; best = a;
+                    }
+                }
+                const float planeOff  = axisLen * 0.28f;
+                const float planeSize = axisLen * 0.28f;
+                struct PlanePick { int id, a, b; glm::vec3 n; };
+                const PlanePick planes[] = {
+                    {4, 0, 1, glm::normalize(glm::cross(kAxes[0], kAxes[1]))},
+                    {5, 0, 2, glm::normalize(glm::cross(kAxes[0], kAxes[2]))},
+                    {6, 1, 2, glm::normalize(glm::cross(kAxes[1], kAxes[2]))},
+                };
+                float bestPlaneT = 1e9f;
+                for (const auto& pl : planes) {
+                    glm::vec3 planeCenter = gizmoPos + kAxes[pl.a] * planeOff + kAxes[pl.b] * planeOff;
+                    glm::vec3 hit; float t = 0.f;
+                    if (!rayPlaneAt(planeCenter, pl.n, hit, t)) continue;
+                    glm::vec3 local = hit - gizmoPos;
+                    float ua = glm::dot(local, kAxes[pl.a]);
+                    float ub = glm::dot(local, kAxes[pl.b]);
+                    float mn = planeOff - planeSize * 0.5f;
+                    float mx = planeOff + planeSize * 0.5f;
+                    if (ua < mn || ua > mx || ub < mn || ub > mx) continue;
+                    if (t < bestPlaneT) { bestPlaneT = t; best = pl.id; }
+                }
+                return best;
+            } else if (xformMode_ == kXFormScale) {
+                int best = -1; float bestDist = pickRadius;
+                for (int a = 0; a < 3; ++a) {
+                    if ((allowScale & (1u << a)) == 0) continue;
+                    float s, d; rayAxis(kAxes[a], s, d);
+                    if (s >= -axisLen * 0.2f && s <= axisLen * 1.2f && d < bestDist) {
+                        bestDist = d; best = a;
+                    }
+                }
+                glm::vec3 w = gizmoPos - ro;
+                float t = glm::dot(w, rd);
+                glm::vec3 closest = ro + rd * t;
+                float d = glm::length(closest - gizmoPos);
+                if (d < pickRadius * 0.65f) best = 3;
+                return best;
+            } else if (xformMode_ == kXFormRotate && allowRot) {
+                int best = -1; float bestDist = axisLen * 0.08f;
+                for (int a = 0; a < 3; ++a) {
+                    if ((allowRot & (1u << a)) == 0) continue;
+                    glm::vec3 hit = rayPlane(kAxes[a]);
+                    float dist = std::abs(glm::length(hit - gizmoPos) - axisLen);
+                    if (dist < bestDist) { bestDist = dist; best = a; }
+                }
+                return best;
+            }
+            return -1;
+        };
+        gizmoHoverAxis_ = (gizmoAxis_ < 0) ? findHoverAxis() : gizmoAxis_;
+        gz.axis = gizmoHoverAxis_;
+        renderer_.SetGizmo(gz);
+
         // Signed angle of a point on the plane perpendicular to axis `a`.
         auto angleOnRing = [&](int a, const glm::vec3& pt) {
             glm::vec3 v = pt - gizmoPos;
@@ -938,11 +1502,6 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             glm::vec3 t = glm::normalize(glm::cross(kAxes[a], u));
             glm::vec3 b = glm::normalize(glm::cross(kAxes[a], t));
             return std::atan2(glm::dot(v, b), glm::dot(v, t));
-        };
-
-        auto snapToGrid = [&](float v) -> float {
-            if (!scnSnapGrid_ || scnGridSize_ <= 0.f) return v;
-            return std::round(v / scnGridSize_) * scnGridSize_;
         };
 
         auto snapToObjectAxis = [&](float v, int axis) -> float {
@@ -974,6 +1533,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             pushVec(scene_.scenery,     kSelScenery);
             pushVec(scene_.spawnPoints,  kSelSpawnPoint);
             pushVec(scene_.playerSpawns, kSelPlayerSpawn);
+            pushVec(scene_.atmosphereVolumes, kSelAtmosphereVolume);
             for (const auto& t : scene_.triggers) {
                 if (selectedType_ == kSelTrigger && t.id == selectedID_) continue;
                 consider(glm::vec3(t.x, 0.f, t.z));
@@ -1044,7 +1604,19 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             } else if (st == kSelScenery) {
                 for (const auto& s : scene_.scenery) if (s.id == id) {
                     outPos = s.pos;
-                    outHalf = glm::max(glm::abs(s.scale) * 0.5f, glm::vec3(0.05f));
+                    // Same fix as the hit-test raycast above: s.scale alone
+                    // is a mesh-scale multiplier, not a world-space size.
+                    // Use the model's real local bounds (scaled) when
+                    // available. Still axis-aligned and centered on s.pos —
+                    // this function's (pos, symmetric half-extent) contract
+                    // can't express rotation or an off-center box, but that's
+                    // an acceptable approximation for face-snap sizing.
+                    glm::vec3 lmn, lmx;
+                    if (renderer_.SceneryModelLocalBounds(s.id, lmn, lmx)) {
+                        outHalf = glm::max((lmx - lmn) * 0.5f * glm::abs(s.scale), glm::vec3(0.05f));
+                    } else {
+                        outHalf = glm::max(glm::abs(s.scale) * 0.5f, glm::vec3(0.05f));
+                    }
                     return true;
                 }
             } else if (st == kSelSpawnPoint) {
@@ -1057,6 +1629,12 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                 for (const auto& ps : scene_.playerSpawns) if (ps.id == id) {
                     outPos  = ps.pos;
                     outHalf = glm::vec3(0.4f, 0.75f, 0.4f);
+                    return true;
+                }
+            } else if (st == kSelAtmosphereVolume) {
+                for (const auto& v : scene_.atmosphereVolumes) if (v.id == id) {
+                    outPos  = v.pos;
+                    outHalf = glm::max(glm::abs(v.size) * 0.5f, glm::vec3(0.05f));
                     return true;
                 }
             }
@@ -1106,9 +1684,19 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             for (const auto& n : scene_.npcs)         testCandidate(kSelNpc, n.id, n.pos, glm::vec3(0.35f, 0.5f, 0.35f));
             for (const auto& e : scene_.emitters)     testCandidate(kSelEmitter, e.id, e.pos, glm::vec3(0.4f, 0.75f, 0.4f));
             for (const auto& w : scene_.water)        testCandidate(kSelWater, w.id, w.pos, glm::vec3(std::max(0.05f, w.scale.x * 0.5f), 0.15f, std::max(0.05f, w.scale.y * 0.5f)));
-            for (const auto& s : scene_.scenery)      testCandidate(kSelScenery, s.id, s.pos, glm::max(glm::abs(s.scale) * 0.5f, glm::vec3(0.05f)));
+            for (const auto& s : scene_.scenery) {
+                // Same s.scale-as-world-size bug as the hit-test/tryGetBounds
+                // fixes above — use the model's real bounds when loaded.
+                glm::vec3 slmn, slmx;
+                glm::vec3 sHalf = renderer_.SceneryModelLocalBounds(s.id, slmn, slmx)
+                    ? glm::max((slmx - slmn) * 0.5f * glm::abs(s.scale), glm::vec3(0.05f))
+                    : glm::max(glm::abs(s.scale) * 0.5f, glm::vec3(0.05f));
+                testCandidate(kSelScenery, s.id, s.pos, sHalf);
+            }
             for (const auto& sp : scene_.spawnPoints)  testCandidate(kSelSpawnPoint,  sp.id, sp.pos, glm::vec3(std::max(0.05f, sp.radius), 0.75f, std::max(0.05f, sp.radius)));
             for (const auto& ps : scene_.playerSpawns) testCandidate(kSelPlayerSpawn, ps.id, ps.pos, glm::vec3(0.4f, 0.75f, 0.4f));
+            for (const auto& v : scene_.atmosphereVolumes)
+                testCandidate(kSelAtmosphereVolume, v.id, v.pos, glm::max(glm::abs(v.size) * 0.5f, glm::vec3(0.05f)));
 
             if (!found || bestAxis < 0) return false;
             objPos[bestAxis] = bestCoord;
@@ -1140,7 +1728,14 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         };
 
         // ── Press: hit-test and latch onto an axis ────────────────────────
-        if (vpHovered_ && ImGui::IsMouseClicked(0) && gizmoAxis_ < 0 && !mouseLook_) {
+        // Gated on the click arbiter having already decided this click
+        // belongs to the gizmo (see "Unified LMB click-priority arbiter"
+        // near the top of this function) instead of re-deciding here — the
+        // arbiter itself used last frame's gizmoHoverAxis_, computed just
+        // above, so the two agree except in the vanishingly rare case where
+        // the cursor crosses onto/off a handle in the exact same frame as
+        // the click.
+        if (lmbGestureOwner_ == kLmbOwnerGizmo && gizmoAxis_ < 0) {
             if (xformMode_ == kXFormMove) {
                 int   best = -1;
                 float bestDist = pickRadius;
@@ -1229,6 +1824,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                     gizmoPrePos_     = selPos;
                     glm::vec3 rot;   SelectedRot(rot);     gizmoStartRot_   = rot;   gizmoPreRot_ = rot;
                     glm::vec3 scl;   SelectedScale(scl);   gizmoStartScale_ = scl;   gizmoPreScale_ = scl;
+                    gizmoScaleAccumUniform_ = 0.f;
                     captureGizmoSelectionStart();
                 }
             } else if (xformMode_ == kXFormRotate && allowRot) {
@@ -1263,12 +1859,24 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                         float delta = (s - gizmoStartS_);
                         if (ctrlDown)       delta *= 0.25f;
                         else if (shiftDown) delta *= 2.0f;
-                        if (useLocalAxes && scnSnapGrid_ && scnGridSize_ > 0.f) {
+                        // Snap the ACCUMULATED DELTA since drag start, not
+                        // the resulting absolute position — regardless of
+                        // gizmo space. Snapping the absolute position instead
+                        // (the old world-space-only behaviour) made the
+                        // object jump a full grid cell the instant the
+                        // continuous drag crossed a cell boundary, because
+                        // the snap result depended on where the object WAS,
+                        // not on how far the mouse had actually moved. See
+                        // docs/TECH_DEBT.md "Viewport input priority chain".
+                        if (scnSnapGrid_ && scnGridSize_ > 0.f) {
                             delta = std::round(delta / scnGridSize_) * scnGridSize_;
                         }
                         np = gizmoStartPos_ + kAxes[gizmoAxis_] * delta;
                         if (!useLocalAxes) {
-                            np[gizmoAxis_] = snapToGrid(np[gizmoAxis_]);
+                            // Object-to-object snapping is inherently
+                            // absolute (it compares against other objects'
+                            // world positions) — unaffected by the delta-vs-
+                            // absolute grid-snap fix above.
                             np[gizmoAxis_] = snapToObjectAxis(np[gizmoAxis_], gizmoAxis_);
                         }
                     } else if (gizmoAxis_ >= 4 && gizmoAxis_ <= 6) {
@@ -1283,19 +1891,18 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                             glm::vec3 delta = hit - gizmoStartHit_;
                             if (ctrlDown)       delta *= 0.25f;
                             else if (shiftDown) delta *= 2.0f;
-                            np = gizmoStartPos_ + delta;
-                            if (useLocalAxes) {
-                                glm::vec3 dv = np - gizmoStartPos_;
-                                float da = glm::dot(dv, kAxes[a]);
-                                float db = glm::dot(dv, kAxes[b]);
-                                if (scnSnapGrid_ && scnGridSize_ > 0.f) {
-                                    da = std::round(da / scnGridSize_) * scnGridSize_;
-                                    db = std::round(db / scnGridSize_) * scnGridSize_;
-                                }
-                                np = gizmoStartPos_ + kAxes[a] * da + kAxes[b] * db;
-                            } else {
-                                np[a] = snapToGrid(np[a]);
-                                np[b] = snapToGrid(np[b]);
+                            // Same fix as the single-axis case above: snap
+                            // the plane-local delta (da, db) since drag
+                            // start, always — not the absolute np[a]/np[b].
+                            glm::vec3 dv = delta;
+                            float da = glm::dot(dv, kAxes[a]);
+                            float db = glm::dot(dv, kAxes[b]);
+                            if (scnSnapGrid_ && scnGridSize_ > 0.f) {
+                                da = std::round(da / scnGridSize_) * scnGridSize_;
+                                db = std::round(db / scnGridSize_) * scnGridSize_;
+                            }
+                            np = gizmoStartPos_ + kAxes[a] * da + kAxes[b] * db;
+                            if (!useLocalAxes) {
                                 np[a] = snapToObjectAxis(np[a], a);
                                 np[b] = snapToObjectAxis(np[b], b);
                             }
@@ -1388,13 +1995,30 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                 } else if (xformMode_ == kXFormScale) {
                     if (gizmoAxis_ == 3) {
                         // Uniform: drag vertically on screen. Use mouse ΔY.
+                        // gizmoScaleAccumUniform_ accumulates the RAW
+                        // (unsnapped) growth since drag start — same idea as
+                        // gizmoRotAccumDeg_ for rotate — so gizmoStartScale_
+                        // can stay fixed at its drag-start value for the
+                        // whole gesture instead of being re-based to the
+                        // (snapped) result every frame. That re-basing was
+                        // the bug: snapping the ABSOLUTE resulting scale
+                        // every frame made a single frame's tiny mouse
+                        // movement jump the size by a comparatively large
+                        // grid step whenever the unsnapped value happened to
+                        // cross a grid boundary. Snapping the DELTA since
+                        // drag start instead (below) fixes that, matching
+                        // the Move-gizmo fix above. See docs/TECH_DEBT.md
+                        // "Viewport input priority chain".
                         float speed = ctrlDown ? 0.25f : (shiftDown ? 2.0f : 1.0f);
                         float dy = -ImGui::GetIO().MouseDelta.y * 0.01f * speed;
-                        glm::vec3 s = gizmoStartScale_ * (1.f + dy);
+                        gizmoScaleAccumUniform_ += dy;
+                        glm::vec3 s = gizmoStartScale_ * (1.f + gizmoScaleAccumUniform_);
                         if (scnSnapGrid_ && scnGridSize_ > 0.f) {
-                            s.x = std::round(s.x / scnGridSize_) * scnGridSize_;
-                            s.y = std::round(s.y / scnGridSize_) * scnGridSize_;
-                            s.z = std::round(s.z / scnGridSize_) * scnGridSize_;
+                            glm::vec3 sizeDelta = s - gizmoStartScale_;
+                            sizeDelta.x = std::round(sizeDelta.x / scnGridSize_) * scnGridSize_;
+                            sizeDelta.y = std::round(sizeDelta.y / scnGridSize_) * scnGridSize_;
+                            sizeDelta.z = std::round(sizeDelta.z / scnGridSize_) * scnGridSize_;
+                            s = gizmoStartScale_ + sizeDelta;
                         }
                         s = glm::max(s, glm::vec3(0.01f));
                         SetSelectedScale(s);
@@ -1422,7 +2046,11 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                             selectedType_ = primaryType;
                             selectedID_ = primaryID;
                         }
-                        gizmoStartScale_ = s;   // accumulate on next frame
+                        // gizmoStartScale_ intentionally NOT reassigned here
+                        // anymore — it stays fixed at the drag-start value so
+                        // gizmoScaleAccumUniform_ (and the peer `factor`
+                        // computation above) both measure cumulative growth
+                        // since drag start, not just the latest frame's step.
                     } else {
                         float s, d;
                         rayAxis(kAxes[gizmoAxis_], s, d);
@@ -1432,8 +2060,13 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                         else if (shiftDown) factor = 1.f + (factor - 1.f) * 2.0f;
                         glm::vec3 ns = gizmoStartScale_;
                         ns[gizmoAxis_] = gizmoStartScale_[gizmoAxis_] * factor;
+                        // Snap the world-unit DELTA since drag start, not the
+                        // absolute resulting size — same fix as uniform scale
+                        // and the Move gizmo above.
                         if (scnSnapGrid_ && scnGridSize_ > 0.f) {
-                            ns[gizmoAxis_] = std::round(ns[gizmoAxis_] / scnGridSize_) * scnGridSize_;
+                            float sizeDelta = ns[gizmoAxis_] - gizmoStartScale_[gizmoAxis_];
+                            sizeDelta = std::round(sizeDelta / scnGridSize_) * scnGridSize_;
+                            ns[gizmoAxis_] = gizmoStartScale_[gizmoAxis_] + sizeDelta;
                         }
                         ns = glm::max(ns, glm::vec3(0.01f));
                         SetSelectedScale(ns);
@@ -1612,6 +2245,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         }
     } else {
         gizmoAxis_ = -1;
+        gizmoHoverAxis_ = -1;
         gizmoMoveRotChanged_ = false;
         gizmoSelectionStart_.clear();
         renderer_.SetGizmo({});   // clear — nothing to draw this frame
@@ -1625,9 +2259,12 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
     // If kModeScenery is active and a model is selected, LMB places without
     // any context menu. This mirrors Unreal: pick asset → click to place.
     // RMB still opens the context menu for placing other object types.
-    const bool scnArmed = (zoneMode_ == kModeScenery && scnModelId_ != 0
-                           && xformMode_ == kXFormSelect && !mouseLook_);
-    if (vpHovered_ && ImGui::IsMouseClicked(0) && scnArmed) {
+    // (scnArmed itself is computed earlier, alongside the click arbiter, so
+    // that arbiter can see it — see the "Unified LMB click-priority arbiter"
+    // block above.) Still gated on the actual click frame (IsMouseClicked),
+    // not just "this gesture's owner is Placement", so holding LMB down
+    // doesn't place an object every single frame.
+    if (lmbClickedNow && lmbGestureOwner_ == kLmbOwnerPlacement) {
         ImVec2 mp = ImGui::GetMousePos();
         glm::vec3 pos = RaycastScene(mp.x - vpOrigin_.x, mp.y - vpOrigin_.y);
         if (scnSnapGrid_ && scnGridSize_ > 0.f) {
@@ -1692,6 +2329,7 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
             {"Emitter",          kModeEmitters   },
             {"Point Light",      kModeLight      },
             {"Spawn Point",      kModeSpawnPoint },
+            {"Atmosphere Volume", kModeAtmosphereVolume },
         };
         for (auto& e : kEntries) {
             if (ImGui::MenuItem(e.label)) {
@@ -1726,6 +2364,7 @@ bool ZonesTab::SelectedPos(glm::vec3& out) const {
     if (tryVec(scene_.scenery,     kSelScenery))    return true;
     if (tryVec(scene_.spawnPoints,  kSelSpawnPoint))  return true;
     if (tryVec(scene_.playerSpawns, kSelPlayerSpawn)) return true;
+    if (tryVec(scene_.atmosphereVolumes, kSelAtmosphereVolume)) return true;
     if (selectedType_ == kSelTrigger)
         for (auto& t : scene_.triggers) if (t.id == selectedID_) { out = {t.x, 0, t.z}; return true; }
     if (selectedType_ == kSelSoundZone)
@@ -1749,6 +2388,7 @@ void ZonesTab::SetSelectedPos(const glm::vec3& pos) {
     trySet(scene_.scenery,     kSelScenery);
     trySet(scene_.spawnPoints,  kSelSpawnPoint);
     trySet(scene_.playerSpawns, kSelPlayerSpawn);
+    trySet(scene_.atmosphereVolumes, kSelAtmosphereVolume);
     if (selectedType_ == kSelTrigger)
         for (auto& t : scene_.triggers)
             if (t.id == selectedID_) { t.x = pos.x; t.z = pos.z; }
@@ -1777,6 +2417,7 @@ void ZonesTab::PersistSelectedPos(sqlite3* db) {
     case kSelScenery:    sql = "UPDATE zone_scenery  SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelSpawnPoint:  sql = "UPDATE spawn_points  SET x=?,y=?,z=? WHERE id=?"; break;
     case kSelPlayerSpawn: sql = "UPDATE player_spawns SET x=?,y=?,z=? WHERE id=?"; break;
+    case kSelAtmosphereVolume: sql = "UPDATE zone_atmosphere_volumes SET pos_x=?,pos_y=?,pos_z=? WHERE id=?"; break;
     default: return;
     }
 
@@ -1876,6 +2517,8 @@ bool ZonesTab::SelectedScale(glm::vec3& out) const {
         for (auto& w : scene_.water) if (w.id == selectedID_) {
             out = glm::vec3(w.scale.x, 1.f, w.scale.y); return true;
         }
+    } else if (selectedType_ == kSelAtmosphereVolume) {
+        for (auto& v : scene_.atmosphereVolumes) if (v.id == selectedID_) { out = v.size; return true; }
     }
     return false;
 }
@@ -1891,6 +2534,8 @@ void ZonesTab::SetSelectedScale(const glm::vec3& s) {
         for (auto& w : scene_.water) if (w.id == selectedID_) {
             w.scale.x = s.x; w.scale.y = s.z; return;
         }
+    } else if (selectedType_ == kSelAtmosphereVolume) {
+        for (auto& v : scene_.atmosphereVolumes) if (v.id == selectedID_) { v.size = s; return; }
     }
 }
 
@@ -1947,6 +2592,20 @@ void ZonesTab::PersistSelectedScale(sqlite3* db) {
                 sqlite3_bind_double(st, 1, w.scale.x);
                 sqlite3_bind_double(st, 2, w.scale.y);
                 sqlite3_bind_int   (st, 3, w.id);
+                sqlite3_step(st); sqlite3_finalize(st);
+            }
+            return;
+        }
+    } else if (selectedType_ == kSelAtmosphereVolume) {
+        for (auto& v : scene_.atmosphereVolumes) if (v.id == selectedID_) {
+            sqlite3_stmt* st = nullptr;
+            if (sqlite3_prepare_v2(db,
+                "UPDATE zone_atmosphere_volumes SET size_x=?,size_y=?,size_z=? WHERE id=?",
+                -1, &st, nullptr) == SQLITE_OK) {
+                sqlite3_bind_double(st, 1, v.size.x);
+                sqlite3_bind_double(st, 2, v.size.y);
+                sqlite3_bind_double(st, 3, v.size.z);
+                sqlite3_bind_int   (st, 4, v.id);
                 sqlite3_step(st); sqlite3_finalize(st);
             }
             return;

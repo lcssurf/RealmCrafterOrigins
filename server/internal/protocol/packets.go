@@ -82,6 +82,7 @@ const (
 	PFullStats           uint16 = 139 // S->C: full stats sync (primary + vitals + 34 derived)
 	PZoneLights          uint16 = 140 // S->C: static point lights (zone_lights) for the current area
 	PZoneWater           uint16 = 141 // S->C: static water planes (zone_water) for the current area
+	PAtmosphereVolumes   uint16 = 142 // S->C: atmosphere volumes (zone_atmosphere_volumes) for the current area — Fase 1, data only, client just stores
 )
 
 // EmitterType values for PCreateEmitter.
