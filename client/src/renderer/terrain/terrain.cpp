@@ -2,6 +2,7 @@
 #include "rco/renderer/pipeline.h"
 #include <stb_image.h>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <cstdio>
 #include <cmath>
 #include <fstream>
@@ -27,7 +28,31 @@ ColData LoadColData(const std::string& area_name) {
 
     uint32_t magic, version;
     if (!r32(magic) || magic != 0x444C4F43u) { std::fclose(f); return {}; }
-    if (!r32(version) || version > 2)        { std::fclose(f); return {}; }
+    if (!r32(version) || version > 3)        { std::fclose(f); return {}; }
+
+    // Precomputes rot (Ry*Rx*Rz, degrees — same convention as zone_scene's
+    // scenery TRS) and the box's world-space Y bounds (via its 8 rotated
+    // corners) once at load, so Resolve()'s per-frame early-out stays a
+    // cheap min/max compare instead of re-deriving this every call.
+    auto finalizeBox = [](ColBox& b, float pitchDeg, float yawDeg, float rollDeg) {
+        glm::mat4 m(1.f);
+        m = glm::rotate(m, glm::radians(yawDeg),  glm::vec3(0, 1, 0));
+        m = glm::rotate(m, glm::radians(pitchDeg), glm::vec3(1, 0, 0));
+        m = glm::rotate(m, glm::radians(rollDeg),  glm::vec3(0, 0, 1));
+        b.rot = glm::mat3(m);
+        float yMin = 1e30f, yMax = -1e30f;
+        for (int i = 0; i < 8; ++i) {
+            glm::vec3 local(
+                (i & 1) ? b.half.x : -b.half.x,
+                (i & 2) ? b.half.y : -b.half.y,
+                (i & 4) ? b.half.z : -b.half.z);
+            float wy = (b.rot * local).y + b.pos.y;
+            yMin = std::min(yMin, wy);
+            yMax = std::max(yMax, wy);
+        }
+        b.worldYMin = yMin;
+        b.worldYMax = yMax;
+    };
 
     ColData out;
     uint32_t n;
@@ -35,8 +60,13 @@ ColData LoadColData(const std::string& area_name) {
     out.boxes.reserve(n);
     for (uint32_t i = 0; i < n; ++i) {
         ColBox b;
+        float pitchDeg = 0.f, yawDeg = 0.f, rollDeg = 0.f;
         if (!rf(b.pos.x)||!rf(b.pos.y)||!rf(b.pos.z)||
             !rf(b.half.x)||!rf(b.half.y)||!rf(b.half.z)) break;
+        if (version >= 3) {
+            if (!rf(pitchDeg)||!rf(yawDeg)||!rf(rollDeg)) break;
+        }
+        finalizeBox(b, pitchDeg, yawDeg, rollDeg);
         out.boxes.push_back(b);
     }
     if (!r32(n)) { std::fclose(f); out.loaded = true; return out; }
@@ -122,10 +152,18 @@ void ColData::Resolve(float& px, float pz_in, float py, float& out_pz) const {
 
     for (int iter = 0; iter < 3; ++iter) {
         for (const auto& b : boxes) {
-            if (pYmax < b.pos.y - b.half.y || pYmin > b.pos.y + b.half.y) continue;
-            float cx = std::max(b.pos.x - b.half.x, std::min(px, b.pos.x + b.half.x));
-            float cz = std::max(b.pos.z - b.half.z, std::min(pz, b.pos.z + b.half.z));
-            float dx = px - cx, dz = pz - cz;
+            if (pYmax < b.worldYMin || pYmin > b.worldYMax) continue;
+            // True OBB test: clamp the capsule's mid-height point in the
+            // box's OWN local axes (rot may be a rotated frame, not just
+            // identity), then bring the closest point back to world space.
+            // For an axis-aligned box (rot=identity, all COLD v2 files),
+            // transpose(rot) is the identity too, so this reduces to the
+            // exact same clamp-in-world-space the old AABB-only test did.
+            glm::vec3 worldPt(px, (pYmin + pYmax) * 0.5f, pz);
+            glm::vec3 local = glm::transpose(b.rot) * (worldPt - b.pos);
+            local = glm::clamp(local, -b.half, b.half);
+            glm::vec3 closest = b.pos + b.rot * local;
+            float dx = px - closest.x, dz = pz - closest.z;
             float d2 = dx*dx + dz*dz;
             if (d2 < R * R) {
                 if (d2 < 1e-7f) { dx = 1.f; dz = 0.f; d2 = 1.f; }

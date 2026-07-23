@@ -26,15 +26,41 @@ type Waypoint struct {
 
 // WorldObject is a placed static model instance in a zone.
 type WorldObject struct {
+	// ID is the zone_scenery row id (see db.WorldObject.ID / LoadWorldObjects).
+	// Used to key Area.objectOverrides and as the object_id argument to the
+	// Lua World.SetTransform/SetVisible/SetCollision API.
+	ID        int
 	ModelPath string
 	Scale     float32
 	X, Y, Z   float32
 	Yaw       float32
+	// Pitch/Roll: the zone_scenery.pitch/roll columns (X/Z axis rotation —
+	// see zone_scenery.h ZScenery::rot "pitch/yaw/roll degrees" and
+	// ZoneRenderer's Ry*Rx*Rz scenery matrix build). Previously never loaded
+	// here — LoadWorldObjects only selected yaw, so any object placed
+	// pitched/rolled in the GUE (e.g. upside-down) rendered upright in the
+	// game client despite showing correctly in the GUE preview.
+	Pitch, Roll float32
 	// BlackCutout: OR of media_models.black_cutout | the scenery's override
 	// material's black_cutout (mirrors the same flag on actor mesh slots —
 	// see appearance.go). When true the client discards near-black pixels
 	// in the deferred gBuffer pass (foliage/leaf cutout).
 	BlackCutout bool
+}
+
+// WorldObjectState holds the current transform/visibility/collision of a
+// WorldObject that has diverged from its static authored default. Written by
+// the Lua World.SetTransform/SetVisible/SetCollision API (see
+// scripting/world_api.go) and merged into the PWorldObjects snapshot sent to
+// clients entering the area, so an object always loads in its current (not
+// original) state. Mirrors the Area.droppedItems pattern.
+type WorldObjectState struct {
+	X, Y, Z     float32
+	Yaw         float32
+	Pitch, Roll float32 // never touched by SetTransform (yaw-only) — carried over from the static/base object so it isn't lost on override
+	Scale       float32
+	Visible     bool
+	Collision   bool
 }
 
 // Light is a placed static point light (torch/lantern) in a zone. Sent to
@@ -185,6 +211,25 @@ type Area struct {
 	// Dropped items sitting in the world.
 	diMu         sync.Mutex
 	droppedItems map[uint32]*DroppedItem
+
+	// Runtime overrides for WorldObjects modified at runtime via Lua
+	// (World.SetTransform/SetVisible/SetCollision). Mirrors droppedItems.
+	woMu            sync.Mutex
+	objectOverrides map[int]*WorldObjectState
+
+	// Scheduled one-shot callbacks (Lua Timer.after) — checked once per AI
+	// tick (see tickAI/tickScheduledCalls). fn is a plain Go closure so this
+	// package never needs to import the scripting/gopher-lua types; the
+	// scripting package's Timer.after binding supplies a closure that itself
+	// re-enters the Lua state safely (locks Registry.mu, sets callCtx, calls
+	// the Lua function, resets callCtx) — mirrors droppedItems/deadNPCs.
+	scMu      sync.Mutex
+	scheduled []scheduledCall
+}
+
+type scheduledCall struct {
+	runAt int64 // unix ms
+	fn    func()
 }
 
 // CheckTrigger returns the first trigger that contains the actor's XZ position,
@@ -220,6 +265,7 @@ func NewArea(name string) *Area {
 		actors:       make(map[uint32]*Actor),
 		droppedItems: make(map[uint32]*DroppedItem),
 		Waypoints:    make(map[int]*Waypoint),
+		objectOverrides: make(map[int]*WorldObjectState),
 	}
 }
 
@@ -520,6 +566,7 @@ func endChase(npc *Actor) { postChaseMode(npc) }
 func (a *Area) tickAI(tickSec float32) {
 	now := time.Now().UnixMilli()
 	a.tickDropDespawn(now)
+	a.tickScheduledCalls(now)
 
 	// Snapshot live NPCs.
 	a.Mu.RLock()
@@ -976,6 +1023,174 @@ func (a *Area) SnapshotDroppedItems() []*DroppedItem {
 	return out
 }
 
+// ---------------------------------------------------------------------------
+// World object runtime overrides (transform/visibility/collision)
+// ---------------------------------------------------------------------------
+
+// findWorldObject returns a pointer into a.Objects for the given ID, or nil.
+func (a *Area) findWorldObject(id int) *WorldObject {
+	a.Mu.RLock()
+	defer a.Mu.RUnlock()
+	for i := range a.Objects {
+		if a.Objects[i].ID == id {
+			return &a.Objects[i]
+		}
+	}
+	return nil
+}
+
+// FindWorldObject returns the placed WorldObject with the given ID, if any.
+// Used by handleObjectInteract (mirrors Area.GetActor for NPCs).
+func (a *Area) FindWorldObject(id int) (*WorldObject, bool) {
+	obj := a.findWorldObject(id)
+	return obj, obj != nil
+}
+
+// baseWorldObjectState builds the default override state for an object still
+// at its static authored transform (i.e. not yet present in objectOverrides).
+func baseWorldObjectState(o *WorldObject) *WorldObjectState {
+	return &WorldObjectState{
+		X: o.X, Y: o.Y, Z: o.Z, Yaw: o.Yaw, Pitch: o.Pitch, Roll: o.Roll,
+		Scale: o.Scale, Visible: true, Collision: true,
+	}
+}
+
+// CurrentWorldObjectState returns the object's current state — its active
+// override if one exists, otherwise its static authored default (with
+// Visible/Collision defaulted to true). Returns false if id does not match
+// any object in the area. Used by the Lua World API to read back fields
+// (e.g. Scale) not exposed by World.SetTransform's own arguments.
+func (a *Area) CurrentWorldObjectState(id int) (WorldObjectState, bool) {
+	obj := a.findWorldObject(id)
+	if obj == nil {
+		return WorldObjectState{}, false
+	}
+	a.woMu.Lock()
+	defer a.woMu.Unlock()
+	if st, ok := a.objectOverrides[id]; ok {
+		return *st, true
+	}
+	return *baseWorldObjectState(obj), true
+}
+
+// GetWorldObjectOverride returns the current override state for the given
+// object ID, if it has ever diverged from its static authored default.
+func (a *Area) GetWorldObjectOverride(id int) (*WorldObjectState, bool) {
+	a.woMu.Lock()
+	defer a.woMu.Unlock()
+	st, ok := a.objectOverrides[id]
+	return st, ok
+}
+
+// SnapshotWorldObjectOverrides returns a copy of the override map, used to
+// merge overrides into the PWorldObjects snapshot sent on area entry.
+func (a *Area) SnapshotWorldObjectOverrides() map[int]*WorldObjectState {
+	a.woMu.Lock()
+	defer a.woMu.Unlock()
+	out := make(map[int]*WorldObjectState, len(a.objectOverrides))
+	for id, st := range a.objectOverrides {
+		out[id] = st
+	}
+	return out
+}
+
+// broadcastWorldObjectUpdate sends PWorldObjectUpdate for the object's
+// current override state. durationSec is the client-side animation length for
+// the transform (0 = instant); visible/collision always apply immediately.
+// Pitch/Roll are included so a client's WorldObjectEntry never loses its
+// authored orientation on a runtime update (World.SetTransform only ever
+// changes X/Y/Z/Yaw — see UpdateWorldObjectTransform — pitch/roll here are
+// always whatever the override/base object already had).
+func (a *Area) broadcastWorldObjectUpdate(id int, st *WorldObjectState, durationSec float32) {
+	var p pb
+	p.u32(uint32(id))
+	p.f32(st.X)
+	p.f32(st.Y)
+	p.f32(st.Z)
+	p.f32(st.Yaw)
+	p.f32(st.Pitch)
+	p.f32(st.Roll)
+	p.f32(st.Scale)
+	p.f32(durationSec)
+	p.u8(boolU8(st.Visible))
+	p.u8(boolU8(st.Collision))
+	a.BroadcastAll(buildFrame(pWorldObjectUpdate, p))
+}
+
+// UpdateWorldObjectTransform sets the object's override to the given target
+// transform and broadcasts PWorldObjectUpdate so connected clients animate
+// toward it over durationSec (0 = instant). The override always stores the
+// FINAL target state, not a mid-flight snapshot — an object entering the area
+// (or a client loading in) mid-animation is therefore always born already at
+// the correct settled state; only clients already in the area play the
+// animation. Returns false if id does not match any object in the area.
+func (a *Area) UpdateWorldObjectTransform(id int, x, y, z, yaw, scale, durationSec float32) bool {
+	obj := a.findWorldObject(id)
+	if obj == nil {
+		return false
+	}
+
+	a.woMu.Lock()
+	st, ok := a.objectOverrides[id]
+	if !ok {
+		st = baseWorldObjectState(obj)
+		a.objectOverrides[id] = st
+	}
+	st.X, st.Y, st.Z, st.Yaw, st.Scale = x, y, z, yaw, scale
+	stCopy := *st
+	a.woMu.Unlock()
+
+	a.broadcastWorldObjectUpdate(id, &stCopy, durationSec)
+	return true
+}
+
+// SetWorldObjectVisible sets the object's visibility override and broadcasts
+// PWorldObjectUpdate with duration=0 (visibility applies immediately, never
+// interpolated). Returns false if id does not match any object in the area.
+func (a *Area) SetWorldObjectVisible(id int, visible bool) bool {
+	obj := a.findWorldObject(id)
+	if obj == nil {
+		return false
+	}
+
+	a.woMu.Lock()
+	st, ok := a.objectOverrides[id]
+	if !ok {
+		st = baseWorldObjectState(obj)
+		a.objectOverrides[id] = st
+	}
+	st.Visible = visible
+	stCopy := *st
+	a.woMu.Unlock()
+
+	a.broadcastWorldObjectUpdate(id, &stCopy, 0)
+	return true
+}
+
+// SetWorldObjectCollision sets the object's collision override and
+// broadcasts PWorldObjectUpdate with duration=0 (collision applies
+// immediately, never interpolated). Returns false if id does not match any
+// object in the area.
+func (a *Area) SetWorldObjectCollision(id int, collision bool) bool {
+	obj := a.findWorldObject(id)
+	if obj == nil {
+		return false
+	}
+
+	a.woMu.Lock()
+	st, ok := a.objectOverrides[id]
+	if !ok {
+		st = baseWorldObjectState(obj)
+		a.objectOverrides[id] = st
+	}
+	st.Collision = collision
+	stCopy := *st
+	a.woMu.Unlock()
+
+	a.broadcastWorldObjectUpdate(id, &stCopy, 0)
+	return true
+}
+
 // SpawnDropsForNPC rolls the drop table for npc and adds any results to the world.
 func (a *Area) SpawnDropsForNPC(npc *Actor) {
 	if npc == nil {
@@ -1011,6 +1226,42 @@ func (a *Area) tickDropDespawn(now int64) {
 		var p pb
 		p.u32(rid)
 		a.BroadcastAll(buildFrame(pRemoveWorldItem, p))
+	}
+}
+
+// ScheduleCall runs fn once, after delayMs have elapsed, on this area's own
+// AI tick goroutine (see tickScheduledCalls — checked every ~100ms, so
+// firing isn't millisecond-precise but is fine for gameplay timers like
+// "close the gate after 20s"). fn is called with no locks held by this
+// package; a caller that needs to reenter another subsystem (e.g. Lua) is
+// responsible for its own locking, exactly like the scripting package's
+// Timer.after binding does.
+func (a *Area) ScheduleCall(delayMs int64, fn func()) {
+	a.scMu.Lock()
+	a.scheduled = append(a.scheduled, scheduledCall{runAt: time.Now().UnixMilli() + delayMs, fn: fn})
+	a.scMu.Unlock()
+}
+
+// tickScheduledCalls runs (and removes) any scheduled calls whose deadline
+// has passed. Mirrors tickDropDespawn: collect due entries under the lock,
+// then invoke them after unlocking (so a callback that calls back into other
+// Area methods, e.g. UpdateWorldObjectTransform, can't deadlock on scMu).
+func (a *Area) tickScheduledCalls(now int64) {
+	a.scMu.Lock()
+	var due []func()
+	remaining := a.scheduled[:0]
+	for _, sc := range a.scheduled {
+		if now >= sc.runAt {
+			due = append(due, sc.fn)
+		} else {
+			remaining = append(remaining, sc)
+		}
+	}
+	a.scheduled = remaining
+	a.scMu.Unlock()
+
+	for _, fn := range due {
+		fn()
 	}
 }
 

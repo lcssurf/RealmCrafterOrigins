@@ -336,8 +336,20 @@ func NewActorPayload(a *Actor) []byte {
 }
 
 // WorldObjectsPayload encodes a slice of static world objects for PWorldObjects.
-// Format: count(u16) + for each: model_path(str)+scale(f32)+x(f32)+y(f32)+z(f32)+yaw(f32)+black_cutout(u8)
-func WorldObjectsPayload(objects []WorldObject) []byte {
+// Format: count(u16) + for each: model_path(str)+scale(f32)+x(f32)+y(f32)+z(f32)+yaw(f32)+black_cutout(u8)+id(u32)+visible(u8)+collision(u8)+pitch(f32)+roll(f32)
+//
+// pitch/roll were added after the fact (appended at the end rather than
+// alongside yaw) so this stays a pure wire-format addition — previously
+// LoadWorldObjects never even loaded these columns, so an object placed
+// pitched/rolled in the GUE (e.g. upside-down) rendered upright in the game
+// client despite the GUE preview showing it correctly.
+//
+// overrides (may be nil) is the area's current Area.objectOverrides snapshot
+// (see SnapshotWorldObjectOverrides) — when an object's ID has an entry, its
+// transform/visible/collision are taken from the override instead of the
+// static authored values, so the object is born in its current runtime state
+// rather than its original one.
+func WorldObjectsPayload(objects []WorldObject, overrides map[int]*WorldObjectState) []byte {
 	var p pb
 	n := len(objects)
 	if n > 0xFFFF {
@@ -346,13 +358,26 @@ func WorldObjectsPayload(objects []WorldObject) []byte {
 	p.u16(uint16(n))
 	for i := 0; i < n; i++ {
 		o := &objects[i]
+		x, y, z, yaw, scale := o.X, o.Y, o.Z, o.Yaw, o.Scale
+		pitch, roll := o.Pitch, o.Roll
+		visible, collision := true, true
+		if st, ok := overrides[o.ID]; ok {
+			x, y, z, yaw, scale = st.X, st.Y, st.Z, st.Yaw, st.Scale
+			pitch, roll = st.Pitch, st.Roll
+			visible, collision = st.Visible, st.Collision
+		}
 		p.str(o.ModelPath)
-		p.f32(o.Scale)
-		p.f32(o.X)
-		p.f32(o.Y)
-		p.f32(o.Z)
-		p.f32(o.Yaw)
+		p.f32(scale)
+		p.f32(x)
+		p.f32(y)
+		p.f32(z)
+		p.f32(yaw)
 		p.u8(boolU8(o.BlackCutout))
+		p.u32(uint32(o.ID))
+		p.u8(boolU8(visible))
+		p.u8(boolU8(collision))
+		p.f32(pitch)
+		p.f32(roll)
 	}
 	return []byte(p)
 }

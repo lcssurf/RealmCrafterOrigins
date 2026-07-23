@@ -104,6 +104,7 @@ type Registry struct {
 	events map[string][]*lua.LFunction
 	w      *world.World
 	quest  QuestBridge
+	inventory InventoryBridge
 	ctx    callCtx
 }
 
@@ -297,6 +298,77 @@ func (r *Registry) HandleChoice(player, npc *world.Actor, area *world.Area, choi
 	pending := r.ctx.pendingDialog
 	r.ctx = callCtx{}
 	return pending
+}
+
+// ObjectInteract fires the "object_interact" event and returns any dialog the
+// script queued. Mirrors InteractNPC exactly, but the target is a placed
+// WorldObject (identified by its zone_scenery ID) instead of an Actor/NPC.
+func (r *Registry) ObjectInteract(player *world.Actor, objectID int, area *world.Area) *DialogPending {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ctx = callCtx{area: area, caster: player}
+	for _, fn := range r.events["object_interact"] {
+		if err := r.safeCall(fn, lua.LNumber(player.RuntimeID), lua.LNumber(objectID)); err != nil {
+			log.Printf("scripting: object_interact: %v", err)
+		}
+	}
+	pending := r.ctx.pendingDialog
+	r.ctx = callCtx{}
+	return pending
+}
+
+// HandleObjectChoice fires the "object_choice" event and returns any
+// follow-up dialog. Mirrors HandleChoice, but for a WorldObject dialog.
+func (r *Registry) HandleObjectChoice(player *world.Actor, objectID int, area *world.Area, choice uint8) *DialogPending {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ctx = callCtx{area: area, caster: player}
+	for _, fn := range r.events["object_choice"] {
+		if err := r.safeCall(fn, lua.LNumber(player.RuntimeID), lua.LNumber(objectID), lua.LNumber(choice)); err != nil {
+			log.Printf("scripting: object_choice: %v", err)
+		}
+	}
+	pending := r.ctx.pendingDialog
+	r.ctx = callCtx{}
+	return pending
+}
+
+// ItemUseScript fires the "item_use_script" event when a Script Item
+// (item_templates.item_type == 4) is used. Its on-use effect is defined
+// entirely in Lua (unlike Consumable/item_type==2, whose heal effect is
+// hardcoded in UseItem/handleUseItem) — this is the generic path for keys,
+// buffs, teleport scrolls, or any other on-use behavior. Mirrors
+// InteractNPC's context setup; unlike InteractNPC/ObjectInteract, no dialog
+// is expected back — a door-key use case would typically drive its dialog
+// off object_interact/object_choice instead (see Inventory.has_item/
+// Inventory.remove_item), this event exists for scripts that want to react
+// to "player used this script item" directly.
+func (r *Registry) ItemUseScript(player *world.Actor, itemID uint16, area *world.Area) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ctx = callCtx{area: area, caster: player}
+	for _, fn := range r.events["item_use_script"] {
+		if err := r.safeCall(fn, lua.LNumber(player.RuntimeID), lua.LNumber(itemID)); err != nil {
+			log.Printf("scripting: item_use_script: %v", err)
+		}
+	}
+	r.ctx = callCtx{}
+}
+
+// InventoryBridge is implemented by the game server runtime and injected
+// into scripting so Lua can query/consume inventory items without importing
+// net/db packages. Mirrors QuestBridge.
+type InventoryBridge interface {
+	HasItem(playerRID uint32, itemID uint16, qty int) (bool, error)
+	RemoveItem(playerRID uint32, itemID uint16, qty int) (bool, error)
+}
+
+// SetInventoryBridge injects runtime inventory callbacks used by the Lua
+// Inventory API. Mirrors SetQuestBridge.
+func (r *Registry) SetInventoryBridge(inv InventoryBridge) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.inventory = inv
 }
 
 // PatchAoEFromDB overlays aoe_type and aoe_radius from DB rows onto in-memory SpellDefs.

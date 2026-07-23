@@ -1973,24 +1973,37 @@ func (d *DB) SaveXP(ctx context.Context, charID string, xp int64, level int) err
 // UseItemResult is the outcome of a UseItem call.
 type UseItemResult struct {
 	ItemType  uint8
-	HealAmt   int32 // > 0 when a consumable was used
-	EquipSlot uint8 // 0xFF when no equip change happened
+	HealAmt   int32  // > 0 when a consumable was used
+	EquipSlot uint8  // 0xFF when no equip change happened
+	ItemID    uint16 // item_templates.id - used by the item_use_script Lua event (item_type == 4)
 }
 
 // UseItem processes a right-click "use" on the given inventory slot:
-//   - Consumable (item_type == 2): removes one from stack, returns heal amount.
+//   - Consumable (item_type == 2): removes one from stack, returns heal amount
+//     (hardcoded effect - always heals for item_value HP).
+//   - Script Item (item_type == 4): does NOT touch the inventory at all -
+//     the caller (handleUseItem) dispatches the "item_use_script" Lua event
+//     and the SCRIPT decides whether/how to consume it (via
+//     Inventory.remove_item). This is deliberately different from
+//     Consumable: a script item that should only ever be consumed in a
+//     specific context (e.g. a key, only spent via the locked door's own
+//     dialog - see dist/server/scripts/events/door_key.lua) must not be
+//     silently wasted just because the player right-clicked it in their
+//     bag. A script item meant to be freely self-consumed on direct use
+//     (e.g. a teleport scroll) still can be - its own item_use_script
+//     handler just calls Inventory.remove_item itself.
 //   - Equippable from bag (slot_type < 10, slot >= 14): moves to best equip slot.
 func (d *DB) UseItem(ctx context.Context, charID string, slot uint8) (*UseItemResult, error) {
 	var quantity int
 	res := &UseItemResult{EquipSlot: 0xFF}
 	var slotType uint8
 	err := d.db.QueryRowContext(ctx,
-		d.q(`SELECT ci.quantity, it.item_type, it.slot_type, it.item_value
+		d.q(`SELECT ci.item_id, ci.quantity, it.item_type, it.slot_type, it.item_value
 		     FROM character_items ci
 		     JOIN item_templates it ON it.id = ci.item_id
 		     WHERE ci.character_id = ? AND ci.slot = ?`),
 		charID, slot,
-	).Scan(&quantity, &res.ItemType, &slotType, &res.HealAmt)
+	).Scan(&res.ItemID, &quantity, &res.ItemType, &slotType, &res.HealAmt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("db: UseItem: no item at slot %d", slot)
 	}
@@ -1999,7 +2012,7 @@ func (d *DB) UseItem(ctx context.Context, charID string, slot uint8) (*UseItemRe
 	}
 
 	switch {
-	case res.ItemType == 2: // consumable Ã¢â‚¬â€ reduce stack
+	case res.ItemType == 2: // consumable - reduce stack
 		if quantity > 1 {
 			_, err = d.db.ExecContext(ctx,
 				d.q(`UPDATE character_items SET quantity = quantity - 1
@@ -2014,7 +2027,10 @@ func (d *DB) UseItem(ctx context.Context, charID string, slot uint8) (*UseItemRe
 			return nil, fmt.Errorf("db: UseItem consume: %w", err)
 		}
 
-	case slotType < 10 && slot >= 14: // equippable from bag Ã¢â‚¬â€ auto-equip
+	case res.ItemType == 4: // script item - no DB mutation; script decides via Inventory.remove_item
+		res.HealAmt = 0
+
+	case slotType < 10 && slot >= 14: // equippable from bag - auto-equip
 		target := d.findEquipSlotFor(ctx, charID, slotType)
 		if err := d.SwapInventorySlots(ctx, charID, slot, target); err != nil {
 			return nil, err
@@ -2027,6 +2043,52 @@ func (d *DB) UseItem(ctx context.Context, charID string, slot uint8) (*UseItemRe
 	}
 
 	return res, nil
+}
+
+// HasItem reports whether the character has at least qty units of itemID
+// anywhere in their inventory (summed across all stacks/slots).
+func (d *DB) HasItem(ctx context.Context, charID string, itemID uint16, qty int) (bool, error) {
+	var total int
+	err := d.db.QueryRowContext(ctx,
+		d.q(`SELECT COALESCE(SUM(quantity), 0) FROM character_items WHERE character_id = ? AND item_id = ?`),
+		charID, itemID,
+	).Scan(&total)
+	if err != nil {
+		return false, fmt.Errorf("db: HasItem: %w", err)
+	}
+	return total >= qty, nil
+}
+
+// RemoveItemQty removes qty units of itemID from the character's inventory.
+// Consumes from a single stack (the one with the largest quantity) -- does
+// not split removal across multiple slots. Returns false (no error) if the
+// character doesn't have enough of the item in any one stack.
+func (d *DB) RemoveItemQty(ctx context.Context, charID string, itemID uint16, qty int) (bool, error) {
+	var slot uint8
+	var quantity int
+	err := d.db.QueryRowContext(ctx,
+		d.q(`SELECT slot, quantity FROM character_items
+		     WHERE character_id = ? AND item_id = ? ORDER BY quantity DESC LIMIT 1`),
+		charID, itemID,
+	).Scan(&slot, &quantity)
+	if err == sql.ErrNoRows || quantity < qty {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("db: RemoveItemQty: %w", err)
+	}
+
+	if quantity > qty {
+		_, err = d.db.ExecContext(ctx,
+			d.q(`UPDATE character_items SET quantity = quantity - ? WHERE character_id = ? AND slot = ?`),
+			qty, charID, slot)
+	} else {
+		err = d.RemoveItemAtSlot(ctx, charID, slot)
+	}
+	if err != nil {
+		return false, fmt.Errorf("db: RemoveItemQty: %w", err)
+	}
+	return true, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -2333,6 +2395,7 @@ type WorldObject struct {
 	Scale       float32
 	X, Y, Z     float32
 	Yaw         float32
+	Pitch, Roll float32 // zone_scenery.pitch/roll — see LoadWorldObjects
 	BlackCutout bool
 }
 
@@ -10160,7 +10223,7 @@ func (d *DB) seedDefaultFXTemplates(ctx context.Context) {
 // rule used for actor mesh slots in appearance.go.
 func (d *DB) LoadWorldObjects(ctx context.Context) ([]*WorldObject, error) {
 	rows, err := d.db.QueryContext(ctx, d.q(
-		`SELECT zs.id, zs.area_name, COALESCE(mm.file_path,''), zs.sx, zs.x, zs.y, zs.z, zs.yaw,
+		`SELECT zs.id, zs.area_name, COALESCE(mm.file_path,''), zs.sx, zs.x, zs.y, zs.z, zs.yaw, zs.pitch, zs.roll,
 		        COALESCE(mm.black_cutout,0), COALESCE(mat.black_cutout,0)
 		 FROM zone_scenery zs
 		 LEFT JOIN media_models mm ON mm.id = zs.model_id
@@ -10173,14 +10236,15 @@ func (d *DB) LoadWorldObjects(ctx context.Context) ([]*WorldObject, error) {
 	var out []*WorldObject
 	for rows.Next() {
 		w := &WorldObject{}
-		var scale, x, y, z, yaw float64
+		var scale, x, y, z, yaw, pitch, roll float64
 		var modelCutout, matCutout bool
 		if err := rows.Scan(&w.ID, &w.AreaName, &w.ModelPath,
-			&scale, &x, &y, &z, &yaw, &modelCutout, &matCutout); err != nil {
+			&scale, &x, &y, &z, &yaw, &pitch, &roll, &modelCutout, &matCutout); err != nil {
 			return nil, fmt.Errorf("db: LoadWorldObjects scan: %w", err)
 		}
 		w.Scale = float32(scale)
 		w.X, w.Y, w.Z, w.Yaw = float32(x), float32(y), float32(z), float32(yaw)
+		w.Pitch, w.Roll = float32(pitch), float32(roll)
 		w.BlackCutout = modelCutout || matCutout
 		out = append(out, w)
 	}

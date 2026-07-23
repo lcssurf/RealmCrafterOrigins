@@ -12,7 +12,17 @@ namespace rco::renderer {
 
 struct ColBox {
     glm::vec3 pos;   // center
-    glm::vec3 half;  // half-extents (scale / 2)
+    glm::vec3 half;  // half-extents (scale / 2), in the box's OWN local axes
+    // Local-to-world rotation (identity = axis-aligned, the only case COLD v2
+    // files produce). COLD v3 adds pitch/yaw/roll per box (same Ry*Rx*Rz
+    // convention used everywhere else — see zone_scene.cpp's `trs`), letting
+    // a rotated wall/door stay a true oriented box instead of an
+    // ever-growing re-fit AABB (which was correct only at 0/90/180/270deg
+    // and became an oversized box at any other angle).
+    glm::mat3 rot = glm::mat3(1.f);
+    // World-space Y bounds of the rotated box (precomputed at load), used
+    // only for Resolve()'s cheap early-out — NOT the collision shape itself.
+    float worldYMin = 0.f, worldYMax = 0.f;
 };
 
 struct ColSphere {

@@ -579,10 +579,13 @@ func main() {
 			area := gameWorld.GetOrCreateArea(wo.AreaName)
 			area.Mu.Lock()
 			area.Objects = append(area.Objects, world.WorldObject{
+				ID:        wo.ID,
 				ModelPath: wo.ModelPath,
 				Scale:     wo.Scale,
 				X:         wo.X, Y: wo.Y, Z: wo.Z,
 				Yaw:         wo.Yaw,
+				Pitch:       wo.Pitch,
+				Roll:        wo.Roll,
 				BlackCutout: wo.BlackCutout,
 			})
 			area.Mu.Unlock()
@@ -802,6 +805,7 @@ func main() {
 		},
 	}, database, acctService, gameWorld, scriptReg)
 	scriptReg.SetQuestBridge(srv)
+	scriptReg.SetInventoryBridge(srv)
 
 	// Run server in background goroutine so we can wait on OS signals.
 	errCh := make(chan error, 1)

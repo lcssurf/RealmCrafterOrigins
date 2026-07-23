@@ -83,6 +83,8 @@ const (
 	PZoneLights          uint16 = 140 // S->C: static point lights (zone_lights) for the current area
 	PZoneWater           uint16 = 141 // S->C: static water planes (zone_water) for the current area
 	PAtmosphereVolumes   uint16 = 142 // S->C: atmosphere volumes (zone_atmosphere_volumes) for the current area — Fase 1, data only, client just stores
+	PWorldObjectUpdate   uint16 = 143 // S->C: runtime transform/visibility/collision update for one WorldObject (Lua World.SetTransform/SetVisible/SetCollision)
+	PObjectInteract      uint16 = 144 // C->S: player interacts with a WorldObject (mirrors PRightClick, but object_id instead of actor RID)
 )
 
 // EmitterType values for PCreateEmitter.

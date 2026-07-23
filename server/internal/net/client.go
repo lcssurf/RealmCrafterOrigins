@@ -69,6 +69,11 @@ type ClientConn struct {
 	account         *db.Account
 	actor           *world.Actor
 	activeDialogNPC uint32 // RID of NPC currently in dialog with this player; 0 = none
+	// activeDialogObject: WorldObject.ID currently in dialog with this player; 0 = none.
+	// Mutually exclusive with activeDialogNPC — a dialog is opened by either
+	// handleRightClick (sets activeDialogNPC, clears activeDialogObject) or
+	// handleObjectInteract (sets activeDialogObject, clears activeDialogNPC).
+	activeDialogObject uint32
 	lastMoveLogAtMs int64
 	worldEnterStart int64 // unix ms when handleStartGame started
 	questLogSync    questLogSyncCache
@@ -193,6 +198,8 @@ func (c *ClientConn) dispatchInGamePacket(ctx context.Context, pktType uint16, p
 		return c.handleCastSpell(ctx, payload)
 	case protocol.PRightClick:
 		return c.handleRightClick(ctx, payload)
+	case protocol.PObjectInteract:
+		return c.handleObjectInteract(ctx, payload)
 	case protocol.PDialogChoice:
 		return c.handleDialogChoice(ctx, payload)
 	case protocol.PPickupItem:
@@ -905,7 +912,8 @@ func (c *ClientConn) sendWorldObjects(area *world.Area) {
 	if len(objects) == 0 {
 		return
 	}
-	c.actor.Send(buildFramedPacket(protocol.PWorldObjects, world.WorldObjectsPayload(objects)))
+	overrides := area.SnapshotWorldObjectOverrides()
+	c.actor.Send(buildFramedPacket(protocol.PWorldObjects, world.WorldObjectsPayload(objects, overrides)))
 }
 
 // sendZoneLights sends the area's static point lights (torches/lanterns —
@@ -1503,6 +1511,15 @@ func (c *ClientConn) handleUseItem(ctx context.Context, payload []byte) error {
 		sw.WriteUint8(0) // attr 0 = HP
 		sw.WriteUint16(uint16(int16(hp)))
 		c.actor.Send(buildFramedPacket(protocol.PStatUpdate, sw.Bytes()))
+	}
+
+	// Script Item (item_type == 4): dispatch "item_use_script" so a script
+	// can react to the raw use event (door-key flows drive their dialog off
+	// object_interact/object_choice instead — see ObjectInteract).
+	if res.ItemType == 4 {
+		if area, ok := c.server.world.GetArea(c.actor.AreaName); ok {
+			c.server.scripting.ItemUseScript(c.actor, res.ItemID, area)
+		}
 	}
 
 	// Equip change: refresh cached combat stats.
@@ -2294,15 +2311,64 @@ func (c *ClientConn) handleRightClick(_ context.Context, payload []byte) error {
 	})
 
 	c.activeDialogNPC = targetRID
+	c.activeDialogObject = 0
 	return c.sendDialog(npc.Name, pending.Text, pending.Options)
 }
 
+// handleObjectInteract handles PObjectInteract — player interacts with a
+// WorldObject (door, lever, etc). Mirrors handleRightClick exactly, but the
+// target is a placed scenery object (area.Objects) instead of an Actor.
+func (c *ClientConn) handleObjectInteract(_ context.Context, payload []byte) error {
+	r := NewReader(payload)
+	objectID, err := r.ReadUint32()
+	if err != nil {
+		return err
+	}
+
+	area, ok := c.server.world.GetArea(c.actor.AreaName)
+	if !ok {
+		return nil
+	}
+	obj, ok := area.FindWorldObject(int(objectID))
+	if !ok {
+		return nil
+	}
+
+	// Range check — client enforces auto-walk; server validates to prevent abuse.
+	const interactRange = float32(6.0)
+	dx := c.actor.X - obj.X
+	dz := c.actor.Z - obj.Z
+	if dx*dx+dz*dz > interactRange*interactRange {
+		return nil
+	}
+
+	pending := c.server.scripting.ObjectInteract(c.actor, int(objectID), area)
+	if pending == nil {
+		return nil
+	}
+
+	// WorldObject has no display name field (see world.WorldObject) — use a
+	// generic label; the actual message is whatever the script passed to
+	// Dialog.send, this is only the dialog box's title/speaker line.
+	c.activeDialogObject = objectID
+	c.activeDialogNPC = 0
+	return c.sendDialog("Object", pending.Text, pending.Options)
+}
+
 // handleDialogChoice handles PDialogChoice — player picks a dialog option (0 = close).
+// activeDialogObject and activeDialogNPC are mutually exclusive (see
+// handleRightClick/handleObjectInteract, each clears the other when it opens
+// its own dialog), so checking activeDialogObject first and falling through
+// to the NPC branch otherwise never double-handles a single choice.
 func (c *ClientConn) handleDialogChoice(_ context.Context, payload []byte) error {
 	r := NewReader(payload)
 	choice, err := r.ReadUint8()
 	if err != nil {
 		return err
+	}
+
+	if c.activeDialogObject != 0 {
+		return c.handleObjectDialogChoice(choice)
 	}
 
 	if c.activeDialogNPC == 0 {
@@ -2334,6 +2400,35 @@ func (c *ClientConn) handleDialogChoice(_ context.Context, payload []byte) error
 		return c.sendDialog(npc.Name, pending.Text, pending.Options)
 	}
 	c.activeDialogNPC = 0
+	return nil
+}
+
+// handleObjectDialogChoice handles PDialogChoice when the active dialog
+// belongs to a WorldObject (see activeDialogObject). Mirrors the NPC branch
+// of handleDialogChoice, minus shop support (scenery objects have no shop).
+func (c *ClientConn) handleObjectDialogChoice(choice uint8) error {
+	objectID := c.activeDialogObject
+
+	if choice == 0 {
+		c.activeDialogObject = 0
+		return nil
+	}
+
+	area, ok := c.server.world.GetArea(c.actor.AreaName)
+	if !ok {
+		c.activeDialogObject = 0
+		return nil
+	}
+	if _, ok := area.FindWorldObject(int(objectID)); !ok {
+		c.activeDialogObject = 0
+		return nil
+	}
+
+	pending := c.server.scripting.HandleObjectChoice(c.actor, int(objectID), area, choice)
+	if pending != nil {
+		return c.sendDialog("Object", pending.Text, pending.Options)
+	}
+	c.activeDialogObject = 0
 	return nil
 }
 

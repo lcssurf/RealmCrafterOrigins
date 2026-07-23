@@ -274,6 +274,18 @@ private:
     glm::vec3 gizmoStartObjPos_= {};   // object origin at drag start
     glm::vec3 gizmoStartHit_   = {};   // plane-drag anchor hit point
     glm::vec3 gizmoStartRot_   = {};   // object rot at drag start (Euler deg)
+    // World-space direction of the ring being dragged, captured once at
+    // mouse-down and held fixed for the whole drag. Needed because rot.xyz
+    // are compound Euler angles (render applies Ry*Rx*Rz, see
+    // ZoneRenderer::DrawFramePBR_ scenery matrix build) — naively adding the
+    // drag delta straight into rot[gizmoAxis_] only matches a true
+    // world-space single-axis rotation when the object's OTHER two angles
+    // are zero. Once yaw is non-trivial (e.g. ~90°, common for a door placed
+    // against a side wall), the X and Z rings visually swap roles. The fix:
+    // apply the delta as a matrix rotation around this fixed world axis,
+    // composed with the drag-start rotation matrix, then decompose back to
+    // Euler (see BuildEulerYXZDeg/DecomposeEulerYXZDeg in zones_viewport.cpp).
+    glm::vec3 gizmoRotAxisWorld_ = {1,0,0};
     glm::vec3 gizmoStartScale_ = {1,1,1};
     float     gizmoStartS_     = 0.f;  // cursor param at drag start (axis-local)
     float     gizmoRotAccumDeg_= 0.f;  // incremental rotate accumulator (avoids wrap jumps)

@@ -117,6 +117,24 @@ static float SmoothLerpFactor(float dt, float rate_per_sec) {
     return std::clamp(a, 0.f, 1.f);
 }
 
+// World-space anchor for a floating UI label (interact prompt, name tag,
+// etc) over an Actor — the middle of its model's bounding box, not its
+// origin/pivot (which for most rigs sits at the base/feet, not the visual
+// center). Falls back to pos + (0, fallbackY, 0) if the actor/model isn't
+// loaded yet. Ignores yaw/pitch/roll (bounds are taken in local space and
+// only scaled, not rotated) — close enough for a text anchor, not worth the
+// extra matrix work for something that just needs to roughly sit over the
+// object.
+static glm::vec3 InteractPromptAnchor(const rco::renderer::Actor* actor,
+                                       const glm::vec3& pos, float fallbackY) {
+    if (actor && actor->IsLoaded()) {
+        const glm::vec3 bmin = actor->model().BoundsMin();
+        const glm::vec3 bmax = actor->model().BoundsMax();
+        return pos + (bmin + bmax) * 0.5f * actor->scale;
+    }
+    return pos + glm::vec3(0.f, fallbackY, 0.f);
+}
+
 static bool ReadConfigBool(const char* section_name,
                            const char* key_name,
                            bool& out_value) {
@@ -1542,11 +1560,32 @@ int main() {
 
     // Static world objects (received via PWorldObjects on area enter)
     struct WorldObjectEntry {
+        int id = 0;
         std::string model_path;
         float scale = 1.f;
         float x = 0.f, y = 0.f, z = 0.f, yaw = 0.f;
+        // Pitch/roll (X/Z axis rotation, degrees) — authored in the GUE,
+        // never changed at runtime (World.SetTransform only ever animates
+        // pos/yaw/scale — see server's WorldObjectState). Previously not
+        // sent to the client at all (LoadWorldObjects only selected yaw),
+        // so anything placed pitched/rolled (e.g. a spike mounted upside
+        // down) rendered upright in-game despite showing correctly in the
+        // GUE preview, which builds the full Ry*Rx*Rz matrix.
+        float pitch = 0.f, roll = 0.f;
         bool  black_cutout = false;
+        bool  visible = true;
+        bool  collision = true; // stored/broadcast only — no client-side collision consumer yet
         std::unique_ptr<rco::renderer::Actor> actor;
+
+        // Deterministic client-side transform animation driven by
+        // PWorldObjectUpdate (see kPWorldObjectUpdate handler). Not used for
+        // visibility/collision, which always apply immediately.
+        bool  anim_active = false;
+        float anim_from_x = 0.f, anim_from_y = 0.f, anim_from_z = 0.f, anim_from_yaw = 0.f, anim_from_scale = 1.f;
+        float anim_to_x = 0.f, anim_to_y = 0.f, anim_to_z = 0.f, anim_to_yaw = 0.f, anim_to_scale = 1.f;
+        float anim_start_time = 0.f;
+        float anim_duration = 0.f;
+
         WorldObjectEntry() = default;
         WorldObjectEntry(WorldObjectEntry&&) = default;
         WorldObjectEntry& operator=(WorldObjectEntry&&) = default;
@@ -1652,7 +1691,10 @@ int main() {
     // Player movement controller (gravity, slope, jump, sprint, click-to-move)
     rco::PlayerController player_ctrl{};
     glm::vec2 last_player_pos{0.f}; // XZ position from previous frame (walk detection)
-    uint32_t  pending_interact   = 0;     // RID of NPC we're walking toward to interact
+    // Interact range for the F-key NPC-dialog/scenery-object interact (see
+    // the F-key handler further down, mirrors the item pickup binding) — no
+    // longer click/reticle-triggered or walk-to-then-auto-interact; the
+    // player must already be standing within range and press F.
     constexpr float kInteractRange = 5.f;
 
     inventory.on_swap = [&](int src, int dst) {
@@ -3366,6 +3408,11 @@ int main() {
                     e.z            = r.ReadF32();
                     e.yaw          = r.ReadF32();
                     e.black_cutout = (r.ReadU8() != 0);
+                    e.id           = static_cast<int>(r.ReadU32());
+                    e.visible      = (r.ReadU8() != 0);
+                    e.collision    = (r.ReadU8() != 0);
+                    e.pitch        = r.ReadF32();
+                    e.roll         = r.ReadF32();
                     if (!r.OK() || e.model_path.empty()) break;
                     unique_models.insert(e.model_path);
                     ++model_counts[e.model_path];
@@ -3376,6 +3423,79 @@ int main() {
                     static_model_prewarm_queue.push_back(path);
                 world_entry_world_objects_received = true;
                 perf_entry.LogWorldObjectsSummary(obj_count, model_counts);
+                break;
+            }
+
+            case rco::net::kPWorldObjectUpdate: {
+                // Runtime transform/visibility/collision update for one
+                // WorldObject (Lua World.SetTransform/SetVisible/
+                // SetCollision — see server/internal/world/area.go
+                // broadcastWorldObjectUpdate). Position/rotation/scale
+                // animate deterministically over duration_sec (0 = instant);
+                // visible/collision always apply immediately, never
+                // interpolated. If a previous animation is still in
+                // progress, the new one re-targets FROM the CURRENT
+                // interpolated pose (not the stale "from" snapshot) — same
+                // fix class as the atmosphere-volume crossfade bug.
+                uint32_t object_id       = r.ReadU32();
+                float    target_x        = r.ReadF32();
+                float    target_y        = r.ReadF32();
+                float    target_z        = r.ReadF32();
+                float    target_yaw      = r.ReadF32();
+                // Pitch/roll are never animated (World.SetTransform only
+                // ever changes pos/yaw/scale — see UpdateWorldObjectTransform)
+                // but are still carried on every update so a client never
+                // loses the object's authored orientation.
+                float    target_pitch    = r.ReadF32();
+                float    target_roll     = r.ReadF32();
+                float    target_scale    = r.ReadF32();
+                float    duration_sec    = r.ReadF32();
+                bool     target_visible  = (r.ReadU8() != 0);
+                bool     target_collision = (r.ReadU8() != 0);
+                if (!r.OK()) break;
+
+                for (auto& obj : world_static_objects) {
+                    if (static_cast<uint32_t>(obj.id) != object_id) continue;
+
+                    const float now_f = static_cast<float>(glfwGetTime());
+                    float from_x = obj.x, from_y = obj.y, from_z = obj.z, from_yaw = obj.yaw, from_scale = obj.scale;
+                    if (obj.anim_active) {
+                        // Re-target from the current interpolated pose, not
+                        // the previous animation's stale "from" snapshot.
+                        const float t = obj.anim_duration > 0.f
+                            ? std::clamp((now_f - obj.anim_start_time) / obj.anim_duration, 0.f, 1.f)
+                            : 1.f;
+                        const float e = t * t * (3.f - 2.f * t);
+                        from_x     = obj.anim_from_x     + (obj.anim_to_x     - obj.anim_from_x)     * e;
+                        from_y     = obj.anim_from_y     + (obj.anim_to_y     - obj.anim_from_y)     * e;
+                        from_z     = obj.anim_from_z     + (obj.anim_to_z     - obj.anim_from_z)     * e;
+                        from_yaw   = obj.anim_from_yaw   + (obj.anim_to_yaw   - obj.anim_from_yaw)   * e;
+                        from_scale = obj.anim_from_scale + (obj.anim_to_scale - obj.anim_from_scale) * e;
+                    }
+
+                    obj.anim_from_x = from_x; obj.anim_from_y = from_y; obj.anim_from_z = from_z;
+                    obj.anim_from_yaw = from_yaw; obj.anim_from_scale = from_scale;
+                    obj.anim_to_x = target_x; obj.anim_to_y = target_y; obj.anim_to_z = target_z;
+                    obj.anim_to_yaw = target_yaw; obj.anim_to_scale = target_scale;
+                    obj.anim_start_time = now_f;
+                    obj.anim_duration = duration_sec;
+                    obj.anim_active = duration_sec > 0.f;
+
+                    if (!obj.anim_active) {
+                        obj.x = target_x; obj.y = target_y; obj.z = target_z;
+                        obj.yaw = target_yaw; obj.scale = target_scale;
+                    } else {
+                        obj.x = from_x; obj.y = from_y; obj.z = from_z;
+                        obj.yaw = from_yaw; obj.scale = from_scale;
+                    }
+
+                    // Visibility/collision/pitch/roll are never interpolated.
+                    obj.visible   = target_visible;
+                    obj.collision = target_collision;
+                    obj.pitch     = target_pitch;
+                    obj.roll      = target_roll;
+                    break;
+                }
                 break;
             }
 
@@ -4250,8 +4370,15 @@ int main() {
 
         // Cursor policy: action-only gameplay keeps mouse captured; menus/UI stay normal.
         {
+            // Auto-release the cursor for any modal that needs mouse clicks
+            // (dialog/shop choices) — previously the player had to manually
+            // hold/toggle the cursor-release key (ALT by default) to click a
+            // dialog option, with no on-screen indication they needed to.
+            // Recomputed every frame, so the cursor re-locks by itself the
+            // instant the dialog/shop closes — no separate "restore" step.
             const bool force_cursor_unlock =
-                (state == rco::GameState::InGame && skill_loadout_screen.IsOpen());
+                (state == rco::GameState::InGame &&
+                 (skill_loadout_screen.IsOpen() || dialog.open || shop.open));
             if (state == rco::GameState::InGame) {
                 const bool key_now_pressed =
                     glfwGetKey(window.Handle(), input_config.cursor_release_key_glfw) == GLFW_PRESS;
@@ -5066,29 +5193,10 @@ int main() {
                 // Cancel movement on death.
                 if (player_dead) {
                     player_ctrl.CancelMoveTarget();
-                    pending_interact = 0;
                     dodge_roll_active = false;
                     dodge_roll_pending = false;
                     rmb_press_handled = false;
                     local_guarding = false;
-                }
-
-                // Auto-interact: fire kPRightClick once close enough.
-                if (pending_interact != 0 && !player_dead) {
-                    auto pit = world_actors.find(pending_interact);
-                    if (pit == world_actors.end()) {
-                        pending_interact = 0; // NPC gone
-                    } else {
-                        float dnx = pit->second.x - player.x;
-                        float dnz = pit->second.z - player.z;
-                        if (dnx*dnx + dnz*dnz <= kInteractRange * kInteractRange) {
-                            rco::net::Writer iw;
-                            iw.WriteU32(pending_interact);
-                            conn.SendPacket(rco::net::kPRightClick, iw);
-                            pending_interact = 0;
-                            player_ctrl.CancelMoveTarget();
-                        }
-                    }
                 }
 
                 // Send position to server at 10 Hz
@@ -5746,10 +5854,48 @@ int main() {
                     }
                 }
 
-                // Static world objects
+                // Static world objects. Advance any in-progress
+                // PWorldObjectUpdate transform animation (deterministic
+                // ease-in-out lerp, see kPWorldObjectUpdate handler) before
+                // submitting; invisible objects are skipped entirely.
                 for (auto& obj : world_static_objects) {
+                    if (obj.anim_active) {
+                        const float now_f = static_cast<float>(now);
+                        float t = obj.anim_duration > 0.f
+                            ? std::clamp((now_f - obj.anim_start_time) / obj.anim_duration, 0.f, 1.f)
+                            : 1.f;
+                        const float e = t * t * (3.f - 2.f * t);
+                        obj.x     = obj.anim_from_x     + (obj.anim_to_x     - obj.anim_from_x)     * e;
+                        obj.y     = obj.anim_from_y     + (obj.anim_to_y     - obj.anim_from_y)     * e;
+                        obj.z     = obj.anim_from_z     + (obj.anim_to_z     - obj.anim_from_z)     * e;
+                        obj.yaw   = obj.anim_from_yaw   + (obj.anim_to_yaw   - obj.anim_from_yaw)   * e;
+                        obj.scale = obj.anim_from_scale + (obj.anim_to_scale - obj.anim_from_scale) * e;
+                        if (t >= 1.f) obj.anim_active = false;
+                    }
+                    if (!obj.visible) continue;
                     if (obj.actor && obj.actor->IsLoaded()) {
-                        obj.actor->Submit(*pipeline);
+                        obj.actor->position = {obj.x, obj.y, obj.z};
+                        obj.actor->yaw      = obj.yaw;
+                        obj.actor->scale    = obj.scale;
+                        if (obj.pitch == 0.f && obj.roll == 0.f) {
+                            // Common case: matches SubmitWithMatrix's result
+                            // below exactly (position * Ry(yaw) * scale) but
+                            // skips building/passing a matrix.
+                            obj.actor->Submit(*pipeline);
+                        } else {
+                            // Pitch/roll present (e.g. an upside-down spike)
+                            // — same Ry*Rx*Rz convention as the GUE's scenery
+                            // preview (zone_renderer.cpp), which is why this
+                            // matched there but not here before pitch/roll
+                            // were plumbed through to the client at all.
+                            glm::mat4 m(1.f);
+                            m = glm::translate(m, obj.actor->position);
+                            m = glm::rotate(m, glm::radians(obj.yaw),   glm::vec3(0.f, 1.f, 0.f));
+                            m = glm::rotate(m, glm::radians(obj.pitch), glm::vec3(1.f, 0.f, 0.f));
+                            m = glm::rotate(m, glm::radians(obj.roll),  glm::vec3(0.f, 0.f, 1.f));
+                            m = glm::scale(m, glm::vec3(obj.scale));
+                            obj.actor->SubmitWithMatrix(*pipeline, m);
+                        }
                     }
                 }
 
@@ -6225,31 +6371,20 @@ int main() {
                         }
                         if (best_id != 0) {
                             auto& clicked = world_actors[best_id];
-                            if (clicked.actor_type == 2 && conn.IsConnected()) {
-                                float dnx = clicked.x - player.x;
-                                float dnz = clicked.z - player.z;
-                                if (dnx*dnx + dnz*dnz <= kInteractRange * kInteractRange) {
-                                    // Close enough — interact now.
-                                    rco::net::Writer iw;
-                                    iw.WriteU32(best_id);
-                                    conn.SendPacket(rco::net::kPRightClick, iw);
-                                } else {
-                                    // Too far — walk toward NPC then interact.
-                                    float ny = renderer_ready
-                                        ? terrain.SampleHeight(clicked.x, clicked.z)
-                                        : clicked.y;
-                                    player_ctrl.SetMoveTarget({clicked.x, ny, clicked.z});
-                                    pending_interact  = best_id;
-                                }
+                            if (clicked.actor_type == 2) {
+                                // Dialog NPC — not attackable. Interact is
+                                // F-key only now (see the F-key handler
+                                // below, mirrors the item pickup binding);
+                                // clicking one just clears any combat target.
+                                combat_target = 0;
+                                combat_approach_active = false;
                             } else {
                                 combat_target    = best_id;
-                                pending_interact = 0;
                                 this_click_confirmed_combat_target = true;
                             }
                         } else {
                             combat_target    = 0;
                             combat_approach_active = false;
-                            pending_interact = 0;
                         }
                     }
                     ms_lmb_click = false;  // consumed; reset for next frame
@@ -6485,8 +6620,11 @@ int main() {
                 ImGui::TextDisabled("Combat: Tap RMB moving = Dodge Roll (W/A/S/D direction), still = Guard");
                 ImGui::End();
 
-                // Action-mode crosshair.
-                {
+                // Action-mode crosshair. Hidden while a modal that needs
+                // mouse clicks is open — GetForegroundDrawList() draws over
+                // EVERY ImGui window, so left unconditional this always sat
+                // in front of the dialog/shop window too.
+                if (!dialog.open && !shop.open && !skill_loadout_screen.IsOpen()) {
                     auto* dl = ImGui::GetForegroundDrawList();
                     float cx = window.Width()  * 0.5f;
                     float cy = window.Height() * 0.5f;
@@ -6503,7 +6641,10 @@ int main() {
                 // Skill hotbar cast (1-9): client sends slot index, server resolves ability
                 // authoritatively from active loadout.
                 const bool skill_loadout_open_hotbar = skill_loadout_screen.IsOpen();
-                if (!player_dead && !skill_loadout_open_hotbar && !ImGui::GetIO().WantTextInput) {
+                // Suppressed while a dialog is open — its own 1-9 handling
+                // above would otherwise ALSO cast a hotbar ability on the
+                // same keypress used to pick a dialog option.
+                if (!player_dead && !skill_loadout_open_hotbar && !dialog.open && !ImGui::GetIO().WantTextInput) {
                     const auto& skill_state = rco::gameplay::PlayerSkillState();
                     int hotbar_key_slots = 4;
                     for (const auto& ab : skill_state.abilities()) {
@@ -6574,9 +6715,16 @@ int main() {
                     }
                 }
 
-                // F key — pick up nearby dropped item
+                // F key — pick up nearby dropped item, or (if none in range)
+                // talk to the nearest dialog NPC, or (if neither) interact
+                // with the nearest scenery object. Interact used to be
+                // reticle/click-triggered (kPRightClick/kPObjectInteract) —
+                // now it's F-only, same binding as pickup, checked in that
+                // priority order so F never "steals" a pickup you're
+                // standing right on top of.
                 if (ImGui::IsKeyPressed(ImGuiKey_F) && !player_dead && !ImGui::GetIO().WantTextInput
                     && conn.IsConnected()) {
+                    bool handled_f = false;
                     for (auto& wi : world_items) {
                         float dx = player.x - wi.x, dz = player.z - wi.z;
                         if (dx*dx + dz*dz <= 25.f) { // 5 unit radius
@@ -6584,7 +6732,43 @@ int main() {
                             w.WriteU32(wi.rid);
                             conn.SendPacket(rco::net::kPPickupItem, w);
                             audio.PlaySfx(rco::audio::SfxId::PickupItem);
+                            handled_f = true;
                             break;
+                        }
+                    }
+
+                    if (!handled_f) {
+                        const float kRangeSq = kInteractRange * kInteractRange;
+                        uint32_t nearest_npc = 0;
+                        float best_npc_dist = kRangeSq;
+                        for (auto& [rid, e] : world_actors) {
+                            if (e.actor_type != 2) continue;
+                            float dx = player.x - e.x, dz = player.z - e.z;
+                            float d = dx * dx + dz * dz;
+                            if (d <= best_npc_dist) { best_npc_dist = d; nearest_npc = rid; }
+                        }
+                        if (nearest_npc != 0) {
+                            rco::net::Writer iw;
+                            iw.WriteU32(nearest_npc);
+                            conn.SendPacket(rco::net::kPRightClick, iw);
+                            handled_f = true;
+                        }
+                    }
+
+                    if (!handled_f) {
+                        const float kRangeSq = kInteractRange * kInteractRange;
+                        const WorldObjectEntry* nearest_obj = nullptr;
+                        float best_obj_dist = kRangeSq;
+                        for (const auto& obj : world_static_objects) {
+                            if (!obj.visible) continue;
+                            float dx = player.x - obj.x, dz = player.z - obj.z;
+                            float d = dx * dx + dz * dz;
+                            if (d <= best_obj_dist) { best_obj_dist = d; nearest_obj = &obj; }
+                        }
+                        if (nearest_obj) {
+                            rco::net::Writer iw;
+                            iw.WriteU32(static_cast<uint32_t>(nearest_obj->id));
+                            conn.SendPacket(rco::net::kPObjectInteract, iw);
                         }
                     }
                 }
@@ -6841,7 +7025,12 @@ int main() {
                     float btnW = kDW - ImGui::GetStyle().WindowPadding.x * 2.f;
                     for (int i = 0; i < static_cast<int>(dialog.options.size()); ++i) {
                         std::string lbl = std::to_string(i + 1) + ". " + dialog.options[i];
-                        if (ImGui::Button(lbl.c_str(), {btnW, 28.f}) && conn.IsConnected()) {
+                        // Number keys 1-9 pick the option directly, same as
+                        // clicking the button — the label already shows the
+                        // number, so this was the natural expectation.
+                        const bool key_picked = (i < 9) &&
+                            ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + i), false);
+                        if ((ImGui::Button(lbl.c_str(), {btnW, 28.f}) || key_picked) && conn.IsConnected()) {
                             rco::net::Writer w;
                             w.WriteU8(static_cast<uint8_t>(i + 1));
                             conn.SendPacket(rco::net::kPDialogChoice, w);
@@ -6900,6 +7089,57 @@ int main() {
                             ImVec2 hs = ImGui::CalcTextSize(hint);
                             dl->AddText({sx - hs.x*0.5f, sy + 4.f},
                                         IM_COL32(200, 255, 180, 200), hint);
+                        }
+                    }
+                }
+
+                // Interact prompt (dialog NPC or scenery object) — nearest
+                // target within kInteractRange, mirroring the "[F] Pegar"
+                // pickup hint above (same key). Anchored at the middle of
+                // the target's model bounds (InteractPromptAnchor), not its
+                // origin/pivot — most rigs have their pivot at the base, so
+                // anchoring there put the label at ground level instead of
+                // over the actual model.
+                if (!player_dead) {
+                    const float kPromptRangeSq = kInteractRange * kInteractRange;
+                    float bestDist = kPromptRangeSq;
+                    glm::vec3 bestPos{0.f};
+                    const char* bestLabel = nullptr;
+
+                    for (auto& [rid, e] : world_actors) {
+                        if (e.actor_type != 2) continue; // only dialog NPCs, not combat/other players
+                        float dx = player.x - e.x, dz = player.z - e.z;
+                        float d = dx * dx + dz * dz;
+                        if (d <= bestDist) {
+                            bestDist = d;
+                            bestPos = InteractPromptAnchor(e.actor.get(), {e.x, e.y, e.z}, 2.2f);
+                            bestLabel = "Falar";
+                        }
+                    }
+                    for (auto& obj : world_static_objects) {
+                        if (!obj.visible) continue;
+                        float dx = player.x - obj.x, dz = player.z - obj.z;
+                        float d = dx * dx + dz * dz;
+                        if (d <= bestDist) {
+                            bestDist = d;
+                            bestPos = InteractPromptAnchor(obj.actor.get(), {obj.x, obj.y, obj.z}, 2.f);
+                            bestLabel = "Interagir";
+                        }
+                    }
+
+                    if (bestLabel) {
+                        glm::vec4 c = proj_mat * view_mat * glm::vec4(bestPos, 1.f);
+                        if (c.w > 0.f) {
+                            auto* dl2 = ImGui::GetForegroundDrawList();
+                            float sw3 = static_cast<float>(window.Width());
+                            float sh3 = static_cast<float>(window.Height());
+                            float sx = (c.x / c.w + 1.f) * 0.5f * sw3;
+                            float sy = (1.f - c.y / c.w) * 0.5f * sh3;
+                            char hint[32];
+                            std::snprintf(hint, sizeof(hint), "[F] %s", bestLabel);
+                            ImVec2 hs = ImGui::CalcTextSize(hint);
+                            dl2->AddText({sx - hs.x * 0.5f, sy - hs.y * 0.5f},
+                                         IM_COL32(255, 255, 255, 230), hint);
                         }
                     }
                 }

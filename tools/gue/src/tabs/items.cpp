@@ -18,7 +18,14 @@ namespace gue {
 // Constants
 // ---------------------------------------------------------------------------
 
-static const char* kItemTypes[]   = { "Weapon", "Armor", "Consumable", "Misc" };
+// item_type == 4 ("Script Item") consumes 1 unit on use like Consumable but
+// never heals — its effect is defined entirely in Lua via the
+// "item_use_script" event instead of a hardcoded Go effect. Consumable (2)
+// stays the hardcoded-heal special case; Script Item is the generic path for
+// any other on-use effect (keys, buffs, teleport scrolls, etc) — see
+// server/internal/db/db.go UseItem and server/internal/scripting/registry.go
+// ItemUseScript.
+static const char* kItemTypes[]   = { "Weapon", "Armor", "Consumable", "Misc", "Script Item" };
 static const char* kSlotTypes[]   = {
     "Weapon (0)", "Shield (1)", "Hat (2)", "Chest (3)", "Hands (4)",
     "Belt (5)",   "Legs (6)",   "Feet (7)", "Ring (8)", "Amulet (9)",
@@ -576,7 +583,7 @@ bool ItemsTab::DrawFields(ItemTemplate& t) {
     std::strncpy(buf, t.name.c_str(), sizeof(buf)-1); buf[sizeof(buf)-1] = 0;
     if (ImGui::InputText("Name", buf, sizeof(buf))) { t.name = buf; changed = true; }
 
-    if (ImGui::Combo("Type", &t.item_type, kItemTypes, 4)) changed = true;
+    if (ImGui::Combo("Type", &t.item_type, kItemTypes, 5)) changed = true;
 
     if (t.item_type == 0 || t.item_type == 1) {
         int st = (t.slot_type < 10) ? t.slot_type : 0;
@@ -974,7 +981,8 @@ void ItemsTab::Draw(sqlite3* db) {
         auto& it = items_[i];
         const char* typeIcon = (it.item_type == 0) ? "[W]"
                              : (it.item_type == 1) ? "[A]"
-                             : (it.item_type == 2) ? "[C]" : "[M]";
+                             : (it.item_type == 2) ? "[C]"
+                             : (it.item_type == 4) ? "[S]" : "[M]";
         char label[160];
         std::snprintf(label, sizeof(label), "%s %s##li%d", typeIcon, it.name.c_str(), i);
         if (ImGui::Selectable(label, selected_ == i)) {

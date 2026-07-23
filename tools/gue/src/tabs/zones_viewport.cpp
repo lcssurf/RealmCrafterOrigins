@@ -12,6 +12,44 @@
 
 namespace gue {
 
+namespace {
+
+// Builds the same Ry*Rx*Rz compound rotation the renderer uses for scenery
+// (rot.x=pitch/X, rot.y=yaw/Y, rot.z=roll/Z — see
+// ZoneRenderer's scenery matrix build, m = Ry then Rx then Rz).
+glm::mat3 BuildEulerYXZDeg(const glm::vec3& rotDeg) {
+    glm::mat4 m(1.f);
+    m = glm::rotate(m, glm::radians(rotDeg.y), glm::vec3(0, 1, 0));
+    m = glm::rotate(m, glm::radians(rotDeg.x), glm::vec3(1, 0, 0));
+    m = glm::rotate(m, glm::radians(rotDeg.z), glm::vec3(0, 0, 1));
+    return glm::mat3(m);
+}
+
+// Inverse of BuildEulerYXZDeg: recovers (pitch, yaw, roll) degrees from a
+// rotation matrix built as Ry*Rx*Rz. Used after composing a world-space
+// gizmo drag delta onto the drag-start matrix, so the result is written back
+// into rot.x/y/z consistently with how the renderer will interpret them.
+// Degenerates at the pitch = +-90 deg gimbal lock (rare for placed scenery);
+// falls back to roll = 0 there, same convention as most DCC tools.
+glm::vec3 DecomposeEulerYXZDeg(const glm::mat3& m) {
+    float sx = std::clamp(-m[2][1], -1.f, 1.f);
+    float pitch = std::asin(sx);
+    float yaw, roll;
+    const float cx = std::cos(pitch);
+    if (cx > 1e-4f) {
+        yaw  = std::atan2(m[2][0], m[2][2]);
+        roll = std::atan2(m[0][1], m[1][1]);
+    } else {
+        // Gimbal lock: yaw and roll both rotate around the same resulting
+        // axis — only their sum/difference is meaningful. Pin roll to 0.
+        yaw  = std::atan2(-m[0][2], m[0][0]);
+        roll = 0.f;
+    }
+    return glm::degrees(glm::vec3(pitch, yaw, roll));
+}
+
+} // namespace
+
 // ─── Floating toolbar (overlaid inside viewport) ──────────────────────────────
 
 void ZonesTab::DrawFloatingToolbar() {
@@ -1842,6 +1880,9 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                     gizmoStartS_   = angleOnRing(best, rayPlane(kAxes[best]));
                     gizmoLastAngle_ = gizmoStartS_;
                     gizmoRotAccumDeg_ = 0.f;
+                    // Fixed for the whole drag — see gizmoRotAxisWorld_ comment
+                    // (zones.h) for why this can't be re-read live each frame.
+                    gizmoRotAxisWorld_ = kAxes[best];
                     glm::vec3 rot; SelectedRot(rot); gizmoStartRot_ = rot; gizmoPreRot_ = rot;
                     captureGizmoSelectionStart();
                 }
@@ -2112,21 +2153,32 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
                     if (scnRotSnap_ > 0.f && !ctrlDown) {
                         delta_deg = std::round(delta_deg / scnRotSnap_) * scnRotSnap_;
                     }
-                    glm::vec3 rot = gizmoStartRot_;
-                    rot[gizmoAxis_] += delta_deg;
+                    // rot.x/y/z are compound Euler angles (render applies
+                    // Ry*Rx*Rz — see BuildEulerYXZDeg), not independent
+                    // world axes, so the drag delta can't be added straight
+                    // into rot[gizmoAxis_]: once the object has any other
+                    // non-zero angle (yaw especially), that naively "adds to
+                    // X" or "adds to Z" no longer matches a rotation around
+                    // the world-space ring the user is actually dragging —
+                    // the X and Z rings end up visually swapped. Fix: rotate
+                    // the drag-start matrix by delta_deg around the FIXED
+                    // world axis captured at mouse-down
+                    // (gizmoRotAxisWorld_), then decompose back to Euler.
+                    const glm::mat3 rotMat3 = glm::mat3(glm::rotate(
+                        glm::mat4(1.f), glm::radians(delta_deg), gizmoRotAxisWorld_));
+                    glm::vec3 rot = DecomposeEulerYXZDeg(rotMat3 * BuildEulerYXZDeg(gizmoStartRot_));
                     SetSelectedRot(rot);
                     if (!gizmoSelectionStart_.empty()) {
                         const int primaryType = selectedType_;
                         const int primaryID = selectedID_;
-                        const glm::mat4 rotMat = glm::rotate(
-                            glm::mat4(1.f), glm::radians(delta_deg), kAxes[gizmoAxis_]);
+                        const glm::mat4 rotMat = glm::mat4(rotMat3);
                         for (const auto& st : gizmoSelectionStart_) {
                             if (st.type == primaryType && st.id == primaryID) continue;
                             selectedType_ = st.type;
                             selectedID_ = st.id;
                             if (st.hasRot) {
-                                glm::vec3 peerRot = st.rot;
-                                peerRot[gizmoAxis_] += delta_deg;
+                                glm::vec3 peerRot = DecomposeEulerYXZDeg(
+                                    rotMat3 * BuildEulerYXZDeg(st.rot));
                                 SetSelectedRot(peerRot);
                             }
                             if (st.hasPos) {

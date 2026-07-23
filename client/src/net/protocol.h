@@ -84,6 +84,8 @@ constexpr uint16_t kPFullStats         = 139; // S->C: full stats sync (primary 
 constexpr uint16_t kPZoneLights        = 140; // S->C: static point lights (zone_lights) for current area
 constexpr uint16_t kPZoneWater         = 141; // S->C: static water planes (zone_water) for current area
 constexpr uint16_t kPAtmosphereVolumes = 142; // S->C: atmosphere volumes (zone_atmosphere_volumes) for current area — Fase 1, client just stores
+constexpr uint16_t kPWorldObjectUpdate = 143; // S->C: runtime transform/visibility/collision update for one WorldObject (Lua World.SetTransform/SetVisible/SetCollision)
+constexpr uint16_t kPObjectInteract    = 144; // C->S: player interacts with a WorldObject (mirrors kPRightClick, object_id instead of actor RID)
 
 // ---------------------------------------------------------------------------
 // Result codes

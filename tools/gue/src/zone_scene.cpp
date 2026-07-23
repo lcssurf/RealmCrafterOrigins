@@ -1142,8 +1142,11 @@ void ZoneScene::SaveToDB(sqlite3* db) {
 // ─── SaveColData ──────────────────────────────────────────────────────────────
 // Binary format (coldata.bin):
 //   u32 magic = 0x444C4F43 ('COLD')
-//   u32 version = 2
-//   u32 num_boxes    — each: f32 cx,cy,cz, hx,hy,hz
+//   u32 version = 3
+//   u32 num_boxes    — each: f32 cx,cy,cz, hx,hy,hz, pitch,yaw,roll (degrees;
+//                      v3 adds the 3 rotation floats — see terrain.h ColBox,
+//                      a true oriented box now instead of an ever-growing
+//                      AABB re-fit that was only correct at 0/90/180/270deg)
 //   u32 num_spheres  — each: f32 cx,cy,cz, r
 //   u32 num_tris     — each: 9 f32 (v0.xyz, v1.xyz, v2.xyz) — world-space
 
@@ -1158,17 +1161,19 @@ void ZoneScene::SaveColData(sqlite3* db, const std::string& area) const {
     auto w32 = [&](uint32_t v) { std::fwrite(&v, 4, 1, f); };
     auto wf  = [&](float    v) { std::fwrite(&v, 4, 1, f); };
 
-    struct FlatBox    { float cx,cy,cz, hx,hy,hz; };
+    struct FlatBox    { float cx,cy,cz, hx,hy,hz, pitch,yaw,roll; };
     struct FlatSphere { float cx,cy,cz, r; };
     struct FlatTri    { float ax,ay,az, bx,by,bz, cx_,cy_,cz_; };
     std::vector<FlatBox>    boxes;
     std::vector<FlatSphere> spheres;
     std::vector<FlatTri>    tris;
 
-    // Standalone ColBoxes
+    // Standalone ColBoxes — ZColBox (zone_scene.h) has no rotation field at
+    // all, always axis-aligned.
     for (auto& b : colBoxes)
         boxes.push_back({b.pos.x, b.pos.y, b.pos.z,
-                         b.scale.x*0.5f, b.scale.y*0.5f, b.scale.z*0.5f});
+                         b.scale.x*0.5f, b.scale.y*0.5f, b.scale.z*0.5f,
+                         0.f, 0.f, 0.f});
 
     // Standalone ColSpheres
     for (auto& s : colSpheres)
@@ -1271,14 +1276,23 @@ void ZoneScene::SaveColData(sqlite3* db, const std::string& area) const {
                 float sz   = (float)sqlite3_column_double(stmt, 6);
                 float detailA = (float)sqlite3_column_double(stmt, 7);
 
-                if (type == 0) { // Box — scale only (AABB stays axis-aligned)
-                    float cx = sc.pos.x + ox * sc.scale.x;
-                    float cy = sc.pos.y + oy * sc.scale.y;
-                    float cz = sc.pos.z + oz * sc.scale.z;
-                    boxes.push_back({cx, cy, cz,
-                                     sx*0.5f*sc.scale.x,
-                                     sy*0.5f*sc.scale.y,
-                                     sz*0.5f*sc.scale.z});
+                if (type == 0) { // Box — a true oriented box now (COLD v3):
+                                  // center follows the full TRS, and the box
+                                  // keeps its ORIGINAL (unrotated) half-extents
+                                  // plus the object's own pitch/yaw/roll as its
+                                  // orientation — client-side ColBox (terrain.h)
+                                  // stores that rotation and does a real
+                                  // OBB-vs-capsule test now, instead of an
+                                  // AABB re-fit that only worked cleanly at
+                                  // 0/90/180/270deg and ballooned into an
+                                  // oversized box at any other angle (e.g. a
+                                  // tipped-over wall).
+                    glm::vec3 center = glm::vec3(trs * glm::vec4(ox, oy, oz, 1.f));
+                    boxes.push_back({center.x, center.y, center.z,
+                                     sx * 0.5f * sc.scale.x,
+                                     sy * 0.5f * sc.scale.y,
+                                     sz * 0.5f * sc.scale.z,
+                                     sc.rot.x, sc.rot.y, sc.rot.z});
                 } else if (type == 1) { // Sphere
                     float cx = sc.pos.x + ox * sc.scale.x;
                     float cy = sc.pos.y + oy * sc.scale.y;
@@ -1324,10 +1338,13 @@ void ZoneScene::SaveColData(sqlite3* db, const std::string& area) const {
     }
 
     w32(0x444C4F43u); // 'COLD'
-    w32(2);           // version
+    w32(3);           // version
 
     w32((uint32_t)boxes.size());
-    for (auto& b : boxes) { wf(b.cx); wf(b.cy); wf(b.cz); wf(b.hx); wf(b.hy); wf(b.hz); }
+    for (auto& b : boxes) {
+        wf(b.cx); wf(b.cy); wf(b.cz); wf(b.hx); wf(b.hy); wf(b.hz);
+        wf(b.pitch); wf(b.yaw); wf(b.roll);
+    }
 
     w32((uint32_t)spheres.size());
     for (auto& s : spheres) { wf(s.cx); wf(s.cy); wf(s.cz); wf(s.r); }
@@ -1355,15 +1372,20 @@ static const int kBoxEdges[12][2] = {
 };
 
 void AppendBox(ColVisData& vis, const glm::vec3& center, const glm::vec3& scale,
-               float r, float g, float b, float a)
+               float r, float g, float b, float a,
+               const glm::mat3& rot = glm::mat3(1.f))
 {
-    // 8 corners: combine ±0.5 × scale + center
+    // 8 corners: combine ±0.5 × scale (rotated by `rot`) + center. Default
+    // identity keeps this exactly the old axis-aligned behavior for any
+    // other caller.
     glm::vec3 corners[8];
-    for (int i = 0; i < 8; ++i)
-        corners[i] = center + glm::vec3(
+    for (int i = 0; i < 8; ++i) {
+        glm::vec3 local(
             scale.x * ((i & 1) ? 0.5f : -0.5f),
             scale.y * ((i & 2) ? 0.5f : -0.5f),
             scale.z * ((i & 4) ? 0.5f : -0.5f));
+        corners[i] = center + rot * local;
+    }
     for (auto& e : kBoxEdges) {
         vis.verts.push_back({corners[e[0]].x, corners[e[0]].y, corners[e[0]].z, r,g,b,a});
         vis.verts.push_back({corners[e[1]].x, corners[e[1]].y, corners[e[1]].z, r,g,b,a});
@@ -1530,13 +1552,14 @@ void ZoneScene::RebuildColVis(sqlite3* db, MeshTriCache& meshCache) {
             float sz   = (float)sqlite3_column_double(stmt, 6);
             float detailA = (float)sqlite3_column_double(stmt, 7);
 
-            if (type == 0) { // Box
-                glm::vec3 center = {sc.pos.x + ox * sc.scale.x,
-                                    sc.pos.y + oy * sc.scale.y,
-                                    sc.pos.z + oz * sc.scale.z};
-                AppendBox(colVis, center,
-                          {sx * sc.scale.x, sy * sc.scale.y, sz * sc.scale.z},
-                          1.f, 0.25f, 0.25f, 0.8f);
+            if (type == 0) { // Box — a true oriented wireframe now, matching
+                              // the OBB fix in SaveColData/terrain.h ColBox
+                              // (AppendBox draws the actual rotated corners
+                              // instead of an AABB re-fit around it).
+                glm::vec3 center = glm::vec3(trs * glm::vec4(ox, oy, oz, 1.f));
+                glm::vec3 full(sx * sc.scale.x, sy * sc.scale.y, sz * sc.scale.z);
+                glm::mat3 R = glm::mat3(Ry * Rx * Rz);
+                AppendBox(colVis, center, full, 1.f, 0.25f, 0.25f, 0.8f, R);
             } else if (type == 1) { // Sphere
                 glm::vec3 center = {sc.pos.x + ox * sc.scale.x,
                                     sc.pos.y + oy * sc.scale.y,

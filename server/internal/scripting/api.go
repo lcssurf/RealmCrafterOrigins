@@ -19,6 +19,9 @@ func (r *Registry) registerAPI() {
 	r.registerEventAPI()
 	r.registerDialogAPI()
 	r.registerQuestAPI()
+	r.registerWorldAPI()
+	r.registerInventoryAPI()
+	r.registerTimerAPI()
 	r.registerLogAPI()
 }
 
@@ -817,6 +820,171 @@ func (r *Registry) registerQuestAPI() {
 	r.L.SetField(mod, "TYPE_INTERACT", lua.LNumber(QuestObjectiveInteract))
 
 	r.L.SetGlobal("Quest", mod)
+}
+
+// ---------------------------------------------------------------------------
+// World API  —  World.SetTransform/SetVisible/SetCollision
+//
+// Runtime control of placed WorldObjects (see world.WorldObject/
+// WorldObjectState/Area.objectOverrides). Every call resolves the current
+// area from r.ctx.area (populated for the duration of the Lua call — see
+// callCtx — by the same call sites that already set it for
+// npc_interact/npc_choice/etc.), so these must be called from within a
+// script handler fired while an area context is active. Each call updates
+// Area.objectOverrides (storing the FINAL settled state, never a mid-flight
+// one) and broadcasts PWorldObjectUpdate to every client in the area.
+// ---------------------------------------------------------------------------
+
+func (r *Registry) registerWorldAPI() {
+	mod := r.L.NewTable()
+
+	// World.SetTransform(object_id, {x=,y=,z=}, yaw, duration) -> ok(bool)
+	// Animates the object from its current position/yaw to the given target
+	// over duration seconds (0 or omitted = instant). Scale is left
+	// unchanged — this call does not expose it.
+	r.L.SetField(mod, "SetTransform", r.L.NewFunction(func(L *lua.LState) int {
+		area := r.ctx.area
+		if area == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		objectID := int(L.CheckNumber(1))
+		posTbl := L.CheckTable(2)
+		yaw := float32(L.CheckNumber(3))
+		duration := float32(L.OptNumber(4, 0))
+
+		cur, ok := area.CurrentWorldObjectState(objectID)
+		if !ok {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		x := float32(luaNumField(posTbl, "x", float64(cur.X)))
+		y := float32(luaNumField(posTbl, "y", float64(cur.Y)))
+		z := float32(luaNumField(posTbl, "z", float64(cur.Z)))
+
+		L.Push(lua.LBool(area.UpdateWorldObjectTransform(objectID, x, y, z, yaw, cur.Scale, duration)))
+		return 1
+	}))
+
+	// World.SetVisible(object_id, visible) -> ok(bool)
+	// Applies immediately (never interpolated).
+	r.L.SetField(mod, "SetVisible", r.L.NewFunction(func(L *lua.LState) int {
+		area := r.ctx.area
+		if area == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		objectID := int(L.CheckNumber(1))
+		visible := L.CheckBool(2)
+		L.Push(lua.LBool(area.SetWorldObjectVisible(objectID, visible)))
+		return 1
+	}))
+
+	// World.SetCollision(object_id, collision) -> ok(bool)
+	// Applies immediately (never interpolated).
+	r.L.SetField(mod, "SetCollision", r.L.NewFunction(func(L *lua.LState) int {
+		area := r.ctx.area
+		if area == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		objectID := int(L.CheckNumber(1))
+		collision := L.CheckBool(2)
+		L.Push(lua.LBool(area.SetWorldObjectCollision(objectID, collision)))
+		return 1
+	}))
+
+	r.L.SetGlobal("World", mod)
+}
+
+// ---------------------------------------------------------------------------
+// Inventory API  —  Inventory.has_item/Inventory.remove_item
+//
+// Delegates to r.inventory (InventoryBridge, injected via SetInventoryBridge
+// — see registry.go), mirroring the Quest.* API's use of r.quest (QuestBridge).
+// ---------------------------------------------------------------------------
+
+func (r *Registry) registerInventoryAPI() {
+	mod := r.L.NewTable()
+
+	// Inventory.has_item(player_id, item_id [, qty=1]) -> bool
+	r.L.SetField(mod, "has_item", r.L.NewFunction(func(L *lua.LState) int {
+		if r.inventory == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		playerRID := uint32(L.CheckNumber(1))
+		itemID := uint16(L.CheckNumber(2))
+		qty := L.OptInt(3, 1)
+		has, err := r.inventory.HasItem(playerRID, itemID, qty)
+		if err != nil {
+			log.Printf("scripting: inventory has_item failed player=%d item=%d err=%v", playerRID, itemID, err)
+			L.Push(lua.LFalse)
+			return 1
+		}
+		L.Push(lua.LBool(has))
+		return 1
+	}))
+
+	// Inventory.remove_item(player_id, item_id [, qty=1]) -> ok(bool)
+	r.L.SetField(mod, "remove_item", r.L.NewFunction(func(L *lua.LState) int {
+		if r.inventory == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		playerRID := uint32(L.CheckNumber(1))
+		itemID := uint16(L.CheckNumber(2))
+		qty := L.OptInt(3, 1)
+		ok, err := r.inventory.RemoveItem(playerRID, itemID, qty)
+		if err != nil {
+			log.Printf("scripting: inventory remove_item failed player=%d item=%d err=%v", playerRID, itemID, err)
+			L.Push(lua.LFalse)
+			return 1
+		}
+		L.Push(lua.LBool(ok))
+		return 1
+	}))
+
+	r.L.SetGlobal("Inventory", mod)
+}
+
+// ---------------------------------------------------------------------------
+// Timer API  —  Timer.after(seconds, fn)
+//
+// One-shot delayed callback, e.g. "close the gate 20s after it opens".
+// Backed by Area.ScheduleCall (world/area.go — checked once per ~100ms AI
+// tick, so not millisecond-precise, fine for gameplay timers). The area is
+// captured from r.ctx.area at SCHEDULE time (same area the script is running
+// in right now); the callback re-enters the Lua state on its own with a
+// fresh callCtx when it eventually fires, mirroring how InteractNPC/
+// ObjectInteract/etc already set up r.ctx before calling into Lua.
+// ---------------------------------------------------------------------------
+
+func (r *Registry) registerTimerAPI() {
+	mod := r.L.NewTable()
+
+	// Timer.after(seconds, function() ... end)
+	r.L.SetField(mod, "after", r.L.NewFunction(func(L *lua.LState) int {
+		seconds := float64(L.CheckNumber(1))
+		fn := L.CheckFunction(2)
+		area := r.ctx.area
+		if area == nil || seconds < 0 {
+			return 0
+		}
+		delayMs := int64(seconds * 1000)
+		area.ScheduleCall(delayMs, func() {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.ctx = callCtx{area: area}
+			if err := r.safeCall(fn); err != nil {
+				log.Printf("scripting: timer callback: %v", err)
+			}
+			r.ctx = callCtx{}
+		})
+		return 0
+	}))
+
+	r.L.SetGlobal("Timer", mod)
 }
 
 func (r *Registry) registerLogAPI() {

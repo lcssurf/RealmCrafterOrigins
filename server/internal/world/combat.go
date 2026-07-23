@@ -23,6 +23,7 @@ const (
 	pRemoveWorldItem uint16 = 114
 	pAnimateActor    uint16 = 30
 	pCombatEvent     uint16 = 128
+	pWorldObjectUpdate uint16 = 143
 )
 
 const (
