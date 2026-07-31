@@ -2942,6 +2942,48 @@ completa de `[dodge]` + `[dodge-call]` + `[physics-move-input]` +
 com isso dá pra apontar exatamente em qual das 3 etapas (cálculo → Move()
 → aplicação final) o delta se perde, sem precisar adivinhar.
 
-**Quando atacar:** aguardando o log real do dodge. Nada corrigido ainda,
-nada compilado.
+**CONFIRMADO pelo dev — causa raiz não era perda de distância, era
+composição:** o dodge sempre é disparado SEGURANDO WASD (é o próprio
+mecanismo que define a direção e distingue de guard). No sistema ANTIGO
+(`git show HEAD:client/src/core/main.cpp`), `player_ctrl.Update()` (WASD)
+rodava incondicionalmente TODO frame, e o dodge era um `player.x/z +=` por
+cima, DEPOIS — ou seja, a velocidade do dash se SOMAVA à velocidade de
+caminhada (aditivo). O novo `external_move_delta` fazia dodge e WASD
+mutuamente EXCLUSIVOS (bypass total do bloco de WASD enquanto
+`external_move_delta.has_value()`) — perdendo esse "boost" aditivo. Números
+e distância crua do dash em si sempre bateram (confirmado por log,
+`deltaIn==posDeltaOut`); o que mudou foi só essa composição.
 
+**Corrigido:** `client/src/core/player_controller.cpp`, `Update()` —
+removido o wrapper `if (external_move_delta.has_value()) {...} else {...}`
+que bypassava tudo. Agora:
+- `dodge_active` é só uma flag local; NumLock/sprint/build-de-`dir`/cálculo
+  de magnitude de WASD (`has_move_input` → `desired_delta_2d = move_dir *
+  chosen_speed * dt`) rodam SEMPRE, dodge ou não.
+- Turn-to-face e auto-approach continuam gateados em `!dodge_active` —
+  pulados por completo durante o dodge (a direção do dash, capturada uma
+  única vez no início do roll em `main.cpp`/`dodge_roll_dir`, não deve ser
+  sobrescrita pela lógica de orientação normal).
+- Depois do cálculo de WASD: `if (dodge_active) { desired_delta_2d +=
+  *external_move_delta; ... } else { click-to-move; jump; }` — soma o delta
+  do dash ao delta de WASD já calculado (ou zero, se WASD solto), UMA vez,
+  e ainda assim só existe UMA chamada a `physics_.Move()` no fim da função
+  (a garantia de "Move() chamado uma única vez por frame" não foi
+  reintroduzida como risco — só mudou o que é somado dentro do único
+  `desired_delta_2d`).
+
+**Direção do dodge:** continua fixa desde o disparo — `*external_move_delta`
+não é recalculado aqui, só somado; ele já chega pronto (direção +
+magnitude decaindo) de `dodge_roll_dir`/`kDodgeRollSpeedStart/End` em
+`main.cpp`, inalterados nesta rodada.
+
+**Turn-to-face/auto-approach:** confirmado que continuam pulados
+corretamente durante o dodge (`!dodge_active` nos dois gates) — só o
+CÁLCULO de delta de WASD (magnitude, não orientação/alvo) voltou a rodar.
+
+**Quando atacar:** aguardando o dev buildar e testar — dash deve voltar a
+se somar à caminhada (mais rápido quando WASD segurado, igual ao antigo),
+sem regressão em: facing não gira durante o dodge, approach não redireciona
+o dash, click-to-move/jump continuam suprimidos durante o dodge, e o
+comportamento pós-reformulação já validado (colide com paredes, não
+atravessa) se mantém.

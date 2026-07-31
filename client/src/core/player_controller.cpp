@@ -76,24 +76,25 @@ PlayerController::Result PlayerController::Update(
 
     // desired_delta_2d/jump_requested: the ONE horizontal movement (and
     // jump intent) this frame, handed to CharacterPhysics::Move() at the
-    // end. Populated either by external_move_delta (dodge roll — see
-    // header doc) OR by WASD/auto-approach/click-to-move below — never
-    // both, same mutual exclusion the old ApplyHorizontalMove call sites
-    // already had.
+    // end.
+    //
+    // external_move_delta (dodge roll) is ADDITIVE with WASD, not a
+    // replacement for it (see docs/TECH_DEBT.md #128, "dash não se sente
+    // como dash" investigation — confirmed by the dev: dodge is always
+    // triggered while holding WASD, and the pre-reformulation dash summed
+    // its own velocity on top of the current walk velocity; making dodge
+    // mutually-exclusive with WASD during the reformulation silently
+    // dropped that composition, which is what made the dash feel like
+    // plain walking despite the raw dash distance itself being correct).
+    // The dash's DIRECTION still comes from wherever it was captured once,
+    // at roll-start (main.cpp) — only its magnitude combines with
+    // whatever WASD velocity is live this frame, every frame, until it
+    // decays out. Click-to-move, turn-to-face and auto-approach are still
+    // skipped entirely while a dodge is active (see the `dodge_active`
+    // gates below) — the dash owns facing/target-approach, same as before.
     glm::vec2 desired_delta_2d(0.f);
     bool jump_requested = false;
-
-    if (external_move_delta.has_value()) {
-        // External movement override (dodge roll today) — bypasses WASD/
-        // click-to-move/turn-to-face entirely; the caller already owns
-        // direction/facing for whatever's driving this. Still resolved
-        // through physics_.Move() below, same as everything else, so it
-        // collides with walls/mesh/terrain instead of clipping through
-        // them. Jump stays suppressed (jump_requested left false).
-        desired_delta_2d = *external_move_delta;
-        auto_run_ = false;
-        CancelMoveTarget();
-    } else {
+    const bool dodge_active = external_move_delta.has_value();
 
     // --- NumLock: toggle auto-run ---
     {
@@ -151,9 +152,12 @@ PlayerController::Result PlayerController::Update(
     // no ambiguity about which source wins. Gated on the caller-owned
     // approach_requested latch (see header doc) — never on mere target
     // selection — so approach only ever starts from an explicit Attack-
-    // button press, not passively from having a target.
+    // button press, not passively from having a target. Skipped entirely
+    // during a dodge (`!dodge_active`): the dash must never get redirected
+    // toward a target mid-roll, and approach shouldn't silently keep
+    // steering underneath it either — same reasoning as turn-to-face below.
     bool has_manual_input = glm::dot(dir, dir) > cfg_.min_dir_len_sq;
-    if (approach_requested && target_pos.has_value()) {
+    if (!dodge_active && approach_requested && target_pos.has_value()) {
         if (has_manual_input) {
             // WASD preempted an in-progress approach this frame. Surface it
             // so the caller clears approach_requested for good — approach
@@ -198,8 +202,12 @@ PlayerController::Result PlayerController::Update(
     // fully free during an attack (camera-relative strafe with the body
     // independently aimed at the target) instead of introducing any
     // attack-time movement lock, which doesn't exist anywhere else in this
-    // class either.
-    if (has_move_input || has_target) {
+    // class either. Skipped entirely during a dodge (`!dodge_active`): the
+    // dash's own fixed direction (captured once at roll-start, main.cpp)
+    // owns facing for its duration — letting this run here would fight
+    // that fixed direction by spinning the body toward whatever WASD keys
+    // happen to be held mid-roll.
+    if (!dodge_active && (has_move_input || has_target)) {
         glm::vec2 move_dir(0.f);
         if (has_move_input) move_dir = glm::normalize(dir);
 
@@ -223,41 +231,57 @@ PlayerController::Result PlayerController::Update(
         float yaw_delta = ShortestYawDeltaDegrees(player.yaw, target_yaw);
         float yaw_alpha = SmoothLerpFactor(dt, cfg_.turn_rate);
         player.yaw = NormalizeYawDegrees(player.yaw + yaw_delta * yaw_alpha);
-
-        if (has_move_input) {
-            float chosen_speed =
-                (moving_back && !moving_fwd) ? base_speed * cfg_.back_mult : base_speed;
-            if (sprinting && !moving_back) chosen_speed *= cfg_.sprint_mult;
-
-            CancelMoveTarget();
-            any_key_move = true;
-            desired_delta_2d = move_dir * chosen_speed * dt;
-        }
     }
 
-    // --- Click-to-move ---
-    if (has_move_target_ && !any_key_move) {
-        float dx = move_target_.x - player.x;
-        float dz = move_target_.z - player.z;
-        float d2 = dx * dx + dz * dz;
-        if (d2 > cfg_.click_stop_radius * cfg_.click_stop_radius) {
-            float dist = std::sqrt(d2);
-            float step = std::min(base_speed * dt, dist);
-            desired_delta_2d = {(dx / dist) * step, (dz / dist) * step};
-            player.yaw = glm::degrees(std::atan2f(dx / dist, dz / dist));
-        } else {
-            CancelMoveTarget();
-        }
+    // WASD movement-magnitude calc — runs REGARDLESS of dodge (item 1: this
+    // is the piece that used to be skipped entirely by the old
+    // external_move_delta bypass, which is what silently dropped the
+    // "additive with WASD" composition the dash relied on for its feel).
+    if (has_move_input) {
+        float chosen_speed =
+            (moving_back && !moving_fwd) ? base_speed * cfg_.back_mult : base_speed;
+        if (sprinting && !moving_back) chosen_speed *= cfg_.sprint_mult;
+
+        glm::vec2 move_dir = glm::normalize(dir);
+        any_key_move = true;
+        desired_delta_2d = move_dir * chosen_speed * dt;
+        if (!dodge_active) CancelMoveTarget();
     }
 
-    // --- Jump (intent only — CharacterPhysics::Move() owns the actual
-    // velocity/on-ground transition) ---
-    jump_requested = physics_.IsOnGround() && glfwGetKey(win, GLFW_KEY_SPACE) == GLFW_PRESS;
-    if (jump_requested) {
+    if (dodge_active) {
+        // Item 1: combine this frame's WASD velocity (if any — dodge is
+        // always triggered while holding WASD per the dev, but this must
+        // not assume that) with the dash's own fixed-direction, decaying
+        // delta — additive, matching the pre-reformulation feel. Direction
+        // of the dash itself is NOT recomputed here; *external_move_delta
+        // already carries whatever direction+magnitude main.cpp resolved
+        // once at roll-start (dodge_roll_dir) and decayed per-frame since.
+        desired_delta_2d += *external_move_delta;
         auto_run_ = false;
-    }
+        CancelMoveTarget();
+    } else {
+        // --- Click-to-move ---
+        if (has_move_target_ && !any_key_move) {
+            float dx = move_target_.x - player.x;
+            float dz = move_target_.z - player.z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 > cfg_.click_stop_radius * cfg_.click_stop_radius) {
+                float dist = std::sqrt(d2);
+                float step = std::min(base_speed * dt, dist);
+                desired_delta_2d = {(dx / dist) * step, (dz / dist) * step};
+                player.yaw = glm::degrees(std::atan2f(dx / dist, dz / dist));
+            } else {
+                CancelMoveTarget();
+            }
+        }
 
-    } // else (!external_move_delta)
+        // --- Jump (intent only — CharacterPhysics::Move() owns the actual
+        // velocity/on-ground transition) ---
+        jump_requested = physics_.IsOnGround() && glfwGetKey(win, GLFW_KEY_SPACE) == GLFW_PRESS;
+        if (jump_requested) {
+            auto_run_ = false;
+        }
+    }
 
     // --- Physics: ONE call resolves collision + gravity + ground + slope +
     // step-up together (rco::physics::CharacterPhysics::Move) ---
