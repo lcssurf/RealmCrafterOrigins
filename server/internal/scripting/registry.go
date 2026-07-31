@@ -361,6 +361,7 @@ func (r *Registry) ItemUseScript(player *world.Actor, itemID uint16, area *world
 type InventoryBridge interface {
 	HasItem(playerRID uint32, itemID uint16, qty int) (bool, error)
 	RemoveItem(playerRID uint32, itemID uint16, qty int) (bool, error)
+	AddItem(playerRID uint32, itemID uint16, qty int) (bool, error)
 }
 
 // SetInventoryBridge injects runtime inventory callbacks used by the Lua
@@ -548,6 +549,65 @@ func (r *Registry) DispatchNPCAIDecision(area *world.Area, npc, target *world.Ac
 		started := npc.SpecialWindupUntil > now
 		npc.Mu.Unlock()
 		if started {
+			return true
+		}
+	}
+	return false
+}
+
+// DispatchChatCommand fires the generic "chat_command" scripting event —
+// the fallback for any chat message starting with "/" that no native Go
+// command handled (see handleSlashCommand in net/client.go). cmd is the
+// lowercased command word without the leading slash (e.g. "unstuck"); args
+// is everything after it, trimmed, as a single string (empty if none).
+//
+// Expected Lua signature:
+//
+//	Event.on("chat_command", function(player_id, command, args)
+//	    if command == "unstuck" then
+//	        -- ... handle it ...
+//	        return true  -- consumed: don't broadcast "/unstuck" as chat text
+//	    end
+//	    return false  -- or omit: not handled by this script, try to broadcast raw
+//	end)
+//
+// Returns true if ANY registered handler returned true (consumed) — the
+// first such handler stops the loop, same short-circuit style as
+// DispatchPlayerBeforeCastIntent's cancel flag. Multiple scripts can share
+// this one event name; each checks `command` itself, exactly like a single
+// Go switch/case would, just in Lua instead of native code.
+func (r *Registry) DispatchChatCommand(area *world.Area, player *world.Actor, cmd, args string) bool {
+	if area == nil || player == nil || cmd == "" {
+		return false
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	handlers, ok := r.events["chat_command"]
+	if !ok || len(handlers) == 0 {
+		return false
+	}
+
+	r.ctx = callCtx{area: area, caster: player}
+	defer func() { r.ctx = callCtx{} }()
+
+	playerRID := lua.LNumber(player.RuntimeID)
+	cmdVal := lua.LString(cmd)
+	argsVal := lua.LString(args)
+
+	for _, fn := range handlers {
+		if err := r.L.CallByParam(lua.P{
+			Fn:      fn,
+			NRet:    1,
+			Protect: true,
+		}, playerRID, cmdVal, argsVal); err != nil {
+			log.Printf("scripting: chat_command handler: %v", err)
+			continue
+		}
+		ret := r.L.Get(-1)
+		r.L.Pop(1)
+		if b, ok := ret.(lua.LBool); ok && bool(b) {
 			return true
 		}
 	}

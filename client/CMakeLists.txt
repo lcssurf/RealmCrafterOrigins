@@ -14,6 +14,16 @@ add_subdirectory(
 )
 
 # --------------------------------------------------------------------------
+# Shared physics library — unified capsule-sweep player movement/collision
+# (CollisionWorld, CharacterPhysics). See docs/TECH_DEBT.md #125's
+# architecture investigation.
+# --------------------------------------------------------------------------
+add_subdirectory(
+    "${CMAKE_SOURCE_DIR}/../shared/physics"
+    "${CMAKE_BINARY_DIR}/_rco_physics"
+)
+
+# --------------------------------------------------------------------------
 # Source files
 # --------------------------------------------------------------------------
 file(GLOB_RECURSE RCO_SOURCES
@@ -72,6 +82,7 @@ target_include_directories(rco_client PRIVATE
 # --------------------------------------------------------------------------
 target_link_libraries(rco_client PRIVATE
     rco_renderer
+    rco_physics
     glfw
     glm::glm
     imgui::imgui

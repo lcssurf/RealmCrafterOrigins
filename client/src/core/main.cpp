@@ -55,6 +55,8 @@
 #include "../renderer/camera.h"
 #include "../renderer/terrain/terrain.h"
 #include "../renderer/actors/actor.h"
+#include "rco/renderer/col_bake.h"
+#include "rco/physics/collision_world.h"
 #include "rco/renderer/particles.h"
 #include "rco/renderer/light_manager.h"
 #include "rco/renderer/water_manager.h"
@@ -1178,19 +1180,9 @@ int main() {
     auto rebuild_extra_mesh_actors =
         [&engine](std::vector<WorldMeshAttachment>& out, const std::vector<WorldMesh>& meshes) {
             out.clear();
-            // TEMP DEBUG (Gremlin Helm-never-draws investigation, point 3 —
-            // confirms whether the slot's model actually loaded on the client,
-            // not just the GUE preview) — dumps every candidate mesh considered
-            // and why it was skipped, if it was.
             for (const auto& wm : meshes) {
                 if (wm.slot == 0) continue;
-                if (wm.bone_name.empty() || wm.model_path.empty()) {
-                    std::fprintf(stderr,
-                        "[mesh-attach-dbg] rebuild_extra_mesh_actors: slot=%d SKIPPED "
-                        "(bone_name='%s' model_path='%s')\n",
-                        wm.slot, wm.bone_name.c_str(), wm.model_path.c_str());
-                    continue;
-                }
+                if (wm.bone_name.empty() || wm.model_path.empty()) continue;
                 WorldMeshAttachment att;
                 att.actor = std::make_unique<rco::renderer::Actor>();
                 att.actor->Init("shaders", wm.model_path.c_str(), &engine.materials());
@@ -1202,11 +1194,6 @@ int main() {
                 att.offset_rot[1] = wm.offset_rot[1];
                 att.offset_rot[2] = wm.offset_rot[2];
                 att.offset_scale  = wm.offset_scale;
-                std::fprintf(stderr,
-                    "[mesh-attach-dbg] rebuild_extra_mesh_actors: slot=%d bone='%s' "
-                    "model_path='%s' -> IsLoaded=%s\n",
-                    wm.slot, wm.bone_name.c_str(), wm.model_path.c_str(),
-                    att.actor->IsLoaded() ? "true" : "false");
                 if (att.actor->IsLoaded()) engine.MarkMaterialsDirty();
                 out.push_back(std::move(att));
             }
@@ -1219,28 +1206,10 @@ int main() {
         [](std::vector<WorldMeshAttachment>& attachments,
            const rco::renderer::Actor& body_actor,
            rco::renderer::Pipeline& pipeline_ref) {
-            // TEMP DEBUG (Gremlin Helm-never-draws investigation, points 2+4):
-            // throttled to ~once/2s (not every frame) to avoid flooding stderr —
-            // same pattern used in the GUE preview's equivalent loop.
-            static double s_lastLog = -1000.0;
-            double nowT = glfwGetTime();
-            bool doLog = (nowT - s_lastLog > 2.0);
-            if (doLog) s_lastLog = nowT;
             for (auto& att : attachments) {
-                if (!att.actor || !att.actor->IsLoaded()) {
-                    if (doLog)
-                        std::fprintf(stderr,
-                            "[mesh-attach-dbg] submit-skip: bone='%s' has_actor=%s loaded=%s\n",
-                            att.bone_name.c_str(), att.actor ? "true" : "false",
-                            (att.actor && att.actor->IsLoaded()) ? "true" : "false");
-                    continue;
-                }
+                if (!att.actor || !att.actor->IsLoaded()) continue;
                 glm::mat4 bone_world;
                 bool boneFound = body_actor.GetBoneWorldTransform(att.bone_name, &bone_world);
-                if (doLog)
-                    std::fprintf(stderr,
-                        "[mesh-attach-dbg] point2: GetBoneWorldTransform('%s') on body actor -> %s\n",
-                        att.bone_name.c_str(), boneFound ? "TRUE" : "FALSE (bone not found in body model)");
                 if (!boneFound) continue;
 
                 glm::mat4 body_matrix(1.f);
@@ -1260,19 +1229,7 @@ int main() {
                 local = glm::scale(local, glm::vec3(att.offset_scale));
 
                 glm::mat4 world = body_matrix * bone_world * local;
-                if (doLog) {
-                    glm::vec3 worldPos(world[3]);
-                    bool hasNaN = std::isnan(worldPos.x) || std::isnan(worldPos.y) || std::isnan(worldPos.z);
-                    std::fprintf(stderr,
-                        "[mesh-attach-dbg] point4: about to SubmitWithMatrix bone='%s' "
-                        "world_pos=(%.3f,%.3f,%.3f) hasNaN=%s\n",
-                        att.bone_name.c_str(), worldPos.x, worldPos.y, worldPos.z,
-                        hasNaN ? "true" : "false");
-                }
                 att.actor->SubmitWithMatrix(pipeline_ref, world);
-                if (doLog)
-                    std::fprintf(stderr, "[mesh-attach-dbg] point4: SubmitWithMatrix CALLED for bone='%s'\n",
-                                 att.bone_name.c_str());
             }
         };
 
@@ -1288,6 +1245,25 @@ int main() {
     std::vector<RecentFloatingPacket> recent_floating_packets;
     rco::ui::SpellBar        spellbar;
     std::unordered_map<std::string, rco::renderer::FXParams> fx_catalog;
+    // Same entries as fx_catalog, keyed by fx_templates.id instead of
+    // fx_key — needed by zone_emitters (kPZoneEmitters), which only carries
+    // an fx_template_id (an int, matching the GUE's searchable combo), not
+    // the string key spells use. Populated alongside fx_catalog in the same
+    // kPFXCatalog loop, never separately.
+    std::unordered_map<int32_t, rco::renderer::FXParams> fx_catalog_by_id;
+    // Zone emitters spawned so far this area session — guards against
+    // re-spawning duplicates if kPZoneEmitters is somehow resent without an
+    // intervening area change. Cleared on area change alongside
+    // world_static_objects/light_manager/etc.
+    bool zone_emitters_spawned_this_area = false;
+    // Handles of the permanent (duration=-1, loop=true) zone emitters
+    // spawned for the CURRENT area — spell-cast emitters (finite duration,
+    // kPCreateEmitter) are never tracked here, only these. Removed one by
+    // one via ParticleSystem::RemoveEmitter at the same area-change/logout
+    // points that already clear world_static_objects/light_manager/etc.,
+    // right before zone_emitters_spawned_this_area is reset — otherwise a
+    // permanent emitter would keep looping forever after leaving its area.
+    std::vector<rco::renderer::EmitterHandle> zone_emitter_handles;
     rco::ui::SkillHotbar     skill_hotbar;
     rco::ui::SpellEffects    spell_fx;
     rco::ui::QuestLog        quest_log;
@@ -1324,6 +1300,13 @@ int main() {
     // the window center for manual visual testing.
     rco::renderer::RippleSim      ripple_sim;
     bool                          ripple_debug_visible = false;
+    // F11 toggles a wireframe overlay of the EXACT collision data
+    // ColData::Resolve tests each frame — static coldata.bin boxes/spheres/
+    // tris, the dynamic_collision_boxes vector just handed to Resolve() (not
+    // a separate recompute), and the player's own collision capsule — so a
+    // dev can visually confirm whether two volumes actually overlap instead
+    // of just trusting logged numbers. Off by default, dev-only.
+    bool                          collision_debug_visible = false;
     // Ripple Sim tuning — PROPORTIONS (multipliers), not absolute world
     // units, applied to the player's ACTUAL model dimensions every frame
     // (Actor::ModelHeight()/ModelWidth(), the same accessors already used
@@ -1575,6 +1558,12 @@ int main() {
         bool  black_cutout = false;
         bool  visible = true;
         bool  collision = true; // stored/broadcast only — no client-side collision consumer yet
+        // Gates the reticle "[F] Interagir" prompt / PObjectInteract send
+        // (see the two world_static_objects hit-test loops below) —
+        // zone_scenery.interactable, opt-in. Previously there was no such
+        // flag at all: every visible object within range showed the
+        // prompt, whether or not anything was bound to object_interact.
+        bool  interactable = false;
         std::unique_ptr<rco::renderer::Actor> actor;
 
         // Deterministic client-side transform animation driven by
@@ -1593,6 +1582,49 @@ int main() {
         WorldObjectEntry& operator=(const WorldObjectEntry&) = delete;
     };
     std::vector<WorldObjectEntry> world_static_objects;
+
+    // Local-space (unrotated, unscaled) box/wedge collision shapes for
+    // is_dynamic=1 scenery objects (see kPDynamicCollisionShapes handler),
+    // keyed by WorldObject.id. Recomputed into world-space AABBs every frame
+    // from the object's current interpolated pose (see the
+    // dynamic_collision_boxes rebuild below main loop) — never baked into
+    // coldata.bin, see server/internal/world/area.go DynamicShape.
+    struct DynamicCollisionShapeLocal {
+        uint8_t type = 0; // 0=box 3=wedge (only these two are ever sent)
+        float ox = 0.f, oy = 0.f, oz = 0.f;
+        float sx = 0.f, sy = 0.f, sz = 0.f;
+        float detailA = 0.f, detailB = 0.f;
+    };
+    struct DynamicCollisionObjectLocal {
+        int object_id = 0;
+        std::vector<DynamicCollisionShapeLocal> shapes;
+    };
+    std::vector<DynamicCollisionObjectLocal> dynamic_collision_shapes;
+    // World-space AABBs rebuilt every frame from dynamic_collision_shapes +
+    // the current world_static_objects pose — precise authored Box/Wedge
+    // shapes for is_dynamic objects. Handed to BOTH ColData::Resolve()
+    // (tested inside the SAME 3-iteration convergence loop as the static
+    // coldata.bin boxes/spheres/tris — NOT a separate pass, see terrain.cpp
+    // Resolve()) and renderer::ComputeGroundHeight (terrain.h/.cpp) as
+    // ground/step-up candidates — these are REAL collision volumes, meant
+    // to both push AND be stood on.
+    std::vector<rco::renderer::ColBox> dynamic_collision_boxes;
+    // NOTE: mesh-collision ground detection (bridges/platforms baked as
+    // col_data.tris) no longer needs anything built here — it went through
+    // three approximation attempts (model-AABB-as-push-volume, then
+    // AABB-center-as-height, then AABB-center-with-radius-margin, see
+    // TECH_DEBT.md #125) that each fixed one symptom and exposed another,
+    // because the underlying problem (representing an arbitrary/curved
+    // walkable surface with a single fixed height or box) has no correct
+    // fixed-shape answer — confirmed against both RealmCrafter-Standard's
+    // Blitz3D collision and Unreal's CharacterMovementComponent::FindFloor,
+    // which both do a real downward query against actual collision
+    // geometry, never a bounding-shape stand-in. renderer::ComputeGroundHeight
+    // now does the same: a real vertical raycast against col_data.tris
+    // (renderer::SampleMeshGroundHeight, terrain.cpp) using the SAME
+    // triangles ColData::Resolve() already tests for horizontal push — no
+    // per-frame rebuild required here at all.
+
     std::vector<std::string> static_model_prewarm_queue;
     std::size_t static_model_prewarm_cursor = 0;
     constexpr std::size_t kStaticInitSampleWindow = 256;
@@ -1821,9 +1853,6 @@ int main() {
             bindings.push_back(std::move(ab));
         }
         player_anim_ctrl.Bind(bindings);
-        // TEMP DIAGNOSTIC (Attack/return_to stuck-on-full-timeline bug) — remove
-        // once root cause is found. See [anim-diag] tags in anim_controller.cpp.
-        player_anim_ctrl.log_enabled = true;
         return player_anim_ctrl.RequestStateByName("Idle");
     };
 
@@ -2132,7 +2161,6 @@ int main() {
                         bindings.push_back(std::move(ab));
                     }
                     player_anim_ctrl.Bind(bindings);
-                    player_anim_ctrl.log_enabled = true;  // TEMP DIAGNOSTIC — see anim_controller.cpp
                     player_anim_ctrl.RequestStateByName("Idle");
                 }
                 std::fprintf(stderr,
@@ -2219,7 +2247,12 @@ int main() {
                 world_actors.clear();
                 world_corpses.clear();
                 world_static_objects.clear();
+                dynamic_collision_shapes.clear();
+                dynamic_collision_boxes.clear();
                 light_manager.Clear();
+                for (auto h : zone_emitter_handles) particles.RemoveEmitter(h);
+                zone_emitter_handles.clear();
+                zone_emitters_spawned_this_area = false;
                 water_manager.Clear();
                 atmosphere_manager.Clear();
                 atmo_prev_target_ = nullptr;
@@ -2482,7 +2515,6 @@ int main() {
                             bindings.push_back(std::move(ab));
                         }
                         player_anim_ctrl.Bind(bindings);
-                        player_anim_ctrl.log_enabled = true;  // TEMP DIAGNOSTIC — see anim_controller.cpp
                         player_anim_ctrl.RequestStateByName("Idle");
                     }
                     player_yaw_offset = actor_yaw_offset;
@@ -2696,7 +2728,12 @@ int main() {
                 world_actors.clear();
                 world_corpses.clear();
                 world_static_objects.clear();
+                dynamic_collision_shapes.clear();
+                dynamic_collision_boxes.clear();
                 light_manager.Clear();
+                for (auto h : zone_emitter_handles) particles.RemoveEmitter(h);
+                zone_emitter_handles.clear();
+                zone_emitters_spawned_this_area = false;
                 water_manager.Clear();
                 atmosphere_manager.Clear();
                 atmo_prev_target_ = nullptr;
@@ -3176,15 +3213,6 @@ int main() {
                             [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                         is_death_action = (act == "death");
                     }
-                    // TEMP DIAGNOSTIC (item 1) — confirm the raw packet: which
-                    // action_id arrived and what it resolves to in player_anims
-                    // (should be "Attack" with start=75 end=130 when the player attacks).
-                    std::fprintf(stderr,
-                        "[anim-diag][NET] kPAnimateActor rid=%u action_id=%u resolved='%s' "
-                        "player_dead=%d is_death_action=%d\n",
-                        rid, static_cast<unsigned>(action_id),
-                        action_id < player_anims.size() ? player_anims[action_id].action.c_str() : "<out-of-range>",
-                        (int)player_dead, (int)is_death_action);
                     if (!player_dead && is_death_action) {
                         break; // stale death packet after respawn
                     }
@@ -3413,6 +3441,7 @@ int main() {
                     e.collision    = (r.ReadU8() != 0);
                     e.pitch        = r.ReadF32();
                     e.roll         = r.ReadF32();
+                    e.interactable = (r.ReadU8() != 0);
                     if (!r.OK() || e.model_path.empty()) break;
                     unique_models.insert(e.model_path);
                     ++model_counts[e.model_path];
@@ -3518,10 +3547,79 @@ int main() {
                     e.color.b     = r.ReadF32();
                     e.intensity   = r.ReadF32();
                     e.radius      = r.ReadF32();
+                    // Spot/Directional support (additive — light_type=0
+                    // Point leaves direction/cone fields at
+                    // PointLightEntry's defaults, unused by LightManager).
+                    uint8_t light_type = r.ReadU8();
+                    float   yaw_deg    = r.ReadF32();
+                    float   pitch_deg  = r.ReadF32();
+                    float   cone_deg   = r.ReadF32();
                     if (!r.OK()) break;
+                    e.type         = static_cast<rco::renderer::LightType>(light_type);
+                    e.coneOuterDeg = cone_deg;
+                    // Only one angle is authored (zone_lights.cone_angle) —
+                    // derive a fixed 10° softer inner edge for the
+                    // smoothstep falloff; unused for Point/Directional.
+                    e.coneInnerDeg = (cone_deg - 10.f > 0.f) ? (cone_deg - 10.f) : 0.f; // avoid std::max — windows.h min/max macro clash in this file (no NOMINMAX)
+                    // Same Ry*Rx convention as scenery/NPC orientation (no
+                    // roll — see world.Light's doc-comment, area.go), applied
+                    // to a "points down" default direction.
+                    {
+                        glm::mat4 rotM(1.f);
+                        rotM = glm::rotate(rotM, glm::radians(yaw_deg),   glm::vec3(0.f, 1.f, 0.f));
+                        rotM = glm::rotate(rotM, glm::radians(pitch_deg), glm::vec3(1.f, 0.f, 0.f));
+                        e.direction = glm::vec3(rotM * glm::vec4(0.f, -1.f, 0.f, 0.f));
+                    }
                     lights.push_back(e);
                 }
                 light_manager.SetLights(std::move(lights));
+                break;
+            }
+
+            case rco::net::kPZoneEmitters: {
+                // Placed particle emitters (zone_emitters bound to a real
+                // fx_template_id) for the current area. Wire format:
+                // count(u16) + per-entry fx_template_id(u32)+x(f32)+y(f32)+
+                // z(f32)+loop(u8) — see server/internal/world/frame.go
+                // EmittersPayload. Unconditional (one-shot per packet, this
+                // only ever arrives once per area entry, never per-frame) —
+                // tracing the exact chain break for the zone-emitter
+                // investigation.
+                uint16_t emitter_count = r.ReadU16();
+                std::fprintf(stderr,
+                    "[zoneemit] received PZoneEmitters: count=%u fx_catalog_by_id.size()=%zu "
+                    "(already_spawned_this_area=%d)\n",
+                    emitter_count, fx_catalog_by_id.size(), (int)zone_emitters_spawned_this_area);
+                size_t before = particles.EmitterCount();
+                size_t resolved = 0, missing = 0;
+                for (uint16_t ei = 0; ei < emitter_count && r.OK(); ++ei) {
+                    int32_t fx_template_id = static_cast<int32_t>(r.ReadU32());
+                    float   ex = r.ReadF32(), ey = r.ReadF32(), ez = r.ReadF32();
+                    bool    loop = (r.ReadU8() != 0);
+                    if (!r.OK()) break;
+
+                    auto it = fx_catalog_by_id.find(fx_template_id);
+                    bool found = (it != fx_catalog_by_id.end());
+                    std::fprintf(stderr,
+                        "[zoneemit]   entry fx_template_id=%d pos=(%.2f,%.2f,%.2f) loop=%d lookup=%s\n",
+                        fx_template_id, ex, ey, ez, (int)loop, found ? "FOUND" : "NOT_FOUND");
+                    if (!found) { ++missing; continue; }
+                    ++resolved;
+
+                    if (zone_emitters_spawned_this_area) continue; // already spawned this area session
+
+                    rco::renderer::EmitterHandle h = particles.SpawnEmitterParams(
+                        it->second, {ex, ey, ez},
+                        static_cast<float>(glfwGetTime()),
+                        loop ? -1.f : 0.f);
+                    if (loop) zone_emitter_handles.push_back(h);
+                }
+                zone_emitters_spawned_this_area = true;
+                size_t after = particles.EmitterCount();
+                std::fprintf(stderr,
+                    "[zoneemit] frame summary: resolved=%zu missing=%zu "
+                    "particles.EmitterCount() %zu -> %zu\n",
+                    resolved, missing, before, after);
                 break;
             }
 
@@ -3633,6 +3731,40 @@ int main() {
                     volumes.push_back(std::move(e));
                 }
                 atmosphere_manager.SetVolumes(std::move(volumes));
+                break;
+            }
+
+            case rco::net::kPDynamicCollisionShapes: {
+                // Local-space box/wedge collision shapes for is_dynamic=1
+                // scenery objects — see server/internal/world/frame.go
+                // DynamicCollisionShapesPayload. World-space AABBs are
+                // rebuilt from these every frame (see the
+                // dynamic_collision_boxes rebuild in the render loop below),
+                // not baked into coldata.bin like static objects.
+                dynamic_collision_shapes.clear();
+                uint16_t obj_count = r.ReadU16();
+                dynamic_collision_shapes.reserve(obj_count);
+                for (uint16_t oi = 0; oi < obj_count && r.OK(); ++oi) {
+                    DynamicCollisionObjectLocal obj;
+                    obj.object_id = static_cast<int>(r.ReadU32());
+                    uint8_t shape_count = r.ReadU8();
+                    obj.shapes.reserve(shape_count);
+                    for (uint8_t si = 0; si < shape_count && r.OK(); ++si) {
+                        DynamicCollisionShapeLocal s;
+                        s.type = r.ReadU8();
+                        s.ox = r.ReadF32();
+                        s.oy = r.ReadF32();
+                        s.oz = r.ReadF32();
+                        s.sx = r.ReadF32();
+                        s.sy = r.ReadF32();
+                        s.sz = r.ReadF32();
+                        s.detailA = r.ReadF32();
+                        s.detailB = r.ReadF32();
+                        obj.shapes.push_back(s);
+                    }
+                    if (!r.OK()) break;
+                    dynamic_collision_shapes.push_back(std::move(obj));
+                }
                 break;
             }
 
@@ -4088,7 +4220,7 @@ int main() {
             case rco::net::kPFXCatalog: {
                 uint16_t count = r.ReadU16();
                 fx_catalog.clear();
-                int loaded = 0;
+                fx_catalog_by_id.clear();
                 for (uint16_t i = 0; i < count; ++i) {
                     std::string key          = r.ReadString();
                     std::string display_name = r.ReadString();
@@ -4115,7 +4247,6 @@ int main() {
                     std::string texture_path = r.ReadString();
                     uint8_t enabled          = r.ReadU8();
 
-                    (void)id;
                     (void)display_name;
                     (void)texture_path;
                     if (!r.OK()) break;
@@ -4135,10 +4266,8 @@ int main() {
                     p.sizeStart       = size_start;
                     p.sizeEnd         = size_end;
                     fx_catalog[key] = p;
-                    loaded++;
+                    fx_catalog_by_id[id] = p;
                 }
-                std::fprintf(stderr, "[fx-catalog] received %u templates, cached %d\n",
-                             (unsigned)count, loaded);
                 break;
             }
 
@@ -4274,7 +4403,12 @@ int main() {
             world_actors.clear();
             world_corpses.clear();
             world_static_objects.clear();
+            dynamic_collision_shapes.clear();
+            dynamic_collision_boxes.clear();
             light_manager.Clear();
+            for (auto h : zone_emitter_handles) particles.RemoveEmitter(h);
+            zone_emitter_handles.clear();
+            zone_emitters_spawned_this_area = false;
             water_manager.Clear();
             atmosphere_manager.Clear();
             atmo_prev_target_ = nullptr;
@@ -4588,7 +4722,17 @@ int main() {
                                 std::chrono::steady_clock::now() - t0).count());
                         perf_entry.LogLazyStage("coldata_load", dur_us, true);
                     }
-                    player.y = terrain.SampleHeight(player.x, player.z);
+                    // One-shot world/area-enter placement — was terrain-only
+                    // (a 5th, previously-unflagged Y write site, see
+                    // TECH_DEBT.md #125 Task 1 audit). dynamic_collision_boxes
+                    // isn't rebuilt yet this frame, so this only misses
+                    // is_dynamic Box/Wedge coverage — static Box/Wedge AND
+                    // mesh (col_data.tris, via ComputeGroundHeight's built-in
+                    // raycast) are both already loaded above and covered.
+                    // Ceiling is a large sentinel (no real player.y yet to gate
+                    // against at initial placement).
+                    player.y = rco::renderer::ComputeGroundHeight(
+                        player.x, player.z, 1e6f, terrain, col_data);
                     player_ctrl.Reset();
                     camera.SnapTarget({player.x, player.y, player.z});
                     if (world_enter_pending && !world_enter_logged) {
@@ -5124,8 +5268,143 @@ int main() {
                     ms_lmb_prev = cur_lmb;
                 }
 
+                // Rebuild dynamic-collision world-space OBBs from the
+                // current (possibly still-animating) interpolated pose of
+                // each is_dynamic object — every frame, not just on
+                // PWorldObjectUpdate, so collision tracks the animation
+                // smoothly instead of snapping at the end. Uses the SAME
+                // shared helper (rco::renderer::ComputeColBoxWorldExtent,
+                // shared/renderer/include/rco/renderer/col_bake.h) the GUE's
+                // SaveColData/RebuildColVis use — one formula, not two
+                // hand-copied ones that could drift apart. Rotation is now
+                // taken from the object's actual current yaw/pitch/roll
+                // (previously identity-only, which broke once objects were
+                // rotated as gameplay — e.g. spinning spike traps).
+                dynamic_collision_boxes.clear();
+                for (const auto& dyn : dynamic_collision_shapes) {
+                    const WorldObjectEntry* obj = nullptr;
+                    for (const auto& o : world_static_objects) {
+                        if (o.id == dyn.object_id) { obj = &o; break; }
+                    }
+                    if (!obj) continue;
+                    // Full current rotation (Ry*Rx*Rz, degrees — same
+                    // convention as zone_scene.cpp's scenery TRS and the
+                    // static bake's LoadColData finalizeBox in terrain.cpp)
+                    // — NOT identity anymore. Rotation is part of the
+                    // gameplay now (rotating spike traps etc.), so a dynamic
+                    // box must track it every frame just like the static
+                    // bake already does. obj->pitch/yaw/roll are read off
+                    // the wire once at load/PWorldObjectUpdate and never
+                    // client-animated independently (see kPWorldObjectUpdate
+                    // above), so this is cheap to recompute per frame — a
+                    // handful of dynamic objects, one 3-rotation compose
+                    // each, not per-vertex.
+                    glm::mat4 rotM(1.f);
+                    rotM = glm::rotate(rotM, glm::radians(obj->yaw),   glm::vec3(0.f, 1.f, 0.f));
+                    rotM = glm::rotate(rotM, glm::radians(obj->pitch), glm::vec3(1.f, 0.f, 0.f));
+                    rotM = glm::rotate(rotM, glm::radians(obj->roll),  glm::vec3(0.f, 0.f, 1.f));
+                    const glm::mat3 rot3(rotM);
+                    for (const auto& shape : dyn.shapes) {
+                        auto ext = rco::renderer::ComputeColBoxWorldExtent(
+                            {obj->x, obj->y, obj->z}, glm::vec3(obj->scale),
+                            {shape.ox, shape.oy, shape.oz}, {shape.sx, shape.sy, shape.sz},
+                            rot3);
+                        rco::renderer::ColBox b;
+                        b.pos = ext.center;
+                        b.half = ext.half;
+                        b.rot = rot3;
+                        // World-space Y bounds of the ROTATED box via its 8
+                        // corners — mirrors LoadColData's finalizeBox
+                        // (terrain.cpp) exactly, used ONLY for Resolve()'s
+                        // cheap early-out (Resolve's actual test is a true
+                        // OBB clamp using b.rot/b.half directly, already
+                        // rotation-correct — this is not an AABB refit of
+                        // the collision shape itself, just of its Y range).
+                        float yMin = 1e30f, yMax = -1e30f;
+                        for (int i = 0; i < 8; ++i) {
+                            glm::vec3 local(
+                                (i & 1) ? b.half.x : -b.half.x,
+                                (i & 2) ? b.half.y : -b.half.y,
+                                (i & 4) ? b.half.z : -b.half.z);
+                            float wy = (b.rot * local).y + b.pos.y;
+                            if (wy < yMin) yMin = wy;
+                            if (wy > yMax) yMax = wy;
+                        }
+                        b.worldYMin = yMin;
+                        b.worldYMax = yMax;
+                        dynamic_collision_boxes.push_back(b);
+                    }
+                }
+
+                // Player-physics reformulation (see docs/TECH_DEBT.md #125's
+                // architecture investigation): CollisionWorld bundles this
+                // frame's freshly-rebuilt collision data (col_data,
+                // dynamic_collision_boxes) plus terrain height/normal
+                // callbacks (deliberately NOT a `const Terrain&` — see
+                // CollisionWorld's doc comment) into the one object
+                // PlayerController::Update() hands straight to
+                // rco::physics::CharacterPhysics::Move() below. There is no
+                // longer a separate col_data.Resolve()/ComputeGroundHeight()
+                // re-snap here — the capsule sweep resolves collision +
+                // ground + slope + step-up together, entirely inside
+                // Update(), so main.cpp only ever applies ONE resolved
+                // position per frame instead of writing player.y twice.
+                rco::physics::CollisionWorld collision_world{
+                    col_data, dynamic_collision_boxes,
+                    [&terrain](float x, float z) { return terrain.SampleHeight(x, z); },
+                    [&terrain](float x, float z) { return terrain.SampleNormal(x, z); },
+                };
+
+                // Directional dodge roll impulse (authoritative start from
+                // PCombatEvent) — computed HERE (before player_ctrl.Update())
+                // so it can be handed in as an external movement override
+                // and resolved through the SAME CharacterPhysics::Move()
+                // collision/slide as ordinary WASD movement, instead of a
+                // raw uncollided position write. Confirmed gameplay decision
+                // (see docs/TECH_DEBT.md #125): dodge now stops on a wall,
+                // slides on a glancing hit, same as any other movement.
+                std::optional<glm::vec2> dodge_delta_override;
+                if (!player_dead && dodge_roll_active) {
+                    const double roll_total = dodge_roll_end - dodge_roll_start;
+                    if (now >= dodge_roll_end || roll_total <= 0.0001 ||
+                        glm::dot(dodge_roll_dir, dodge_roll_dir) < 0.0001f) {
+                        dodge_roll_active = false;
+                    } else {
+                        const float t = std::clamp(
+                            static_cast<float>((now - dodge_roll_start) / roll_total),
+                            0.f, 1.f);
+                        const float speed =
+                            kDodgeRollSpeedStart + (kDodgeRollSpeedEnd - kDodgeRollSpeedStart) * t;
+                        dodge_delta_override = dodge_roll_dir * speed * dt;
+                        // Item 1 investigation (dodge not moving) — confirms
+                        // the delta is actually computed non-zero here, at
+                        // the SOURCE, before it's handed to Update(). Cross-
+                        // reference against character_physics.cpp's
+                        // [physics-move] line (in.delta) to see if it
+                        // survives the trip into Move().
+                        static auto s_lastDodgeLog = std::chrono::steady_clock::time_point{};
+                        auto nowT = std::chrono::steady_clock::now();
+                        if (nowT - s_lastDodgeLog >= std::chrono::milliseconds(100)) {
+                            s_lastDodgeLog = nowT;
+                            std::fprintf(stderr,
+                                "[dodge] dir=(%.3f,%.3f) t=%.3f speed=%.3f dt=%.5f -> "
+                                "delta=(%.4f,%.4f) player_before=(%.3f,%.3f,%.3f)\n",
+                                dodge_roll_dir.x, dodge_roll_dir.y, t, speed, dt,
+                                dodge_delta_override->x, dodge_delta_override->y,
+                                player.x, player.y, player.z);
+                        }
+                    }
+                }
+
                 // ---- Player movement (keyboard, click-to-move, gravity, slope, jump) ----
-                if (!ImGui::GetIO().WantCaptureKeyboard && !skill_loadout_open) {
+                // Gate is normally "keyboard free" (don't move via typed keys
+                // while a UI dialog/chat has focus) — but a dodge roll isn't
+                // WASD-driven, so it must still resolve (and keep colliding)
+                // even while some UI has keyboard focus, same as before this
+                // reformulation (dodge used to run in a completely separate,
+                // ungated block).
+                if ((!ImGui::GetIO().WantCaptureKeyboard && !skill_loadout_open) ||
+                    dodge_delta_override.has_value()) {
                     bool rmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
                     bool lmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
 
@@ -5148,10 +5427,50 @@ int main() {
                         }
                     }
 
+                    // collision_world (built above) carries THIS frame's
+                    // freshly-rebuilt dynamic_collision_boxes — the rebuild
+                    // block runs before this call specifically so
+                    // CharacterPhysics::Move()'s sweep/ground-probe never
+                    // sees stale data (see TECH_DEBT.md #125).
+                    // dodge_delta_override (computed above, before this
+                    // block): when set, this call resolves the dodge's
+                    // per-frame impulse instead of WASD/click-to-move —
+                    // same CharacterPhysics instance, so it collides for
+                    // real (stops on a wall, slides on a glancing hit).
+                    //
+                    // Item 2 investigation (main.cpp) — is Update()/Move()
+                    // called more than once per frame during a dodge,
+                    // letting a second (non-dodge) call overwrite the
+                    // result? grep confirms exactly ONE call site of
+                    // player_ctrl.Update() in the whole client, and exactly
+                    // ONE call site of physics_.Move() inside it — this
+                    // line is that entire call graph; there is no second
+                    // path. The log below still proves it at runtime rather
+                    // than trusting that structural argument: an
+                    // unthrottled per-call counter, reset when a dodge
+                    // starts, active only while dodge_roll_active (bounded
+                    // duration — not the kind of spam this file removed
+                    // last round). Two log lines with the same call index,
+                    // or the index skipping/repeating, would mean the
+                    // structural argument above is wrong somehow.
+                    static int s_dodgeCallCounter = 0;
+                    static bool s_dodgeWasActive = false;
+                    if (dodge_delta_override.has_value()) {
+                        if (!s_dodgeWasActive) s_dodgeCallCounter = 0;
+                        ++s_dodgeCallCounter;
+                        std::fprintf(stderr,
+                            "[dodge-call] player_ctrl.Update() call #%d this dodge, "
+                            "delta=(%.4f,%.4f), player_before=(%.3f,%.3f,%.3f)\n",
+                            s_dodgeCallCounter, dodge_delta_override->x, dodge_delta_override->y,
+                            player.x, player.y, player.z);
+                    }
+                    s_dodgeWasActive = dodge_delta_override.has_value();
+
                     rco::PlayerController::Result pc_result = player_ctrl.Update(
-                        w, dt, player_dead, player, terrain,
+                        w, dt, player_dead, player, collision_world,
                         camera.GetYaw(), rmb_held, lmb_held,
-                        is_attacking, attack_target_pos, combat_approach_active);
+                        is_attacking, attack_target_pos, combat_approach_active,
+                        dodge_delta_override);
                     // combat_approach_active is a sticky latch this file owns (see
                     // its declaration doc) — PlayerController only ever reports
                     // outcomes, never persists the flag itself. Clear on either:
@@ -5163,31 +5482,6 @@ int main() {
                     if (pc_result.approach_arrived || pc_result.approach_cancelled_by_input) {
                         combat_approach_active = false;
                     }
-                }
-
-                // Directional dodge roll impulse (authoritative start from PCombatEvent).
-                if (!player_dead && dodge_roll_active) {
-                    const double roll_total = dodge_roll_end - dodge_roll_start;
-                    if (now >= dodge_roll_end || roll_total <= 0.0001 ||
-                        glm::dot(dodge_roll_dir, dodge_roll_dir) < 0.0001f) {
-                        dodge_roll_active = false;
-                    } else {
-                        const float t = std::clamp(
-                            static_cast<float>((now - dodge_roll_start) / roll_total),
-                            0.f, 1.f);
-                        const float speed =
-                            kDodgeRollSpeedStart + (kDodgeRollSpeedEnd - kDodgeRollSpeedStart) * t;
-                        player.x += dodge_roll_dir.x * speed * dt;
-                        player.z += dodge_roll_dir.y * speed * dt;
-                    }
-                }
-
-                // Resolve player position against collision volumes (boxes + spheres).
-                // Only re-snap y when grounded — controller owns y while airborne.
-                if (col_data.loaded) {
-                    col_data.Resolve(player.x, player.z, player.y, player.z);
-                    if (player_ctrl.IsOnGround())
-                        player.y = terrain.SampleHeight(player.x, player.z);
                 }
 
                 // Cancel movement on death.
@@ -5297,6 +5591,22 @@ int main() {
                         std::fprintf(stderr, "[debug] gPhongGlobal mode = %s\n", names[m]);
                     }
                     f8_prev = f8_cur;
+                }
+
+                // -- F11 toggles the collision-debug wireframe overlay (static
+                // coldata.bin + dynamic_collision_boxes + player capsule — see
+                // the ImGui foreground-drawlist block further down, right
+                // after the portal markers, which is the same
+                // proj_mat/view_mat world->screen projection technique).
+                {
+                    static bool f11_prev = false;
+                    bool f11_cur = glfwGetKey(w, GLFW_KEY_F11) == GLFW_PRESS;
+                    if (f11_cur && !f11_prev) {
+                        collision_debug_visible = !collision_debug_visible;
+                        std::fprintf(stderr, "[coldebug] overlay %s\n",
+                                     collision_debug_visible ? "ON" : "OFF");
+                    }
+                    f11_prev = f11_cur;
                 }
 
                 // Volumetric fog stays always enabled (design decision for atmosphere).
@@ -6760,7 +7070,7 @@ int main() {
                         const WorldObjectEntry* nearest_obj = nullptr;
                         float best_obj_dist = kRangeSq;
                         for (const auto& obj : world_static_objects) {
-                            if (!obj.visible) continue;
+                            if (!obj.visible || !obj.interactable) continue;
                             float dx = player.x - obj.x, dz = player.z - obj.z;
                             float d = dx * dx + dz * dz;
                             if (d <= best_obj_dist) { best_obj_dist = d; nearest_obj = &obj; }
@@ -7117,7 +7427,7 @@ int main() {
                         }
                     }
                     for (auto& obj : world_static_objects) {
-                        if (!obj.visible) continue;
+                        if (!obj.visible || !obj.interactable) continue;
                         float dx = player.x - obj.x, dz = player.z - obj.z;
                         float d = dx * dx + dz * dz;
                         if (d <= bestDist) {
@@ -7282,6 +7592,120 @@ int main() {
                             ImVec2 ts = ImGui::CalcTextSize(lbl);
                             dl->AddText({lp.x - ts.x*0.5f, lp.y},
                                         IM_COL32(120, 200, 255, 220), lbl);
+                        }
+                    }
+                }
+
+                // -- F11 collision-debug overlay --
+                // Draws the EXACT data col_data.Resolve() was just called with
+                // above (dynamic_collision_boxes — the very same vector, not a
+                // second recompute), the static coldata.bin volumes for direct
+                // comparison, and the player's own collision capsule (same
+                // kPlayerCapsuleRadius/Height Resolve() uses — see terrain.h).
+                // Same world->screen projection technique as the portal
+                // markers just above (proj_mat/view_mat already computed this
+                // frame). Off by default — F11 toggles collision_debug_visible.
+                if (collision_debug_visible) {
+                    auto* dl3 = ImGui::GetForegroundDrawList();
+                    float sw3 = static_cast<float>(window.Width());
+                    float sh3 = static_cast<float>(window.Height());
+
+                    auto project3 = [&](const glm::vec3& wp, ImVec2& out) -> bool {
+                        glm::vec4 c = proj_mat * view_mat * glm::vec4(wp, 1.f);
+                        if (c.w <= 0.001f) return false;
+                        out.x = (c.x / c.w + 1.f) * 0.5f * sw3;
+                        out.y = (1.f - c.y / c.w) * 0.5f * sh3;
+                        return true;
+                    };
+                    auto line3D = [&](const glm::vec3& a, const glm::vec3& b, ImU32 col, float thick) {
+                        ImVec2 sa, sb;
+                        if (project3(a, sa) && project3(b, sb)) dl3->AddLine(sa, sb, col, thick);
+                    };
+                    // Same 8-corner/12-edge convention as the GUE's
+                    // PreviewViewport::DrawCollisionOverlay_ box case
+                    // (tools/gue/src/preview_viewport.cpp) — same shape, same
+                    // winding, just a different renderer.
+                    auto drawBox = [&](const glm::vec3& c, const glm::vec3& h,
+                                        const glm::mat3& rot, ImU32 col, float thick) {
+                        glm::vec3 local[8] = {
+                            {-h.x,-h.y,-h.z}, {h.x,-h.y,-h.z}, {h.x,h.y,-h.z}, {-h.x,h.y,-h.z},
+                            {-h.x,-h.y, h.z}, {h.x,-h.y, h.z}, {h.x,h.y, h.z}, {-h.x,h.y, h.z},
+                        };
+                        glm::vec3 v[8];
+                        for (int i = 0; i < 8; ++i) v[i] = c + rot * local[i];
+                        static const int e[12][2] = {
+                            {0,1},{1,2},{2,3},{3,0}, {4,5},{5,6},{6,7},{7,4}, {0,4},{1,5},{2,6},{3,7},
+                        };
+                        for (auto& edge : e) line3D(v[edge[0]], v[edge[1]], col, thick);
+                    };
+
+                    // Dynamic boxes — magenta. This is dynamic_collision_boxes
+                    // itself, rebuilt earlier this same frame and handed
+                    // straight into the CollisionWorld the player's capsule
+                    // sweep (rco::physics::CharacterPhysics::Move) tests
+                    // against — what you see here is exactly what was
+                    // tested, not a second implementation that could
+                    // silently diverge. (ColData::Resolve, mentioned in
+                    // older comments nearby, is legacy as of the player-
+                    // physics reformulation — see docs/TECH_DEBT.md #125 —
+                    // and no longer runs for the player at all.)
+                    for (const auto& b : dynamic_collision_boxes)
+                        drawBox(b.pos, b.half, b.rot, IM_COL32(255, 0, 255, 235), 2.2f);
+
+                    // Static coldata.bin boxes — cyan, for direct comparison
+                    // against the dynamic (magenta) ones above.
+                    for (const auto& b : col_data.boxes)
+                        drawBox(b.pos, b.half, b.rot, IM_COL32(60, 220, 255, 200), 1.6f);
+
+                    // Static spheres — yellow, three orthogonal rings.
+                    for (const auto& s : col_data.spheres) {
+                        constexpr int kSegs = 20;
+                        ImU32 col = IM_COL32(255, 220, 60, 200);
+                        for (int i = 0; i < kSegs; ++i) {
+                            float a0 = i * (2.f * 3.14159f / kSegs);
+                            float a1 = (i + 1) * (2.f * 3.14159f / kSegs);
+                            line3D(s.pos + glm::vec3(cosf(a0), sinf(a0), 0.f) * s.radius,
+                                   s.pos + glm::vec3(cosf(a1), sinf(a1), 0.f) * s.radius, col, 1.4f);
+                            line3D(s.pos + glm::vec3(cosf(a0), 0.f, sinf(a0)) * s.radius,
+                                   s.pos + glm::vec3(cosf(a1), 0.f, sinf(a1)) * s.radius, col, 1.4f);
+                            line3D(s.pos + glm::vec3(0.f, cosf(a0), sinf(a0)) * s.radius,
+                                   s.pos + glm::vec3(0.f, cosf(a1), sinf(a1)) * s.radius, col, 1.4f);
+                        }
+                    }
+
+                    // Static mesh collision triangles — orange.
+                    for (const auto& t : col_data.tris) {
+                        ImU32 col = IM_COL32(255, 150, 40, 160);
+                        line3D(t.v[0], t.v[1], col, 1.2f);
+                        line3D(t.v[1], t.v[2], col, 1.2f);
+                        line3D(t.v[2], t.v[0], col, 1.2f);
+                    }
+
+                    // Player's own collision capsule — reads the ACTUAL
+                    // radius/height rco::physics::CharacterPhysics::Move()
+                    // uses (player_ctrl.GetPhysicsConfig()), not the
+                    // separate renderer::kPlayerCapsuleRadius/Height
+                    // constants — those are only the legacy ColData::Resolve
+                    // path's numbers now (see docs/TECH_DEBT.md #125) and
+                    // could silently drift from what the player capsule
+                    // actually uses today. Two rings (feet + head) plus
+                    // vertical edges, lime so it's distinct from both
+                    // magenta (dynamic) and cyan (static).
+                    {
+                        const float R = player_ctrl.GetPhysicsConfig().radius;
+                        const float H = player_ctrl.GetPhysicsConfig().height;
+                        glm::vec3 feet(player.x, player.y, player.z);
+                        glm::vec3 headc(player.x, player.y + H, player.z);
+                        ImU32 col = IM_COL32(170, 255, 110, 235);
+                        constexpr int kSegs = 20;
+                        for (int i = 0; i < kSegs; ++i) {
+                            float a0 = i * (2.f * 3.14159f / kSegs);
+                            float a1 = (i + 1) * (2.f * 3.14159f / kSegs);
+                            glm::vec3 d0(cosf(a0) * R, 0.f, sinf(a0) * R);
+                            glm::vec3 d1(cosf(a1) * R, 0.f, sinf(a1) * R);
+                            line3D(feet + d0, feet + d1, col, 1.6f);
+                            line3D(headc + d0, headc + d1, col, 1.6f);
+                            if (i % 5 == 0) line3D(feet + d0, headc + d0, col, 1.6f);
                         }
                     }
                 }

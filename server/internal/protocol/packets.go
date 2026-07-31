@@ -85,6 +85,8 @@ const (
 	PAtmosphereVolumes   uint16 = 142 // S->C: atmosphere volumes (zone_atmosphere_volumes) for the current area — Fase 1, data only, client just stores
 	PWorldObjectUpdate   uint16 = 143 // S->C: runtime transform/visibility/collision update for one WorldObject (Lua World.SetTransform/SetVisible/SetCollision)
 	PObjectInteract      uint16 = 144 // C->S: player interacts with a WorldObject (mirrors PRightClick, but object_id instead of actor RID)
+	PDynamicCollisionShapes uint16 = 145 // S->C: local-space box/wedge collision shapes for is_dynamic=1 scenery objects, sent once on area entry
+	PZoneEmitters        uint16 = 146 // S->C: placed zone_emitters (fx_template_id + loop) for the current area, sent once on area entry
 )
 
 // EmitterType values for PCreateEmitter.

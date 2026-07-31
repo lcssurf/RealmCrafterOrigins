@@ -10,11 +10,21 @@ class Pipeline;
 // One static point light (torch/lantern) as received from the server via
 // PZoneLights — see server/internal/world/frame.go LightsPayload and
 // tools/gue/src/zone_scene.h ZLight (the authoring side, Zone editor).
+// light_type: 0=Point (default — every field below is unused, matches
+// today's behavior exactly), 1=Spot, 2=Directional. Additive: existing
+// callers that only set pos/color/intensity/radius keep working unchanged.
+enum class LightType : uint8_t { Point = 0, Spot = 1, Directional = 2 };
+
 struct PointLightEntry {
     glm::vec3 pos{0.f};
     glm::vec3 color{1.f};
     float     intensity = 1.f;
     float     radius    = 5.f;
+
+    LightType type = LightType::Point;
+    glm::vec3 direction{0.f, -1.f, 0.f}; // Spot/Directional only — unit "aim" direction
+    float     coneOuterDeg = 45.f;       // Spot only — full cone angle in degrees
+    float     coneInnerDeg = 35.f;       // Spot only — inner (fully-lit) angle, softens the edge
 };
 
 // Holds the current area's static point lights and resubmits them into the

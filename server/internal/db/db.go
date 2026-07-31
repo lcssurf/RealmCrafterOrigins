@@ -2397,6 +2397,7 @@ type WorldObject struct {
 	Yaw         float32
 	Pitch, Roll float32 // zone_scenery.pitch/roll — see LoadWorldObjects
 	BlackCutout bool
+	Interactable bool // zone_scenery.interactable — gates the client's reticle prompt/PObjectInteract
 }
 
 // Waypoint mirrors one row in area_waypoints.
@@ -10224,7 +10225,7 @@ func (d *DB) seedDefaultFXTemplates(ctx context.Context) {
 func (d *DB) LoadWorldObjects(ctx context.Context) ([]*WorldObject, error) {
 	rows, err := d.db.QueryContext(ctx, d.q(
 		`SELECT zs.id, zs.area_name, COALESCE(mm.file_path,''), zs.sx, zs.x, zs.y, zs.z, zs.yaw, zs.pitch, zs.roll,
-		        COALESCE(mm.black_cutout,0), COALESCE(mat.black_cutout,0)
+		        COALESCE(mm.black_cutout,0), COALESCE(mat.black_cutout,0), zs.interactable
 		 FROM zone_scenery zs
 		 LEFT JOIN media_models mm ON mm.id = zs.model_id
 		 LEFT JOIN media_materials mat ON mat.id = zs.material_id
@@ -10237,15 +10238,16 @@ func (d *DB) LoadWorldObjects(ctx context.Context) ([]*WorldObject, error) {
 	for rows.Next() {
 		w := &WorldObject{}
 		var scale, x, y, z, yaw, pitch, roll float64
-		var modelCutout, matCutout bool
+		var modelCutout, matCutout, interactable bool
 		if err := rows.Scan(&w.ID, &w.AreaName, &w.ModelPath,
-			&scale, &x, &y, &z, &yaw, &pitch, &roll, &modelCutout, &matCutout); err != nil {
+			&scale, &x, &y, &z, &yaw, &pitch, &roll, &modelCutout, &matCutout, &interactable); err != nil {
 			return nil, fmt.Errorf("db: LoadWorldObjects scan: %w", err)
 		}
 		w.Scale = float32(scale)
 		w.X, w.Y, w.Z, w.Yaw = float32(x), float32(y), float32(z), float32(yaw)
 		w.Pitch, w.Roll = float32(pitch), float32(roll)
 		w.BlackCutout = modelCutout || matCutout
+		w.Interactable = interactable
 		out = append(out, w)
 	}
 	return out, rows.Err()
@@ -10262,6 +10264,13 @@ type ZoneLight struct {
 	ColorR, ColorG, ColorB float32
 	Intensity          float32
 	Radius             float32
+	// LightType/Yaw/Pitch/ConeAngle — additive (zone_lights.light_type/yaw/
+	// pitch/cone_angle, all DEFAULT 0 except cone_angle DEFAULT 45).
+	// LightType: 0=Point (default, everything below unused) 1=Spot 2=Directional.
+	LightType int
+	Yaw       float32
+	Pitch     float32
+	ConeAngle float32
 }
 
 // LoadZoneLights returns all placed static point lights across every area.
@@ -10272,7 +10281,8 @@ type ZoneLight struct {
 // matching how LoadWorldObjects/LoadWaypoints etc. are already handled.
 func (d *DB) LoadZoneLights(ctx context.Context) ([]*ZoneLight, error) {
 	rows, err := d.db.QueryContext(ctx, d.q(
-		`SELECT id, area_name, name, x, y, z, color_r, color_g, color_b, intensity, radius
+		`SELECT id, area_name, name, x, y, z, color_r, color_g, color_b, intensity, radius,
+		        light_type, yaw, pitch, cone_angle
 		 FROM zone_lights ORDER BY area_name, id`))
 	if err != nil {
 		return nil, fmt.Errorf("db: LoadZoneLights: %w", err)
@@ -10281,16 +10291,111 @@ func (d *DB) LoadZoneLights(ctx context.Context) ([]*ZoneLight, error) {
 	var out []*ZoneLight
 	for rows.Next() {
 		l := &ZoneLight{}
-		var x, y, z, cr, cg, cb, intensity, radius float64
+		var x, y, z, cr, cg, cb, intensity, radius, yaw, pitch, coneAngle float64
 		if err := rows.Scan(&l.ID, &l.AreaName, &l.Name,
-			&x, &y, &z, &cr, &cg, &cb, &intensity, &radius); err != nil {
+			&x, &y, &z, &cr, &cg, &cb, &intensity, &radius,
+			&l.LightType, &yaw, &pitch, &coneAngle); err != nil {
 			return nil, fmt.Errorf("db: LoadZoneLights scan: %w", err)
 		}
 		l.X, l.Y, l.Z = float32(x), float32(y), float32(z)
 		l.ColorR, l.ColorG, l.ColorB = float32(cr), float32(cg), float32(cb)
 		l.Intensity = float32(intensity)
 		l.Radius = float32(radius)
+		l.Yaw, l.Pitch, l.ConeAngle = float32(yaw), float32(pitch), float32(coneAngle)
 		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// ZoneEmitterRow is one placed zone_emitters row bound to an fx_templates
+// entry (fx_template_id=0 means "not configured" — the GUE's legacy
+// config_name enum, never resolved to a real FX template, so LoadZoneEmitters
+// filters those out entirely rather than sending unusable rows to clients).
+type ZoneEmitterRow struct {
+	ID           int
+	AreaName     string
+	FXTemplateID int
+	X, Y, Z      float32
+	Loop         bool
+}
+
+// LoadZoneEmitters returns every zone_emitters row that has a real
+// fx_template_id configured (see ZoneEmitterRow doc). Same "GUE creates the
+// table, server doesn't" convention as LoadZoneLights — a fresh DB predating
+// the fx_template_id/loop columns would 500 without the ALTER TABLE
+// migration (tools/gue/src/zone_scene.cpp EnsureTables), same as any other
+// GUE-authored column.
+func (d *DB) LoadZoneEmitters(ctx context.Context) ([]*ZoneEmitterRow, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(
+		`SELECT id, area_name, fx_template_id, x, y, z, loop
+		 FROM zone_emitters WHERE fx_template_id > 0 ORDER BY area_name, id`))
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadZoneEmitters: %w", err)
+	}
+	defer rows.Close()
+	var out []*ZoneEmitterRow
+	for rows.Next() {
+		e := &ZoneEmitterRow{}
+		var x, y, z float64
+		var loop int
+		if err := rows.Scan(&e.ID, &e.AreaName, &e.FXTemplateID, &x, &y, &z, &loop); err != nil {
+			return nil, fmt.Errorf("db: LoadZoneEmitters scan: %w", err)
+		}
+		e.X, e.Y, e.Z = float32(x), float32(y), float32(z)
+		e.Loop = loop != 0
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// DynamicShapeRow is one local-space box/wedge collision shape (from
+// media_model_shapes) belonging to a zone_scenery object flagged
+// is_dynamic=1. Mesh (type 2) and sphere (type 1) shapes are deliberately
+// excluded by the query — dynamic collision only supports box/wedge (see
+// tools/gue/src/zone_scene.h ZScenery::isDynamic and the GUE panel warning),
+// keeping the per-object descriptor small and avoiding sending mesh
+// triangle data over the network at all.
+type DynamicShapeRow struct {
+	AreaName                  string
+	ObjectID                  int
+	Type                      uint8
+	OffsetX, OffsetY, OffsetZ float32
+	SizeX, SizeY, SizeZ       float32
+	DetailA, DetailB          float32
+}
+
+// LoadDynamicCollisionShapes returns every box/wedge collision shape for
+// scenery objects flagged is_dynamic=1, across every area. Mirrors
+// LoadZoneLights (same "server doesn't create the table" caveat doesn't
+// apply here since zone_scenery/media_model_shapes already exist for
+// LoadWorldObjects, but a fresh DB predating is_dynamic would 500 without
+// the ALTER TABLE migration — same as any other GUE-authored column).
+func (d *DB) LoadDynamicCollisionShapes(ctx context.Context) ([]DynamicShapeRow, error) {
+	rows, err := d.db.QueryContext(ctx, d.q(
+		`SELECT zs.area_name, zs.id, mms.type,
+		        mms.offset_x, mms.offset_y, mms.offset_z,
+		        mms.size_x, mms.size_y, mms.size_z,
+		        mms.detail_a, mms.detail_b
+		 FROM zone_scenery zs
+		 JOIN media_model_shapes mms ON mms.model_id = zs.model_id
+		 WHERE zs.is_dynamic = 1 AND mms.type IN (0, 3)
+		 ORDER BY zs.area_name, zs.id, mms.id`))
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadDynamicCollisionShapes: %w", err)
+	}
+	defer rows.Close()
+	var out []DynamicShapeRow
+	for rows.Next() {
+		var r DynamicShapeRow
+		var ox, oy, oz, sx, sy, sz, da, db_ float64
+		if err := rows.Scan(&r.AreaName, &r.ObjectID, &r.Type,
+			&ox, &oy, &oz, &sx, &sy, &sz, &da, &db_); err != nil {
+			return nil, fmt.Errorf("db: LoadDynamicCollisionShapes scan: %w", err)
+		}
+		r.OffsetX, r.OffsetY, r.OffsetZ = float32(ox), float32(oy), float32(oz)
+		r.SizeX, r.SizeY, r.SizeZ = float32(sx), float32(sy), float32(sz)
+		r.DetailA, r.DetailB = float32(da), float32(db_)
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

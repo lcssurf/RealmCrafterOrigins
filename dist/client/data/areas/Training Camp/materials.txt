@@ -4,3 +4,4 @@
 1811 15 assets/materials/aerial_rocks_02_1k/textures/aerial_rocks_02_Albedo.jpg - assets/materials/aerial_rocks_02_1k/textures/aerial_rocks_02_ORM.png 2.5
 1812 4 assets/materials/forest_ground_06_1k/textures/forest_ground_06_Albedo.jpg - assets/materials/forest_ground_06_1k/textures/forest_ground_06_ORM.png 2.5
 1814 1 assets/materials/large_sandstone_blocks_01_1k/textures/large_sandstone_blocks_01_Albedo.jpg assets/textures/large_sandstone_blocks_01/large_sandstone_blocks_01_nor_gl_1k.png assets/materials/large_sandstone_blocks_01_1k/textures/large_sandstone_blocks_01_ORM.png 5.31
+2055 4 assets/materials/dry_riverbed_rock_1k/textures/dry_riverbed_rock_Albedo.jpg assets/textures/dry_riverbed_rock/dry_riverbed_rock_nor_gl_1k.png assets/materials/dry_riverbed_rock_1k/textures/dry_riverbed_rock_ORM.png 2.5

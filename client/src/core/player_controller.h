@@ -1,17 +1,25 @@
 #pragma once
+#include "rco/physics/character_physics.h"
+#include "rco/physics/collision_world.h"
 #include <glm/glm.hpp>
 #include <optional>
 
 struct GLFWwindow;
 namespace rco { struct PlayerState; }
-namespace rco::renderer { class Terrain; }
 
 namespace rco {
 
 // Handles all local-player movement: keyboard walking, click-to-move,
-// gravity, slope blocking, slide, jumping, sprint, and auto-run.
-// Call Update() once per frame after camera/mouse RMB yaw sync and
-// before collision resolution.
+// sprint, auto-run, turn-to-face, and combat auto-approach INPUT — the
+// actual physics resolution (gravity, collision, ground detection, slope,
+// step-up) is delegated entirely to rco::physics::CharacterPhysics's
+// unified capsule sweep (see docs/TECH_DEBT.md #125's architecture
+// investigation). This class no longer implements any collision/gravity
+// logic itself — it builds a CapsuleMoveInput from resolved input and
+// applies the CapsuleMoveResult back to PlayerState.
+//
+// Call Update() once per frame after camera/mouse RMB yaw sync and before
+// anything else reads player position/on-ground state for this frame.
 class PlayerController {
 public:
     struct Config {
@@ -19,18 +27,8 @@ public:
         float back_mult           = 0.65f;
         float sprint_mult         = 1.65f;  // speed multiplier while Shift is held
         // Yaw smoothing rate for turn-to-face-movement (SmoothLerpFactor's
-        // exponential rate_per_sec, see player_controller.cpp) — was
-        // declared but never read (dead field); now active. Bumped from
-        // the old dead default (150.0f) to 180.0f, the "fast but not
-        // instant" ballpark requested for LOCAL input response — notably
-        // higher than the 20.0f used for remote-actor network-catchup
-        // smoothing (main.cpp's kYawLerpRate), since local input needs to
-        // feel responsive, not just gradually correct a network delta.
+        // exponential rate_per_sec, see player_controller.cpp).
         float turn_rate           = 180.0f;
-        float max_slope_deg       = 45.0f;
-        float jump_vel            = 9.0f;
-        float gravity             = 20.0f;
-        float snap_down           = 0.8f;
         float click_stop_radius   = 0.08f;
         float min_move_len_sq     = 1e-8f;
         float min_proj_len        = 0.001f;
@@ -62,11 +60,16 @@ public:
     bool      HasMoveTarget()            const { return has_move_target_; }
     glm::vec3 MoveTarget()               const { return move_target_; }
 
-    void Reset() { vel_y_ = 0.f; on_ground_ = true; auto_run_ = false; CancelMoveTarget(); }
-    bool IsOnGround() const { return on_ground_; }
+    void Reset() { physics_.Reset(); auto_run_ = false; CancelMoveTarget(); }
+    bool IsOnGround() const { return physics_.IsOnGround(); }
     bool IsAutoRunning() const { return auto_run_; }
     const Config& GetConfig() const { return cfg_; }
     void SetConfig(const Config& cfg) { cfg_ = cfg; }
+    // Physics tuning (gravity/jump/slope/step-up/etc — see
+    // physics::CharacterPhysics::Config) lives on the physics sub-object
+    // directly, not duplicated here.
+    const physics::CharacterPhysics::Config& GetPhysicsConfig() const { return physics_.GetConfig(); }
+    void SetPhysicsConfig(const physics::CharacterPhysics::Config& cfg) { physics_.SetConfig(cfg); }
 
     // Action-mode controller (RCO): WASD is relative to the CAMERA
     // (camera_yaw, degrees — same convention as PlayerState::yaw/
@@ -100,28 +103,40 @@ public:
     // same as if no target were selected at all. Turn-to-face stays gated on
     // is_attacking (see above): it's deliberately an attack-time-only
     // behavior, unrelated to approach_requested.
+    //
+    // world: everything the underlying CharacterPhysics::Move() needs to
+    // resolve collision/ground this frame (col_data, dynamic boxes, terrain
+    // height/normal callbacks) — see rco::physics::CollisionWorld. Caller
+    // should rebuild it (dynamic boxes especially) for THIS frame before
+    // calling Update() — see docs/TECH_DEBT.md #125 on why a stale list
+    // mattered more than expected once.
+    //
+    // external_move_delta: when present, OVERRIDES WASD/click-to-move/turn-
+    // to-face entirely for this call — the caller (main.cpp) already owns
+    // the direction/facing/duration of whatever's driving this (today: the
+    // dodge roll's per-frame impulse, computed from its own timing curve).
+    // Still resolved through this SAME CharacterPhysics instance/Move()
+    // call as ordinary movement, so it collides with walls/mesh/terrain —
+    // slides on a glancing hit, stops square-on — instead of a raw,
+    // uncollided position write. Jump is also suppressed while overriding
+    // (a dodge shouldn't also trigger a jump). See docs/TECH_DEBT.md #125.
     Result Update(GLFWwindow* win, float dt, bool dead,
                   PlayerState& player,
-                  const renderer::Terrain& terrain,
+                  const physics::CollisionWorld& world,
                   float camera_yaw,
                   bool rmb_held, bool lmb_held,
                   bool is_attacking = false,
                   std::optional<glm::vec3> target_pos = std::nullopt,
-                  bool approach_requested = false);
+                  bool approach_requested = false,
+                  std::optional<glm::vec2> external_move_delta = std::nullopt);
 
 private:
-    Config    cfg_{};
-    float     vel_y_          = 0.f;
-    bool      on_ground_      = true;
-    bool      auto_run_       = false;
-    glm::vec3 move_target_    = {};
-    bool      has_move_target_= false;
-    bool      numlock_prev_   = false;
-
-    bool ApplyHorizontalMove(glm::vec2 delta, PlayerState& player,
-                              const renderer::Terrain& terrain);
-    void UpdateVertical(float dt, PlayerState& player,
-                        const renderer::Terrain& terrain);
+    Config                      cfg_{};
+    physics::CharacterPhysics   physics_{};
+    bool      auto_run_        = false;
+    glm::vec3 move_target_     = {};
+    bool      has_move_target_ = false;
+    bool      numlock_prev_    = false;
 };
 
 } // namespace rco

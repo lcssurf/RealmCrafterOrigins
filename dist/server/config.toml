@@ -25,7 +25,13 @@ base_step_allowance = 0.75
 max_move_speed      = 18.0
 speed_slack_mult    = 1.25
 max_below_ground    = 1.0
-max_above_ground    = 12.0
+# groundY is heightmap-only (server has no coldata.bin/collision data) —
+# widened well past terrain to give elevated static geometry (bridges,
+# platforms) room, otherwise standing on one gets rejected as an
+# "impossible height" and the player is silently frozen/yanked back.
+# Trades some Y-axis anti-cheat precision for correctness; see the
+# MaxAboveGround comment in server/internal/net/client.go.
+max_above_ground    = 40.0
 enable_telemetry    = false
 log_rejections      = true
 telemetry_sample_ms = 500

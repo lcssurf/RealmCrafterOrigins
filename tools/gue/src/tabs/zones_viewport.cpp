@@ -150,6 +150,23 @@ void ZonesTab::DrawFloatingToolbar() {
                           "  Simple  — fast, flat lighting\n"
                           "  Lit     — full client PBR (shadows/SSAO/IBL)");
 
+    // ── Collision wireframe toggle (static colVis + dynamic dynColVis) ────
+    ImGui::SameLine(0, 8.f);
+    const bool showColliders = scene_.showColliders;
+    if (showColliders) {
+        ImGui::PushStyleColor(ImGuiCol_Button,        {0.22f, 0.52f, 0.88f, 1.f});
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.30f, 0.62f, 1.00f, 1.f});
+    }
+    if (ImGui::Button("Colliders", {70.f, 22.f})) {
+        scene_.showColliders = !showColliders;
+    }
+    if (showColliders) ImGui::PopStyleColor(2);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Show/hide the collision wireframe overlay\n"
+                          "(static coldata.bin boxes/spheres + dynamic\n"
+                          "is_dynamic scenery preview, cyan). Editor-only —\n"
+                          "never affects the normal object/terrain preview.");
+
     // Camera state hint
     ImGui::SameLine(0, 16.f);
     if (mouseLook_) {
@@ -215,7 +232,20 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
     renderer_.Resize((int)vp.x, (int)vp.y);
     if (scene_.colVisDirty) {
         scene_.RebuildColVis(db, meshTriCache_);
-        renderer_.UploadColVisBatch(scene_.colVis);
+        // Dynamic-collision preview (is_dynamic=1 scenery, box/wedge only —
+        // see zone_scene.h dynColVis) is a separate CPU-side list, never
+        // merged into scene_.colVis itself or coldata.bin — only combined
+        // here, right before upload, so the existing single-batch GL draw
+        // path can render both without a second VAO/VBO/shader.
+        scene_.RebuildDynamicColVis(db);
+        if (scene_.dynColVis.verts.empty()) {
+            renderer_.UploadColVisBatch(scene_.colVis);
+        } else {
+            ColVisData combined = scene_.colVis;
+            combined.verts.insert(combined.verts.end(),
+                scene_.dynColVis.verts.begin(), scene_.dynColVis.verts.end());
+            renderer_.UploadColVisBatch(combined);
+        }
     }
     renderer_.RenderFrame(cam_, scene_, selectedID_, selectedType_, dt);
 
@@ -1388,6 +1418,10 @@ void ZonesTab::DrawViewport(sqlite3* db, MediaTab* media) {
         unsigned allowRot   = 0, allowScale = 0;
         if (selectedType_ == kSelScenery) { allowRot = 0b111; allowScale = 0b111; }
         else if (selectedType_ == kSelNpc)     { allowRot = 0b010; }
+        // Pitch+yaw, no roll (bit 2/Z) — a light's aim direction only ever
+        // needs two axes; a Spot/Directional light must be able to pitch
+        // up/down as well as yaw, unlike NPC (yaw-only, never aims).
+        else if (selectedType_ == kSelLight)     { allowRot = 0b011; }
         else if (selectedType_ == kSelColBox)    { allowScale = 0b111; }
         else if (selectedType_ == kSelColSphere) { allowScale = 0b001; }   // uniform — X drives radius
         else if (selectedType_ == kSelWater)     { allowScale = 0b101; }
@@ -2508,6 +2542,10 @@ bool ZonesTab::SelectedRot(glm::vec3& out) const {
         for (auto& n : scene_.npcs) if (n.id == selectedID_) {
             out = glm::vec3(0.f, n.yaw, 0.f); return true;
         }
+    } else if (selectedType_ == kSelLight) {
+        for (auto& l : scene_.lights) if (l.id == selectedID_) {
+            out = glm::vec3(l.pitch, l.yaw, 0.f); return true;
+        }
     }
     return false;
 }
@@ -2517,6 +2555,9 @@ void ZonesTab::SetSelectedRot(const glm::vec3& rot) {
         for (auto& s : scene_.scenery) if (s.id == selectedID_) { s.rot = rot; return; }
     } else if (selectedType_ == kSelNpc) {
         for (auto& n : scene_.npcs) if (n.id == selectedID_) { n.yaw = rot.y; return; }
+    } else if (selectedType_ == kSelLight) {
+        // No roll (z) — a light's aim direction only needs pitch+yaw.
+        for (auto& l : scene_.lights) if (l.id == selectedID_) { l.pitch = rot.x; l.yaw = rot.y; return; }
     }
 }
 
@@ -2543,6 +2584,18 @@ void ZonesTab::PersistSelectedRot(sqlite3* db) {
                 -1, &st, nullptr) == SQLITE_OK) {
                 sqlite3_bind_double(st, 1, n.yaw);
                 sqlite3_bind_int   (st, 2, n.id);
+                sqlite3_step(st); sqlite3_finalize(st);
+            }
+            return;
+        }
+    } else if (selectedType_ == kSelLight) {
+        for (auto& l : scene_.lights) if (l.id == selectedID_) {
+            sqlite3_stmt* st = nullptr;
+            if (sqlite3_prepare_v2(db, "UPDATE zone_lights SET yaw=?,pitch=? WHERE id=?",
+                -1, &st, nullptr) == SQLITE_OK) {
+                sqlite3_bind_double(st, 1, l.yaw);
+                sqlite3_bind_double(st, 2, l.pitch);
+                sqlite3_bind_int   (st, 3, l.id);
                 sqlite3_step(st); sqlite3_finalize(st);
             }
             return;

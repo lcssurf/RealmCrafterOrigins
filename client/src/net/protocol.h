@@ -86,6 +86,8 @@ constexpr uint16_t kPZoneWater         = 141; // S->C: static water planes (zone
 constexpr uint16_t kPAtmosphereVolumes = 142; // S->C: atmosphere volumes (zone_atmosphere_volumes) for current area — Fase 1, client just stores
 constexpr uint16_t kPWorldObjectUpdate = 143; // S->C: runtime transform/visibility/collision update for one WorldObject (Lua World.SetTransform/SetVisible/SetCollision)
 constexpr uint16_t kPObjectInteract    = 144; // C->S: player interacts with a WorldObject (mirrors kPRightClick, object_id instead of actor RID)
+constexpr uint16_t kPDynamicCollisionShapes = 145; // S->C: local-space box/wedge collision shapes for is_dynamic=1 scenery objects, sent once on area entry
+constexpr uint16_t kPZoneEmitters      = 146; // S->C: placed zone_emitters (fx_template_id + loop) for current area, sent once on area entry
 
 // ---------------------------------------------------------------------------
 // Result codes

@@ -49,11 +49,12 @@ void ParticleSystem::Shutdown() {
 // SpawnEmitter
 // ---------------------------------------------------------------------------
 
-void ParticleSystem::SpawnEmitterParams(const FXParams& params,
+EmitterHandle ParticleSystem::SpawnEmitterParams(const FXParams& params,
                                        glm::vec3 pos,
                                        float now,
                                        float duration) {
     Emitter e;
+    e.id        = nextEmitterId_++;
     e.params    = params;
     e.pos       = pos;
     e.startTime = now;
@@ -66,7 +67,22 @@ void ParticleSystem::SpawnEmitterParams(const FXParams& params,
         e.nextSpawn = 1e30f; // no further streaming
     }
 
+    EmitterHandle handle = e.id;
     emitters_.push_back(std::move(e));
+    return handle;
+}
+
+// ---------------------------------------------------------------------------
+// RemoveEmitter
+// ---------------------------------------------------------------------------
+
+bool ParticleSystem::RemoveEmitter(EmitterHandle handle) {
+    if (handle == kInvalidEmitterHandle) return false;
+    auto it = std::find_if(emitters_.begin(), emitters_.end(),
+        [handle](const Emitter& e) { return e.id == handle; });
+    if (it == emitters_.end()) return false;
+    emitters_.erase(it);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,8 +122,14 @@ void ParticleSystem::Update(float now, float dt) {
     for (auto it = emitters_.begin(); it != emitters_.end(); ) {
         auto& e = *it;
 
-        float age          = now - e.startTime;
-        bool  emitterAlive = e.duration > 0.f && age < e.duration;
+        float age = now - e.startTime;
+        // duration<0 is the "never expires" sentinel (see particles.h) —
+        // must short-circuit BEFORE the age<duration compare, otherwise a
+        // negative duration reads as "already expired" (age is never less
+        // than a negative number) and a permanent stream emitter would
+        // never spawn a single particle.
+        bool  neverExpires = e.duration < 0.f;
+        bool  emitterAlive = neverExpires || (e.duration > 0.f && age < e.duration);
         float interval     = spawnInterval(e);
 
         if (emitterAlive && interval > 0.f) {

@@ -482,6 +482,8 @@ private:
 
     // Emitters
     int   emtConfigIdx_   = 0;
+    int   emtFxTemplateId_ = 0;  // ZEmitter::fxTemplateId for new-emitter placement
+    bool  emtLoop_          = true;
     static constexpr const char* kEmitterNames[] = {
         "Fire", "Explosion", "Heal", "Portal", "Blood", "Smoke"
     };
@@ -491,6 +493,8 @@ private:
     float lightColor_[3]   = {1.0f, 0.8f, 0.5f};  // warm torch-ish default
     float lightIntensity_  = 1.0f;
     float lightRadius_     = 5.0f;
+    int   lightType_       = 0;   // 0=Point 1=Spot 2=Directional — see ZLight::lightType
+    float lightConeAngle_  = 45.0f;
 
     // Atmosphere volumes (Fase 1 — data + editor only, see docs/TECH_DEBT.md
     // "Atmosphere volumes"). Placement-time defaults; the volume's own

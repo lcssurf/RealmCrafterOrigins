@@ -68,6 +68,12 @@ add_library(rco_renderer STATIC
     # Collision baking — extract triangles from mesh files (no OpenGL)
     src/col_bake.cpp
 
+    # Collision data types (ColBox/ColSphere/ColTri/ColData) + legacy
+    # Resolve()/LoadColData — promoted out of client/terrain.cpp during the
+    # player-physics reformulation so shared/physics can reference them
+    # without depending on client/ (see docs/TECH_DEBT.md #125)
+    src/collision_data.cpp
+
     # STB single-translation-unit implementation
     src/stb_image_impl.cpp
 )

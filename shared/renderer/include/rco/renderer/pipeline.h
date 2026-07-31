@@ -232,6 +232,27 @@ public:
 
     void AddPointLight(const glm::vec3& pos, const glm::vec3& color, float radius);
 
+    // AddSpotLight/AddDirectionalLocalLight — additive siblings of
+    // AddPointLight, same local-light SSBO/light-volume-sphere mechanism
+    // (gPhongManyLocal.fs), just filling in the new direction/spotParams
+    // fields AddPointLight leaves zeroed. coneOuterDeg/coneInnerDeg are the
+    // FULL cone angle in degrees (matches zone_lights.cone_angle's
+    // authoring convention) — inner is used only to soften the edge
+    // (smoothstep), not a second real cone.
+    void AddSpotLight(const glm::vec3& pos, const glm::vec3& color, float radius,
+                       const glm::vec3& direction, float coneOuterDeg, float coneInnerDeg);
+
+    // "Directional" zone light: NOT a true infinite/global directional
+    // light (that's sun_ below, a single DirLight the deferred/shadow/IBL
+    // passes are tightly coupled to — turning it into a list would be a
+    // much bigger change). This is the pragmatic additive alternative: the
+    // same radius-bounded light-volume sphere as Point/Spot, but shaded
+    // with a fixed direction instead of a position-derived one, so it reads
+    // as "directional within its placed radius" rather than truly infinite.
+    // See docs/TECH_DEBT.md.
+    void AddDirectionalLocalLight(const glm::vec3& pos, const glm::vec3& color, float radius,
+                                   const glm::vec3& direction);
+
     struct EndConfig {
         // When false, the caller reads engine.finalImage() (ImTextureID for tools).
         // When true (default), the final composed image is blitted to framebuffer 0.

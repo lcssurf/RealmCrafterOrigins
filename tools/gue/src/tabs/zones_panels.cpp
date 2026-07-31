@@ -859,6 +859,22 @@ void ZonesTab::DrawPanelScenery(sqlite3* db, MediaTab* media, bool placement) {
     if (ImGui::InputInt("Inventory slots##scno", &s.invSize)) { if(s.invSize<0)s.invSize=0; changed=true; }
     if (ImGui::Checkbox("Ownable##scno", &s.ownable)) changed=true;
     if (ImGui::Checkbox("Locked##scno",  &s.locked))  changed=true;
+    if (ImGui::Checkbox("Dynamic Collision##scno", &s.isDynamic)) changed=true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Excludes this object from the static coldata.bin bake.\n"
+                          "Its collision is recomputed live client-side from the\n"
+                          "object's current (script-animated) pose instead — for\n"
+                          "doors/gates/etc moved at runtime via World.SetTransform.");
+    if (s.isDynamic && s.collision == 3) {
+        ImGui::TextColored({1.f, 0.55f, 0.15f, 1.f},
+            "Dynamic collision requires a Box shape — configure in Model Shapes.");
+    }
+    if (ImGui::Checkbox("Interactable##scno", &s.interactable)) changed=true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Shows the client's \"[F] Interagir\" reticle prompt and sends\n"
+                          "PObjectInteract when in range. Leave off for purely decorative\n"
+                          "scenery — only check this if an object_interact Lua handler is\n"
+                          "actually bound to this object's id (see e.g. door_key.lua).");
     ImGui::Separator();
     {
         char folderBuf[128];
@@ -882,7 +898,7 @@ void ZonesTab::DrawPanelScenery(sqlite3* db, MediaTab* media, bool placement) {
         sqlite3_stmt* stmt = nullptr;
         sqlite3_prepare_v2(db,
             "UPDATE zone_scenery SET x=?,y=?,z=?,pitch=?,yaw=?,roll=?,"
-            "sx=?,sy=?,sz=?,collision=?,anim_mode=?,inv_size=?,ownable=?,locked=?,folder=? WHERE id=?",
+            "sx=?,sy=?,sz=?,collision=?,anim_mode=?,inv_size=?,ownable=?,locked=?,folder=?,is_dynamic=?,interactable=? WHERE id=?",
             -1, &stmt, nullptr);
         sqlite3_bind_double(stmt,1,s.pos.x);   sqlite3_bind_double(stmt,2,s.pos.y);   sqlite3_bind_double(stmt,3,s.pos.z);
         sqlite3_bind_double(stmt,4,s.rot.x);   sqlite3_bind_double(stmt,5,s.rot.y);   sqlite3_bind_double(stmt,6,s.rot.z);
@@ -891,7 +907,9 @@ void ZonesTab::DrawPanelScenery(sqlite3* db, MediaTab* media, bool placement) {
         sqlite3_bind_int(stmt,12,s.invSize);   sqlite3_bind_int(stmt,13,s.ownable?1:0);
         sqlite3_bind_int(stmt,14,s.locked?1:0);
         sqlite3_bind_text(stmt,15,s.folder.c_str(),-1,SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt,16,s.id);
+        sqlite3_bind_int(stmt,16,s.isDynamic?1:0);
+        sqlite3_bind_int(stmt,17,s.interactable?1:0);
+        sqlite3_bind_int(stmt,18,s.id);
         sqlite3_step(stmt); sqlite3_finalize(stmt);
         scene_.colVisDirty = true;
     }
@@ -1435,6 +1453,26 @@ void ZonesTab::DrawPanelTerrain(sqlite3* db, bool) {
 
 // ─── Emitters panel (Phase 9) ─────────────────────────────────────────────────
 
+// Small, uncached query — fx_templates is a tiny table (a handful to a few
+// dozen rows), so re-querying it every time this combo is drawn is cheap and
+// avoids needing to plumb a cache from the (separate) FXTemplatesTab.
+static std::vector<std::pair<int, std::string>> FetchFXTemplateItems(sqlite3* db) {
+    std::vector<std::pair<int, std::string>> items;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, COALESCE(NULLIF(display_name,''), fx_key) FROM fx_templates"
+        " WHERE enabled=1 ORDER BY display_name, fx_key",
+        -1, &stmt, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            int id = sqlite3_column_int(stmt, 0);
+            const unsigned char* name = sqlite3_column_text(stmt, 1);
+            items.emplace_back(id, name ? reinterpret_cast<const char*>(name) : "");
+        }
+        sqlite3_finalize(stmt);
+    }
+    return items;
+}
+
 void ZonesTab::DrawPanelEmitters(sqlite3* db, bool placement) {
     static constexpr int kEmCount = 6;
 
@@ -1451,6 +1489,16 @@ void ZonesTab::DrawPanelEmitters(sqlite3* db, bool placement) {
             }
             ImGui::EndCombo();
         }
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextUnformatted("FX Template (the one that actually works):");
+        ImGui::SetNextItemWidth(-1);
+        ui::SearchableComboId("FX Template##emtp", emtFxTemplateId_,
+                               FetchFXTemplateItems(db), "(none — inert)");
+        ImGui::Checkbox("Loop##emtp", &emtLoop_);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("On: runs for as long as the area is loaded.\n"
+                              "Off: fires once on area entry and stops.");
         ImGui::Spacing();
         ImGui::TextDisabled("RMB in viewport to place.");
         return;
@@ -1487,14 +1535,32 @@ void ZonesTab::DrawPanelEmitters(sqlite3* db, bool placement) {
     ImGui::SetNextItemWidth(-1); if (ImGui::InputFloat("Z##emo",&e.pos.z,0,0,"%.2f")) changed=true;
     ImGui::SetNextItemWidth(pw); if (ImGui::InputFloat("Y##emo",&e.pos.y,0,0,"%.2f")) changed=true;
 
+    ImGui::Separator();
+    ImGui::TextUnformatted("FX Template (the one that actually works):");
+    ImGui::SetNextItemWidth(-1);
+    if (ui::SearchableComboId("FX Template##emo", e.fxTemplateId,
+                               FetchFXTemplateItems(db), "(none — inert)")) {
+        changed = true;
+    }
+    if (ImGui::Checkbox("Loop##emo", &e.loop)) changed = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("On: runs for as long as the area is loaded.\n"
+                          "Off: fires once on area entry and stops.");
+    if (e.fxTemplateId == 0) {
+        ImGui::TextColored({1.f, 0.55f, 0.15f, 1.f},
+            "No FX Template set — server won't send this emitter at all.");
+    }
+
     if (changed) {
         sqlite3_stmt* s = nullptr;
         sqlite3_prepare_v2(db,
-            "UPDATE zone_emitters SET config_name=?,x=?,y=?,z=? WHERE id=?",
+            "UPDATE zone_emitters SET config_name=?,x=?,y=?,z=?,fx_template_id=?,loop=? WHERE id=?",
             -1, &s, nullptr);
         sqlite3_bind_text(s,1,e.configName.c_str(),-1,SQLITE_TRANSIENT);
         sqlite3_bind_double(s,2,e.pos.x); sqlite3_bind_double(s,3,e.pos.y); sqlite3_bind_double(s,4,e.pos.z);
-        sqlite3_bind_int(s,5,e.id);
+        sqlite3_bind_int(s,5,e.fxTemplateId);
+        sqlite3_bind_int(s,6,e.loop?1:0);
+        sqlite3_bind_int(s,7,e.id);
         sqlite3_step(s); sqlite3_finalize(s);
     }
     ImGui::Spacing();
@@ -1521,6 +1587,15 @@ void ZonesTab::DrawPanelLight(sqlite3* db, bool placement) {
         ImGui::SliderFloat("Radius##lightp", &lightRadius_, 0.5f, 40.f, "%.1f");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Attenuation cutoff — how far the light reaches, world units.");
+        static const char* kLightTypes[] = { "Point", "Spot", "Directional" };
+        ImGui::Combo("Type##lightp", &lightType_, kLightTypes, 3);
+        if (lightType_ == 1) {
+            ImGui::SliderFloat("Cone Angle##lightp", &lightConeAngle_, 1.f, 170.f, "%.0f°");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Full cone angle. Aim direction is set after placement\n"
+                                  "with the Rotate gizmo [E] — Spot/Directional default to\n"
+                                  "pointing straight down until rotated.");
+        }
         ImGui::Spacing();
         ImGui::TextDisabled("RMB in viewport to place.");
         return;
@@ -1555,17 +1630,31 @@ void ZonesTab::DrawPanelLight(sqlite3* db, bool placement) {
         ImGui::SetTooltip("Attenuation cutoff — how far the light reaches, world units.\n"
                           "Shown in the viewport as a faint ring around the light marker.");
 
+    static const char* kLightTypes[] = { "Point", "Spot", "Directional" };
+    if (ImGui::Combo("Type##lighto", &l.lightType, kLightTypes, 3)) changed = true;
+    if (l.lightType == 1) {
+        if (ImGui::SliderFloat("Cone Angle##lighto", &l.coneAngle, 1.f, 170.f, "%.0f°")) changed = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Full cone angle — the marker cone in the viewport updates live.");
+    }
+    if (l.lightType != 0) {
+        ImGui::TextDisabled("Aim with the Rotate gizmo [E] (yaw/pitch, no roll).");
+    }
+
     if (changed) {
         sqlite3_stmt* s = nullptr;
         sqlite3_prepare_v2(db,
-            "UPDATE zone_lights SET name=?,x=?,y=?,z=?,color_r=?,color_g=?,color_b=?,intensity=?,radius=? WHERE id=?",
+            "UPDATE zone_lights SET name=?,x=?,y=?,z=?,color_r=?,color_g=?,color_b=?,intensity=?,radius=?,"
+            "light_type=?,cone_angle=? WHERE id=?",
             -1, &s, nullptr);
         sqlite3_bind_text(s, 1, l.name.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_double(s, 2, l.pos.x); sqlite3_bind_double(s, 3, l.pos.y); sqlite3_bind_double(s, 4, l.pos.z);
         sqlite3_bind_double(s, 5, l.color.r); sqlite3_bind_double(s, 6, l.color.g); sqlite3_bind_double(s, 7, l.color.b);
         sqlite3_bind_double(s, 8, l.intensity);
         sqlite3_bind_double(s, 9, l.radius);
-        sqlite3_bind_int(s, 10, l.id);
+        sqlite3_bind_int(s, 10, l.lightType);
+        sqlite3_bind_double(s, 11, l.coneAngle);
+        sqlite3_bind_int(s, 12, l.id);
         sqlite3_step(s); sqlite3_finalize(s);
     }
     ImGui::Spacing();

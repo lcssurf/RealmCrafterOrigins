@@ -10,201 +10,142 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <chrono>
 
 namespace rco::renderer {
 
-// ---------------------------------------------------------------------------
-// Collision data — load from coldata.bin
-// ---------------------------------------------------------------------------
+// True when the player's CAPSULE (a circle of the given radius around
+// (x, z), not just its exact center point) overlaps the box's XZ footprint
+// (rotation undone via its precomputed local frame). Probes at the box's
+// own center height, which is exact for yaw-only rotation (see
+// ComputeGroundHeight's doc comment) and an approximation otherwise.
+//
+// Radius-aware on purpose (TECH_DEBT.md #125): a strict center-point-only
+// test rejects the player the instant their exact feet-center crosses the
+// footprint edge, even though their body — a capsule of radius R, not a
+// point — still visibly overlaps the object right up to the edge. That
+// produced the "pulled to the ground right at the edge/corner" symptom for
+// BOTH Box/Wedge and Mesh ground candidates, since this is the ONE shared
+// function tryBox (below) calls for all three kinds. Uses the same
+// clamp-to-box + compare-distance-to-R technique already validated by
+// Resolve()'s testBox horizontal push (terrain.cpp) — not a new formula,
+// just applied here too.
+//
+// outLocalX/outLocalZ (optional): the raw LOCAL-frame coordinates before
+// the radius/half-extent comparison, purely for diagnostics — lets a
+// caller log the actual margin (or overshoot) against b.half instead of
+// only the pass/fail boolean.
+static bool PointInBoxFootprint(float x, float z, const ColBox& b, float radius,
+                                 float* outLocalX = nullptr, float* outLocalZ = nullptr) {
+    glm::vec3 local = glm::transpose(b.rot) * (glm::vec3(x, b.pos.y, z) - b.pos);
+    if (outLocalX) *outLocalX = local.x;
+    if (outLocalZ) *outLocalZ = local.z;
+    glm::vec2 clampedXZ = glm::clamp(glm::vec2(local.x, local.z),
+                                      glm::vec2(-b.half.x, -b.half.z),
+                                      glm::vec2(b.half.x, b.half.z));
+    float dx = local.x - clampedXZ.x;
+    float dz = local.z - clampedXZ.y;
+    return (dx * dx + dz * dz) <= radius * radius;
+}
 
-ColData LoadColData(const std::string& area_name) {
-    char path[512];
-    std::snprintf(path, sizeof(path), "data/areas/%s/coldata.bin", area_name.c_str());
-    FILE* f = std::fopen(path, "rb");
-    if (!f) return {};
+// Ray-plane intersection for one triangle: does the vertical column at
+// (x, z) pass through tri's XZ projection, and if so, is the resulting
+// surface height at or below y_start (i.e. would a ray cast straight down
+// from y_start actually reach this triangle, not pass over it)?
+//
+// Containment test is a standard 2D barycentric-coordinate check on the
+// triangle's (x, z) projection — cheap and exact for arbitrary (non-
+// degenerate) triangles, including steep/near-vertical ones as long as
+// they still have SOME XZ-projected area (a perfectly vertical wall
+// triangle has zero XZ area and correctly never matches here, which is
+// right: a vertical wall isn't something you stand ON). Height at the hit
+// point is the same barycentric weights applied to the triangle's Y
+// values — exact for the triangle's own plane, no interpolation error,
+// unlike sampling a regular heightmap grid.
+static bool RayVerticalHitsTri(float x, float z, float y_start,
+                                const ColTri& tri, float& outY) {
+    const glm::vec2 a{tri.v[0].x, tri.v[0].z};
+    const glm::vec2 b{tri.v[1].x, tri.v[1].z};
+    const glm::vec2 c{tri.v[2].x, tri.v[2].z};
 
-    auto r32 = [&](uint32_t& v) { return std::fread(&v, 4, 1, f) == 1; };
-    auto rf  = [&](float&    v) { return std::fread(&v, 4, 1, f) == 1; };
+    // Cheap XZ bounding-box reject before the full barycentric math —
+    // col_data.tris has no per-object grouping (see TECH_DEBT.md #125's
+    // cost analysis: 28k+ triangles for a single area, flattened, no
+    // spatial index), so this is the only low-cost filter available
+    // without adding a new spatial structure. Most triangles reject here
+    // on the very first comparison.
+    const float minX = std::min({a.x, b.x, c.x}), maxX = std::max({a.x, b.x, c.x});
+    if (x < minX || x > maxX) return false;
+    const float minZ = std::min({a.y, b.y, c.y}), maxZ = std::max({a.y, b.y, c.y});
+    if (z < minZ || z > maxZ) return false;
 
-    uint32_t magic, version;
-    if (!r32(magic) || magic != 0x444C4F43u) { std::fclose(f); return {}; }
-    if (!r32(version) || version > 3)        { std::fclose(f); return {}; }
+    const glm::vec2 p{x, z};
+    const glm::vec2 v0 = b - a, v1 = c - a, v2 = p - a;
+    const float d00 = glm::dot(v0, v0), d01 = glm::dot(v0, v1), d11 = glm::dot(v1, v1);
+    const float d20 = glm::dot(v2, v0), d21 = glm::dot(v2, v1);
+    const float denom = d00 * d11 - d01 * d01;
+    if (std::abs(denom) < 1e-8f) return false; // zero XZ area (near-vertical triangle) — not standable
 
-    // Precomputes rot (Ry*Rx*Rz, degrees — same convention as zone_scene's
-    // scenery TRS) and the box's world-space Y bounds (via its 8 rotated
-    // corners) once at load, so Resolve()'s per-frame early-out stays a
-    // cheap min/max compare instead of re-deriving this every call.
-    auto finalizeBox = [](ColBox& b, float pitchDeg, float yawDeg, float rollDeg) {
-        glm::mat4 m(1.f);
-        m = glm::rotate(m, glm::radians(yawDeg),  glm::vec3(0, 1, 0));
-        m = glm::rotate(m, glm::radians(pitchDeg), glm::vec3(1, 0, 0));
-        m = glm::rotate(m, glm::radians(rollDeg),  glm::vec3(0, 0, 1));
-        b.rot = glm::mat3(m);
-        float yMin = 1e30f, yMax = -1e30f;
-        for (int i = 0; i < 8; ++i) {
-            glm::vec3 local(
-                (i & 1) ? b.half.x : -b.half.x,
-                (i & 2) ? b.half.y : -b.half.y,
-                (i & 4) ? b.half.z : -b.half.z);
-            float wy = (b.rot * local).y + b.pos.y;
-            yMin = std::min(yMin, wy);
-            yMax = std::max(yMax, wy);
+    const float invDenom = 1.f / denom;
+    const float v = (d11 * d20 - d01 * d21) * invDenom;
+    const float w = (d00 * d21 - d01 * d20) * invDenom;
+    const float u = 1.f - v - w;
+    constexpr float kEdgeEps = -1e-4f; // small tolerance so points exactly on an edge still hit
+    if (u < kEdgeEps || v < kEdgeEps || w < kEdgeEps) return false;
+
+    const float y = u * tri.v[0].y + v * tri.v[1].y + w * tri.v[2].y;
+    if (y > y_start) return false; // this triangle's surface is above the ray's start — not reachable downward
+    outY = y;
+    return true;
+}
+
+std::optional<float> SampleMeshGroundHeight(float x, float z, float y_start,
+                                             const std::vector<ColTri>& tris) {
+    std::optional<float> best;
+    for (const auto& tri : tris) {
+        float y;
+        if (RayVerticalHitsTri(x, z, y_start, tri, y)) {
+            // Highest hit at/below y_start wins — same as a real ray
+            // stopping at the FIRST surface it reaches coming down, so a
+            // bridge deck is picked over a pillar underneath it, but a
+            // pillar top is still picked correctly when standing under the
+            // deck (y_start below the deck's height to begin with).
+            if (!best || y > *best) best = y;
         }
-        b.worldYMin = yMin;
-        b.worldYMax = yMax;
+    }
+    return best;
+}
+
+float ComputeGroundHeight(float x, float z, float support_ceiling_y,
+                           const Terrain& terrain, const ColData& col_data,
+                           const std::vector<ColBox>& dynamicBoxes) {
+    float ground = terrain.SampleHeight(x, z);
+    const char* source = "terrain";
+    auto tryBox = [&](const ColBox& b, const char* kind) {
+        const bool overCeiling = b.worldYMax > support_ceiling_y;
+        const bool notHigher   = !overCeiling && b.worldYMax <= ground;
+        if (overCeiling || notHigher) return;
+        if (PointInBoxFootprint(x, z, b, kPlayerCapsuleRadius)) {
+            ground = b.worldYMax;
+            source = kind;
+        }
     };
+    for (const auto& b : col_data.boxes)    tryBox(b, "box");
+    for (const auto& b : dynamicBoxes)      tryBox(b, "dynamicBox");
 
-    ColData out;
-    uint32_t n;
-    if (!r32(n)) { std::fclose(f); return {}; }
-    out.boxes.reserve(n);
-    for (uint32_t i = 0; i < n; ++i) {
-        ColBox b;
-        float pitchDeg = 0.f, yawDeg = 0.f, rollDeg = 0.f;
-        if (!rf(b.pos.x)||!rf(b.pos.y)||!rf(b.pos.z)||
-            !rf(b.half.x)||!rf(b.half.y)||!rf(b.half.z)) break;
-        if (version >= 3) {
-            if (!rf(pitchDeg)||!rf(yawDeg)||!rf(rollDeg)) break;
-        }
-        finalizeBox(b, pitchDeg, yawDeg, rollDeg);
-        out.boxes.push_back(b);
+    // Mesh candidate: real vertical raycast against col_data.tris (the same
+    // triangles ColData::Resolve() already tests for horizontal push — no
+    // new data) instead of the retired AABB/center approximation
+    // (TECH_DEBT.md #125). Exact for arbitrary geometry — arches, ramps,
+    // anything — since it's a real ray-plane intersection per triangle, not
+    // a stand-in shape.
+    std::optional<float> meshY = SampleMeshGroundHeight(x, z, support_ceiling_y, col_data.tris);
+    if (meshY.has_value() && *meshY > ground) {
+        ground = *meshY;
+        source = "mesh";
     }
-    if (!r32(n)) { std::fclose(f); out.loaded = true; return out; }
-    out.spheres.reserve(n);
-    for (uint32_t i = 0; i < n; ++i) {
-        ColSphere s;
-        if (!rf(s.pos.x)||!rf(s.pos.y)||!rf(s.pos.z)||!rf(s.radius)) break;
-        out.spheres.push_back(s);
-    }
-    if (version >= 2) {
-        if (!r32(n)) { std::fclose(f); out.loaded = true; return out; }
-        out.tris.reserve(n);
-        for (uint32_t i = 0; i < n; ++i) {
-            ColTri t;
-            bool ok = rf(t.v[0].x)&&rf(t.v[0].y)&&rf(t.v[0].z)
-                    &&rf(t.v[1].x)&&rf(t.v[1].y)&&rf(t.v[1].z)
-                    &&rf(t.v[2].x)&&rf(t.v[2].y)&&rf(t.v[2].z);
-            if (!ok) break;
-            out.tris.push_back(t);
-        }
-    }
-    std::fclose(f);
-    out.loaded = true;
-    return out;
-}
-
-// ---------------------------------------------------------------------------
-// Collision resolution — push player out of boxes and spheres
-// ---------------------------------------------------------------------------
-
-// Closest point on a 2D line segment to point p (Ericson).
-static glm::vec2 ClosestPtSeg2D(glm::vec2 p, glm::vec2 a, glm::vec2 b) {
-    glm::vec2 ab = b - a, ap = p - a;
-    float len2 = glm::dot(ab, ab);
-    if (len2 < 1e-10f) return a;
-    float t = std::max(0.f, std::min(1.f, glm::dot(ap, ab) / len2));
-    return a + t * ab;
-}
-
-// Closest point on 2D triangle (a,b,c) to point p — Ericson barycentric method.
-// Handles degenerate (collinear) triangles gracefully.
-static glm::vec2 ClosestPtTri2D(glm::vec2 p, glm::vec2 a, glm::vec2 b, glm::vec2 c) {
-    glm::vec2 ab = b-a, ac = c-a, ap = p-a;
-    float d1 = glm::dot(ab,ap), d2 = glm::dot(ac,ap);
-    if (d1 <= 0.f && d2 <= 0.f) return a;
-    glm::vec2 bp = p-b;
-    float d3 = glm::dot(ab,bp), d4 = glm::dot(ac,bp);
-    if (d3 >= 0.f && d4 <= d3) return b;
-    float vc = d1*d4 - d3*d2;
-    if (vc <= 0.f && d1 >= 0.f && d3 <= 0.f) {
-        float v = d1/(d1-d3); return a + v*ab;
-    }
-    glm::vec2 cp = p-c;
-    float d5 = glm::dot(ab,cp), d6 = glm::dot(ac,cp);
-    if (d6 >= 0.f && d5 <= d6) return c;
-    float vb = d5*d2 - d1*d6;
-    if (vb <= 0.f && d2 >= 0.f && d6 <= 0.f) {
-        float w = d2/(d2-d6); return a + w*ac;
-    }
-    float va = d3*d6 - d5*d4;
-    if (va <= 0.f && (d4-d3) >= 0.f && (d5-d6) >= 0.f) {
-        float w = (d4-d3)/((d4-d3)+(d5-d6)); return b + w*(c-b);
-    }
-    float denom = va+vb+vc;
-    if (std::abs(denom) < 1e-10f) {
-        // Degenerate triangle — fall back to closest edge
-        glm::vec2 p1 = ClosestPtSeg2D(p,a,b);
-        glm::vec2 p2 = ClosestPtSeg2D(p,b,c);
-        glm::vec2 p3 = ClosestPtSeg2D(p,c,a);
-        float l1=glm::length(p-p1), l2=glm::length(p-p2), l3=glm::length(p-p3);
-        if (l1<=l2&&l1<=l3) return p1;
-        return l2<=l3 ? p2 : p3;
-    }
-    float inv = 1.f/denom, v = vb*inv, w = vc*inv;
-    return a + v*ab + w*ac;
-}
-
-void ColData::Resolve(float& px, float pz_in, float py, float& out_pz) const {
-    constexpr float R = 0.45f;   // player capsule radius
-    constexpr float H = 1.8f;    // player capsule height
-    float pz = pz_in;
-    float pYmin = py, pYmax = py + H;
-
-    for (int iter = 0; iter < 3; ++iter) {
-        for (const auto& b : boxes) {
-            if (pYmax < b.worldYMin || pYmin > b.worldYMax) continue;
-            // True OBB test: clamp the capsule's mid-height point in the
-            // box's OWN local axes (rot may be a rotated frame, not just
-            // identity), then bring the closest point back to world space.
-            // For an axis-aligned box (rot=identity, all COLD v2 files),
-            // transpose(rot) is the identity too, so this reduces to the
-            // exact same clamp-in-world-space the old AABB-only test did.
-            glm::vec3 worldPt(px, (pYmin + pYmax) * 0.5f, pz);
-            glm::vec3 local = glm::transpose(b.rot) * (worldPt - b.pos);
-            local = glm::clamp(local, -b.half, b.half);
-            glm::vec3 closest = b.pos + b.rot * local;
-            float dx = px - closest.x, dz = pz - closest.z;
-            float d2 = dx*dx + dz*dz;
-            if (d2 < R * R) {
-                if (d2 < 1e-7f) { dx = 1.f; dz = 0.f; d2 = 1.f; }
-                float d = std::sqrt(d2);
-                float push = R - d;
-                px += (dx / d) * push;
-                pz += (dz / d) * push;
-            }
-        }
-        for (const auto& s : spheres) {
-            if (pYmax < s.pos.y - s.radius || pYmin > s.pos.y + s.radius) continue;
-            float dx = px - s.pos.x, dz = pz - s.pos.z;
-            float d2 = dx*dx + dz*dz;
-            float minD = R + s.radius;
-            if (d2 < minD * minD) {
-                if (d2 < 1e-7f) { dx = 1.f; dz = 0.f; d2 = 1.f; }
-                float d = std::sqrt(d2);
-                px += (dx / d) * (minD - d);
-                pz += (dz / d) * (minD - d);
-            }
-        }
-        for (const auto& tri : tris) {
-            float tYmin = std::min({tri.v[0].y, tri.v[1].y, tri.v[2].y});
-            float tYmax = std::max({tri.v[0].y, tri.v[1].y, tri.v[2].y});
-            if (pYmax < tYmin || pYmin > tYmax) continue;
-            glm::vec2 a{tri.v[0].x, tri.v[0].z};
-            glm::vec2 b{tri.v[1].x, tri.v[1].z};
-            glm::vec2 c{tri.v[2].x, tri.v[2].z};
-            glm::vec2 pp{px, pz};
-            glm::vec2 closest = ClosestPtTri2D(pp, a, b, c);
-            glm::vec2 diff = pp - closest;
-            float d2 = glm::dot(diff, diff);
-            if (d2 < R * R) {
-                if (d2 < 1e-7f) { diff = {1.f, 0.f}; d2 = 1.f; }
-                float d = std::sqrt(d2);
-                px += (diff.x / d) * (R - d);
-                pz += (diff.y / d) * (R - d);
-            }
-        }
-    }
-    out_pz = pz;
+    (void)source; // kept for readability/future debugging, not otherwise read
+    return ground;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,5 @@
 #include "player_controller.h"
 #include "../ui/game_state.h"
-#include "../renderer/terrain/terrain.h"
 
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
@@ -11,8 +10,6 @@
 
 namespace rco {
 namespace {
-constexpr bool kDebugPlayerMovement = false;
-
 // Shortest-arc yaw smoothing — SAME pattern already active in production
 // for remote-actor yaw interpolation (main.cpp:102-117, applied at
 // main.cpp:3887-3911 with kYawLerpRate=20.0f for network catch-up).
@@ -36,135 +33,29 @@ float SmoothLerpFactor(float dt, float rate_per_sec) {
 }
 
 // ---------------------------------------------------------------------------
-// ApplyHorizontalMove
-// Only blocks uphill movement that exceeds max_slope_deg (measured from
-// current height to destination height). Flat or downhill always passes.
-// Blocked movement is projected sideways along the slope face.
-// ---------------------------------------------------------------------------
-bool PlayerController::ApplyHorizontalMove(glm::vec2 delta,
-        PlayerState& player,
-        const renderer::Terrain& terrain)
-{
-    if (glm::dot(delta, delta) < cfg_.min_move_len_sq) return true;
-
-    float new_x = player.x + delta.x;
-    float new_z = player.z + delta.y;
-
-    float h_src = terrain.SampleHeight(player.x, player.z);
-    float h_dst = terrain.SampleHeight(new_x, new_z);
-    float rise  = h_dst - h_src;
-    float dist  = glm::length(delta);
-
-    if (rise > 0.f) {
-        float slope_deg = glm::degrees(std::atan2f(rise, dist));
-        if (slope_deg > cfg_.max_slope_deg) {
-            // Project sideways along slope face
-            glm::vec3 n  = terrain.SampleNormal(new_x, new_z);
-            glm::vec3 d3 = glm::normalize(glm::vec3(delta.x, 0.f, delta.y));
-            glm::vec3 proj = d3 - glm::dot(d3, n) * n;
-
-            glm::vec2 proj2(proj.x, proj.z);
-            float plen = glm::length(proj2);
-            if (plen > cfg_.min_proj_len) {
-                new_x = player.x + (proj2.x / plen) * dist;
-                new_z = player.z + (proj2.y / plen) * dist;
-
-                float h_proj = terrain.SampleHeight(new_x, new_z);
-                float rise2  = h_proj - h_src;
-                float dist2  = glm::length(glm::vec2(new_x - player.x, new_z - player.z));
-                if (rise2 > 0.f && dist2 > cfg_.min_proj_len &&
-                    glm::degrees(std::atan2f(rise2, dist2)) > cfg_.max_slope_deg) {
-                    if (kDebugPlayerMovement) {
-                        std::fprintf(stderr,
-                            "[move] blocked uphill slope=%.1f max=%.1f pos=(%.2f,%.2f)\n",
-                            glm::degrees(std::atan2f(rise2, dist2)),
-                            cfg_.max_slope_deg, player.x, player.z);
-                    }
-                    return false;
-                }
-            } else {
-                if (kDebugPlayerMovement) {
-                    std::fprintf(stderr,
-                        "[move] blocked no-side-proj pos=(%.2f,%.2f)\n",
-                        player.x, player.z);
-                }
-                return false;
-            }
-        }
-    }
-
-    player.x = new_x;
-    player.z = new_z;
-    return true;
-}
-
-// ---------------------------------------------------------------------------
-// UpdateVertical
-// Snaps to terrain when grounded. Goes airborne when terrain drops more than
-// snap_down in one frame. Applies gravity when airborne. Slides on steep slopes.
-// ---------------------------------------------------------------------------
-void PlayerController::UpdateVertical(float dt,
-        PlayerState& player,
-        const renderer::Terrain& terrain)
-{
-    float terrain_h = terrain.SampleHeight(player.x, player.z);
-
-    if (!on_ground_) {
-        vel_y_   -= cfg_.gravity * dt;
-        player.y += vel_y_ * dt;
-        if (player.y <= terrain_h) {
-            player.y   = terrain_h;
-            vel_y_     = 0.f;
-            on_ground_ = true;
-            if (kDebugPlayerMovement) {
-                std::fprintf(stderr, "[move] landed y=%.2f\n", player.y);
-            }
-        }
-        return;
-    }
-
-    float delta_h = terrain_h - player.y;
-
-    if (delta_h > -cfg_.snap_down) {
-        player.y = terrain_h;
-    } else {
-        on_ground_ = false;
-        vel_y_     = 0.f;
-        if (kDebugPlayerMovement) {
-            std::fprintf(stderr, "[move] leave-ground drop=%.2f\n", delta_h);
-        }
-        return;
-    }
-
-    // Slope slide
-    glm::vec3 n     = terrain.SampleNormal(player.x, player.z);
-    float slope_deg = glm::degrees(std::acos(glm::clamp(n.y, 0.f, 1.f)));
-    if (slope_deg > cfg_.max_slope_deg) {
-        glm::vec3 g_vec(0.f, -cfg_.gravity, 0.f);
-        glm::vec3 slide = g_vec - glm::dot(g_vec, n) * n;
-        player.x += slide.x * dt;
-        player.z += slide.z * dt;
-        player.y  = terrain.SampleHeight(player.x, player.z);
-        if (kDebugPlayerMovement) {
-            std::fprintf(stderr,
-                "[move] slope-slide angle=%.1f max=%.1f pos=(%.2f,%.2f)\n",
-                slope_deg, cfg_.max_slope_deg, player.x, player.z);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Update
+//
+// This class now ONLY resolves INPUT into a desired movement — WASD/click-
+// to-move direction, sprint, auto-run, turn-to-face, auto-approach, jump
+// intent. The actual collision/gravity/ground/slope/step-up resolution is
+// entirely rco::physics::CharacterPhysics::Move()'s job (see
+// docs/TECH_DEBT.md #125's architecture investigation) — this function
+// builds ONE CapsuleMoveInput from whatever input won this frame (WASD XOR
+// click-to-move, same mutual-exclusion as before) and applies the single
+// CapsuleMoveResult back to PlayerState at the end. No more
+// ApplyHorizontalMove/UpdateVertical/ColData::Resolve/ComputeGroundHeight
+// calls anywhere in this file.
 // ---------------------------------------------------------------------------
 PlayerController::Result PlayerController::Update(
         GLFWwindow* win, float dt, bool dead,
         PlayerState& player,
-        const renderer::Terrain& terrain,
+        const physics::CollisionWorld& world,
         float camera_yaw,
         bool rmb_held, bool lmb_held,
         bool is_attacking,
         std::optional<glm::vec3> target_pos,
-        bool approach_requested)
+        bool approach_requested,
+        std::optional<glm::vec2> external_move_delta)
 {
     // has_target: gates turn-to-face-target (used further below) — stays
     // tied to is_attacking on purpose. It's specifically for the "body
@@ -176,13 +67,33 @@ PlayerController::Result PlayerController::Update(
     Result r{};
 
     if (dead) {
-        player.y   = terrain.SampleHeight(player.x, player.z);
-        vel_y_     = 0.f;
-        on_ground_ = true;
-        auto_run_  = false;
+        player.y = world.sample_terrain_height(player.x, player.z);
+        physics_.Reset();
+        auto_run_ = false;
         CancelMoveTarget();
         return r;
     }
+
+    // desired_delta_2d/jump_requested: the ONE horizontal movement (and
+    // jump intent) this frame, handed to CharacterPhysics::Move() at the
+    // end. Populated either by external_move_delta (dodge roll — see
+    // header doc) OR by WASD/auto-approach/click-to-move below — never
+    // both, same mutual exclusion the old ApplyHorizontalMove call sites
+    // already had.
+    glm::vec2 desired_delta_2d(0.f);
+    bool jump_requested = false;
+
+    if (external_move_delta.has_value()) {
+        // External movement override (dodge roll today) — bypasses WASD/
+        // click-to-move/turn-to-face entirely; the caller already owns
+        // direction/facing for whatever's driving this. Still resolved
+        // through physics_.Move() below, same as everything else, so it
+        // collides with walls/mesh/terrain instead of clipping through
+        // them. Jump stays suppressed (jump_requested left false).
+        desired_delta_2d = *external_move_delta;
+        auto_run_ = false;
+        CancelMoveTarget();
+    } else {
 
     // --- NumLock: toggle auto-run ---
     {
@@ -282,12 +193,12 @@ PlayerController::Result PlayerController::Update(
     // Turn-to-face runs whenever there's WASD input OR the player is mid-
     // attack with a valid target — the latter lets the body turn to face
     // the enemy even while standing still (dir==0), which a plain
-    // "has_move_input" gate would skip entirely. Movement (ApplyHorizontalMove
-    // below) stays gated on has_move_input ONLY, never on has_target — this
-    // is what keeps WASD fully free during an attack (camera-relative
-    // strafe with the body independently aimed at the target) instead of
-    // introducing any attack-time movement lock, which doesn't exist
-    // anywhere else in this class either.
+    // "has_move_input" gate would skip entirely. Movement stays gated on
+    // has_move_input ONLY, never on has_target — this is what keeps WASD
+    // fully free during an attack (camera-relative strafe with the body
+    // independently aimed at the target) instead of introducing any
+    // attack-time movement lock, which doesn't exist anywhere else in this
+    // class either.
     if (has_move_input || has_target) {
         glm::vec2 move_dir(0.f);
         if (has_move_input) move_dir = glm::normalize(dir);
@@ -296,15 +207,12 @@ PlayerController::Result PlayerController::Update(
         // combat target, while mid-attack with a resolved target position
         // (overrides movement-direction facing — the whole point of this
         // feature), or (b) the world-space movement direction otherwise,
-        // same as before (atan2(x, z) convention, matching
-        // ApplyHorizontalMove/click-to-move's atan2(dx/dist, dz/dist)).
-        // Reuses the SAME shortest-arc-lerp pattern already active for
-        // remote-actor yaw smoothing (NormalizeYawDegrees/
-        // ShortestYawDeltaDegrees/SmoothLerpFactor above), just with
-        // cfg_.turn_rate as the (faster, local-input) rate instead of the
-        // network-catchup rate — same rate/feel whether facing a target or
-        // facing movement, so there's no jarring speed change when the
-        // attack window starts/ends.
+        // same as before (atan2(x, z) convention, matching click-to-move's
+        // atan2(dx/dist, dz/dist)). Reuses the SAME shortest-arc-lerp
+        // pattern already active for remote-actor yaw smoothing
+        // (NormalizeYawDegrees/ShortestYawDeltaDegrees/SmoothLerpFactor
+        // above), just with cfg_.turn_rate as the (faster, local-input)
+        // rate instead of the network-catchup rate.
         float target_yaw;
         if (has_target) {
             glm::vec2 to_target = {target_pos->x - player.x, target_pos->z - player.z};
@@ -323,7 +231,7 @@ PlayerController::Result PlayerController::Update(
 
             CancelMoveTarget();
             any_key_move = true;
-            ApplyHorizontalMove(move_dir * chosen_speed * dt, player, terrain);
+            desired_delta_2d = move_dir * chosen_speed * dt;
         }
     }
 
@@ -335,28 +243,71 @@ PlayerController::Result PlayerController::Update(
         if (d2 > cfg_.click_stop_radius * cfg_.click_stop_radius) {
             float dist = std::sqrt(d2);
             float step = std::min(base_speed * dt, dist);
-            ApplyHorizontalMove({(dx / dist) * step, (dz / dist) * step}, player, terrain);
+            desired_delta_2d = {(dx / dist) * step, (dz / dist) * step};
             player.yaw = glm::degrees(std::atan2f(dx / dist, dz / dist));
         } else {
             CancelMoveTarget();
         }
     }
 
-    // --- Jump ---
-    if (on_ground_ && glfwGetKey(win, GLFW_KEY_SPACE) == GLFW_PRESS) {
-        vel_y_ = cfg_.jump_vel;
-        on_ground_ = false;
+    // --- Jump (intent only — CharacterPhysics::Move() owns the actual
+    // velocity/on-ground transition) ---
+    jump_requested = physics_.IsOnGround() && glfwGetKey(win, GLFW_KEY_SPACE) == GLFW_PRESS;
+    if (jump_requested) {
         auto_run_ = false;
-        if (kDebugPlayerMovement) {
-            std::fprintf(stderr, "[move] jump vel=%.2f\n", cfg_.jump_vel);
-        }
     }
 
-    // --- Vertical ---
-    UpdateVertical(dt, player, terrain);
+    } // else (!external_move_delta)
+
+    // --- Physics: ONE call resolves collision + gravity + ground + slope +
+    // step-up together (rco::physics::CharacterPhysics::Move) ---
+    physics::CapsuleMoveInput input;
+    input.current_position = glm::vec3(player.x, player.y, player.z);
+    input.desired_delta     = glm::vec3(desired_delta_2d.x, 0.f, desired_delta_2d.y);
+    input.jump_requested     = jump_requested;
+    input.dt                 = dt;
+    // "Dodge não desloca" investigation (docs/TECH_DEBT.md #128) — force
+    // Move()'s [slidemove]/[physics-move] logging for every frame of a
+    // dodge (bounded duration), instead of the normal 1000ms throttle which
+    // could otherwise skip logging the entire dash.
+    input.verbose_log        = external_move_delta.has_value();
+
+    if (external_move_delta.has_value()) {
+        // Checkpoint 2 of the dodge investigation: confirms desired_delta_2d
+        // (built above from external_move_delta) actually survives into
+        // CapsuleMoveInput.desired_delta unchanged, right before Move() is
+        // called. Cross-reference against main.cpp's [dodge]/[dodge-call]
+        // (the SOURCE delta) and character_physics.cpp's [physics-move]/
+        // [slidemove] (what Move() does with it).
+        std::fprintf(stderr,
+            "[physics-move-input] external_delta=(%.4f,%.4f) -> "
+            "CapsuleMoveInput.desired_delta=(%.4f,%.4f,%.4f) player_before=(%.3f,%.3f,%.3f)\n",
+            external_move_delta->x, external_move_delta->y,
+            input.desired_delta.x, input.desired_delta.y, input.desired_delta.z,
+            player.x, player.y, player.z);
+    }
+
+    physics::CapsuleMoveResult result = physics_.Move(input, world);
+
+    if (external_move_delta.has_value()) {
+        // Checkpoint 4: if [physics-move]/[slidemove] show a non-zero
+        // posDeltaOut but player.x/z still doesn't visibly change on
+        // screen, the loss is AFTER this point — either this assignment
+        // isn't reached, or something later this same frame overwrites
+        // player.x/y/z again (e.g. a server position-correction packet
+        // applied after PlayerController::Update() returns).
+        std::fprintf(stderr,
+            "[physics-move-apply] result.position=(%.3f,%.3f,%.3f) "
+            "player_before=(%.3f,%.3f,%.3f)\n",
+            result.position.x, result.position.y, result.position.z,
+            player.x, player.y, player.z);
+    }
+
+    player.x = result.position.x;
+    player.y = result.position.y;
+    player.z = result.position.z;
 
     return r;
 }
 
 } // namespace rco
-

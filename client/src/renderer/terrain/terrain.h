@@ -1,53 +1,23 @@
 #pragma once
 #include "renderer/terrain/terrain_chunk.h"
 #include "rco/renderer/material_texture_array.h"
+#include "rco/renderer/collision_data.h"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 #include <vector>
 #include <memory>
 #include <string>
 #include <cstdint>
+#include <optional>
+
+// ColBox/ColSphere/ColTri/ColData/kPlayerCapsuleRadius/kPlayerCapsuleHeight/
+// kMaxStepHeight/LoadColData used to be declared right here — moved to
+// shared/renderer/include/rco/renderer/collision_data.h (both in
+// rco::renderer, so nothing below needed to change) during the player-
+// physics reformulation, so shared/physics could reference them without
+// depending on client/. See docs/TECH_DEBT.md #125.
 
 namespace rco::renderer {
-
-struct ColBox {
-    glm::vec3 pos;   // center
-    glm::vec3 half;  // half-extents (scale / 2), in the box's OWN local axes
-    // Local-to-world rotation (identity = axis-aligned, the only case COLD v2
-    // files produce). COLD v3 adds pitch/yaw/roll per box (same Ry*Rx*Rz
-    // convention used everywhere else — see zone_scene.cpp's `trs`), letting
-    // a rotated wall/door stay a true oriented box instead of an
-    // ever-growing re-fit AABB (which was correct only at 0/90/180/270deg
-    // and became an oversized box at any other angle).
-    glm::mat3 rot = glm::mat3(1.f);
-    // World-space Y bounds of the rotated box (precomputed at load), used
-    // only for Resolve()'s cheap early-out — NOT the collision shape itself.
-    float worldYMin = 0.f, worldYMax = 0.f;
-};
-
-struct ColSphere {
-    glm::vec3 pos;
-    float     radius;
-};
-
-struct ColTri {
-    glm::vec3 v[3];  // world-space triangle vertices
-};
-
-struct ColData {
-    std::vector<ColBox>    boxes;
-    std::vector<ColSphere> spheres;
-    std::vector<ColTri>    tris;    // mesh collision triangles (v2+)
-    bool loaded = false;
-
-    // Resolve player XZ position against all volumes. Player is modelled as a
-    // vertical capsule: radius R, height H, feet at (px, py, pz).
-    // Only XZ is modified; py (terrain height) stays owned by the terrain system.
-    void Resolve(float& px, float pz_in, float py, float& out_pz) const;
-};
-
-// Loads coldata.bin for the given area name. Returns an empty ColData on failure.
-ColData LoadColData(const std::string& area_name);
 
 class Pipeline;
 
@@ -142,5 +112,72 @@ private:
 
     TerrainRenderTuning render_tuning_{};
 };
+
+// LEGACY as of the player-physics reformulation (docs/TECH_DEBT.md #125):
+// the player no longer calls this — PlayerController now resolves ground
+// detection through rco::physics::CharacterPhysics::Move()'s unified
+// capsule sweep (shared/physics), which reimplements the same box-footprint
+// and mesh-raycast candidates directly against CollisionWorld. Left here,
+// still fully functional, since nothing forces removal (may still be useful
+// for camera/tooling/future NPC collision).
+//
+// Highest walkable surface at (x, z): the terrain heightmap, the top
+// (worldYMax) of a static/dynamic Box collision volume whose XZ footprint
+// contains the point, OR the height of a col_data.tris mesh triangle
+// directly below (x, z) — whichever is highest. Lets the player stand on
+// elevated objects (bridges, platforms, arches — ANY shape, not just
+// flat-topped ones) instead of always falling back to the sculpted terrain
+// underneath them.
+//
+// Mesh candidate is a real vertical raycast (see SampleMeshGroundHeight in
+// terrain.cpp) against the SAME triangles ColData::Resolve() already tests
+// for horizontal push — not an AABB/bounding-box approximation. This
+// replaces an earlier model-AABB-based approximation (TECH_DEBT.md #125)
+// that broke down for any mesh with structure above the walkable surface
+// (a bridge's railings) or non-flat geometry (an arched deck, where the
+// walkable height changes continuously — no single fixed height/box could
+// ever represent it correctly). Confirmed as the actual industry pattern
+// this round: both RealmCrafter-Standard's Blitz3D collision
+// (CollisionNY# contact-normal check against real terrain+mesh geometry)
+// and Unreal's CharacterMovementComponent::FindFloor (capsule/line sweep
+// via SweepSingleByChannel against real physics collision) do a real
+// downward query against actual geometry, never a per-object bounding-box
+// stand-in.
+//
+// support_ceiling_y gates which candidates are even considered: only
+// surfaces at or below this Y count as ground (mesh: only tri hits with
+// height <= support_ceiling_y; box: only worldYMax <= support_ceiling_y).
+// This is what stops a tall crate/pillar/railing from yanking the player up
+// onto its roof just because its footprint happens to overlap their feet —
+// callers pass the player's pre-step Y (plus a small step-up tolerance
+// where appropriate) so only things at-or-below roughly where the player
+// already is can act as ground, never something above their head.
+//
+// Box footprint test assumes yaw-only rotation (ColBox.rot's only case in
+// practice today, per its own doc comment) — a probe point at the box's own
+// center height is transformed into the box's local frame, so pitch/roll
+// would make this an approximation, not exact.
+//
+// dynamicBoxes: real collision volumes (is_dynamic Box/Wedge shapes) that
+// ALSO get tested by ColData::Resolve()'s horizontal push — pass the exact
+// same list given to Resolve() so ground and push agree on what's solid.
+float ComputeGroundHeight(float x, float z, float support_ceiling_y,
+                           const Terrain& terrain, const ColData& col_data,
+                           const std::vector<ColBox>& dynamicBoxes = {});
+
+// Vertical raycast from y_start downward against tris: returns the highest
+// triangle-surface height at (x, z) that is <= y_start (i.e. the first
+// surface a real ray cast straight down from y_start would hit — if
+// multiple triangles are hit at the same XZ column, e.g. a bridge deck AND
+// a pillar underneath it, the higher one wins, matching what an actual
+// downward ray would report), or std::nullopt if no triangle's XZ
+// projection contains the point at any height <= y_start.
+//
+// This is a real per-triangle ray-plane intersection (barycentric
+// containment test in XZ, then height interpolated from the triangle's own
+// plane) — not an approximation of the triangle soup by any bounding shape,
+// so it's exact for arbitrary geometry (arches, ramps, curved decks).
+std::optional<float> SampleMeshGroundHeight(float x, float z, float y_start,
+                                             const std::vector<ColTri>& tris);
 
 } // namespace rco::renderer

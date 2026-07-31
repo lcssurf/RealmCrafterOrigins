@@ -810,6 +810,33 @@ void ZoneRenderer::DrawCircleXZ(const glm::vec2& xz, float r, float y,
     }
 }
 
+void ZoneRenderer::DrawCone(const glm::vec3& apex, const glm::vec3& dir, float outerDeg,
+                             float length, const glm::vec4& col, const glm::mat4& vp) {
+    glm::vec3 d = dir;
+    float dlen = glm::length(d);
+    d = (dlen > 0.0001f) ? (d / dlen) : glm::vec3(0.f, -1.f, 0.f);
+    // Any vector not parallel to d works as a seed for an orthonormal basis.
+    glm::vec3 up = (std::abs(d.y) > 0.99f) ? glm::vec3(1.f, 0.f, 0.f) : glm::vec3(0.f, 1.f, 0.f);
+    glm::vec3 right = glm::normalize(glm::cross(d, up));
+    glm::vec3 fwdUp = glm::normalize(glm::cross(right, d));
+
+    const float baseRadius = length * std::tan(glm::radians(glm::clamp(outerDeg, 1.f, 178.f) * 0.5f));
+    const glm::vec3 baseCenter = apex + d * length;
+
+    const int segs = 24;
+    glm::vec3 prev = baseCenter + right * baseRadius;
+    for (int i = 1; i <= segs; ++i) {
+        float ang = (float)i / segs * 2.f * glm::pi<float>();
+        glm::vec3 cur = baseCenter
+            + right * (baseRadius * std::cos(ang))
+            + fwdUp * (baseRadius * std::sin(ang));
+        DrawLine(prev, cur, col, vp);
+        if (i % 6 == 0) DrawLine(apex, cur, col, vp); // a few spokes read as a cone silhouette
+        prev = cur;
+    }
+    DrawLine(apex, baseCenter, col, vp); // axis line, so the aim direction is unambiguous at a glance
+}
+
 // ─── RenderFrame ──────────────────────────────────────────────────────────────
 
 void ZoneRenderer::RenderFrame(const ZoneCamera& cam, const ZoneScene& scene,
@@ -920,6 +947,33 @@ void ZoneRenderer::RenderFramePBR_(const ZoneCamera& cam, const ZoneScene& scene
         ghostActor_->SubmitWithMatrix(*fullPipeline_, ghostTransform_);
     }
 
+    // Zone lights (zone_lights) — resubmitted every frame into the deferred
+    // lighting pass, mirroring the client's LightManager::SubmitAll exactly
+    // (same shared rco::renderer::Pipeline class, same AddPointLight call,
+    // same gPhongManyLocal.fs shader the client uses — nothing new to
+    // build). Previously never called here at all, so Lit mode only ever
+    // showed the sun/IBL and never any placed zone_lights, even though the
+    // "Colliders"-style marker for them was already drawn in the forward
+    // overlay pass below (that's just an icon, not a light contribution).
+    for (const auto& l : scene.lights) {
+        if (scene.IsHidden(kSelLight, l.id)) continue;
+        if (l.lightType == 1 || l.lightType == 2) {
+            // Same Ry*Rx convention as SelectedRot/SetSelectedRot (no roll).
+            glm::mat4 rotM(1.f);
+            rotM = glm::rotate(rotM, glm::radians(l.yaw),   glm::vec3(0.f, 1.f, 0.f));
+            rotM = glm::rotate(rotM, glm::radians(l.pitch), glm::vec3(1.f, 0.f, 0.f));
+            glm::vec3 dir = glm::vec3(rotM * glm::vec4(0.f, -1.f, 0.f, 0.f));
+            if (l.lightType == 1) {
+                fullPipeline_->AddSpotLight(l.pos, l.color * l.intensity, l.radius,
+                                             dir, l.coneAngle, glm::max(0.f, l.coneAngle - 10.f));
+            } else {
+                fullPipeline_->AddDirectionalLocalLight(l.pos, l.color * l.intensity, l.radius, dir);
+            }
+        } else {
+            fullPipeline_->AddPointLight(l.pos, l.color * l.intensity, l.radius);
+        }
+    }
+
     // Forward pass — overlays (portals, triggers, colboxes, gizmo) into the
     // same FBO so they respect the deferred depth buffer.
     glm::mat4 vp = proj * view;
@@ -999,8 +1053,12 @@ void ZoneRenderer::DrawForwardOverlays_(const ZoneScene& scene, int selectedID,
                             : glm::vec4(1.0f, 0.4f, 0.0f, 0.45f);
         DrawSphere(s.pos, s.radius, col, vp);
     }
-    // Per-scenery collision shapes — one batched draw call for all shapes.
-    if (colVisBatchVtxN_ > 0 && colVisColorProg_) {
+    // Per-scenery collision shapes — one batched draw call for all shapes
+    // (static colVis + dynamic dynColVis, already combined at upload time —
+    // see zones_viewport.cpp). Gated on scene.showColliders so the "Colliders"
+    // toolbar toggle can hide both together without touching normal
+    // scenery/terrain rendering.
+    if (scene.showColliders && colVisBatchVtxN_ > 0 && colVisColorProg_) {
         glUseProgram(colVisColorProg_);
         glUniformMatrix4fv(0, 1, GL_FALSE, glm::value_ptr(vp));
         glBindVertexArray(colVisBatchVAO_);
@@ -1030,6 +1088,18 @@ void ZoneRenderer::DrawForwardOverlays_(const ZoneScene& scene, int selectedID,
         glm::vec4 ringCol = sel ? glm::vec4(1.f, 0.95f, 0.1f, 0.5f)
                                 : glm::vec4(l.color.r, l.color.g, l.color.b, 0.25f);
         DrawCircleXZ({l.pos.x, l.pos.z}, l.radius, l.pos.y, ringCol, vp);
+        // Spot: cone marker along the configured aim direction, so the
+        // reach/angle can be eyeballed before testing in-game. Same
+        // Ry*Rx convention as SelectedRot/SetSelectedRot (no roll).
+        if (l.lightType == 1) {
+            glm::mat4 rotM(1.f);
+            rotM = glm::rotate(rotM, glm::radians(l.yaw),   glm::vec3(0.f, 1.f, 0.f));
+            rotM = glm::rotate(rotM, glm::radians(l.pitch), glm::vec3(1.f, 0.f, 0.f));
+            glm::vec3 dir = glm::vec3(rotM * glm::vec4(0.f, -1.f, 0.f, 0.f));
+            glm::vec4 coneCol = sel ? glm::vec4(1.f, 0.95f, 0.1f, 0.6f)
+                                    : glm::vec4(l.color.r, l.color.g, l.color.b, 0.4f);
+            DrawCone(l.pos, dir, l.coneAngle, l.radius, coneCol, vp);
+        }
     }
     static const glm::vec4 kNpcAggColors[] = {
         {0.1f, 0.9f, 0.1f, 0.35f}, {1.0f, 0.9f, 0.0f, 0.35f},

@@ -1290,6 +1290,43 @@ visualmente estranhos em interiores.
 **Estimativa:** luz dinâmica ~1 dia (reaproveita infra); sombra de point light ~3-5 dias
 (trabalho novo de renderização).
 
+### Fase 3: light_type (Spot/Directional) + rotação — implementado
+
+**Aditivo sobre a Fase 1** — `light_type=0` (Point, default) continua produzindo
+resultado idêntico a antes; nada no caminho Point foi alterado.
+
+- Schema: `zone_lights` ganhou `light_type INTEGER DEFAULT 0`, `yaw`/`pitch REAL DEFAULT 0`,
+  `cone_angle REAL DEFAULT 45` (migração idempotente, `ALTER TABLE ... ADD COLUMN`,
+  mesmo padrão de `is_dynamic`/`interactable`).
+- `world.Light`/`ZoneLight` (Go) e `LightsPayload` (`frame.go`) espelham os campos,
+  **aditivo no fim do payload** (mesmo padrão de pitch/roll em `WorldObjectsPayload`).
+- GUE: gizmo Rotate habilitado pra `kSelLight` (`allowRot = 0b011` — pitch+yaw, sem roll;
+  diferente do yaw-only de NPC porque uma luz precisa mirar pra cima/baixo, não só girar).
+  Painel ganhou combo Type + slider Cone Angle (só visível em Spot). Marcador visual:
+  cone wireframe (`ZoneRenderer::DrawCone`) na direção configurada, além da esfera/anel
+  já existentes.
+- Shader: `PointLight` (struct C++ `light.h` + `lightGeom.vs` + `gPhongManyLocal.fs`)
+  ganhou `vec4 direction` + `vec4 spotParams` (x=cos ângulo externo, y=cos ângulo interno,
+  z=light_type), **appended** após os campos originais — layout std430 continua múltiplo
+  de 16 bytes, sem padding extra. `Pipeline::AddPointLight` inalterado (zero-init desses
+  campos = light_type 0 = Point); dois novos métodos aditivos, `AddSpotLight`/
+  `AddDirectionalLocalLight`.
+- **Directional é uma aproximação, não sol de verdade**: o pipeline só suporta UM
+  `DirLight` global (`sun_`, com sombra/IBL acoplados) — transformar isso numa lista
+  seria invasivo. A escolha pragmática foi reaproveitar 100% o mecanismo de luz local
+  (mesma esfera-volume/SSBO de Point/Spot), só trocando o `L` do shading de
+  "posição-derivado" pra "direção fixa" — ou seja, um "Directional" de zona tem RAIO
+  limitado (não é infinito) e não tem sombra. Ver `Pipeline::AddDirectionalLocalLight`
+  (`pipeline.h`) pro racional completo.
+
+**Pendência separada (fora desta rodada): Area/Rect light.** Exige técnica de
+iluminação diferente das usadas aqui — não é um "modo" a mais no mesmo shader de
+esfera-volume, precisa de integração analítica de área (LTC — Linearly Transformed
+Cosines — ou equivalente), o que é trabalho de shader genuinamente novo, não uma
+extensão aditiva como Spot/Directional foram. Maior esforço do grupo; tratar como
+item futuro à parte quando/se luzes de área virarem prioridade (ex: painéis de luz,
+janelas grandes).
+
 ## 117. Água — reflexo aproximado (IBL+Fresnel) feito, reflexo real (planar/SSR) + mecânica de nadar pendentes
 
 **Fase 0 implementada** (plano estático texturizado):
@@ -2175,17 +2212,222 @@ colisão de terreno/montanha, impedindo o jogador de subir na ponte. Ver item
 
 ## 125. COLISÃO: objetos de ponte não são escaláveis/atravessáveis pelo jogador
 
-**Estado:** reportado pelo dev — jogador não consegue subir/atravessar
-objetos de ponte no jogo.
+**Estado:** investigado e corrigido em cadeia, várias causas empilhadas:
 
-**Suspeita (não confirmada):** interação entre a colisão do objeto (ponte) e
-algum ajuste anterior de colisão de terreno/montanha, impedindo o jogador de
-subir na ponte.
+1. `player.y` era forçado incondicionalmente pro heightmap sempre que
+   grounded (main.cpp + `PlayerController::UpdateVertical`), ignorando
+   qualquer caixa de colisão mais alta embaixo do jogador — corrigido com
+   `renderer::ComputeGroundHeight` (terrain.h/.cpp), que agora considera o
+   topo (`worldYMax`) de `ColBox`es (estáticas + dinâmicas) como candidato
+   de chão, não só o terreno.
+2. Mesmo com (1), o empurrão horizontal (`ColData::Resolve`'s `testBox`)
+   tratava qualquer caixa cuja faixa vertical (worldYMin-worldYMax)
+   sobrepusesse a altura do jogador como parede sólida — empurrando o
+   jogador pra trás antes dele conseguir chegar perto o bastante do
+   footprint pra `ComputeGroundHeight` agir. Corrigido com um bypass de
+   "step-up": se `worldYMax` da caixa está a `<= kMaxStepHeight` (0.5,
+   terrain.h) dos pés atuais do jogador, o empurrão é pulado e
+   `ComputeGroundHeight` eleva o jogador no mesmo frame.
+3. **Objetos de ponte/plataforma normalmente usam colisão do tipo MESH**
+   (triângulos em `col_data.tris`), não Box/Wedge — (1) e (2) só
+   cobriam `col_data.boxes`, então pontes mesh continuavam intransponíveis
+   mesmo após a correção. Mitigado (não resolvido com precisão) usando o
+   AABB do MODELO (`Model::BoundsMin/BoundsMax`, mesma fonte de
+   `Actor::ModelHeight/ModelWidth`) como uma "caixa virtual" — ver
+   `main.cpp`, `mesh_ground_only_boxes`.
+3b. **REGRESSÃO descoberta após (3):** a primeira versão dessa mitigação
+   colocava a caixa-AABB de mesh dentro de `dynamic_collision_boxes` — o
+   MESMO vetor usado pelo empurrão horizontal (`ColData::Resolve`). Pra
+   qualquer objeto cujo AABB do modelo visual seja mais alto que
+   `kMaxStepHeight` (a maioria), isso virou uma SEGUNDA parede sólida
+   empilhada em cima da colisão precisa que o objeto já tinha (Box/Wedge
+   autorado, ou os próprios tris) — quebrando o step-up de Box que já
+   funcionava antes dessa extensão, não só deixando Mesh sem efeito.
+   Corrigido separando em dois vetores: `dynamic_collision_boxes` (real,
+   testado por `Resolve()` E `ComputeGroundHeight`) e
+   `mesh_ground_only_boxes` (somente leitura, um novo parâmetro
+   `groundOnlyBoxes` em `ComputeGroundHeight` — NUNCA passado a
+   `Resolve()`). `PlayerController::Update/UpdateVertical` também passaram
+   a receber esse segundo vetor.
+4. Servidor também rejeitava a posição corrigida do cliente
+   (`handleStandardUpdate`, `net/client.go`) porque seu `groundY` é
+   heightmap-only (sem coldata/caixas) — `MaxAboveGround` foi alargado de
+   12→40 como paliativo (ver comentário no código); a correção "de
+   verdade" seria portar parse de `coldata.bin` pro servidor. **Atenção:**
+   só `dist/server/config.toml` (rastreado no git, é o que `build-server.bat`
+   produz) foi atualizado — as cópias locais não rastreadas `dist2/` e
+   `"dist - Clean"/` ainda têm `max_above_ground=12.0`; se o servidor de
+   teste rodar a partir de uma dessas, o afrouxamento não está em vigor.
 
-**NÃO investigado ainda** — só reportado. A investigar em sessão futura.
+3c. **CAUSA CONFIRMADA por log real** (`[meshground]`/`[groundheight]`, não
+   suposição): `worldYMax` do candidato de mesh usava o ponto MAIS ALTO de
+   toda a AABB do modelo (44-68 nos logs coletados) — muito acima do teto
+   de aceitação do jogador (`player.y + snap_down`, ~31) —
+   `ComputeGroundHeight` sempre rejeitava com `overCeiling=true`. A ponte
+   tem corrimão/grade/arco (estrutura acima do tabuleiro andável), então o
+   topo real da AABB nunca é onde o jogador pode pisar; a diferença
+   trueYMax-trueYMin observada nos logs confirma uma "espessura" total bem
+   maior que um tabuleiro de ponte (que deveria ter só 1-3 unidades).
+   **Corrigido:** `worldYMax` do candidato de mesh agora usa o CENTRO
+   VERTICAL da AABB (`b.pos.y`, já disponível sem cálculo extra) em vez do
+   topo — aproximação melhor pra "onde normalmente se anda" quando há
+   estrutura acima do piso. Zero configuração extra, desbloqueia a ponte
+   hoje. `worldYMin` (topo/base reais da AABB completa) continua logado
+   pra diagnóstico, só não é mais usado como candidato de chão.
+   **Trade-off aceito:** essa é uma heurística, não uma leitura exata do
+   piso — funciona bem pra estruturas tipo ponte/plataforma (corrimão
+   simétrico acima de um tabuleiro fino), mas pode errar pra objetos com
+   massa concentrada acima ou abaixo do centro (ex: um objeto com base
+   maciça e só uma plataforma fina no topo teria o centro mais baixo que o
+   piso real). **Alternativa mais robusta considerada e adiada:** deixar o
+   dev capturar manualmente uma "ground box" por modelo no GUE, reusando a
+   UI de Model Shapes já existente (como foi feito pro portão) — mais
+   preciso, mas exige trabalho de configuração por modelo antes de
+   qualquer ponte funcionar; adiado porque o pedido era resolver o caso
+   real (a ponte) sem depender de configuração extra imediata. Fica
+   registrado como upgrade path se a heurística do centro se mostrar
+   errada em algum objeto específico.
 
-**Quando atacar:** próxima sessão dedicada a colisão/movimentação do
-jogador.
+**Log de diagnóstico ativo (temporário):** `ComputeGroundHeight`
+(terrain.cpp) loga (throttle ~500ms, `[groundheight]`) todo candidato
+avaliado (tipo/worldYMax/passou footprint) + o resultado final escolhido.
+`[meshground]` (main.cpp, throttle ~1s, objetos a ≤20 unidades do jogador)
+loga cada objeto individualmente: SKIP com motivo, ou ADDED com
+pos/half/trueYMin/trueYMax/aabbHeight/worldYMax(usado). `kDebugPlayerMovement`
+em `player_controller.cpp` segue ligado (`true`) — reverter pra `false`
+quando tudo estiver confirmado.
+
+3d. **Ainda não subia mesmo com 3c** — log real mostrou a ponte (id=1306)
+   nem aparecendo entre os 135 candidatos avaliados naquele frame de
+   `[groundheight]`, apesar de `[meshground] ADDED id=1306` ter disparado.
+   Investigado: **yaw real da ponte confirmado != 0** (`zone_scenery.yaw`
+   pra id=1306 = 8.913246°, `dist/server/rco.db`) — bateu com a suspeita
+   inicial do dev de rotação. MAS o teste de footprint (`PointInBoxFootprint`,
+   terrain.cpp) já usa a MESMA técnica rotation-aware do empurrão horizontal
+   já validado (`glm::transpose(b.rot) * (worldPt - b.pos)` contra
+   `b.half`) — refeito o cálculo à mão com os números exatos do log
+   (pos/half/yaw reais) confirma que o ponto do jogador CAI dentro do
+   footprint rotacionado (margem de ~1.8 em X, ~1.5 em Z) — ou seja, a
+   matemática de rotação está correta, não é a causa.
+   **Causa real:** `dynamic_collision_boxes`/`mesh_ground_only_boxes` eram
+   reconstruídos DEPOIS de `player_ctrl.Update()` no loop principal —
+   `PlayerController::UpdateVertical`'s 3 chamadas a `ComputeGroundHeight`
+   (aterrissagem/chão/slope-slide) sempre recebiam o estado de UM FRAME
+   ATRÁS. Pra um objeto estático que nunca se move isso deveria convergir
+   sozinho em 1-2 frames — mas se o teste do dev pegou um momento em que o
+   modelo da ponte ainda estava carregando assíncrono (ou logo após entrar
+   na área), a janela de "ainda não populado" pôde coincidir com a
+   observação. **Corrigido:** todo o bloco de rebuild (dyncol +
+   mesh-ground, ~300 linhas) foi movido pra rodar ANTES de
+   `player_ctrl.Update()` no loop principal (main.cpp) — agora TODO
+   consumidor (as 3 chamadas dentro de `UpdateVertical` E o re-snap
+   pós-`Resolve()`) usa o MESMO estado, sempre fresco do frame atual, zero
+   defasagem. `player_controller.h`'s doc do parâmetro `dynamic_boxes`
+   atualizada de acordo.
+   **Achado colateral (não é a causa, mas real e documentado):** a query do
+   servidor (`db.go LoadWorldObjects`) só lê `zone_scenery.sx` como "scale"
+   — `sy`/`sz` são ignorados. Pra objetos com escala não-uniforme (a ponte:
+   sx=0.048, sy=0.02, sz=0.089) isso já era uma aproximação existente ANTES
+   de qualquer trabalho de hoje (afeta a RENDERIZAÇÃO também, não só
+   colisão — o cliente só recebe um float de escala pra tudo). Como o
+   cálculo de AABB usa o mesmo `obj.scale` que a renderização, o resultado
+   visualmente combina com o que o jogador vê — não é uma nova
+   inconsistência introduzida agora, mas fica registrado como limitação
+   pré-existente caso vire problema em outro contexto.
+
+3e. **Bug real encontrado, categoria diferente da suspeita de rotação:**
+   `pitch`/`roll` da ponte confirmados 0.0/0.0 (só `yaw` não-zero,
+   `zone_scenery` id=1306) — descarta rotação 3D complexa, é só o caso 2D
+   já assumido. Refazendo a conta à mão (Python, não estimativa manual)
+   com os números exatos de DOIS momentos do log (posições de jogador
+   diferentes), a fórmula usada por `PointInBoxFootprint` deveria ter
+   retornado `inFootprint=true` nos dois casos — folga de ~1.8 e ~1.95 em
+   X/Z respectivamente. A causa real, independente disso: `PointInBoxFootprint`
+   testava só o PONTO CENTRAL exato do jogador contra os half-extents —
+   zero margem pro raio da cápsula (`kPlayerCapsuleRadius`, 0.45). Perto de
+   uma borda/quina, o centro dos pés pode estar a poucos centímetros pra
+   fora do retângulo enquanto o corpo inteiro (círculo de raio R) ainda
+   está visivelmente sobre o objeto — o teste rejeitava mesmo assim. Isso
+   explica tanto o caso relatado de Box (pular perto da quina) quanto pode
+   ter contribuído pro caso da ponte, já que é a MESMA função compartilhada
+   por `box`/`dynamicBox`/`meshGroundOnly` dentro do `tryBox` de
+   `ComputeGroundHeight`.
+   **Corrigido:** `PointInBoxFootprint` agora testa overlap
+   CÍRCULO-RETÂNGULO (clamp do ponto local aos half-extents, distância do
+   ponto original ao clamped comparada contra `kPlayerCapsuleRadius`) — a
+   MESMA técnica já usada e validada pelo empurrão horizontal em
+   `Resolve()`'s `testBox`, não uma fórmula nova. Corrige os 3 tipos de
+   candidato de uma vez (função única compartilhada).
+   **Log estendido:** `[groundheight] candidate` agora inclui
+   `local=(x,z) half=(hx,hz) R=...` — os valores BRUTOS antes da
+   comparação, não só o booleano final, pra confirmar a margem exata (ou o
+   quanto estava fora) em vez de inferir por matemática manual de novo.
+
+3f. **Substituído — aproximação por AABB abandonada, raycast real implementado.**
+   Mesmo com a margem de raio (3e), a ponte continuou não subindo — log
+   real mostrou `local=(0.000,0.000)` em TODOS os candidatos
+   `meshGroundOnly`, o que era estatisticamente impossível como resultado
+   genuíno (bug real: `PointInBoxFootprint` só escrevia
+   `outLocalX`/`outLocalZ` dentro do `if (!overCeiling && !notHigher)`,
+   então qualquer candidato que já falhasse esse gate — que era o caso de
+   TODOS os `meshGroundOnly`, dado o histórico deste item — nunca chegava
+   a computar o valor real, ficando no inicializador `0.f`). Corrigido
+   (`PointInBoxFootprint` chamado incondicionalmente), mas mesmo com os
+   valores reais visíveis, ficou claro que o problema de fundo era outro:
+   uma ponte em ARCO tem altura andável que muda CONTINUAMENTE — nenhuma
+   caixa/altura fixa por objeto pode representar isso corretamente, não
+   importa quantas rodadas de ajuste (topo → centro → margem de raio) se
+   tentasse.
+   Investigação de padrão de indústria (código-fonte real, não memória):
+   `RealmCrafter-Standard-1.26` (`Engine Source/Client/Client.bb:299-314`)
+   resolve isso com colisão Blitz3D nativa contra a malha real (terreno E
+   objetos registrados como `C_Triangle`, mesma categoria) — `CollisionNY#`
+   decide se o contato é andável, sem diferenciar terreno de objeto.
+   Unreal (`CharacterMovementComponent.cpp`, `FindFloor`/`ComputeFloorDist`/
+   `FloorSweepTest`) faz um sweep/trace real via `SweepSingleByChannel`
+   contra a geometria de colisão física do mundo. As duas convergem: raycast/
+   sweep real contra geometria real, nunca aproximação por caixa.
+   **Implementado:** `SampleMeshGroundHeight(x, z, y_start, tris)` — raycast
+   vertical real contra `col_data.tris` (os MESMOS triângulos já usados no
+   empurrão horizontal de `Resolve()`, sem dado novo): pra cada triângulo,
+   testa contenção 2D (baricêntrica) na projeção XZ e, se dentro, interpola
+   a altura Y no PLANO do triângulo (exato, não uma amostra de heightmap
+   regular) — corrige naturalmente qualquer geometria, incluindo arcos e
+   rampas. Se múltiplos triângulos batem na mesma coluna XZ (pilar E
+   tabuleiro), pega o maior valor ainda `<= y_start` (primeiro obstáculo
+   vindo de cima, igual um raycast de verdade). `ComputeGroundHeight` agora
+   consulta isso como um candidato a mais, ao lado de `box`/`dynamicBox` —
+   `groundOnlyBoxes`/`mesh_ground_only_boxes` e todo o bloco de rebuild de
+   AABB de mesh em `main.cpp` (~170 linhas) foram REMOVIDOS — não são mais
+   necessários, já que o raycast lê `col_data.tris` direto, sem rebuild
+   por frame.
+   **Custo:** `col_data.tris` tem 28.321 triângulos pra "Training Camp"
+   (contagem real, não estimativa) — sem agrupamento por objeto no formato
+   atual (coldata.bin não guarda ID/tipo por triângulo), então não dá pra
+   filtrar por "objetos próximos" sem re-derivar essa informação no bake.
+   Mitigação aplicada: reject barato por bounding-box XZ do triângulo (4
+   comparações) antes da matemática baricêntrica completa — mesma ordem de
+   custo que o teste horizontal de tris já existente em `Resolve()` (que já
+   itera os mesmos 28k triângulos, sem filtro melhor, e é aceito hoje). Se
+   perfilamento futuro mostrar que é caro demais, o próximo passo é um grid
+   espacial (bucket de triângulos por célula XZ, construído uma vez no
+   load) — não implementado agora, não necessário pra esse primeiro passo.
+   **Risco identificado, não corrigido (fora de escopo desta rodada):**
+   `Resolve()`'s empurrão horizontal contra tris usa `ClosestPtTri2D`, que
+   quando o ponto do jogador está DENTRO de um triângulo retorna o próprio
+   ponto como "mais próximo" (distância ≈0) — cai no fallback de
+   `d2 < 1e-7f`, empurrando o jogador por um R inteiro em direção arbitrária
+   (+X). Andar por cima de qualquer triângulo de mesh (agora possível pela
+   primeira vez, graças ao raycast) pode expor esse bug como um tremor/
+   empurrão lateral constante. Vale testar especificamente ao atravessar a
+   ponte inteira, não só ao subir nela.
+
+**Quando atacar:** aguardando o dev buildar e confirmar em jogo — a ponte
+escalável (incluindo o arco, não só a base), Box continuando OK, e observar
+se o "Risco identificado" acima (tremor ao andar sobre mesh) se manifesta.
+Se sim, é o próximo item a corrigir (aplicar a mesma margem de raio de 3e
+ao empurrão de tris, ou uma correção equivalente em `ClosestPtTri2D`'s
+fallback de ponto-interior).
 
 ## 126. Viewport input priority chain (GUE Zones tab)
 
@@ -2412,4 +2654,294 @@ trazer de volta.
 `tools/gue/src/tabs/zones_viewport.cpp`,
 `shared/renderer/include/rco/renderer/atmosphere_volume_manager.h`,
 `client/src/core/main.cpp`, `client/src/net/protocol.h`.
+
+## 128. Física do jogador reformulada — sweep de cápsula unificado (shared/physics/)
+
+**Estado:** substituição real (não paralela) do sistema espalhado descrito
+no item #125 — `ColData::Resolve` (empurrão horizontal), `ComputeGroundHeight`/
+`SampleMeshGroundHeight` (chão vertical), `ApplyHorizontalMove`'s bloqueio de
+slope, e o bypass de `kMaxStepHeight`, todos resolviam pedaços separados do
+mesmo problema em pontos de decisão diferentes. Confirmado por investigação
+de código real (Unreal `CharacterMovementComponent::FindFloor`/
+`SweepSingleByChannel`, RealmCrafter-Standard's Blitz3D `CollisionNY#`) que
+o padrão de indústria é resolver tudo numa função só, via sweep de forma
+contra a geometria real. Implementado em `shared/physics/`:
+
+- `capsule_sweep.h/.cpp`: `SweepCapsuleVsBox` (Minkowski — box inflado pelo
+  raio, slab test no frame local do box, mesma transposição de rotação já
+  validada em `PointInBoxFootprint`), `SweepCapsuleVsTriangle` (substep +
+  bisseção, NÃO um sweep analítico contínuo — ver limitação abaixo),
+  `SweepCapsuleVsSphere` (analítico exato, círculo-vs-círculo em XZ),
+  `RayVerticalHitsTri` (duplicado do antigo `SampleMeshGroundHeight`, agora
+  dono real dessa lógica).
+- `character_physics.h/.cpp`: `CharacterPhysics::Move(CapsuleMoveInput,
+  CollisionWorld) -> CapsuleMoveResult` — UMA função: gravidade, pulo,
+  `SlideMove` (collide-and-slide horizontal com step-up integrado, não mais
+  bypass separado), `ProbeGround` (sweep vertical pra baixo — substitui
+  `ComputeGroundHeight`+`SampleMeshGroundHeight` juntos), slope-slide
+  (só quando `is_terrain`, preservando a distinção já correta de não
+  bloquear objetos/rampas por ângulo).
+
+**Desvios do desenho original, feitos conscientemente (não escondidos):**
+1. **`CapsuleMoveInput` ganhou `current_position`** (não estava no stub
+   original) — `Move()` precisa saber de onde varrer; `CharacterPhysics`
+   guarda só `velocity_`/`on_ground_` como estado persistente entre frames,
+   posição é passada e devolvida a cada chamada (não é dono da posição).
+2. **Terreno NÃO é varrido como parede 3D** durante o movimento horizontal —
+   `Terrain` é um heightmap 2.5D (uma altura por coluna XZ), não uma malha
+   triangulada exposta pra colisão, então não há geometria real pra varrer
+   contra. Papel do terreno continua sendo fonte de altura/normal via
+   `ProbeGround` + slope-check, do jeito que já era antes.
+   **Mudança de comportamento real decorrente disso:** o antigo
+   `ApplyHorizontalMove` REJEITAVA um passo horizontal antes de aplicá-lo se
+   o destino fosse íngreme demais (jogador ficava "preso" na borda de um
+   penhasco/ladeira). Agora o delta horizontal sempre é aplicado, e só
+   DEPOIS a detecção de chão descobre que o destino não é chão válido — ou
+   seja, o jogador agora ANDA PRA FORA de uma ladeira íngreme/penhasco e cai,
+   em vez de ficar bloqueado ali. Aceito pelo risco explícito desta rodada;
+   avisar se o "feel" antigo (não conseguir sair da borda) for necessário.
+3. **`CollisionWorld` não guarda `const Terrain&`** — guarda dois
+   `std::function<float(float,float)>`/`std::function<glm::vec3(float,float)>`
+   (`sample_terrain_height`/`sample_terrain_normal`) em vez disso.
+   `Terrain` puxa OpenGL/glad e é genuinamente client-side; inversão de
+   dependência via callback evita mover a classe inteira pra `shared/` só
+   pra satisfazer 2 métodos.
+4. **Promovido pra `shared/renderer/include/rco/renderer/collision_data.h`**
+   (novo arquivo): `ColBox`/`ColSphere`/`ColTri`/`ColData` (struct + a
+   IMPLEMENTAÇÃO de `Resolve`, movida junto com `LoadColData` pra
+   `shared/renderer/src/collision_data.cpp`) — puros dados/sem OpenGL,
+   precisavam ser visíveis de `shared/physics` sem inverter a direção de
+   dependência (shared não pode depender de client/). `client/terrain.h`
+   agora só inclui esse header; `Terrain` (a classe de renderização)
+   continua 100% client-side, intocada.
+
+**Legado, não removido (nada força a remoção ainda):** `ColData::Resolve`,
+`renderer::ComputeGroundHeight`, `renderer::SampleMeshGroundHeight`,
+`renderer::PointInBoxFootprint` continuam existindo e funcionais em
+`collision_data.cpp`/`terrain.cpp` — confirmado que NADA além do jogador os
+chamava (nem NPC, nem ator remoto — esses são só interpolados
+visualmente/server-authoritative). Ficam documentados como legado, caso
+alguma ferramenta ou sistema futuro (colisão de NPC no cliente?) precise da
+mesma coisa.
+
+**Dodge roll — UNIFICADO** (decisão de gameplay confirmada pelo dev depois
+do primeiro teste): o impulso por-frame do dodge (`dodge_roll_dir * speed *
+dt`, mesma curva de velocidade de sempre) agora é calculado em `main.cpp`
+ANTES de `player_ctrl.Update()` e passado como um novo parâmetro opcional,
+`external_move_delta` (`std::optional<glm::vec2>`) — quando presente,
+`PlayerController::Update()` pula inteiramente WASD/auto-approach/click-to-
+move/turn-to-face (o chamador já é dono de direção/facing do dodge) e usa
+esse delta direto como `desired_delta`, resolvido pela MESMA instância de
+`CharacterPhysics` — colide de verdade (para numa parede, desliza num
+ângulo raso) em vez do antigo `player.x/z += ...` sem checagem nenhuma.
+Pulo fica suprimido nesse frame (não dá pra pular E dodgear no mesmo
+frame). O gate do bloco "Player movement" em `main.cpp` (antes só
+`!WantCaptureKeyboard`) ganhou um `|| dodge_delta_override.has_value()`
+pra o dodge continuar resolvendo mesmo com uma UI capturando teclado —
+igual o comportamento antigo (dodge rodava num bloco totalmente
+desacoplado, nunca gateado por isso).
+
+**Bug real corrigido — "grudado" ao andar em cima de Box/Mesh:** confirmado
+exatamente como suspeitado — o sweep HORIZONTAL testava a cápsula inteira
+(base incluída, já bem em cima da superfície de apoio) contra a MESMA
+geometria que tinha acabado de ser identificada como CHÃO, tratando o topo
+do objeto como parede mesmo estando o jogador só EM CIMA dele, nunca
+atravessando seu corpo. Pra Box, o gate de banda-Y de `SweepCapsuleVsBox`
+usava `capsuleYmin > box.worldYMax` (comparação estrita) — corrigido pra
+`capsuleYmin >= box.worldYMax - kFloorContactEpsilon` (0.02 unidades): pés
+na altura exata do topo (ou levemente acima) do objeto que sustenta o
+jogador agora nunca vira candidato de colisão horizontal, é competência
+exclusiva do `ProbeGround`. Pra Mesh, não bastava usar o vértice mais alto
+do triângulo (`tYmax`) com a mesma margem — numa superfície inclinada/em
+arco a altura real onde o jogador pisa varia continuamente e costuma ficar
+BEM abaixo do vértice mais alto do triângulo, então essa checagem simples
+deixaria passar despercebido a maior parte dos casos justamente na ponte em
+arco. Em vez disso, `SweepCapsuleVsTriangle` agora calcula a altura
+INTERPOLADA por baricêntricas exatamente no XZ de cada ponto testado
+(`TriBarycentricHeight`, novo helper compartilhado, também usado agora por
+`RayVerticalHitsTri`) e compara os pés do jogador contra ELA, não contra o
+vértice mais alto — correto pra qualquer geometria, plana ou curva.
+
+**Limitação conhecida (triângulo, não corrigida):** `SweepCapsuleVsTriangle`
+usa substeps (8) + bisseção (4 iterações), não um sweep analítico contínuo
+capsula-vs-triângulo-inflado — pode "atravessar" (tunneling) obstáculos
+finos se o delta por frame for grande o bastante relativo ao raio (0.45).
+Seguro pras velocidades atuais do jogo (~8-13 u/s a 60fps ≈ 0.15-0.2 u/frame,
+e o dodge, mesmo mais rápido — `kDodgeRollSpeedEnd` — ainda é um delta
+pequeno por frame), mas precisaria de um sweep analítico de verdade se uma
+habilidade de movimento muito mais rápida for adicionada depois.
+
+**Bug real corrigido (com log real, não suposição) — step-up zerava o
+movimento horizontal:** o epsilon de contato-de-chão (item acima) resolveu
+o "grudado" no sentido de não tratar mais o suporte do jogador como parede,
+mas revelou um SEGUNDO bug, mais grave, no próprio step-up. Log decisivo:
+```
+[slidemove] iter=0 step-up diff=0.079 -> y=32.374
+[slidemove] iter=1 step-up diff=0.000 -> y=32.374
+[slidemove] iter=2 step-up diff=0.000 -> y=32.374
+[slidemove] deltaIn=(0.135,-0.024) posDeltaOut=(0.000,0.000)
+```
+`deltaIn` não-zero, `posDeltaOut` zerado. Causa: o branch de step-up só
+elevava `pos.y` e fazia `continue`, confiando que a PRÓXIMA iteração
+aplicaria o delta horizontal normalmente a partir da posição já elevada.
+Na prática, re-varrer da MESMA posição XZ (só Y mudou) frequentemente
+re-detecta um "degrau" (diff~0 de novo — o mesmo candidato agora lido como
+contato-de-chão, ou um triângulo vizinho da mesma superfície numa altura
+quase idêntica) — disparando o MESMO branch de novo, consumindo as 3
+iterações de `slide_iterations` inteiras sem o XZ jamais avançar um
+milímetro (dodge "não anda" e andar em cima de mesh "grudado" eram os
+sintomas do MESMO bug). **Corrigido:** step-up agora eleva `pos.y` E aplica
+o delta horizontal completo NA HORA (`pos.x/z += delta.x/z`), depois
+`break` — em vez de "bloqueado, tenta de novo", um degrau passa a ser
+tratado exatamente como um "sem colisão nenhuma" (já que por definição não
+é parede). **Trade-off aceito:** não re-testa se existe uma parede de
+verdade logo depois do degrau, na MESMA chamada de `SlideMove` — só seria
+pega no frame SEGUINTE, já a partir da posição elevada. Dado o tamanho do
+degrau (≤ `max_step_height`, 0.5) e do delta por frame, o risco de
+atravessar algo relevante nesse meio-tempo é bem baixo.
+
+**Confirmado — Move()/Update() chamado só uma vez por frame durante dodge:**
+`grep` confirma um ÚNICO call site de `player_ctrl.Update()` em todo o
+client (`main.cpp`) e um ÚNICO call site de `physics_.Move()` dentro dele
+(`player_controller.cpp`) — não existe caminho estrutural pra uma segunda
+chamada sobrescrever o resultado do dodge no mesmo frame. Adicionado um log
+não-throttled (`[dodge-call]`, ativo só durante a duração limitada de um
+dodge, não é o tipo de log contínuo removido na rodada anterior) com
+contador incremental por chamada, pra provar isso em runtime também, não só
+por leitura de código.
+
+**Quando atacar:** aguardando o dev buildar e testar de novo —
+especificamente: (1) andar livremente em cima de um Box plano e da ponte em
+arco sem grudar, agora realmente avançando no XZ; (2) dodge se movendo de
+verdade e colidindo (parando numa parede, deslizando num ângulo raso); (3)
+que Box/Mesh continuam escaláveis e paredes ainda bloqueiam (não regredir o
+que já funcionava); (4) o comportamento de "cair de penhasco em vez de
+travar na borda" (item 2 de duas rodadas atrás) continua aceitável.
+
+**Bug NOVO reportado (separado do step-up) — atravessa e fica preso DENTRO
+de um Box ao POUSAR vindo de cima:** diferente de andar já apoiado em cima
+(isso já funciona); o sintoma é especificamente no momento de aterrissagem
+de uma queda/pulo. Hipótese levantada por leitura de código (AINDA NÃO
+CONFIRMADA por log real): `kFloorContactEpsilon` em `SweepCapsuleVsBox`
+(`shared/physics/src/capsule_sweep.cpp`) é um gate de exclusão SÓ com limite
+inferior —
+```cpp
+if (capsuleYmax < box.worldYMin || capsuleYmin >= box.worldYMax - kFloorContactEpsilon)
+    return result; // sem hit
+```
+Isso exclui não só "apoiado exatamente em cima" (dentro de 0.02) mas
+QUALQUER `pos.y` de `worldYMax - 0.02` até +infinito — inclusive o jogador
+ainda bem acima do Box, em queda livre. Como esse mesmo `SweepCapsuleVsBox`
+é chamado tanto por `SlideMove` (horizontal) quanto por `ProbeGround`
+(vertical, via `downDelta`) sem nenhuma distinção de caminho, o gate
+suprime IGUALMENTE a detecção de pouso vertical — não é exclusivo do
+horizontal como a intenção original. Mecanismo de oscilação plausível: ao
+pousar exatamente em `pos.y == worldYMax`, o MESMO gate excluiria o Box de
+novo no `ProbeGround` do frame seguinte (`capsuleYmin(worldYMax) >=
+worldYMax - epsilon` é trivialmente verdadeiro), `ground.height` cairia de
+volta pro terreno (bem mais baixo), `on_ground_` viraria false, o jogador
+cairia de novo, possivelmente redetectando o Box um frame depois já abaixo
+do epsilon — um ciclo que poderia se apresentar visualmente como
+"atravessar e ficar preso dentro do objeto".
+
+**Log implementado para confirmar (NÃO CORRIGIDO AINDA — só instrumentação):**
+em `character_physics.cpp`/`.h`:
+- `ProbeGround` ganhou parâmetro `bool verboseFall = false` (default,
+  não quebra os outros call sites). Só é passado `true` a partir do branch
+  aéreo (`!on_ground_`) de `Move()`.
+- `tryBox` (dentro de `ProbeGround`) loga, quando `verboseFall` e o Box está
+  a ≤5 unidades de `pos.y` (`nearPlayer`): o estado do candidato ANTES de
+  qualquer gate, motivo explícito de rejeição em cada gate (`ceiling_y`,
+  "not higher"), e uma linha `[groundprobe]` reproduzindo exatamente a
+  comparação do epsilon-gate (`pos.y >= worldYMax-0.02`) com resultado
+  TRUE/false explícito.
+- `Move()`'s branch aéreo ganhou logs incondicionais (não throttled)
+  `[fallprobe] FRAME` (prevY, pos.y pós-gravidade, capsuleTop, velocity.y) e
+  `[fallprobe] RESULT` (ground.found, ground.height, willLand) — dá pra
+  comparar frame a frame se a cápsula "pula" de acima do Box pra
+  dentro/abaixo do topo sem nunca registrar hit=1 no meio do caminho.
+
+**Confirmado por leitura de código (pergunta 2 do dev):** SIM, o mesmo gate
+de epsilon é usado nos dois caminhos — vertical (`ProbeGround`→
+`SweepCapsuleVsBox` com `downDelta`) e horizontal (`SlideMove`→
+`SweepCapsuleVsBox` com o delta de movimento) chamam a MESMA função com a
+MESMA linha de gate, sem nenhuma ramificação por caminho. Se a hipótese
+acima se confirmar pelo log, esse é exatamente o bug.
+
+**CONFIRMADO por log real — causa raiz era outra (não o epsilon):** a
+hipótese do epsilon one-sided ficou descartada. O log real mostrou que o
+"overhead gate" do `ProbeGround` (`if (box.worldYMax > ceiling_y) reject`)
+usava `ceiling_y = prevY`, isto é, a posição dos PÉS da cápsula no INÍCIO
+do frame — não o TOPO da cápsula (`prevY + height`). Numa queda rápida,
+`prevY` (pés no frame anterior) fica só um pouco acima do `pos.y` deste
+frame (pós-gravidade) — bem longe do topo real da cápsula. Qualquer Box
+cujo `worldYMax` estivesse entre `prevY` e `prevY+height` (ou seja,
+genuinamente abaixo da cabeça do jogador, candidato de pouso legítimo) era
+rejeitado como "teto" só por estar um pouco acima de onde os pés já
+estavam NAQUELE frame — e a cápsula atravessava a caixa inteira sem nunca
+registrar hit=1.
+
+**Corrigido:** `shared/physics/src/character_physics.cpp`, branch aéreo de
+`Move()` — `ceiling_y` agora é `prevY + cfg_.height` (topo da cápsula no
+início do frame, antes da queda deste frame ser aplicada), em vez de
+`prevY` sozinho:
+```cpp
+const float ceiling_y = prevY + cfg_.height;
+ground = ProbeGround(pos, ceiling_y, world, doLog, /*verboseFall=*/true);
+```
+Log `[fallprobe] FRAME` também passou a imprimir `ceiling_y` explicitamente
+pra facilitar comparação em testes futuros.
+
+**Teto de verdade ainda bloqueia corretamente:** o gate continua sendo
+`box.worldYMax > ceiling_y` → rejeita. Com `ceiling_y = prevY + height`
+(topo da cápsula no início do frame), um teto cujo `worldYMax` estiver
+ACIMA do topo da cápsula nesse instante continua sendo corretamente
+identificado como overhead e excluído do pouso — a mudança só ampliou a
+janela de candidatos aceitos pra incluir tudo até a cabeça do jogador
+(inclusive), não além dela. Não regride o caso "bater a cabeça num teto
+baixo antes de conseguir pousar".
+
+**Quando atacar:** aguardando o dev buildar e repetir o teste de pular de
+cima de um Box — confirmar que agora pousa corretamente (sem atravessar) e
+que não houve regressão nos casos já testados (andar em cima, dodge,
+step-up, paredes).
+
+**Bug NOVO reportado — dodge dispara (estado/animação ativam) mas o
+jogador não se desloca:** suspeita do dev (mesma classe dos dois bugs já
+resolvidos nesta sessão — "delta calculado mas descartado no meio do
+caminho", como o step-up e o overhead gate). Instrumentado o caminho
+completo do delta, do cálculo até a posição final, SEM aplicar correção
+ainda:
+
+1. `[dodge]` (`main.cpp`, já existia) — delta calculado na ORIGEM, antes de
+   `Update()`.
+2. `[physics-move-input]` (NOVO, `player_controller.cpp`) — confirma que
+   `external_move_delta` sobrevive até virar
+   `CapsuleMoveInput.desired_delta` sem alteração, logo antes de
+   `physics_.Move()`.
+3. `[slidemove]` (`character_physics.cpp`, já existia, formato
+   `deltaIn=.../posDeltaOut=...`) — mas até agora só disparava sob o
+   throttle de 1000ms, que podia pular o dash inteiro (dodge dura bem menos
+   de 1s). Adicionado `CapsuleMoveInput.verbose_log` — quando true (setado
+   por `PlayerController` só quando `external_move_delta.has_value()`,
+   janela naturalmente limitada, mesmo raciocínio do `[dodge-call]`), força
+   o log incondicionalmente pra TODO frame do dodge, ignorando o throttle.
+   `[physics-move]` (já existia, mostra `in.delta` + `posDelta` resultante)
+   ganhou o mesmo tratamento.
+4. `[physics-move-apply]` (NOVO, `player_controller.cpp`) — loga
+   `result.position` (saída de `Move()`) e `player.x/y/z` ANTES da
+   atribuição, logo antes de `player.x/y/z = result.position.*`. Se
+   `posDeltaOut` do `[slidemove]` for não-zero mas isso aqui mostrar que a
+   atribuição não teve efeito visível, o problema está DEPOIS deste ponto
+   (algo sobrescrevendo `player.x/y/z` mais tarde no mesmo frame — ex:
+   correção de posição vinda do servidor).
+
+**NÃO assume causa.** Preciso que o dev teste o dodge e cole a saída
+completa de `[dodge]` + `[dodge-call]` + `[physics-move-input]` +
+`[physics-move]` + `[slidemove]` + `[physics-move-apply]` dessa janela —
+com isso dá pra apontar exatamente em qual das 3 etapas (cálculo → Move()
+→ aplicação final) o delta se perde, sem precisar adivinhar.
+
+**Quando atacar:** aguardando o log real do dodge. Nada corrigido ainda,
+nada compilado.
 

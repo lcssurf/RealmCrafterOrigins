@@ -23,6 +23,7 @@ func (r *Registry) registerAPI() {
 	r.registerInventoryAPI()
 	r.registerTimerAPI()
 	r.registerLogAPI()
+	r.registerTimeAPI()
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +613,18 @@ func (r *Registry) registerActorAPI() {
 		return 1
 	}))
 
+	// Actor.send_msg(rid, text) — delivers a chat-log line to just this
+	// actor's client (sender shown as "System"). See
+	// world.Actor.SendSystemMessage.
+	r.L.SetField(mod, "send_msg", r.L.NewFunction(func(L *lua.LState) int {
+		actor, ok := lookup(L)
+		if !ok {
+			return 0
+		}
+		actor.SendSystemMessage(L.CheckString(2))
+		return 0
+	}))
+
 	r.L.SetGlobal("Actor", mod)
 }
 
@@ -894,6 +907,67 @@ func (r *Registry) registerWorldAPI() {
 		return 1
 	}))
 
+	// World.GetTransform(object_id) -> {x,y,z,yaw,pitch,roll,scale} or nil
+	// Returns the object's CURRENT resolved transform — an active override
+	// if SetTransform has ever moved it, otherwise the static authored pose
+	// from zone_scenery (same source SetTransform's own "cur" comes from,
+	// CurrentWorldObjectState). Lets a script capture an object's REAL pose
+	// (e.g. a door's true "closed" position) instead of hand-typing world
+	// coordinates that silently drift out of sync whenever the object is
+	// repositioned in the GUE (see door_key.lua, which does exactly this on
+	// first interact instead of hardcoding CLOSED_Y/DOOR_YAW).
+	r.L.SetField(mod, "GetTransform", r.L.NewFunction(func(L *lua.LState) int {
+		area := r.ctx.area
+		if area == nil {
+			L.Push(lua.LNil)
+			return 1
+		}
+		objectID := int(L.CheckNumber(1))
+		cur, ok := area.CurrentWorldObjectState(objectID)
+		if !ok {
+			L.Push(lua.LNil)
+			return 1
+		}
+		t := L.NewTable()
+		t.RawSetString("x", lua.LNumber(cur.X))
+		t.RawSetString("y", lua.LNumber(cur.Y))
+		t.RawSetString("z", lua.LNumber(cur.Z))
+		t.RawSetString("yaw", lua.LNumber(cur.Yaw))
+		t.RawSetString("pitch", lua.LNumber(cur.Pitch))
+		t.RawSetString("roll", lua.LNumber(cur.Roll))
+		t.RawSetString("scale", lua.LNumber(cur.Scale))
+		L.Push(t)
+		return 1
+	}))
+
+	// World.TeleportToAreaSpawn(player_id) -> ok(bool)
+	// Resets the player's live position to their cached spawn coordinates
+	// (Actor.SpawnX/Y/Z/Yaw, resolved once at login by handleStartGame — see
+	// net/client.go) and snaps the client via PRepositionActor. Reuses
+	// world.Actor.TeleportToSpawn() — the exact same reset already used by
+	// handleRespawnPlayer on death — so spawn resolution is never
+	// re-derived here. Returns false if the actor id doesn't resolve in
+	// this area, or if it has no valid cached spawn yet.
+	r.L.SetField(mod, "TeleportToAreaSpawn", r.L.NewFunction(func(L *lua.LState) int {
+		area := r.ctx.area
+		if area == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		rid := uint32(L.CheckNumber(1))
+		actor, ok := area.GetActor(rid)
+		if !ok {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		// area.Heightmap lets TeleportToSpawn snap Y to the real terrain at
+		// (SpawnX, SpawnZ) instead of trusting the authored SpawnY, which can
+		// silently drift out of sync with the terrain (see TeleportToSpawn's
+		// doc-comment) and freeze the player's movement entirely if it does.
+		L.Push(lua.LBool(actor.TeleportToSpawn(area.Heightmap)))
+		return 1
+	}))
+
 	r.L.SetGlobal("World", mod)
 }
 
@@ -938,6 +1012,25 @@ func (r *Registry) registerInventoryAPI() {
 		ok, err := r.inventory.RemoveItem(playerRID, itemID, qty)
 		if err != nil {
 			log.Printf("scripting: inventory remove_item failed player=%d item=%d err=%v", playerRID, itemID, err)
+			L.Push(lua.LFalse)
+			return 1
+		}
+		L.Push(lua.LBool(ok))
+		return 1
+	}))
+
+	// Inventory.add_item(player_id, item_id [, qty=1]) -> ok(bool)
+	r.L.SetField(mod, "add_item", r.L.NewFunction(func(L *lua.LState) int {
+		if r.inventory == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		playerRID := uint32(L.CheckNumber(1))
+		itemID := uint16(L.CheckNumber(2))
+		qty := L.OptInt(3, 1)
+		ok, err := r.inventory.AddItem(playerRID, itemID, qty)
+		if err != nil {
+			log.Printf("scripting: inventory add_item failed player=%d item=%d err=%v", playerRID, itemID, err)
 			L.Push(lua.LFalse)
 			return 1
 		}
@@ -993,6 +1086,26 @@ func (r *Registry) registerLogAPI() {
 		log.Printf("scripting: [lua] %s", msg)
 		return 0
 	}))
+}
+
+// ---------------------------------------------------------------------------
+// Time API  —  Time.now_ms()
+//
+// os.time() is unavailable to scripts (os/io are stripped globally in
+// Registry.New — sandboxing scripts away from the filesystem/process), so
+// this is the only clock scripts have. Wraps the same nowMs() helper used
+// server-side for cooldown bookkeeping (e.g. Actor.LastCombatAt), letting a
+// script keep its own per-player cooldown table (player_id -> last-used
+// timestamp) entirely in Lua, with no new engine-side cooldown support.
+// ---------------------------------------------------------------------------
+
+func (r *Registry) registerTimeAPI() {
+	mod := r.L.NewTable()
+	r.L.SetField(mod, "now_ms", r.L.NewFunction(func(L *lua.LState) int {
+		L.Push(lua.LNumber(nowMs()))
+		return 1
+	}))
+	r.L.SetGlobal("Time", mod)
 }
 
 // ---------------------------------------------------------------------------

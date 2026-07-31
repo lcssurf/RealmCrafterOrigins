@@ -24,6 +24,8 @@ const (
 	pAnimateActor    uint16 = 30
 	pCombatEvent     uint16 = 128
 	pWorldObjectUpdate uint16 = 143
+	pRepositionActor uint16 = 49
+	pChatMessage     uint16 = 16
 )
 
 const (

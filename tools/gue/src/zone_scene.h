@@ -24,6 +24,19 @@ struct ZScenery {
     int       invSize     = 0;
     bool      ownable     = false;
     bool      locked      = false;
+    // Excludes this object from the static coldata.bin bake — its collision
+    // is instead recomputed every frame client-side from the current (script-
+    // animated) pose. Only box/wedge collision shapes are supported for
+    // dynamic objects (see the GUE panel warning) — mesh is not sent over
+    // the network at all for dynamic objects, that's the expensive case the
+    // dynamic-collision design deliberately avoids.
+    bool      isDynamic   = false;
+    // Gates the client's crosshair/reticle "[F] Interagir" prompt and the
+    // PObjectInteract send — the client's world_static_objects hit-test has
+    // no way to know whether a placed object actually has an
+    // object_interact Lua handler bound to its id, so it must be told
+    // explicitly. Defaults to false (opt-in): most scenery is decorative.
+    bool      interactable = false;
     // Free-text organizational group ("" = ungrouped/root). Purely an
     // editor-side concept — not read by the server/client, just lets the
     // dev group placed scenery (e.g. "Forest North", "Village Props") for
@@ -114,6 +127,13 @@ struct ZEmitter {
     int         id         = 0;
     glm::vec3   pos        = {};
     std::string configName;
+    // fx_template_id — the real, working config path (server LoadZoneEmitters
+    // only sends rows where this is >0; the legacy configName enum above is
+    // GUE-preview-only, never reaches the server or game client). 0 = not
+    // configured yet. loop: true = runs for as long as the area is loaded
+    // (duration=-1 client-side), false = fires once and stops.
+    int         fxTemplateId = 0;
+    bool        loop         = true;
 };
 
 // Static point light (torch/lantern) — Phase 1 of the point-light system.
@@ -128,6 +148,15 @@ struct ZLight {
     glm::vec3   color      = {1.0f, 0.8f, 0.5f};  // warm torch-ish default
     float       intensity  = 1.0f;
     float       radius     = 5.0f;                // attenuation cutoff, world units
+
+    // Phase 2 — additive. lightType 0=Point (default, everything below
+    // unused, identical to Phase 1) 1=Spot 2=Directional. yaw/pitch: same
+    // convention as scenery/NPC (no roll). coneAngle: Spot only, full cone
+    // angle in degrees.
+    int   lightType  = 0;
+    float yaw        = 0.f;
+    float pitch      = 0.f;
+    float coneAngle  = 45.f;
 };
 
 struct ZWaypoint {
@@ -339,6 +368,22 @@ struct ZoneScene {
     ColVisData colVis;
     bool       colVisDirty = true;
 
+    // Separate wireframe preview for is_dynamic=1 scenery's box/wedge
+    // collision shape (see RebuildDynamicColVis) — never baked into
+    // coldata.bin and never merged into colVis's own storage; the two are
+    // only combined at upload time (see zones_viewport.cpp), purely so the
+    // existing single-batch GL draw call can render both without a second
+    // VAO/VBO/shader.
+    ColVisData dynColVis;
+
+    // Global toggle for the combined colVis+dynColVis wireframe batch (see
+    // ZoneRenderer::DrawForwardOverlays_) — on by default so existing
+    // behavior is unchanged until a dev explicitly turns it off via the
+    // "Colliders" button in the floating toolbar (zones_viewport.cpp
+    // DrawFloatingToolbar). Editor-only, like hiddenObjects below — never
+    // sent to client/server, never affects gameplay.
+    bool showColliders = true;
+
     // ── Per-object editor visibility ("the eye icon") ─────────────────────
     // Generic across every selectable type (ZSelType enum) — NOT a `bool
     // visible` field duplicated on every ZScenery/ZLight/ZColBox/etc struct.
@@ -376,6 +421,7 @@ struct ZoneScene {
         dirty = false;
         colVis = {};
         colVisDirty = true;
+        dynColVis = {};
     }
 
     // Loads every object type for the given area from SQLite.
@@ -392,6 +438,13 @@ struct ZoneScene {
     // Rebuild per-scenery collision shape overlays for the viewport.
     // meshCache is keyed by model_id; triangles are extracted once and reused.
     void RebuildColVis(sqlite3* db, MeshTriCache& meshCache);
+
+    // Same idea as RebuildColVis but for is_dynamic=1 scenery — a separate
+    // wireframe (different color, see zone_scene.cpp) so it's visually
+    // distinguishable in the editor. Only box/wedge shapes are drawn (the
+    // only two types dynamic collision ever sends to the client — see
+    // PDynamicCollisionShapes); this never touches colVis/coldata.bin.
+    void RebuildDynamicColVis(sqlite3* db);
 
     // Schema migrations — run once per EnsureTables call (safe to call repeatedly).
     static void EnsureTables(sqlite3* db);

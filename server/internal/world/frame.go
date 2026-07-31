@@ -336,7 +336,13 @@ func NewActorPayload(a *Actor) []byte {
 }
 
 // WorldObjectsPayload encodes a slice of static world objects for PWorldObjects.
-// Format: count(u16) + for each: model_path(str)+scale(f32)+x(f32)+y(f32)+z(f32)+yaw(f32)+black_cutout(u8)+id(u32)+visible(u8)+collision(u8)+pitch(f32)+roll(f32)
+// Format: count(u16) + for each: model_path(str)+scale(f32)+x(f32)+y(f32)+z(f32)+yaw(f32)+black_cutout(u8)+id(u32)+visible(u8)+collision(u8)+pitch(f32)+roll(f32)+interactable(u8)
+//
+// interactable was likewise appended at the end (same reasoning as
+// pitch/roll below) — gates the client's reticle "[F] Interagir" prompt,
+// which previously had no per-object flag to check at all and offered
+// every scenery object in range regardless of whether anything was
+// actually bound to object_interact for it.
 //
 // pitch/roll were added after the fact (appended at the end rather than
 // alongside yaw) so this stays a pure wire-format addition — previously
@@ -378,13 +384,20 @@ func WorldObjectsPayload(objects []WorldObject, overrides map[int]*WorldObjectSt
 		p.u8(boolU8(collision))
 		p.f32(pitch)
 		p.f32(roll)
+		p.u8(boolU8(o.Interactable))
 	}
 	return []byte(p)
 }
 
 // LightsPayload encodes a slice of static point lights for PZoneLights.
 // Format: count(u16) + for each: name(str)+x(f32)+y(f32)+z(f32)+
-//         color_r(f32)+color_g(f32)+color_b(f32)+intensity(f32)+radius(f32)
+//         color_r(f32)+color_g(f32)+color_b(f32)+intensity(f32)+radius(f32)+
+//         light_type(u8)+yaw(f32)+pitch(f32)+cone_angle(f32)
+//
+// light_type/yaw/pitch/cone_angle were appended at the end (same convention
+// as pitch/roll on WorldObjectsPayload and interactable before it) so this
+// stays a pure additive wire-format change — light_type=0 (Point) callers
+// on both ends are unaffected by the new trailing fields.
 func LightsPayload(lights []Light) []byte {
 	var p pb
 	n := len(lights)
@@ -403,6 +416,67 @@ func LightsPayload(lights []Light) []byte {
 		p.f32(l.ColorB)
 		p.f32(l.Intensity)
 		p.f32(l.Radius)
+		p.u8(uint8(l.LightType))
+		p.f32(l.Yaw)
+		p.f32(l.Pitch)
+		p.f32(l.ConeAngle)
+	}
+	return []byte(p)
+}
+
+// EmittersPayload encodes a slice of placed zone_emitters for PZoneEmitters.
+// Format: count(u16) + for each: fx_template_id(u32)+x(f32)+y(f32)+z(f32)+loop(u8)
+func EmittersPayload(emitters []Emitter) []byte {
+	var p pb
+	n := len(emitters)
+	if n > 0xFFFF {
+		n = 0xFFFF
+	}
+	p.u16(uint16(n))
+	for i := 0; i < n; i++ {
+		e := &emitters[i]
+		p.u32(uint32(e.FXTemplateID))
+		p.f32(e.X)
+		p.f32(e.Y)
+		p.f32(e.Z)
+		p.u8(boolU8(e.Loop))
+	}
+	return []byte(p)
+}
+
+// DynamicCollisionShapesPayload encodes the local-space box/wedge collision
+// shapes for is_dynamic=1 scenery objects, for PDynamicCollisionShapes.
+// Format: count(u16) + for each object: object_id(u32) + shape_count(u8),
+// then per shape: type(u8) + offset_x,y,z(f32) + size_x,y,z(f32) + detail_a,b(f32).
+// Sent once on area entry (mirrors LightsPayload/WaterPayload) — this is a
+// small subset (only the flagged objects), not the whole area's geometry.
+func DynamicCollisionShapesPayload(objects []DynamicCollisionObject) []byte {
+	var p pb
+	n := len(objects)
+	if n > 0xFFFF {
+		n = 0xFFFF
+	}
+	p.u16(uint16(n))
+	for i := 0; i < n; i++ {
+		o := &objects[i]
+		p.u32(uint32(o.ObjectID))
+		shapeCount := len(o.Shapes)
+		if shapeCount > 0xFF {
+			shapeCount = 0xFF
+		}
+		p.u8(uint8(shapeCount))
+		for si := 0; si < shapeCount; si++ {
+			s := &o.Shapes[si]
+			p.u8(s.Type)
+			p.f32(s.OffsetX)
+			p.f32(s.OffsetY)
+			p.f32(s.OffsetZ)
+			p.f32(s.SizeX)
+			p.f32(s.SizeY)
+			p.f32(s.SizeZ)
+			p.f32(s.DetailA)
+			p.f32(s.DetailB)
+		}
 	}
 	return []byte(p)
 }

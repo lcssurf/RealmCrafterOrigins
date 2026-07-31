@@ -9,14 +9,9 @@
 #include <cstdint>
 #include <cstdio>
 
-// TEMP DEBUG (investigation only — remove before commit): logs every GL
-// error raised since the last check, tagged with the exact call site. Used
-// to bisect the "+ Add Material" transition step by step — see
-// docs/TECH_DEBT.md "Terrain multi-material authoring (Phase 1)".
 inline void TerrainCheckGL_(const char* where) {
-    GLenum err;
-    while ((err = glGetError()) != GL_NO_ERROR)
-        std::fprintf(stderr, "[gl-err] %s: GL error 0x%04x\n", where, err);
+    (void)where;
+    while (glGetError() != GL_NO_ERROR) {}
 }
 
 // One RGBA8 texture holding blend weights for up to 4 materials (one per

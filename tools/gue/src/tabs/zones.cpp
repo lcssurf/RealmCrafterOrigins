@@ -739,16 +739,20 @@ void ZonesTab::PlaceObject(const glm::vec3& wpos, sqlite3* db, MediaTab* media) 
     }
     case kModeEmitters: {
         ZEmitter e;
-        e.pos        = wpos;
-        e.configName = kEmitterNames[emtConfigIdx_];
+        e.pos          = wpos;
+        e.configName   = kEmitterNames[emtConfigIdx_];
+        e.fxTemplateId = emtFxTemplateId_;
+        e.loop         = emtLoop_;
 
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
-            "INSERT INTO zone_emitters (area_name, config_name, x, y, z) VALUES (?,?,?,?,?)",
+            "INSERT INTO zone_emitters (area_name, config_name, x, y, z, fx_template_id, loop) VALUES (?,?,?,?,?,?,?)",
             -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt,1,scene_.areaName.c_str(),-1,SQLITE_TRANSIENT);
             sqlite3_bind_text(stmt,2,e.configName.c_str(),-1,SQLITE_TRANSIENT);
             sqlite3_bind_double(stmt,3,e.pos.x); sqlite3_bind_double(stmt,4,e.pos.y); sqlite3_bind_double(stmt,5,e.pos.z);
+            sqlite3_bind_int(stmt,6,e.fxTemplateId);
+            sqlite3_bind_int(stmt,7,e.loop?1:0);
             sqlite3_step(stmt);
             e.id = (int)sqlite3_last_insert_rowid(db);
             sqlite3_finalize(stmt);
@@ -766,17 +770,21 @@ void ZonesTab::PlaceObject(const glm::vec3& wpos, sqlite3* db, MediaTab* media) 
         l.color     = {lightColor_[0], lightColor_[1], lightColor_[2]};
         l.intensity = lightIntensity_;
         l.radius    = lightRadius_;
+        l.lightType = lightType_;
+        l.coneAngle = lightConeAngle_;
 
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
-            "INSERT INTO zone_lights (area_name, name, x, y, z, color_r, color_g, color_b, intensity, radius)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            "INSERT INTO zone_lights (area_name, name, x, y, z, color_r, color_g, color_b, intensity, radius, light_type, cone_angle)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(stmt, 2, l.name.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_double(stmt, 3, l.pos.x); sqlite3_bind_double(stmt, 4, l.pos.y); sqlite3_bind_double(stmt, 5, l.pos.z);
             sqlite3_bind_double(stmt, 6, l.color.r); sqlite3_bind_double(stmt, 7, l.color.g); sqlite3_bind_double(stmt, 8, l.color.b);
             sqlite3_bind_double(stmt, 9, l.intensity);
             sqlite3_bind_double(stmt, 10, l.radius);
+            sqlite3_bind_int(stmt, 11, l.lightType);
+            sqlite3_bind_double(stmt, 12, l.coneAngle);
             sqlite3_step(stmt);
             l.id = (int)sqlite3_last_insert_rowid(db);
             sqlite3_finalize(stmt);
@@ -1660,11 +1668,13 @@ void ZonesTab::DuplicateSelected(sqlite3* db, MediaTab* media) {
         e.pos += offset;
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
-            "INSERT INTO zone_emitters (area_name, config_name, x, y, z)"
-            " VALUES (?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            "INSERT INTO zone_emitters (area_name, config_name, x, y, z, fx_template_id, loop)"
+            " VALUES (?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(stmt, 2, e.configName.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_double(stmt, 3, e.pos.x); sqlite3_bind_double(stmt, 4, e.pos.y); sqlite3_bind_double(stmt, 5, e.pos.z);
+            sqlite3_bind_int(stmt, 6, e.fxTemplateId);
+            sqlite3_bind_int(stmt, 7, e.loop?1:0);
             sqlite3_step(stmt);
             e.id = (int)sqlite3_last_insert_rowid(db);
             sqlite3_finalize(stmt);
@@ -1684,14 +1694,19 @@ void ZonesTab::DuplicateSelected(sqlite3* db, MediaTab* media) {
         l.pos += offset;
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db,
-            "INSERT INTO zone_lights (area_name, name, x, y, z, color_r, color_g, color_b, intensity, radius)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
+            "INSERT INTO zone_lights (area_name, name, x, y, z, color_r, color_g, color_b, intensity, radius,"
+            " light_type, yaw, pitch, cone_angle)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, scene_.areaName.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(stmt, 2, l.name.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_double(stmt, 3, l.pos.x); sqlite3_bind_double(stmt, 4, l.pos.y); sqlite3_bind_double(stmt, 5, l.pos.z);
             sqlite3_bind_double(stmt, 6, l.color.r); sqlite3_bind_double(stmt, 7, l.color.g); sqlite3_bind_double(stmt, 8, l.color.b);
             sqlite3_bind_double(stmt, 9, l.intensity);
             sqlite3_bind_double(stmt, 10, l.radius);
+            sqlite3_bind_int(stmt, 11, l.lightType);
+            sqlite3_bind_double(stmt, 12, l.yaw);
+            sqlite3_bind_double(stmt, 13, l.pitch);
+            sqlite3_bind_double(stmt, 14, l.coneAngle);
             sqlite3_step(stmt);
             l.id = (int)sqlite3_last_insert_rowid(db);
             sqlite3_finalize(stmt);

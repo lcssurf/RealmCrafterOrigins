@@ -9,6 +9,12 @@ struct PointLight
   float quadratic;
   float radiusSquared;
   float _padding;
+
+  // Spot/Directional support — must stay byte-identical to the C++ struct
+  // (rco::renderer::PointLight, shared/renderer/include/rco/renderer/light.h)
+  // and to gPhongManyLocal.fs's copy of this struct (same SSBO, std430).
+  vec4 direction;
+  vec4 spotParams;
 };
 
 layout (std430, binding = 0) readonly buffer lit

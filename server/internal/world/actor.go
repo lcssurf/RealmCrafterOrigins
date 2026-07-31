@@ -270,6 +270,77 @@ func (a *Actor) IsDead() bool {
 	return a.DeadAt > 0
 }
 
+// TeleportToSpawn resets this actor's live position to its cached spawn
+// coordinates (SpawnX/SpawnY/SpawnZ/SpawnYaw, resolved once at login — see
+// handleStartGame in net/client.go, which reads the actor def's
+// initial_spawn_id — and never re-derived here) and sends PRepositionActor
+// so the owning client snaps immediately, mirroring exactly what
+// handleRespawnPlayer already does on death (net/client.go). Returns false
+// only if no valid spawn was ever resolved (SpawnX/SpawnZ still at the
+// (0,0) sentinel — see the "never the 0,0,0 origin bug" fallback in
+// handleStartGame), so callers (e.g. a Lua /unstuck command) can report
+// failure instead of silently teleporting to the map origin.
+//
+// Note this returns the actor to its ORIGINAL login-area spawn, not
+// necessarily a spawn point "for the area it's currently standing in" —
+// SpawnAreaName may differ from AreaName if the actor has since walked
+// through a portal. That matches the one existing precedent
+// (handleRespawnPlayer) and avoids re-deriving spawn resolution here.
+//
+// hm (may be nil): the CURRENT area's heightmap, used to snap Y to the real
+// terrain height at (SpawnX, SpawnZ) instead of trusting the authored
+// SpawnY blindly. This matters because a player_spawns row's Y can drift
+// out of sync with the terrain (re-sculpted after the spawn was placed,
+// typo, copy-pasted from a different area) without anyone noticing — until
+// a player actually spawns/teleports there and gets stuck: the server's
+// movement-validation vertical sanity check (net/client.go
+// handleStandardUpdate, mv.MaxAboveGround) rejects EVERY subsequent move
+// packet whose reported Y is more than ~12 units off the real terrain
+// height, so a large stored-Y/terrain mismatch here doesn't just place the
+// player slightly wrong — it silently freezes their movement entirely,
+// since every corrective reposition the server sends back just puts them
+// right back at the same bad Y. Confirmed on the "Training Camp Spawn" row
+// (player_spawns id=3): stored Y=50.32, real terrain≈34.46, a ~15.9 unit
+// gap — comfortably over the 12-unit tolerance.
+func (a *Actor) TeleportToSpawn(hm *Heightmap) bool {
+	a.Mu.Lock()
+	if a.SpawnX == 0 && a.SpawnZ == 0 {
+		a.Mu.Unlock()
+		return false
+	}
+	a.X, a.Z, a.Yaw = a.SpawnX, a.SpawnZ, a.SpawnYaw
+	a.Y = a.SpawnY
+	if hm != nil {
+		a.Y = hm.SampleWorld(a.SpawnX, a.SpawnZ)
+	}
+	x, y, z, yaw := a.X, a.Y, a.Z, a.Yaw
+	a.Mu.Unlock()
+
+	var p pb
+	p.u32(a.RuntimeID)
+	p.f32(x)
+	p.f32(y)
+	p.f32(z)
+	p.f32(yaw)
+	a.Send(buildFrame(pRepositionActor, p))
+	return true
+}
+
+// SendSystemMessage delivers a chat-log line to just this actor's client,
+// tagged with sender name "System" (no other actor's name, so the client
+// never mistakenly attaches a speech bubble to a real player/NPC — see
+// kPChatMessage handling client-side, client/src/core/main.cpp, which
+// resolves the bubble target by matching sender name against a live actor).
+// Uses the same PChatMessage wire format as ordinary chat (net/client.go
+// handleChatMessage): channel(u8) + sender(str) + text(str).
+func (a *Actor) SendSystemMessage(text string) {
+	var p pb
+	p.u8(0) // channel — ignored by the client, which reads sender+text only
+	p.str("System")
+	p.str(text)
+	a.Send(buildFrame(pChatMessage, p))
+}
+
 // Send enqueues data for delivery to this actor's client.
 func (a *Actor) Send(data []byte) {
 	select {

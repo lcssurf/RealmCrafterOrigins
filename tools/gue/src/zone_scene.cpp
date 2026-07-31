@@ -393,6 +393,16 @@ void ZoneScene::EnsureTables(sqlite3* db) {
         "  z           REAL    NOT NULL DEFAULT 0"
         ")");
 
+    // fx_template_id + loop — additive (safe no-op on DBs that already have
+    // these columns). fx_template_id=0 means "not configured" — the legacy
+    // config_name enum above is GUE-preview-only and was never wired to the
+    // server/client at all; LoadZoneEmitters (server) only sends rows where
+    // fx_template_id>0. loop=1 default: a placed zone emitter is normally
+    // meant to run for as long as the area is loaded (torch, portal swirl),
+    // not fire once and stop.
+    Exec(db, "ALTER TABLE zone_emitters ADD COLUMN fx_template_id INTEGER NOT NULL DEFAULT 0");
+    Exec(db, "ALTER TABLE zone_emitters ADD COLUMN loop INTEGER NOT NULL DEFAULT 1");
+
     // ── Point lights (Phase 1 — static torches/lanterns) ───────────────────
     // Sent to the client on area load; resubmitted every frame into the
     // already-existing (previously unused) Pipeline::AddPointLight() deferred
@@ -412,6 +422,17 @@ void ZoneScene::EnsureTables(sqlite3* db) {
         "  intensity REAL    NOT NULL DEFAULT 1.0,"
         "  radius    REAL    NOT NULL DEFAULT 5.0"
         ")");
+
+    // Light type + rotation (Phase 2 — additive, safe no-op on DBs that
+    // already have these columns). light_type: 0=Point (default — every
+    // existing light keeps rendering exactly as before) 1=Spot
+    // 2=Directional. yaw/pitch: same convention as scenery/NPC orientation,
+    // no roll (a light's aim direction doesn't need it). cone_angle: Spot
+    // only, full cone angle in degrees.
+    Exec(db, "ALTER TABLE zone_lights ADD COLUMN light_type INTEGER NOT NULL DEFAULT 0");
+    Exec(db, "ALTER TABLE zone_lights ADD COLUMN yaw REAL NOT NULL DEFAULT 0");
+    Exec(db, "ALTER TABLE zone_lights ADD COLUMN pitch REAL NOT NULL DEFAULT 0");
+    Exec(db, "ALTER TABLE zone_lights ADD COLUMN cone_angle REAL NOT NULL DEFAULT 45");
 
     // ── Player spawn points ───────────────────────────────────────────────
     Exec(db,
@@ -522,6 +543,24 @@ void ZoneScene::EnsureTables(sqlite3* db) {
 
     // Scenery organizational folders (safe no-op on DBs that already have it).
     Exec(db, "ALTER TABLE zone_scenery ADD COLUMN folder TEXT NOT NULL DEFAULT ''");
+
+    // Dynamic collision marker — objects flagged here are excluded from the
+    // static coldata.bin bake (SaveColData/RebuildColVis) and instead sent
+    // to the client as a small local-space shape descriptor
+    // (PDynamicCollisionShapes), recomputed every frame from the object's
+    // current (possibly animated) pose. See docs/TECH_DEBT.md dynamic
+    // collision investigation.
+    Exec(db, "ALTER TABLE zone_scenery ADD COLUMN is_dynamic INTEGER NOT NULL DEFAULT 0");
+
+    // Interactable marker — the client's crosshair/reticle hit-test
+    // ("[F] Interagir" prompt) only offers PObjectInteract for scenery
+    // flagged here. Defaults to 0 (opt-in), NOT 1: the reticle hit-test was
+    // built against every scenery object in range with no filter at all
+    // (bug), so defaulting to 1 would just keep showing the prompt on every
+    // existing decorative prop until someone manually unchecks each one.
+    // Opt-in means only the (currently: one) object actually wired to an
+    // object_interact Lua script needs to be flipped on by hand.
+    Exec(db, "ALTER TABLE zone_scenery ADD COLUMN interactable INTEGER NOT NULL DEFAULT 0");
 
     // Folder registry — tracks a folder's existence independently of whether
     // any scenery is currently tagged with it, so "New Folder" always leaves
@@ -847,16 +886,18 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
 
     // ── Emitters ─────────────────────────────────────────────────────────
     if (sqlite3_prepare_v2(db,
-        "SELECT id, x, y, z, config_name FROM zone_emitters WHERE area_name=? ORDER BY id",
+        "SELECT id, x, y, z, config_name, fx_template_id, loop FROM zone_emitters WHERE area_name=? ORDER BY id",
         -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, area.c_str(), -1, SQLITE_TRANSIENT);
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             ZEmitter e;
-            e.id         = sqlite3_column_int(stmt, 0);
-            e.pos.x      = (float)sqlite3_column_double(stmt, 1);
-            e.pos.y      = (float)sqlite3_column_double(stmt, 2);
-            e.pos.z      = (float)sqlite3_column_double(stmt, 3);
-            e.configName = txt(stmt, 4);
+            e.id           = sqlite3_column_int(stmt, 0);
+            e.pos.x        = (float)sqlite3_column_double(stmt, 1);
+            e.pos.y        = (float)sqlite3_column_double(stmt, 2);
+            e.pos.z        = (float)sqlite3_column_double(stmt, 3);
+            e.configName   = txt(stmt, 4);
+            e.fxTemplateId = sqlite3_column_int(stmt, 5);
+            e.loop         = sqlite3_column_int(stmt, 6) != 0;
             emitters.push_back(e);
         }
         sqlite3_finalize(stmt);
@@ -864,7 +905,8 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
 
     // ── Point lights ─────────────────────────────────────────────────────
     if (sqlite3_prepare_v2(db,
-        "SELECT id, x, y, z, name, color_r, color_g, color_b, intensity, radius"
+        "SELECT id, x, y, z, name, color_r, color_g, color_b, intensity, radius,"
+        "       light_type, yaw, pitch, cone_angle"
         " FROM zone_lights WHERE area_name=? ORDER BY id",
         -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, area.c_str(), -1, SQLITE_TRANSIENT);
@@ -880,6 +922,10 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
             l.color.b   = (float)sqlite3_column_double(stmt, 7);
             l.intensity = (float)sqlite3_column_double(stmt, 8);
             l.radius    = (float)sqlite3_column_double(stmt, 9);
+            l.lightType = sqlite3_column_int(stmt, 10);
+            l.yaw       = (float)sqlite3_column_double(stmt, 11);
+            l.pitch     = (float)sqlite3_column_double(stmt, 12);
+            l.coneAngle = (float)sqlite3_column_double(stmt, 13);
             lights.push_back(l);
         }
         sqlite3_finalize(stmt);
@@ -936,7 +982,7 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
     if (sqlite3_prepare_v2(db,
         "SELECT id, model_id, material_id,"
         "       x, y, z, pitch, yaw, roll, sx, sy, sz,"
-        "       collision, anim_mode, inv_size, ownable, locked, folder"
+        "       collision, anim_mode, inv_size, ownable, locked, folder, is_dynamic, interactable"
         " FROM zone_scenery WHERE area_name=? ORDER BY id",
         -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, area.c_str(), -1, SQLITE_TRANSIENT);
@@ -963,6 +1009,8 @@ void ZoneScene::LoadFromDB(sqlite3* db, const std::string& area) {
                 const unsigned char* f = sqlite3_column_text(stmt, 17);
                 s.folder = f ? reinterpret_cast<const char*>(f) : "";
             }
+            s.isDynamic  = sqlite3_column_int(stmt, 18) != 0;
+            s.interactable = sqlite3_column_int(stmt, 19) != 0;
             scenery.push_back(s);
         }
         sqlite3_finalize(stmt);
@@ -1248,6 +1296,7 @@ void ZoneScene::SaveColData(sqlite3* db, const std::string& area) const {
 
         for (auto& sc : scenery) {
             if (sc.collision == 0) continue;
+            if (sc.isDynamic) continue; // sent to the client separately, see PDynamicCollisionShapes
             sqlite3_bind_int(stmt, 1, sc.modelId);
 
             // Full TRS matrix (pitch=X, yaw=Y, roll=Z in degrees)
@@ -1287,11 +1336,10 @@ void ZoneScene::SaveColData(sqlite3* db, const std::string& area) const {
                                   // 0/90/180/270deg and ballooned into an
                                   // oversized box at any other angle (e.g. a
                                   // tipped-over wall).
-                    glm::vec3 center = glm::vec3(trs * glm::vec4(ox, oy, oz, 1.f));
-                    boxes.push_back({center.x, center.y, center.z,
-                                     sx * 0.5f * sc.scale.x,
-                                     sy * 0.5f * sc.scale.y,
-                                     sz * 0.5f * sc.scale.z,
+                    auto ext = rco::renderer::ComputeColBoxWorldExtent(
+                        sc.pos, sc.scale, {ox, oy, oz}, {sx, sy, sz}, glm::mat3(Ry * Rx * Rz));
+                    boxes.push_back({ext.center.x, ext.center.y, ext.center.z,
+                                     ext.half.x, ext.half.y, ext.half.z,
                                      sc.rot.x, sc.rot.y, sc.rot.z});
                 } else if (type == 1) { // Sphere
                     float cx = sc.pos.x + ox * sc.scale.x;
@@ -1525,6 +1573,7 @@ void ZoneScene::RebuildColVis(sqlite3* db, MeshTriCache& meshCache) {
 
     for (auto& sc : scenery) {
         if (sc.collision == 0) continue;
+        if (sc.isDynamic) continue; // no static preview — collision recomputed live client-side
         sqlite3_bind_int(stmt, 1, sc.modelId);
 
         glm::mat4 T   = glm::translate(glm::mat4(1.f), sc.pos);
@@ -1556,10 +1605,10 @@ void ZoneScene::RebuildColVis(sqlite3* db, MeshTriCache& meshCache) {
                               // the OBB fix in SaveColData/terrain.h ColBox
                               // (AppendBox draws the actual rotated corners
                               // instead of an AABB re-fit around it).
-                glm::vec3 center = glm::vec3(trs * glm::vec4(ox, oy, oz, 1.f));
-                glm::vec3 full(sx * sc.scale.x, sy * sc.scale.y, sz * sc.scale.z);
                 glm::mat3 R = glm::mat3(Ry * Rx * Rz);
-                AppendBox(colVis, center, full, 1.f, 0.25f, 0.25f, 0.8f, R);
+                auto ext = rco::renderer::ComputeColBoxWorldExtent(
+                    sc.pos, sc.scale, {ox, oy, oz}, {sx, sy, sz}, R);
+                AppendBox(colVis, ext.center, ext.half * 2.f, 1.f, 0.25f, 0.25f, 0.8f, R);
             } else if (type == 1) { // Sphere
                 glm::vec3 center = {sc.pos.x + ox * sc.scale.x,
                                     sc.pos.y + oy * sc.scale.y,
@@ -1609,6 +1658,66 @@ void ZoneScene::RebuildColVis(sqlite3* db, MeshTriCache& meshCache) {
         sqlite3_reset(stmt);
     }
     if (pathStmt) sqlite3_finalize(pathStmt);
+    sqlite3_finalize(stmt);
+}
+
+// Preview for is_dynamic=1 scenery's box/wedge collision shape — same TRS
+// math as RebuildColVis (full pos+rot+scale; the editor shows the box
+// rotated even though the runtime AABB rebuild ignores rotation, since it's
+// still useful to see where the shape sits relative to the model), but in a
+// visually distinct color (cyan) and stored separately in dynColVis so it
+// never touches colVis/coldata.bin. Mesh/sphere are not drawn here at all —
+// dynamic collision only ever sends box/wedge to the client (see
+// server/internal/db/db.go LoadDynamicCollisionShapes, type IN (0,3)).
+void ZoneScene::RebuildDynamicColVis(sqlite3* db) {
+    dynColVis = {};
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT type, offset_x, offset_y, offset_z, size_x, size_y, size_z, detail_a, detail_b"
+        " FROM media_model_shapes WHERE model_id=? ORDER BY id",
+        -1, &stmt, nullptr) != SQLITE_OK) return;
+
+    constexpr float kCyanR = 0.15f, kCyanG = 0.85f, kCyanB = 1.0f, kCyanA = 0.9f;
+
+    for (auto& sc : scenery) {
+        if (!sc.isDynamic) continue;
+        sqlite3_bind_int(stmt, 1, sc.modelId);
+
+        glm::mat4 T   = glm::translate(glm::mat4(1.f), sc.pos);
+        glm::mat4 Ry  = glm::rotate(glm::mat4(1.f), glm::radians(sc.rot.y), glm::vec3(0,1,0));
+        glm::mat4 Rx  = glm::rotate(glm::mat4(1.f), glm::radians(sc.rot.x), glm::vec3(1,0,0));
+        glm::mat4 Rz  = glm::rotate(glm::mat4(1.f), glm::radians(sc.rot.z), glm::vec3(0,0,1));
+        glm::mat4 S   = glm::scale(glm::mat4(1.f), sc.scale);
+        glm::mat4 trs = T * Ry * Rx * Rz * S;
+
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            int type = sqlite3_column_int(stmt, 0);
+            if (type != 0 && type != 3) continue; // box/wedge only
+
+            float ox = (float)sqlite3_column_double(stmt, 1);
+            float oy = (float)sqlite3_column_double(stmt, 2);
+            float oz = (float)sqlite3_column_double(stmt, 3);
+            float sx = (float)sqlite3_column_double(stmt, 4);
+            float sy = (float)sqlite3_column_double(stmt, 5);
+            float sz = (float)sqlite3_column_double(stmt, 6);
+            float detailA = (float)sqlite3_column_double(stmt, 7);
+
+            if (type == 0) { // Box — oriented preview (same fix as RebuildColVis)
+                glm::mat3 R = glm::mat3(Ry * Rx * Rz);
+                auto ext = rco::renderer::ComputeColBoxWorldExtent(
+                    sc.pos, sc.scale, {ox, oy, oz}, {sx, sy, sz}, R);
+                AppendBox(dynColVis, ext.center, ext.half * 2.f, kCyanR, kCyanG, kCyanB, kCyanA, R);
+            } else { // Wedge / ramp
+                int subdiv = (int)std::lround(detailA);
+                if (subdiv < 1) subdiv = 1;
+                if (subdiv > 16) subdiv = 16;
+                AppendWedgeWire(dynColVis, {ox, oy, oz}, {sx, sy, sz}, trs, subdiv,
+                                kCyanR, kCyanG, kCyanB, kCyanA);
+            }
+        }
+        sqlite3_reset(stmt);
+    }
     sqlite3_finalize(stmt);
 }
 

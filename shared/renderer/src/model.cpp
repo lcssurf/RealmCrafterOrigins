@@ -94,25 +94,6 @@ static GLuint LoadTexCached(const std::string& path, bool srgb) {
                      path.c_str(), stbi_failure_reason());
         return 0;
     }
-    // Alpha content analysis — log classification once per texture on load.
-    // ZERO render change: this only reads px and logs; no texture or state is modified.
-    {
-        const int total = w * h;
-        int low = 0, high = 0;
-        for (int i = 0; i < total; ++i) {
-            const uint8_t a = px[i * 4 + 3];
-            if (a <  16) low++;
-            if (a > 240) high++;
-        }
-        const float low_f  = total ? (float)low  / total : 0.f;
-        const float high_f = total ? (float)high / total : 0.f;
-        const float mid_f  = 1.f - low_f - high_f;
-        const bool is_cutout = (low_f > 0.02f) && (high_f > 0.30f);
-        std::fprintf(stderr,
-            "[alpha-detect] '%s'  low=%.1f%%  high=%.1f%%  mid=%.1f%%  -> %s\n",
-            path.c_str(), low_f * 100.f, high_f * 100.f, mid_f * 100.f,
-            is_cutout ? "CUTOUT" : "opaque");
-    }
     GLuint tex = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -354,15 +335,7 @@ GLuint Model::LoadTex(const aiScene* scene, const std::string& path, bool srgb) 
     unsigned char* px = nullptr;
     int w = 0, h = 0;
 
-    // TEMP DEBUG (GremlinEye_01 embedded-texture investigation — remove
-    // after diagnosis): forces the [tex-resolve] trace below (raw texture
-    // path from the model file, embedded-vs-external classification, every
-    // resolution candidate BuildTextureCandidates tries, and which one — if
-    // any — actually loaded) for this one model, without needing
-    // RCO_ASSET_LOG_VERBOSE=1 set process-wide (which would also spam every
-    // other model's texture loads).
-    const bool verbose      = VerboseAssetLogsEnabled() ||
-        model_path_.find("GremlinEye") != std::string::npos;
+    const bool verbose      = VerboseAssetLogsEnabled();
     const bool is_embedded  = !path.empty() && path[0] == '*';
 
     if (verbose) {
@@ -1765,23 +1738,6 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
                 }
             }
 
-            // TEMP DEBUG (Mixamo retarget-not-working investigation, remove
-            // after diagnosis): how many animations Assimp actually found in
-            // this file, and their raw/native names. Mixamo "Without Skin"
-            // exports typically carry exactly 1, named "mixamo.com" or
-            // "Armature|mixamo.com".
-            std::fprintf(stderr,
-                "[anim-retarget-dbg] '%s': scene->mNumAnimations=%u\n",
-                path, scene->mNumAnimations);
-            for (unsigned ai = 0; ai < scene->mNumAnimations; ++ai) {
-                std::fprintf(stderr,
-                    "[anim-retarget-dbg]   [%u] name='%s' duration=%.3f ticks (%.1f tps) channels=%u\n",
-                    ai, scene->mAnimations[ai]->mName.C_Str(),
-                    scene->mAnimations[ai]->mDuration,
-                    scene->mAnimations[ai]->mTicksPerSecond,
-                    scene->mAnimations[ai]->mNumChannels);
-            }
-
             fcache = std::make_shared<AnimFileCache>();
             CollectBindRotations(scene->mRootNode, &fcache->origin_bind_rot);
             for (unsigned ai = 0; ai < scene->mNumAnimations; ++ai) {
@@ -1832,31 +1788,6 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
             if (dur > longest) { longest = dur; target_ai = ai; }
         }
     }
-    // TEMP DEBUG (Mixamo retarget-not-working investigation, remove after
-    // diagnosis): confirms whether name_override ("Clip Name"/clip_override,
-    // or the action name when clip_override is blank — see Actor::LoadAnim
-    // call sites) was empty at all, and if not, WHICH clip got picked and by
-    // what rule. Selection here is ALWAYS "longest clip", never a name match
-    // against the file's own raw animation names (raw.fbx_name) — so a
-    // mismatched/blank "Clip Name" does not by itself explain a skipped clip.
-    if (!name_override || name_override[0] == '\0') {
-        std::fprintf(stderr,
-            "[anim-retarget-dbg] '%s': name_override EMPTY -> no longest-clip filtering, "
-            "ALL %zu clip(s) in the file will be appended (each keeping its own raw.fbx_name)\n",
-            path, fcache->clips.size());
-    } else if (target_ai < 0) {
-        std::fprintf(stderr,
-            "[anim-retarget-dbg] '%s': name_override='%s' but target_ai=-1 "
-            "(file has zero clips?)\n", path, name_override);
-    } else {
-        std::fprintf(stderr,
-            "[anim-retarget-dbg] '%s': name_override='%s' -> picked clip[%d] "
-            "raw_name='%s' duration=%.3fs (longest-duration rule, NOT a name match)\n",
-            path, name_override, target_ai,
-            fcache->clips[target_ai].fbx_name.c_str(),
-            fcache->clips[target_ai].duration_sec);
-    }
-
     // ── Build AnimClip(s), filtering channels against this body's node_map_ ──
     int first = (int)clips_.size();
     for (int ai = 0; ai < (int)fcache->clips.size(); ++ai) {
@@ -1868,15 +1799,6 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
         clip.duration_sec              = raw.duration_sec;
         clip.fps                       = raw.fps;
         clip.built_with_alias_revision = bone_alias_revision_;
-
-        // TEMP DEBUG (Mixamo retarget-not-working investigation, remove
-        // after diagnosis): per-channel outcome counters, reported once
-        // after the loop below.
-        int dbg_direct_matches = 0, dbg_alias_matches = 0, dbg_discarded = 0;
-        std::fprintf(stderr,
-            "[anim-retarget-dbg] clip[%d] raw_name='%s' -> resolving %zu raw channel(s) "
-            "against node_map_ (%zu entries) + bone_aliases_ (%zu entries)\n",
-            ai, raw.fbx_name.c_str(), raw.channels.size(), node_map_.size(), bone_aliases_.size());
 
         for (const RawAnimChannel& rc : raw.channels) {
             // Resolve this channel's name against the body's own skeleton.
@@ -1892,24 +1814,9 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
                     node_map_.find(alias_it->second) != node_map_.end()) {
                     resolved_name = alias_it->second;
                     was_retargeted = true;
-                    ++dbg_alias_matches;
-                    std::fprintf(stderr,
-                        "[anim-retarget-dbg]   RETARGETED channel='%s' -> '%s' (via bone_aliases_)\n",
-                        rc.name.c_str(), resolved_name.c_str());
                 } else {
-                    ++dbg_discarded;
-                    std::fprintf(stderr,
-                        "[anim-retarget-dbg]   DISCARDED channel='%s' "
-                        "(no exact node_map_ match, %s)\n",
-                        rc.name.c_str(),
-                        bone_aliases_.empty() ? "bone_aliases_ is EMPTY (SetBoneAliases never called?)"
-                                               : "no alias registered for this name");
                     continue;
                 }
-            } else {
-                ++dbg_direct_matches;
-                std::fprintf(stderr,
-                    "[anim-retarget-dbg]   DIRECT MATCH channel='%s'\n", rc.name.c_str());
             }
             BoneChannel bc;
             bc.name = resolved_name;
@@ -1983,86 +1890,6 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
                         key.v = bind_dest * delta_dest_frame;
                     }
 
-                    // TEMP DEBUG (delta-retargeting verification, remove after
-                    // diagnosis): for the Hips channel, dump both bind poses
-                    // once and the resulting final rotation at 4 timeline
-                    // points, to confirm visually there are no more large
-                    // jumps AND no more odd/sideways orientation.
-                    std::string lower_rc = rc.name;
-                    for (auto& c : lower_rc) c = (char)std::tolower((unsigned char)c);
-                    const bool is_verify_channel = lower_rc.find("hips") != std::string::npos ||
-                                                    lower_rc.find("leftshoulder") != std::string::npos ||
-                                                    lower_rc.find("leftarm") != std::string::npos;
-
-                    // TEMP DEBUG (Idle-invariant investigation, remove after
-                    // diagnosis): for a channel that's nearly stationary at
-                    // its own bind pose (as any Idle clip's frame 0 should
-                    // be), verify each stage of the retargeting formula in
-                    // isolation — bind_origin, the RAW animated rotation
-                    // (rc.rot, untouched by the in-place bc.rot transform
-                    // above, since bc.rot was a separate copy), the resulting
-                    // delta_origin_frame, the calibrated offset, the
-                    // resulting delta_dest_frame, bind_dest, and the actual
-                    // final value already written into bc.rot. If
-                    // animated≈bind_origin (Idle-like), delta_origin_frame
-                    // should be ≈identity, delta_dest_frame should ALSO be
-                    // ≈identity (conjugating identity by anything is still
-                    // identity), and therefore final should be ≈bind_dest.
-                    if (lower_rc.find("leftarm") != std::string::npos && !rc.rot.empty() && !bc.rot.empty()) {
-                        auto deg = [](const glm::quat& q) { return glm::degrees(glm::eulerAngles(q)); };
-                        glm::quat animated0        = rc.rot[0].v; // pre-transform, untouched
-                        glm::quat delta_origin0    = inv_origin * animated0;
-                        glm::quat delta_dest0      = offset * delta_origin0 * inv_offset;
-                        glm::quat expected_final0  = bind_dest * delta_dest0;
-                        glm::quat actual_final0    = bc.rot[0].v; // already transformed above
-                        float dot_final_vs_bind_dest = glm::dot(glm::normalize(actual_final0), glm::normalize(bind_dest));
-                        float dot_expected_vs_actual  = glm::dot(glm::normalize(expected_final0), glm::normalize(actual_final0));
-                        std::fprintf(stderr,
-                            "[idle-invariant-dbg] channel '%s'->'%s' key[0]@%.3fs:\n"
-                            "  bind_origin        euler_deg=(%.2f,%.2f,%.2f)\n"
-                            "  animated(rc.rot[0]) euler_deg=(%.2f,%.2f,%.2f)  <- should be close to bind_origin if Idle\n"
-                            "  delta_origin_frame  euler_deg=(%.2f,%.2f,%.2f)  <- should be close to (0,0,0)=identity\n"
-                            "  offset (calibrated) euler_deg=(%.2f,%.2f,%.2f)\n"
-                            "  delta_dest_frame    euler_deg=(%.2f,%.2f,%.2f)  <- should STILL be close to identity\n"
-                            "  bind_dest           euler_deg=(%.2f,%.2f,%.2f)  <- Male_01's own rest pose for this bone\n"
-                            "  expected_final (recomputed) euler_deg=(%.2f,%.2f,%.2f)\n"
-                            "  actual_final (bc.rot[0], as written into the clip) euler_deg=(%.2f,%.2f,%.2f)\n"
-                            "  dot(actual_final, bind_dest)=%.4f (1.0=identical, <0.9 = clearly NOT bind_dest)\n"
-                            "  dot(expected_final, actual_final)=%.4f (should be ~1.0 — sanity check that the loop above computed exactly this formula)\n",
-                            rc.name.c_str(), resolved_name.c_str(), rc.rot[0].t,
-                            deg(bind_origin).x, deg(bind_origin).y, deg(bind_origin).z,
-                            deg(animated0).x, deg(animated0).y, deg(animated0).z,
-                            deg(delta_origin0).x, deg(delta_origin0).y, deg(delta_origin0).z,
-                            deg(offset).x, deg(offset).y, deg(offset).z,
-                            deg(delta_dest0).x, deg(delta_dest0).y, deg(delta_dest0).z,
-                            deg(bind_dest).x, deg(bind_dest).y, deg(bind_dest).z,
-                            deg(expected_final0).x, deg(expected_final0).y, deg(expected_final0).z,
-                            deg(actual_final0).x, deg(actual_final0).y, deg(actual_final0).z,
-                            dot_final_vs_bind_dest, dot_expected_vs_actual);
-                    }
-
-                    if (is_verify_channel && !bc.rot.empty()) {
-                        auto deg = [](const glm::quat& q) { return glm::degrees(glm::eulerAngles(q)); };
-                        glm::vec3 eo = deg(bind_origin), ed = deg(bind_dest);
-                        std::fprintf(stderr,
-                            "[delta-retarget-dbg] channel '%s'->'%s': bind_origin_euler_deg="
-                            "(%.1f,%.1f,%.1f) bind_dest_euler_deg=(%.1f,%.1f,%.1f)\n",
-                            rc.name.c_str(), resolved_name.c_str(), eo.x, eo.y, eo.z, ed.x, ed.y, ed.z);
-                        for (int p = 0; p <= 3; ++p) {
-                            double t = clip.duration_sec * (p / 3.0);
-                            size_t best = 0;
-                            double best_dt = std::abs(bc.rot[0].t - t);
-                            for (size_t k = 1; k < bc.rot.size(); ++k) {
-                                double dt = std::abs(bc.rot[k].t - t);
-                                if (dt < best_dt) { best_dt = dt; best = k; }
-                            }
-                            glm::vec3 ef = deg(bc.rot[best].v);
-                            std::fprintf(stderr,
-                                "[delta-retarget-dbg]   t=%5.2fs key[%zu]@%.3fs "
-                                "final_euler_deg=(%.1f,%.1f,%.1f)\n",
-                                t, best, bc.rot[best].t, ef.x, ef.y, ef.z);
-                        }
-                    }
                 } else {
                     std::fprintf(stderr,
                         "[anim-retarget-dbg]   WARNING: no bind rotation found for "
@@ -2077,11 +1904,6 @@ int Model::AppendAnimationsFrom(const char* path, const char* name_override) {
             clip.chan_map[bc.name] = (int)clip.channels.size();
             clip.channels.push_back(std::move(bc));
         }
-        std::fprintf(stderr,
-            "[anim-retarget-dbg] clip[%d] '%s' done: %d direct + %d retargeted = %d applied, "
-            "%d discarded (of %zu total)\n",
-            ai, clip.name.c_str(), dbg_direct_matches, dbg_alias_matches,
-            dbg_direct_matches + dbg_alias_matches, dbg_discarded, raw.channels.size());
 
         {
             auto hit = clip.chan_map.find("mixamorig:Hips");

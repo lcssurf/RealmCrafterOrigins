@@ -46,6 +46,11 @@ type WorldObject struct {
 	// see appearance.go). When true the client discards near-black pixels
 	// in the deferred gBuffer pass (foliage/leaf cutout).
 	BlackCutout bool
+	// Interactable: zone_scenery.interactable — gates whether the client's
+	// reticle hit-test offers "[F] Interagir"/sends PObjectInteract for
+	// this object at all. Opt-in (default false in the DB): most scenery
+	// is decorative and has no object_interact Lua handler bound to it.
+	Interactable bool
 }
 
 // WorldObjectState holds the current transform/visibility/collision of a
@@ -76,6 +81,27 @@ type Light struct {
 	ColorR, ColorG, ColorB float32
 	Intensity float32
 	Radius    float32
+	// LightType/Yaw/Pitch/ConeAngle — additive (Phase 2, Spot/Directional).
+	// LightType 0=Point (default, everything below unused — byte-identical
+	// to Phase 1 behavior) 1=Spot 2=Directional. Yaw/Pitch: degrees, same
+	// Ry*Rx convention as scenery/NPC orientation (no roll — a light's
+	// aim direction doesn't need it). ConeAngle: Spot only, full cone
+	// angle in degrees.
+	LightType int
+	Yaw       float32
+	Pitch     float32
+	ConeAngle float32
+}
+
+// Emitter is a placed static particle emitter (zone_emitters bound to a real
+// fx_templates entry via FXTemplateID) — sent once on area entry, resolved
+// client-side to an FXParams from its already-loaded fx_catalog (kPFXCatalog)
+// and spawned via ParticleSystem::SpawnEmitterParams with duration=-1 when
+// Loop is true (never expires — see shared/renderer particles.h/.cpp).
+type Emitter struct {
+	FXTemplateID int
+	X, Y, Z      float32
+	Loop         bool
 }
 
 // Water is a placed static water plane — Gerstner wave vertex displacement
@@ -162,6 +188,25 @@ type AtmosphereVolume struct {
 	ColorVignetteSoftness float32
 }
 
+// DynamicShape is one local-space box/wedge collision shape (from
+// media_model_shapes, unrotated/unscaled model-local coordinates) belonging
+// to a WorldObject flagged is_dynamic=1 in the GUE. Sent to the client once
+// on area entry (PDynamicCollisionShapes) instead of being baked into
+// coldata.bin — the client re-derives the world-space box every frame from
+// the object's current (possibly script-animated) pose.
+type DynamicShape struct {
+	Type                       uint8 // 0=box 3=wedge (mesh/sphere never sent — see LoadDynamicCollisionShapes)
+	OffsetX, OffsetY, OffsetZ  float32
+	SizeX, SizeY, SizeZ        float32
+	DetailA, DetailB           float32
+}
+
+// DynamicCollisionObject groups all DynamicShapes belonging to one WorldObject.
+type DynamicCollisionObject struct {
+	ObjectID int
+	Shapes   []DynamicShape
+}
+
 // Trigger is a script-activated zone volume (XZ cylinder).
 type Trigger struct {
 	ID          int
@@ -183,8 +228,10 @@ type Area struct {
 	Waypoints map[int]*Waypoint
 	Objects   []WorldObject
 	Lights    []Light
+	Emitters  []Emitter
 	Water     []Water
 	AtmosphereVolumes []AtmosphereVolume
+	DynamicCollisionObjects []DynamicCollisionObject
 
 	// Environment config (loaded from area_config at startup)
 	PvPEnabled                   bool

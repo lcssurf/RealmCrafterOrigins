@@ -100,7 +100,10 @@ func defaultConfig() config {
 			MaxMoveSpeed:      18.0,
 			SpeedSlackMult:    1.25,
 			MaxBelowGround:    1.0,
-			MaxAboveGround:    12.0,
+			// See MaxAboveGround comment in server/internal/net/client.go —
+			// groundY is heightmap-only, widened past terrain so standing on
+			// elevated static geometry (bridges/platforms) isn't rejected.
+			MaxAboveGround: 40.0,
 			EnableTelemetry:   false,
 			LogRejections:     true,
 			TelemetrySampleMs: 500,
@@ -587,6 +590,7 @@ func main() {
 				Pitch:       wo.Pitch,
 				Roll:        wo.Roll,
 				BlackCutout: wo.BlackCutout,
+				Interactable: wo.Interactable,
 			})
 			area.Mu.Unlock()
 		}
@@ -608,10 +612,68 @@ func main() {
 				ColorR:    zl.ColorR, ColorG: zl.ColorG, ColorB: zl.ColorB,
 				Intensity: zl.Intensity,
 				Radius:    zl.Radius,
+				LightType: zl.LightType,
+				Yaw:       zl.Yaw,
+				Pitch:     zl.Pitch,
+				ConeAngle: zl.ConeAngle,
 			})
 			area.Mu.Unlock()
 		}
 		log.Printf("main: loaded %d zone lights", len(zoneLights))
+	}
+
+	// Load placed particle emitters (zone_emitters bound to a real
+	// fx_template_id) and distribute to areas. See world.Emitter and
+	// tools/gue/src/zone_scene.h ZEmitter.
+	zoneEmitters, err := database.LoadZoneEmitters(ctx)
+	if err != nil {
+		log.Printf("main: load zone_emitters: %v", err)
+	} else {
+		perArea := make(map[string]int)
+		for _, ze := range zoneEmitters {
+			area := gameWorld.GetOrCreateArea(ze.AreaName)
+			area.Mu.Lock()
+			area.Emitters = append(area.Emitters, world.Emitter{
+				FXTemplateID: ze.FXTemplateID,
+				X:            ze.X, Y: ze.Y, Z: ze.Z,
+				Loop: ze.Loop,
+			})
+			area.Mu.Unlock()
+			perArea[ze.AreaName]++
+		}
+		log.Printf("[zoneemit] loaded %d zone_emitters total across %d area(s): %v",
+			len(zoneEmitters), len(perArea), perArea)
+	}
+
+	// Load dynamic-collision box/wedge shapes (is_dynamic=1 scenery) and
+	// group them by object into each area's DynamicCollisionObjects. Rows
+	// come back ordered by (area_name, object id, shape id), so shapes for
+	// the same object are always contiguous — track the last object seen
+	// and append to it directly instead of a map lookup per row.
+	dynShapeRows, err := database.LoadDynamicCollisionShapes(ctx)
+	if err != nil {
+		log.Printf("main: load dynamic collision shapes: %v", err)
+	} else {
+		var curArea *world.Area
+		var curObj *world.DynamicCollisionObject
+		for _, r := range dynShapeRows {
+			if curArea == nil || curArea.Name != r.AreaName || curObj == nil || curObj.ObjectID != r.ObjectID {
+				area := gameWorld.GetOrCreateArea(r.AreaName)
+				area.Mu.Lock()
+				area.DynamicCollisionObjects = append(area.DynamicCollisionObjects,
+					world.DynamicCollisionObject{ObjectID: r.ObjectID})
+				curObj = &area.DynamicCollisionObjects[len(area.DynamicCollisionObjects)-1]
+				area.Mu.Unlock()
+				curArea = area
+			}
+			curObj.Shapes = append(curObj.Shapes, world.DynamicShape{
+				Type:    r.Type,
+				OffsetX: r.OffsetX, OffsetY: r.OffsetY, OffsetZ: r.OffsetZ,
+				SizeX: r.SizeX, SizeY: r.SizeY, SizeZ: r.SizeZ,
+				DetailA: r.DetailA, DetailB: r.DetailB,
+			})
+		}
+		log.Printf("main: loaded %d dynamic collision shape(s)", len(dynShapeRows))
 	}
 
 	// Load water planes and distribute to areas. Gerstner waves + Sub-fase 2a

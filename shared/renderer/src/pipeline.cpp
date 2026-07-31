@@ -104,6 +104,46 @@ void Pipeline::AddPointLight(const glm::vec3& pos, const glm::vec3& color, float
     p.linear        = 0.0f;
     p.quadratic     = 1.0f / glm::max(0.001f, radius * radius);
     p.radiusSquared = radius * radius;
+    // p.direction/p.spotParams stay zero-initialized (PointLight{} above) —
+    // spotParams.z==0 is exactly the Point light_type in gPhongManyLocal.fs.
+    localLights_.push_back(p);
+}
+
+void Pipeline::AddSpotLight(const glm::vec3& pos, const glm::vec3& color, float radius,
+                             const glm::vec3& direction, float coneOuterDeg, float coneInnerDeg) {
+    PointLight p{};
+    p.diffuse       = glm::vec4(color, 0.0f);
+    p.position      = glm::vec4(pos,   0.0f);
+    p.linear        = 0.0f;
+    p.quadratic     = 1.0f / glm::max(0.001f, radius * radius);
+    p.radiusSquared = radius * radius;
+    glm::vec3 dir = direction;
+    float len = glm::length(dir);
+    dir = (len > 0.0001f) ? (dir / len) : glm::vec3(0.f, -1.f, 0.f);
+    p.direction = glm::vec4(dir, 0.0f);
+    // Inner edge is a few degrees narrower than the outer cone so the
+    // falloff is a smooth gradient (smoothstep), never a hard cutoff.
+    float outerHalfDeg = glm::max(0.5f, coneOuterDeg * 0.5f);
+    float innerHalfDeg = glm::max(0.f, glm::min(coneInnerDeg * 0.5f, outerHalfDeg - 0.5f));
+    p.spotParams = glm::vec4(cosf(glm::radians(outerHalfDeg)),
+                              cosf(glm::radians(innerHalfDeg)),
+                              1.0f, 0.0f); // z = light_type Spot
+    localLights_.push_back(p);
+}
+
+void Pipeline::AddDirectionalLocalLight(const glm::vec3& pos, const glm::vec3& color, float radius,
+                                         const glm::vec3& direction) {
+    PointLight p{};
+    p.diffuse       = glm::vec4(color, 0.0f);
+    p.position      = glm::vec4(pos,   0.0f);
+    p.linear        = 0.0f;
+    p.quadratic     = 1.0f / glm::max(0.001f, radius * radius);
+    p.radiusSquared = radius * radius;
+    glm::vec3 dir = direction;
+    float len = glm::length(dir);
+    dir = (len > 0.0001f) ? (dir / len) : glm::vec3(0.f, -1.f, 0.f);
+    p.direction  = glm::vec4(dir, 0.0f);
+    p.spotParams = glm::vec4(0.f, 0.f, 2.0f, 0.0f); // z = light_type Directional
     localLights_.push_back(p);
 }
 
@@ -690,13 +730,27 @@ void Pipeline::globalLightPass_() {
 void Pipeline::localLightsPass_() {
     if (localLights_.empty()) return;
 
-    lightSSBO_ = std::make_unique<StaticBuffer>(
-        localLights_.data(), localLights_.size() * sizeof(PointLight), 0);
+    // Camera-inside-volume test, per light — squared distance vs radius, no
+    // sqrt. Split into two buckets because ONE instanced draw call shares
+    // ONE glCullFace/cull-enable state for every light in it, and the two
+    // cases genuinely need different treatment (see below). In the common
+    // case every light lands in `outside` and this costs one extra
+    // dot()-and-compare per light, nothing more.
+    //
+    // A small margin (radius shrunk ~5%) keeps a camera sitting almost
+    // exactly on the boundary from flickering between the two draws frame
+    // to frame.
+    std::vector<PointLight> outside, inside;
+    outside.reserve(localLights_.size());
+    for (const auto& l : localLights_) {
+        glm::vec3 d = camPos_ - glm::vec3(l.position);
+        float distSq = glm::dot(d, d);
+        if (distSq < l.radiusSquared * 0.9025f) inside.push_back(l);
+        else outside.push_back(l);
+    }
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE);
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_FRONT);
 
     auto& sh = Shader::shaders["gPhongManyLocal"];
     sh->Bind();
@@ -707,16 +761,58 @@ void Pipeline::localLightsPass_() {
     sh->SetInt ("gAlbedo", 1);
     sh->SetInt ("gRMA",    2);
     sh->SetInt ("gDepth",  3);
-    lightSSBO_->BindBase(GL_SHADER_STORAGE_BUFFER, 0);
 
     Mesh& sph = GetUnitLightSphere();
     glVertexArrayVertexBuffer(engine_->vao_, 0, sph.GetVBOID(), 0, sizeof(Vertex));
     glVertexArrayElementBuffer(engine_->vao_, sph.GetEBOID());
-    glDrawElementsInstanced(GL_TRIANGLES,
-        static_cast<GLsizei>(sph.GetVertexCount()),
-        GL_UNSIGNED_INT, nullptr,
-        static_cast<GLsizei>(localLights_.size()));
 
+    auto drawBatch = [&](const std::vector<PointLight>& batch,
+                          std::unique_ptr<StaticBuffer>& ssbo) {
+        if (batch.empty()) return;
+        ssbo = std::make_unique<StaticBuffer>(
+            batch.data(), batch.size() * sizeof(PointLight), 0);
+        ssbo->BindBase(GL_SHADER_STORAGE_BUFFER, 0);
+        glDrawElementsInstanced(GL_TRIANGLES,
+            static_cast<GLsizei>(sph.GetVertexCount()),
+            GL_UNSIGNED_INT, nullptr,
+            static_cast<GLsizei>(batch.size()));
+    };
+
+    // Depth test is OFF for this whole pass (disabled by globalLightPass_
+    // just before and never re-enabled) — "is this pixel lit" is 100% the
+    // fragment shader's own distanceToLight<=radius discard, not GL depth
+    // testing against the volume's own geometry.
+    //
+    // Outside (the common case, unchanged behavior): each screen ray
+    // crosses this closed shell TWICE (entering the near side, exiting the
+    // far side), so single-sided culling is required — shading both
+    // crossings would additively double the light's contribution wherever
+    // they land on the same pixel. GL_BACK was verified against
+    // GetUnitLightSphere()'s actual triangle winding (worked the signed
+    // volume V0·(V1×V2) for a sample triangle from its index order in
+    // helpers.cpp — it winds opposite the "outward-normal CCW" convention
+    // most sphere generators use) — keeping back-facing triangles here
+    // covers the sphere's full on-screen silhouette correctly.
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    drawBatch(outside, lightSSBO_);
+
+    // Inside: culling DISABLED entirely, not flipped to GL_FRONT. From
+    // inside a closed shell, each screen ray crosses the surface only ONCE
+    // (you're already inside it — the ray just exits once), so there is no
+    // double-shading risk either way, and no need to identify which
+    // face-culling mode is "the inside-facing side" for this specific
+    // mesh's (non-standard) winding — rendering both sides is guaranteed
+    // correct regardless, and provably costs nothing extra in overdraw
+    // since only one triangle ever covers a given pixel from in here.
+    std::unique_ptr<StaticBuffer> insideSSBO;
+    glDisable(GL_CULL_FACE);
+    drawBatch(inside, insideSSBO);
+
+    // Restore the pass's steady-state (matches what `outside` above just
+    // used) so whatever runs next doesn't need to know this function's
+    // internal cull-state juggling.
+    glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
 }
 

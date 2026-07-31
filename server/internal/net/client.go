@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"strings"
 	"time"
 
 	"realm-crafter/server/internal/db"
@@ -23,8 +24,29 @@ var defaultMovementValidation = MovementValidationConfig{
 	BaseStepAllowance: 0.75,  // jitter/packet burst tolerance
 	MaxMoveSpeed:      18.0,  // conservative sanity cap for player locomotion
 	SpeedSlackMult:    1.25,  // latency slack over nominal speed budget
-	MaxBelowGround:    1.0,   // allow small penetration before correction
-	MaxAboveGround:    12.0,  // allow jump/fall but reject impossible heights
+	MaxBelowGround: 1.0, // allow small penetration before correction
+	// groundY (handleStandardUpdate below) is sampled from the AREA
+	// HEIGHTMAP ONLY — the server has no coldata.bin/collision-box data
+	// at all (unlike the client's renderer::ComputeGroundHeight, which
+	// also considers Box collision-volume tops so the player can stand
+	// on bridges/platforms). A tight MaxAboveGround here rejects every
+	// legitimate Y report while standing on such an object as an
+	// "impossible height" and forces a PRepositionActor every packet —
+	// the player gets silently frozen/yanked back, same class of bug as
+	// TeleportToSpawn's stored-Y/terrain mismatch (see actor.go's doc
+	// comment on that function). Widened well past any plausible
+	// jump/fall arc specifically to give static elevated geometry room,
+	// since porting full collision parsing to the server is a much
+	// bigger effort than this project's current stage warrants — this
+	// intentionally trades some precision against Y-axis cheating
+	// (flying/no-clipping above terrain) for correctness against real
+	// players standing on real level geometry. Horizontal movement speed
+	// and step distance are still fully validated below, unaffected by
+	// this. If tighter Y anti-cheat is ever needed, the real fix is
+	// giving the server its own ComputeGroundHeight-equivalent (parse
+	// coldata.bin + track dynamic scenery poses), not shrinking this
+	// back down.
+	MaxAboveGround: 40.0,
 	EnableTelemetry:   false,
 	LogRejections:     true,
 	TelemetrySampleMs: 500,
@@ -624,11 +646,25 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	// Send static point lights (torches/lanterns) for this area.
 	c.sendZoneLights(area)
 
+	// FX catalog MUST be sent before sendZoneEmitters below — the client
+	// resolves each zone emitter's fx_template_id against the catalog it
+	// already has cached (fx_catalog_by_id) the moment PZoneEmitters
+	// arrives; it does not defer/retry. Confirmed via [zoneemit] client
+	// log: "fx_catalog_by_id.size()=0 ... lookup=NOT_FOUND" when this was
+	// still sent after sendZoneEmitters (below sendKnownSpells originally).
+	c.sendFXCatalog()
+
+	// Send placed particle emitters for this area.
+	c.sendZoneEmitters(area)
+
 	// Send static water planes for this area.
 	c.sendZoneWater(area)
 
 	// Send atmosphere volumes for this area (Fase 1 — data only).
 	c.sendAtmosphereVolumes(area)
+
+	// Send dynamic-collision box/wedge shapes for this area's flagged objects.
+	c.sendDynamicCollisionShapes(area)
 
 	// Send any dropped items already in the area.
 	c.sendWorldItems(area)
@@ -639,7 +675,6 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	// Send known spells.
 	c.sendKnownSpells()
 	c.sendSkillSnapshots(ctx)
-	c.sendFXCatalog()
 
 	// Send current quest state after entering world.
 	_ = c.sendQuestLogSnapshot(ctx)
@@ -931,6 +966,21 @@ func (c *ClientConn) sendZoneLights(area *world.Area) {
 	c.actor.Send(buildFramedPacket(protocol.PZoneLights, world.LightsPayload(lights)))
 }
 
+// sendZoneEmitters sends the area's placed particle emitters (zone_emitters
+// bound to a real fx_template_id). Mirrors sendZoneLights exactly, same two
+// call sites (initial area entry and portal/area change).
+func (c *ClientConn) sendZoneEmitters(area *world.Area) {
+	area.Mu.RLock()
+	emitters := area.Emitters
+	area.Mu.RUnlock()
+	log.Printf("[zoneemit] area=%q loaded=%d sending_to=%s", area.Name, len(emitters), c.actor.Name)
+	if len(emitters) == 0 {
+		return
+	}
+	c.actor.Send(buildFramedPacket(protocol.PZoneEmitters, world.EmittersPayload(emitters)))
+	log.Printf("[zoneemit] area=%q sent PZoneEmitters (%d emitters) to=%s", area.Name, len(emitters), c.actor.Name)
+}
+
 // sendZoneWater sends the area's static water planes (Water Phase 0).
 // Mirrors sendZoneLights exactly; called from the same two places (initial
 // area entry and portal/area change) so the client's WaterManager always has
@@ -958,6 +1008,28 @@ func (c *ClientConn) sendAtmosphereVolumes(area *world.Area) {
 		return
 	}
 	c.actor.Send(buildFramedPacket(protocol.PAtmosphereVolumes, world.AtmosphereVolumesPayload(volumes)))
+}
+
+// sendDynamicCollisionShapes sends the local-space box/wedge collision
+// shapes for the area's is_dynamic=1 scenery objects. Mirrors
+// sendZoneLights/sendAtmosphereVolumes exactly; called from the same two
+// places (initial area entry and portal/area change). Only the flagged
+// subset of objects is sent — not the whole area, matching how
+// PZoneLights/PZoneWater/PAtmosphereVolumes already scope down to a small
+// per-area list rather than piggybacking on PWorldObjects' fixed format.
+func (c *ClientConn) sendDynamicCollisionShapes(area *world.Area) {
+	area.Mu.RLock()
+	objects := area.DynamicCollisionObjects
+	area.Mu.RUnlock()
+	// One-shot diagnostic (this function only runs on area entry/portal
+	// change, never per-frame) — confirms whether LoadDynamicCollisionShapes
+	// found anything for THIS area at all. 0 here means the problem is
+	// upstream (query/schema/is_dynamic not persisted), not the client.
+	log.Printf("net: sendDynamicCollisionShapes area=%q dynamic_objects=%d", area.Name, len(objects))
+	if len(objects) == 0 {
+		return
+	}
+	c.actor.Send(buildFramedPacket(protocol.PDynamicCollisionShapes, world.DynamicCollisionShapesPayload(objects)))
 }
 
 func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) error {
@@ -1011,8 +1083,10 @@ func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) er
 	c.sendPortals(newArea)
 	c.sendWorldObjects(newArea)
 	c.sendZoneLights(newArea)
+	c.sendZoneEmitters(newArea)
 	c.sendZoneWater(newArea)
 	c.sendAtmosphereVolumes(newArea)
+	c.sendDynamicCollisionShapes(newArea)
 	c.sendWorldItems(newArea)
 
 	// Resend known spells — the client clears its spellbar on PChangeArea,
@@ -1037,7 +1111,7 @@ func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) er
 	return nil
 }
 
-func (c *ClientConn) handleChatMessage(_ context.Context, payload []byte) error {
+func (c *ClientConn) handleChatMessage(ctx context.Context, payload []byte) error {
 	r := NewReader(payload)
 	channel, err := r.ReadUint8()
 	if err != nil {
@@ -1046,6 +1120,18 @@ func (c *ClientConn) handleChatMessage(_ context.Context, payload []byte) error 
 	message, err := r.ReadString()
 	if err != nil {
 		return err
+	}
+
+	// Slash-command hook: try native handlers first (none exist yet — see
+	// handleSlashCommand for the switch that future built-in commands land
+	// in), then fall back to the "chat_command" Lua event. If nothing
+	// consumes it, fall through and broadcast the raw text as chat exactly
+	// like before this hook existed — preserves today's behavior for any
+	// message that merely happens to start with "/" but isn't a real command.
+	if strings.HasPrefix(message, "/") {
+		if c.handleSlashCommand(ctx, message) {
+			return nil
+		}
 	}
 
 	var w Writer
@@ -1066,6 +1152,43 @@ func (c *ClientConn) handleChatMessage(_ context.Context, payload []byte) error 
 		area.Broadcast(framed, c.actor.RuntimeID)
 	}
 	return nil
+}
+
+// handleSlashCommand dispatches a chat message starting with "/" — e.g.
+// "/unstuck" or "/combat dodge extra args" — first to a native Go handler
+// (the switch below; empty today, this is the hook point for any FUTURE
+// built-in command that needs direct Go-side logic instead of a script),
+// and only if nothing native recognizes it, to the generic "chat_command"
+// Lua event (Registry.DispatchChatCommand) as a fallback. Running Lua only
+// as a fallback — never before — means a script can never accidentally
+// shadow a native command that gets added later; native always wins.
+//
+// Returns true if the command was consumed (native handled it, or some Lua
+// "chat_command" handler explicitly returned true) — the caller then skips
+// broadcasting the raw text as ordinary chat. Returns false for anything
+// unrecognized, in which case the message falls through and is broadcast
+// as-is, exactly matching this server's pre-existing behavior for any chat
+// text (no prior concept of "unknown command" existed to preserve).
+func (c *ClientConn) handleSlashCommand(_ context.Context, message string) bool {
+	body := strings.TrimPrefix(message, "/")
+	fields := strings.Fields(body)
+	if len(fields) == 0 {
+		return false
+	}
+	cmd := strings.ToLower(fields[0])
+	args := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(body), fields[0]))
+
+	switch cmd {
+	// Future native commands go here, e.g.:
+	// case "who":
+	//     return c.handleWhoCommand()
+	}
+
+	area, ok := c.server.world.GetArea(c.actor.AreaName)
+	if !ok {
+		return false
+	}
+	return c.server.scripting.DispatchChatCommand(area, c.actor, cmd, args)
 }
 
 // ---------------------------------------------------------------------------
@@ -1573,6 +1696,14 @@ func (c *ClientConn) handleRespawnPlayer(ctx context.Context) error {
 	c.actor.Y = c.actor.SpawnY
 	c.actor.Z = c.actor.SpawnZ
 	c.actor.Yaw = c.actor.SpawnYaw
+	// Snap Y to the real terrain height, same reasoning as
+	// world.Actor.TeleportToSpawn (see its doc-comment) — an authored
+	// SpawnY that has drifted from the actual terrain would otherwise make
+	// every movement packet after respawn fail the vertical sanity check
+	// below (mv.MaxAboveGround) and silently freeze the player.
+	if respawnArea, ok := c.server.world.GetArea(c.actor.AreaName); ok && respawnArea.Heightmap != nil {
+		c.actor.Y = respawnArea.Heightmap.SampleWorld(c.actor.X, c.actor.Z)
+	}
 	hp := c.actor.Health
 	x, y, z, yaw := c.actor.X, c.actor.Y, c.actor.Z, c.actor.Yaw
 	rid := c.actor.RuntimeID

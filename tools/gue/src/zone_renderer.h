@@ -207,6 +207,12 @@ private:
     void DrawBox   (const glm::vec3& pos, const glm::vec3& scale, const glm::vec4& col, const glm::mat4& vp);
     void DrawLine  (const glm::vec3& a,   const glm::vec3& b,     const glm::vec4& col, const glm::mat4& vp);
     void DrawCircleXZ(const glm::vec2& xz, float r, float y, const glm::vec4& col, const glm::mat4& vp);
+    // Wireframe cone marker for Spot lights — apex at the light position,
+    // aimed along `dir` (unit vector), `outerDeg` is the FULL cone angle
+    // (matches ZLight::coneAngle's authoring convention), `length` is a
+    // purely visual reach (not the light's actual radius/range).
+    void DrawCone(const glm::vec3& apex, const glm::vec3& dir, float outerDeg,
+                  float length, const glm::vec4& col, const glm::mat4& vp);
 
     GLuint sphereVAO_ = 0, sphereVBO_ = 0, sphereEBO_ = 0;
     int    sphereIdx_ = 0;
