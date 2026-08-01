@@ -2429,6 +2429,16 @@ Se sim, é o próximo item a corrigir (aplicar a mesma margem de raio de 3e
 ao empurrão de tris, ou uma correção equivalente em `ClosestPtTri2D`'s
 fallback de ponto-interior).
 
+**CONFIRMADO PELO DEV — RESOLVIDO.** Testado em jogo: a ponte (incluindo o
+arco completo, não só a base/entrada) é escalável e andável de ponta a
+ponta via sweep de cápsula real contra triângulos (não mais aproximação
+por AABB/altura fixa). Box/Wedge confirmados sem regressão. O "risco
+identificado" de tremor/empurrão lateral ao atravessar mesh não se
+confirmou como problema bloqueante — colisão validada como estável. Item
+fechado. (A causa raiz completa está documentada no item 128, já que a
+correção definitiva da ponte só veio como parte da reformulação completa
+da física de movimento.)
+
 ## 126. Viewport input priority chain (GUE Zones tab)
 
 **Estado:** investigado e corrigido nesta sessão (`tools/gue/src/tabs/zones_viewport.cpp`, `zones.h`).
@@ -2987,3 +2997,392 @@ sem regressão em: facing não gira durante o dodge, approach não redireciona
 o dash, click-to-move/jump continuam suprimidos durante o dodge, e o
 comportamento pós-reformulação já validado (colide com paredes, não
 atravessa) se mantém.
+
+**CONFIRMADO PELO DEV — RESOLVIDO, ITEM FECHADO.** Bateria de testes final
+aprovada: dash volta a se somar à velocidade de caminhada (composição
+aditiva com WASD restaurada, igual ao comportamento antigo); facing não
+gira durante o dodge; auto-approach não redireciona o dash; click-to-move/
+jump continuam suprimidos durante o dodge; dodge colide corretamente com
+paredes (não atravessa mais, comportamento novo desejado); todo o
+comportamento pós-reformulação já validado em rodadas anteriores desta
+sessão permanece estável (andar/subir em Box e Mesh sem grudar, step-up em
+degraus pequenos, pouso correto sem atravessar objetos ao cair de cima).
+
+Reformulação completa da física de movimento do jogador — encerrada.
+Sistema novo (shared/physics/, CharacterPhysics::Move() unificado,
+sweep de cápsula real contra Box/Mesh) substituiu de vez o sistema antigo
+de ~8 pontos de decisão espalhados (ApplyHorizontalMove/UpdateVertical/
+ColData::Resolve/ComputeGroundHeight em 3 arquivos diferentes). Débito
+técnico que originou este arco (colisão de ponte, item 125) está,
+portanto, também encerrado.
+
+## 129. Mob morto volta pra Idle e fica travado (não fica na pose de morto)
+
+**Sintoma:** mobs, ao morrer, tocam a animação de Death brevemente e então
+voltam sozinhos pra Idle normal — não a pose de morto, Idle em loop mesmo.
+
+**Investigação (servidor):** limpo, não é a causa.
+`server/internal/world/combat_basic.go:243-294` — morte é um caminho
+ONCE-only (`dead := hp <= 0 && target.DeadAt == 0`), envia
+`BroadcastAnimate(area, target, "Death")` (linha 279) e depois um pacote
+`pActorDead` (280-291), uma única vez.
+`server/internal/world/area.go:997-1010` (`KillNPC`) remove o NPC de
+`a.actors` IMEDIATAMENTE e sincronamente — `tickAI` (`area.go:613-650`)
+nunca mais o processa depois disso. A FSM não continua rodando pós-morte e
+não existe um pacote de "idle" tardio sobrescrevendo o estado de morte.
+Fallback de vocabulário (`combat_events.go:54-103`) nunca substitui
+silenciosamente por Idle — só loga warning se `Death` não estiver bound.
+
+**Causa raiz confirmada (cliente):**
+`client/src/renderer/anim_controller.cpp` — "FIX 2" (branch de fim-de-clipe
+em `Update()`), introduzido no commit `2f5e582` ("Animation fixes, sphere
+preview & world cutouts") pra resolver um bug DIFERENTE: um one-shot com
+`return_to` ausente/mal digitado (typo, nome que não bate com nenhuma ação
+do `Bind()`) deixava o ator preso na última pose PRA SEMPRE, sem ir pra
+lugar nenhum — ver o comentário original do FIX 2 no código, que descreve
+exatamente esse caso ("if return_to_action_id resolved to 0xFF because the
+return_to name was misspelled or missing from Bind()"). A correção
+original força volta pra Idle sempre que um one-shot termina sem
+`return_to` resolvido — mas isso trata "sem `return_to` porque é terminal
+POR DESIGN" (Death, que segundo `doc/done/ANIMATION_SYSTEM_SPEC.md:133,1149`
+deveria segurar o último frame pra sempre) exatamente igual a "sem
+`return_to` por ENGANO" — o mesmo mecanismo que resolvia o bug de 2f5e582
+também capturava Death, que nunca teve `return_to` de propósito.
+
+**Configuração:** verificada direto em `dist/server/rco.db` — todos os
+mobs testados (Gremlin id=6, Skeletal Archer id=7, Skeletal King id=8, Orc
+Warrior id=9, Orc King id=10, Orc Boss id=11) já tinham `Death` bound com
+clipe real, `loop=0`, `priority=99` — configuração correta, não era o
+problema.
+
+**Corrigido — sinal explícito `is_terminal`, sem inferir de `priority`:**
+adicionado um campo booleano explícito (default `false`, preserva
+comportamento atual pra tudo que não opta), em vez de usar `priority=99`
+como proxy (frágil — outra ação poderia coincidentemente usar essa
+prioridade por outro motivo):
+
+- **Schema:** `media_actor_anims.is_terminal INTEGER NOT NULL DEFAULT 0` —
+  `server/internal/db/db.go` `migrateV56` (novo, registrado após
+  `migrateV55`) via `addColumnIfMissing`; espelhado no bootstrap próprio do
+  GUE (`tools/gue/src/tabs/media.cpp`, CREATE TABLE + `animColumns[]`
+  migration list, mesmo padrão já usado pras outras colunas dessa tabela).
+- **GUE:** `ActorAnimMap::is_terminal` (`tools/gue/src/tabs/media.h`) +
+  checkbox "Terminal" na tabela de animações do Actor Def editor
+  (`media.cpp`, coluna nova na tabela de 11→12 colunas, com tooltip) +
+  load/insert/update SQL atualizados + "Add Standard Actions" já marca
+  Death como `is_terminal=true` por padrão pra Actor Defs novos.
+- **Wire (server→cliente):** `world.AnimBinding.IsTerminal`
+  (`server/internal/world/actor.go`) + `appendAnimBindings`
+  (`server/internal/world/frame.go`) manda mais um byte logo depois de
+  `Priority`, antes da contagem de eventos — campo NOVO no final do
+  registro por binding, não quebra formato existente. `BuildAppearanceFromDef`
+  (`server/internal/net/appearance.go`) propaga `a.IsTerminal`.
+- **Cliente:** `rco::anim::AnimBinding::is_terminal`
+  (`client/src/renderer/anim_controller.h`) + os 2 pontos de leitura de wire
+  (PStartGame e PNewActor, `main.cpp`) + os 6 pontos de cópia struct-a-struct
+  (`WorldAnim`/`IncomingAnim`/`AnimBinding`, 3 caminhos: player via
+  PStartGame, player via PNewActor, outros atores via PNewActor) — todos
+  atualizados em lockstep pra não dessincronizar o parser binário.
+- **Dados:** `dist/server/rco.db`, `media_actor_anims.is_terminal=1` pras 6
+  linhas de Death dos mobs listados acima (Human-Male, id=5, NÃO marcado —
+  fora do escopo pedido, é uma raça de jogador, não um mob).
+
+**Branch de fim-de-clipe corrigido**
+(`anim_controller.cpp`, `Update()`, ~linha 317): quando `pending_return_ ==
+0xFF` (sem `return_to` resolvido),
+```cpp
+if (b.is_terminal) {
+    // Terminal por design — segura o último frame, não cai pra Idle.
+    active_.finished = true;
+} else {
+    // FIX 2 original, intocado — continua protegendo o caso de má
+    // configuração (return_to ausente/typo).
+    ... fallback pra Idle (ou finished=true se nem Idle existir) ...
+}
+```
+Comportamento do FIX 2 preservado 100% pra todo binding com
+`is_terminal=false` (o default) — só bindings que EXPLICITAMENTE marcam
+`is_terminal=true` (hoje: só Death nos 6 mobs acima) saem do caminho de
+fallback-pra-Idle.
+
+**Quando atacar:** aguardando o dev buildar (server + client + GUE) e
+testar — mob morto deve ficar na pose de Death permanentemente até o corpo
+ser removido (`kCorpseSinkDurationSec`), sem voltar pra Idle. Confirmar
+também que um one-shot genuinamente mal configurado (sem `is_terminal`,
+`return_to` vazio por engano) continua caindo pra Idle como antes — não
+regredir a proteção original do FIX 2. Nada compilado nesta rodada.
+
+**Round 2 — reportado pelo dev: ainda volta pro Idle, só que depois de
+completar a animação inteira (antes talvez interrompesse mais cedo).**
+Suspeita: `is_terminal` não chega `true` no ponto da checagem, OU chega
+`true` mas algo depois força Idle de qualquer forma.
+
+**Achado crítico ANTES de qualquer log novo:** todos os `[anim-diag]...`
+logs em `anim_controller.cpp` — incluindo os que documentavam esse mesmo
+branch na rodada anterior — são gateados por `log_enabled`
+(`anim_controller.h:143`, default `false`) e **nada em `main.cpp` jamais
+seta esse campo como `true`** (`grep -rn "log_enabled"` não encontra
+nenhuma atribuição fora do próprio header). Ou seja: todo log de
+`[anim-diag]` estava efetivamente MORTO durante jogo normal — isso explica
+por que a rodada anterior não pôde ser confirmada por log real antes de
+implementar o fix.
+
+**Log novo implementado — incondicional, não depende de `log_enabled`**
+(`client/src/renderer/anim_controller.cpp`), prefixo `[death-term]` pra
+não se misturar com o `[anim-diag]` de sempre:
+
+1. `[death-term][BIND]` (dentro de `Bind()`, ~linha 41): loga
+   `is_terminal`/`return_to`/`priority` pra toda binding cujo `action ==
+   "Death"` OU `is_terminal == true`, ANTES de qualquer lógica de
+   Update() rodar — item 2 (rastreia se o campo chega true no cliente,
+   na origem: DB → wire → struct copy → aqui).
+2. `[death-term][DECISION]` (no branch de fim-de-clipe, ~linha 340): loga
+   `action`, `is_terminal`, `return_to`, `pending_return_`, `priority`, e
+   qual caminho VAI ser tomado (`RETURN_TO` / `HOLD_LAST_FRAME(terminal)` /
+   `FALLBACK_TO_IDLE(FIX2)`) — item 1, o ponto exato da checagem.
+3. `[death-term][APPLIED]` (dentro dos branches terminal e FIX2, ~linhas
+   371 e 388): confirma qual caminho REALMENTE rodou e o estado resultante
+   (`active_.finished`, `current_id_`) — item 1, complementa o DECISION
+   com o resultado real, não só a intenção.
+4. `[death-term][OVERRIDE]` (em `RequestStateImpl_`, ~linha 104): dispara
+   toda vez que ALGUÉM pede uma troca de estado saindo de uma binding
+   `is_terminal=true` já `finished=true` — captura QUALQUER chamador
+   (sistema de loco, re-bind de corpse, PNewActor perdido, etc.) que possa
+   estar puxando o ator de volta pra Idle DEPOIS do branch terminal ter
+   rodado corretamente — item 3, não coberto pela correção da rodada
+   anterior (que só mexeu no branch de fim-de-clipe, não em todo caminho
+   que chama `RequestState`/`ForceState`).
+
+**NÃO assume causa.** Preciso que o dev mate um mob e cole a saída
+completa de `[death-term][BIND]` + `[death-term][DECISION]` +
+`[death-term][APPLIED]` + `[death-term][OVERRIDE]` (se aparecer) daquela
+morte específica. Com isso dá pra dizer, sem adivinhar: (a) se
+`is_terminal` chega `true` no `Bind()` pra aquele mob, (b) se sim, se o
+branch terminal roda e mantém `current_id_` em Death, e (c) se mesmo assim
+algo dispara um OVERRIDE puxando de volta pra Idle depois.
+
+Nada corrigido nesta rodada, nada compilado.
+
+**Round 3 — confirmado por log real: o branch corrigido funciona.**
+`is_terminal=true`, `current_id_` fica em Death(3), `active_.finished=true`,
+disparando de novo TODO FRAME (esperado — nada em `Update()` congela
+`active_.time_sec` quando terminal, então `frame_ended` continua `true`
+pra sempre depois do fim do clipe e o branch reexecuta; inofensivo, já que
+o branch terminal não chama `RequestStateImpl_` nenhuma, só resseta
+`active_.finished=true` de novo). MESMO ASSIM o ator acaba em Idle
+visualmente — confirma-se que é OUTRO ponto, depois deste branch, que
+força a troca.
+
+**Log novo — rastreio de TODOS os pontos que podem escrever `current_id_`:**
+todo entry point público (`RequestState`, `ForceState`,
+`RequestStateByName`) ganhou um parâmetro `origin` (`const char*`, default
+`"?"`, não quebra call sites que não passam nada — mas TODOS os call sites
+reais do codebase foram atualizados com uma tag única). `RequestStateImpl_`
+ganhou dois logs incondicionais novos:
+
+- `[death-term][TO_IDLE]` — dispara TODA VEZ que qualquer chamada (de
+  qualquer origem) tem como alvo a ação "Idle", independente do estado
+  atual ser terminal ou não. Mostra `origin`, `force`, `current_id_`/ação
+  atual, `active_.finished`, `cb.is_terminal`. Mais amplo que o
+  `[death-term][OVERRIDE]` da rodada 2 de propósito: um `Bind()` que
+  reseta `current_id_` pra 0 ANTES de chamar `RequestStateByName("Idle")`
+  nunca dispararia o OVERRIDE (nesse ponto `cb` já seria `bindings_[0]`,
+  não Death), mas dispara o TO_IDLE.
+- `[death-term][OVERRIDE]` (já existia, rodada 2) — mantido, agora também
+  com `origin`.
+
+**Lista completa dos pontos que podem trocar `current_id_`** (todo call
+site de `RequestState`/`ForceState`/`RequestStateByName`, cada um com sua
+tag de origin):
+
+| Tag (`origin`) | Arquivo:contexto | Quando dispara |
+|---|---|---|
+| `AnimController::Bind` | `anim_controller.cpp:73`, dentro de `Bind()` | toda vez que `Bind()` roda (PNewActor/PStartGame) — sempre tenta ir pra Idle |
+| `AnimController::Update/auto-loco` | `anim_controller.cpp:238` | só quando `cur` já é Idle/Walk/Run (loco_eligible) — Death não é elegível, não deveria disparar pra um corpse |
+| `AnimController::Update/RETURN_TO` | `anim_controller.cpp:374` | quando `pending_return_ != 0xFF` — Death não tem return_to, não deveria disparar |
+| `AnimController::Update/FIX2-fallback` | `anim_controller.cpp:419` | só quando `is_terminal==false` — não deveria disparar pra Death agora |
+| `main.cpp/rebind_player_anim_controller` | `main.cpp:1858` | lambda de rebind do player (não-NPC) |
+| `main.cpp/PStartGame` | `main.cpp:2168` | bind inicial do player |
+| `main.cpp/PNewActor-player-self` | `main.cpp:2526` | PNewActor pro próprio player |
+| `main.cpp/PNewActor-other-actor` | `main.cpp:2703` | **suspeito** — PNewActor pra QUALQUER outro ator, inclusive se o `rid` de um corpse for reenviado; logado com `[death-term][PNEWACTOR]` extra se `rid` também estiver em `world_corpses` no momento |
+| `main.cpp/dodge-start`, `guard-started`, `parry-started` | `main.cpp:2952,2962,2964` | eventos de combate do player local — não afetam NPCs |
+| `main.cpp/pActorDead-player`, `pActorDead-corpse` | `main.cpp:3146,3166` | os próprios disparos de Death — esperado |
+| `main.cpp/kPRepositionActor-respawn-reset` | `main.cpp:3208` | reset de Idle só do PLAYER ao respawnar — não afeta NPC |
+| `main.cpp/PAnimateActor-player`, `PAnimateActor-other-actor` | `main.cpp:3246,3273` | **suspeito principal** — pacote de animação normal do servidor pra qualquer `rid`; `it->second` vem de `world_actors.find(rid)`, que EM TEORIA não deveria mais conter o `rid` de um corpse (removido em `pActorDead`) — mas logado com `[death-term][PANIMATE]` extra se `rid` também estiver em `world_corpses` simultaneamente, pra confirmar ou descartar isso com dado real em vez de suposição |
+| `main.cpp/attr-sync-respawn-reset` | `main.cpp:3304` | reset de Idle só do PLAYER — não afeta NPC |
+| `main.cpp/per-frame-player-dead-loop` | `main.cpp:5787` | só PLAYER, é o próprio padrão "dispara Death todo frame" que o dev observou — mas isolado ao player, NPCs/corpses não têm equivalente (loop de corpses em `main.cpp` só chama `Update()`, nunca re-chama `RequestStateByName`) |
+
+Os dois suspeitos reais pra um MOB corpse (não-player) são
+`PNewActor-other-actor` e `PAnimateActor-other-actor` — ambos logados com
+uma checagem extra (`rid_is_also_a_corpse`) que dispara um log adicional
+se o `rid` do corpse aparecer nesses caminhos enquanto ainda em
+`world_corpses`, o que não deveria ser estruturalmente possível (corpse é
+removido de `world_actors` no exato momento em que é criado) — mas fica
+provado ou descartado por log real em vez de leitura de código.
+
+**Quando atacar:** aguardando o dev matar um mob e colar a saída completa
+de `[death-term][BIND]` + `[death-term][DECISION]` + `[death-term][APPLIED]`
++ `[death-term][TO_IDLE]` (TODAS as ocorrências, não só a primeira) +
+`[death-term][OVERRIDE]`/`[death-term][PNEWACTOR]`/`[death-term][PANIMATE]`
+(se aparecerem) daquela morte. O primeiro `[death-term][TO_IDLE]` cujo
+`origin` aparecer depois do primeiro `[death-term][APPLIED] ...
+is_terminal=true` é o culpado. Nada corrigido nesta rodada, nada compilado.
+
+**Round 4 — CAUSA RAIZ REAL ENCONTRADA, confirmada por leitura de código (não
+mais log/hipótese): não é lógica de estado, é amostragem de pose no
+renderer.** O dev reportou que depois da morte `[death-term][DECISION]`/
+`[APPLIED]` param de aparecer — descartando qualquer troca de estado em
+C++ (`current_id_`/`RequestStateImpl_`), exatamente como a rodada 3 já
+apontava. A pergunta certa virou "o que está sendo DESENHADO", não "qual
+é o estado lógico".
+
+**Cadeia de renderização rastreada:**
+`AnimController::Submit()` (`client/src/renderer/anim_controller.cpp:462-483`)
+chama `actor.SubmitAs(CurrentAction()="Death", CurrentTime()+offset,
+loop_flag=false, pipeline)` — `loop_flag` vem de
+`active_.binding->loop`, que é `false` pra Death (correto). `SubmitAs`
+(`shared/renderer/src/actor.cpp:362-419`) clampa corretamente o tempo
+quando `loop==false`:
+```cpp
+if (loop) { if (dur > 0.f) t = std::fmod(anim_t, dur); }
+else      { if (dur > 0.f && t > dur) t = dur; }   // actor.cpp:378-379
+```
+Ou seja, uma vez que a animação "terminou", `t` fica travado em
+`t == dur` (a duração exata do clipe) — até aqui, correto, essa é
+literalmente a intenção de "segurar no último frame".
+
+**O BUG está um nível abaixo, em `Model::ComputeBones`**
+(`shared/renderer/src/model.cpp:748-821`) — essa função NÃO recebe nem
+respeita nenhum parâmetro `loop`. Ela SEMPRE faz:
+```cpp
+t = clip->duration_sec > 0.f ? std::fmod(time_sec, clip->duration_sec) : 0.f;
+// model.cpp:777
+```
+`SubmitAs` já passou `t = dur` (a duração EXATA do clipe, pro caso
+segurado/terminado). `ComputeBones` recebe esse `dur` como `time_sec` e
+faz `fmod(dur, dur)` — que em IEEE754 é **exatamente `0.0`**. Resultado:
+em vez de amostrar o ÚLTIMO frame do clipe de Death (a pose de morto,
+caída), `ComputeBones` amostra o **PRIMEIRO frame** (`t=0`) — que, pra
+praticamente qualquer clipe de morte (personagem em pé antes de cair),
+visualmente parece uma pose neutra/em-pé — exatamente o que o dev está
+descrevendo como "voltou pro Idle". Bate perfeitamente com "só depois de
+completar a animação inteira" (rodada anterior) — o glitch só aparece no
+exato instante em que `time_sec` cruza `duration_sec` pela primeira vez
+(`t` vira `dur`, `fmod(dur,dur)=0`), não antes.
+
+**Resposta aos 3 itens pedidos:**
+1. `Update()` do corpse NÃO tem nenhum limite/timeout que o pare
+   silenciosamente — roda todo frame indefinidamente, gateado só por: (a)
+   remoção total do `world_corpses` em `remove_time` (~10.75s pós-morte:
+   `kCorpseLieTimeSec`=4.25 + `kCorpseSinkDurationSec`=6.50,
+   `main.cpp:1137-1139`) — quando isso acontece, a entrada é APAGADA do
+   vetor (`main.cpp:6150-6153`, `it = world_corpses.erase(it); continue;`)
+   e nada mais é desenhado pra ela, correto, não é bug; (b) cull transiente
+   de distância/frustum (`main.cpp`, dentro do loop de corpses) — pula
+   Update() E Submit() só NAQUELE frame, retoma normalmente assim que o
+   corpse volta a ficar visível/perto. Não encontrei nenhum caminho que
+   pare `Update()` permanentemente enquanto o corpse ainda está na lista e
+   visível — se o `[death-term]` realmente parou de aparecer bem antes dos
+   ~10.75s, peço a confirmação exata do timing no próximo teste (mas isso
+   não muda a causa raiz abaixo, que já explica o sintoma visual principal
+   independente disso).
+2. Se for o caso (a) acima (remoção aos ~10.75s): fica visível **nada** —
+   o corpse é apagado da lista, não há mais nenhum `Submit()` pra ele. Se o
+   dev continua vendo um corpo "em Idle" depois disso, é preciso re-testar
+   olhando o relógio: o mais provável, dado o bug confirmado abaixo, é que
+   a pose errada (frame 0 = "Idle-looking") já estava acontecendo BEM antes
+   dos 10.75s — assim que `time_sec` cruzou a duração do clipe de Death,
+   não é um estado "novo" surgindo depois.
+3. A pose desenhada vem de `AnimController::Submit()` → `Actor::SubmitAs()`
+   → `Model::ComputeBones()` — não existe nenhum cache de pose "congelada"
+   separado nem fallback de bind-pose explícito pra corpse; o bug é
+   puramente `ComputeBones` fazendo `fmod(t, dur)` sem saber que `t==dur`
+   significa "clipe one-shot já terminado, segure o ÚLTIMO frame", tratando
+   isso como "voltar ao início do clipe" (frame 0) via aritmética de módulo.
+
+**NÃO implementado ainda** (instrução explícita desta rodada) — mas o
+ponto exato do fix já está identificado: `Model::ComputeBones` precisa
+saber se o clipe é loop ou não (hoje não recebe esse parâmetro), e quando
+não-loop, deve clampar internamente pra pouco ANTES de `duration_sec`
+(ex: `std::min(time_sec, duration_sec - epsilon)`) em vez de aplicar
+`fmod` incondicional — ou alternativamente, `SubmitAs` (que já sabe o
+`loop` flag) pode subtrair um pequeno epsilon ao clampar em `dur`, já que
+o problema real é `t` bater EXATAMENTE em `dur` antes de chegar em
+`ComputeBones`. Qualquer uma das duas resolve; a segunda é a mudança
+menor (um `-1e-4f` a mais em `actor.cpp:379`, sem tocar
+`Model::ComputeBones` nem seu contrato de assinatura).
+
+**Quando atacar:** aguardando autorização pra implementar (não pedida
+ainda nesta rodada) — recomendo o fix do epsilon em `SubmitAs`
+(`actor.cpp:379`) por ser o menor raio de mudança, mas ambas as opções
+resolvem o mesmo sintoma. Nada corrigido, nada compilado.
+
+**CORRIGIDO — correção estrutural em `Model::ComputeBones` (não o
+epsilon):** o dev pediu explicitamente a correção maior, não o remendo
+pontual em `SubmitAs` — motivo: um epsilon no call site só protege o
+caminho de Death; qualquer outro clipe one-shot que termine com
+`time_sec == duration_sec` exato sofreria o mesmo bug silenciosamente em
+qualquer OUTRO call site de `ComputeBones` que alguém escrever no futuro.
+
+- **`shared/renderer/include/rco/renderer/model.h`** — `ComputeBones`
+  ganhou um 6º parâmetro `bool loop = true` (default preserva o
+  comportamento de qualquer chamador que não seja atualizado).
+- **`shared/renderer/src/model.cpp`** — dentro de `ComputeBones`, quando
+  `loop==true`: comportamento IDÊNTICO a antes (`fmod(time_sec,
+  duration_sec)`). Quando `loop==false`: clampa `time_sec` pra
+  `duration_sec - 1e-4f` ANTES de qualquer aritmética, se `time_sec >=
+  duration_sec` — nunca mais chega no caso degenerado `fmod(dur,dur)=0`.
+  `ComputeBlendedBones` (função IRMÃ, não mencionada no pedido) não foi
+  tocada — suas 2 chamadas internas a `ComputeBones` (`model.cpp:868-869`,
+  casos de borda `alpha<=0`/`alpha>=1`) usam o default `loop=true` e
+  continuam com o comportamento de sempre; deixadas de fora
+  deliberadamente porque blend só fica ativo por uma janela curta logo no
+  INÍCIO de uma transição de estado (`blend_t_ < blend_dur`), nunca durante
+  o "segurar pra sempre" de um one-shot já terminado — não é o caminho que
+  o bug confirmado atinge.
+- **`shared/renderer/src/actor.cpp`** — os 3 call sites reais de
+  `ComputeBones` atualizados:
+  - `Actor::Submit()` (linha ~292) e `Actor::SubmitWithMatrix()` (linha
+    ~336) — caminho LEGADO (`clip_idx_`/`anim_t_`, dirigido pelo próprio
+    `Actor::PlayAnim()`/`Update()`, usado quando `AnimController` não está
+    pronto, ou por `SubmitWithMatrix` no caminho de preview/ferramentas):
+    agora passam `loop_` (membro do próprio `Actor`, já existia). Esse
+    caminho tinha o MESMO bug em potencial — `Actor::Update()` também seta
+    `anim_t_ = dur;` exato quando um one-shot sem `return_to_` termina
+    (`actor.cpp`, dentro de `Update()`).
+  - `Actor::SubmitAs()` (linha ~396) — caminho usado por
+    `AnimController::Submit()` (o caminho real do bug reportado): agora
+    passa o parâmetro `loop` que a função já recebia. O clamp que já
+    existia em `SubmitAs` (`t = dur` quando `loop==false && t>dur`,
+    `actor.cpp:378-379`) foi MANTIDO — agora é redundante mas inofensivo
+    (double-clamp idempotente: `SubmitAs` já entrega `t==dur`,
+    `ComputeBones` reclampa pra `dur-1e-4f` internamente).
+
+**Confirmado — todos os call sites reais atualizados:** os únicos 3 pontos
+do codebase inteiro que chamam `Model::ComputeBones` diretamente (fora de
+`ComputeBlendedBones`, deliberadamente fora de escopo) são os 3 listados
+acima, em `actor.cpp` — `grep -rn "ComputeBones" --include=*.cpp .`
+confirma que não há nenhum outro caller (nem em `tools/gue/`, que usa sua
+própria lógica de preview via os mesmos `Actor::Submit*` acima, não chama
+`Model::ComputeBones` direto).
+
+**Confirmado — comportamento de animações em loop idêntico ao de hoje:**
+o branch `if (loop) { t = std::fmod(time_sec, clip->duration_sec); }` é
+byte-a-byte o mesmo cálculo que existia antes da mudança — só o branch
+`else` (novo) é exclusivo de `loop==false`. Todo call site que já passava
+implicitamente "sempre loop" (o comportamento de 100% dos casos antes
+desta mudança) continua se comportando exatamente igual, já que os 3 call
+sites reais agora passam o `loop`/`loop_` VERDADEIRO de cada binding —
+para Idle/Walk/Run (`loop=true`) nada muda; só Attack/Cast/Hit/Jump/Death
+(`loop=false`) passam a se beneficiar do clamp quando terminam e ficam
+seguradas (a maioria desses já tem `return_to` e nunca fica "segurada" por
+muito tempo — só Death, com `is_terminal=true` e sem `return_to`, fica
+parada nesse estado indefinidamente, que é exatamente o caso que expunha
+o bug).
+
+**Quando atacar:** aguardando o dev buildar (client) e repetir o teste de
+matar um mob — o corpse deve ficar visualmente na pose de Death (último
+frame, corpo caído) e não mais reverter pro primeiro frame do clipe.
+Confirmar também que animações em loop (Idle/Walk/Run) e one-shots com
+`return_to` (Attack/Hit/Cast/Jump) continuam idênticas — sem regressão.
+Nada commitado, nada compilado nesta rodada.

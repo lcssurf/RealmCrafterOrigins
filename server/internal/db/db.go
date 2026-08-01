@@ -501,6 +501,7 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV53(ctx)
 	d.migrateV54(ctx)
 	d.migrateV55(ctx)
+	d.migrateV56(ctx)
 
 	return d, nil
 }
@@ -3034,6 +3035,9 @@ type ActorDefAnim struct {
 	BlendIn    float32
 	ReturnTo   string
 	Priority   uint8
+	// IsTerminal: explicit "hold last frame, no auto-return" flag (migrateV56).
+	// See world.AnimBinding.IsTerminal for the full rationale.
+	IsTerminal bool
 }
 
 // ActorDef bundles an actor definition with its meshes + animation map +
@@ -3119,17 +3123,18 @@ func (d *DB) LoadActorDef(ctx context.Context, id int) (*ActorDef, error) {
 	}
 
 	arows, err := d.db.QueryContext(ctx,
-		d.q(`SELECT id, actor_def_id, action, clip_id, loop, speed, blend_in, return_to, priority
+		d.q(`SELECT id, actor_def_id, action, clip_id, loop, speed, blend_in, return_to, priority, is_terminal
 		     FROM media_actor_anims WHERE actor_def_id = ?`), id)
 	if err == nil {
 		defer arows.Close()
 		for arows.Next() {
 			var a ActorDefAnim
-			var loopInt, priInt int
+			var loopInt, priInt, terminalInt int
 			if err := arows.Scan(&a.ID, &a.ActorDefID, &a.Action, &a.ClipID,
-				&loopInt, &a.Speed, &a.BlendIn, &a.ReturnTo, &priInt); err == nil {
+				&loopInt, &a.Speed, &a.BlendIn, &a.ReturnTo, &priInt, &terminalInt); err == nil {
 				a.Loop = loopInt != 0
 				a.Priority = uint8(priInt)
+				a.IsTerminal = terminalInt != 0
 				out.Anims = append(out.Anims, a)
 			}
 		}
@@ -9549,6 +9554,17 @@ func (d *DB) migrateV52(ctx context.Context) {
 func (d *DB) migrateV53(ctx context.Context) {
 	d.addColumnIfMissing(ctx, "item_templates", "icon_path", "TEXT NOT NULL DEFAULT ''")
 	d.addColumnIfMissing(ctx, "ability_templates", "icon_path", "TEXT NOT NULL DEFAULT ''")
+}
+
+// migrateV56 adds is_terminal to media_actor_anims — an explicit "hold last
+// frame forever, no auto-return" flag for one-shot bindings (e.g. Death),
+// distinct from return_to=='' left empty BY MISTAKE. Default false preserves
+// existing behavior (AnimController's FIX 2 fallback-to-Idle) for every
+// binding that doesn't opt in. See docs/TECH_DEBT.md, mob-death-stuck-in-
+// Idle investigation, and client/src/renderer/anim_controller.cpp's
+// end-of-clip branch, which is the actual consumer of this flag.
+func (d *DB) migrateV56(ctx context.Context) {
+	d.addColumnIfMissing(ctx, "media_actor_anims", "is_terminal", "INTEGER NOT NULL DEFAULT 0")
 }
 
 // CanonicalBoneSlots is the fixed vocabulary of ~19 humanoid retargeting

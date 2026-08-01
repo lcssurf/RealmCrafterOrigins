@@ -229,6 +229,12 @@ type AnimBinding struct {
 	BlendIn      float32
 	ReturnTo     string
 	Priority     uint8
+	// IsTerminal: explicit "hold last frame forever, no auto-return" signal
+	// (e.g. Death). Distinguishes that from ReturnTo=="" left empty BY
+	// MISTAKE — the client's AnimController falls back to Idle for the
+	// latter but not the former. See docs/TECH_DEBT.md, mob-death-stuck-
+	// in-Idle investigation.
+	IsTerminal   bool
 	Events       []AnimEvent
 }
 

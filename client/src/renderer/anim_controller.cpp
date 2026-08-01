@@ -32,6 +32,18 @@ void AnimController::Bind(const std::vector<AnimBinding>& bindings) {
 
     // Second pass: resolve return_to → return_to_action_id
     for (auto& b : bindings_) {
+        // UNCONDITIONAL (see docs/TECH_DEBT.md #129 round 2): traces
+        // is_terminal from the moment it arrives in this AnimController,
+        // BEFORE any Update()/end-of-clip logic runs. If this prints
+        // is_terminal=0 for Death, the field never arrived true here —
+        // the bug is upstream (DB read, wire encode/decode, or a struct
+        // copy site in main.cpp that wasn't updated), not in this file.
+        if (b.action == "Death" || b.is_terminal) {
+            std::fprintf(stderr,
+                "[death-term][BIND] action='%s' is_terminal=%d return_to='%s' priority=%u\n",
+                b.action.c_str(), (int)b.is_terminal, b.return_to.c_str(),
+                static_cast<unsigned>(b.priority));
+        }
         if (b.return_to.empty()) {
             b.return_to_action_id = 0xFF;
         } else {
@@ -58,18 +70,18 @@ void AnimController::Bind(const std::vector<AnimBinding>& bindings) {
     current_id_              = 0;
 
     // If Idle is present, transition into it (updates current_id_ and blend state).
-    RequestStateByName("Idle");
+    RequestStateByName("Idle", "AnimController::Bind");
 }
 
-bool AnimController::RequestState(uint8_t new_id) {
-    return RequestStateImpl_(new_id, /*force=*/false);
+bool AnimController::RequestState(uint8_t new_id, const char* origin) {
+    return RequestStateImpl_(new_id, /*force=*/false, origin);
 }
 
-bool AnimController::ForceState(uint8_t new_id) {
-    return RequestStateImpl_(new_id, /*force=*/true);
+bool AnimController::ForceState(uint8_t new_id, const char* origin) {
+    return RequestStateImpl_(new_id, /*force=*/true, origin);
 }
 
-bool AnimController::RequestStateImpl_(uint8_t new_id, bool force) {
+bool AnimController::RequestStateImpl_(uint8_t new_id, bool force, const char* origin) {
     if (bindings_.empty() || new_id >= static_cast<uint8_t>(bindings_.size())) {
         if (log_enabled) {
             std::fprintf(stderr,
@@ -91,6 +103,46 @@ bool AnimController::RequestStateImpl_(uint8_t new_id, bool force) {
 
     const auto& nb = bindings_[new_id];
     const auto& cb = bindings_[current_id_];
+
+    // UNCONDITIONAL (see docs/TECH_DEBT.md #129 round 3): every single call
+    // into this function that targets Idle, no matter the caller, no matter
+    // whether the current state is terminal/finished. Round 2's
+    // [death-term][OVERRIDE] below only fired when leaving a
+    // terminal+finished state — round 3's real log showed the terminal
+    // branch (is_terminal=true, current_id_ stays at Death, active_.finished
+    // =true) firing correctly EVERY frame, yet the actor still visually
+    // ends up on Idle. This trace is broader on purpose: it fires for EVERY
+    // transition targeting Idle regardless of what cb/current state looks
+    // like, so it also catches paths that don't go through this exact
+    // instance's "leaving a terminal state" framing (e.g. a fresh Bind()
+    // that resets current_id_ to 0 BEFORE calling RequestStateByName("Idle")
+    // — cb at that point would already be bindings_[0], not Death, so the
+    // OVERRIDE check below would never fire for that path, but this one will).
+    if (nb.action == "Idle") {
+        std::fprintf(stderr,
+            "[death-term][TO_IDLE] origin='%s' force=%d requested_id=%u ('Idle') <- "
+            "current_id_=%u ('%s') active_.finished=%d cb.is_terminal=%d\n",
+            origin, (int)force, static_cast<unsigned>(new_id),
+            static_cast<unsigned>(current_id_), cb.action.c_str(),
+            (int)active_.finished, (int)cb.is_terminal);
+    }
+
+    // UNCONDITIONAL (see docs/TECH_DEBT.md #129 round 2, item 3): catches
+    // ANY caller that requests a state change AWAY from a terminal,
+    // already-finished state (e.g. Death after is_terminal correctly held
+    // it) — this is exactly the "something else forces Idle afterward"
+    // scenario the previous round's fix would NOT cover, since that fix
+    // only touches the end-of-clip branch, not every possible caller of
+    // RequestState/RequestStateByName/ForceState/Bind() elsewhere in the
+    // codebase (loco system, corpse re-bind, a stray PNewActor, etc).
+    if (cb.is_terminal && active_.finished && new_id != current_id_) {
+        std::fprintf(stderr,
+            "[death-term][OVERRIDE] origin='%s' '%s' (terminal, finished=true) is being "
+            "switched to '%s' (id=%u) by an external RequestState/ForceState call, "
+            "force=%d.\n",
+            origin, cb.action.c_str(), nb.action.c_str(), static_cast<unsigned>(new_id),
+            (int)force);
+    }
 
     if (log_enabled) {
         std::fprintf(stderr,
@@ -154,11 +206,11 @@ bool AnimController::RequestStateImpl_(uint8_t new_id, bool force) {
     return true;
 }
 
-bool AnimController::RequestStateByName(const std::string& action) {
+bool AnimController::RequestStateByName(const std::string& action, const char* origin) {
     auto it = action_to_id_.find(action);
     if (it == action_to_id_.end()) return false;
     if (!AnimBindingIsValid(bindings_[it->second])) return false;
-    return RequestStateImpl_(it->second, /*force=*/false);
+    return RequestStateImpl_(it->second, /*force=*/false, origin);
 }
 
 void AnimController::Update(float dt, float speed) {
@@ -183,7 +235,7 @@ void AnimController::Update(float dt, float speed) {
                         "[anim-diag][LOCO] speed=%.3f cur='%s' -> requesting '%s'\n",
                         speed, cur.c_str(), desired);
                 }
-                RequestStateByName(desired);
+                RequestStateByName(desired, "AnimController::Update/auto-loco");
             }
         } else if (log_enabled) {
             // ⚠️ KEY CHECK (item 4): while cur is NOT Idle/Walk/Run (e.g. stuck on
@@ -300,10 +352,26 @@ void AnimController::Update(float dt, float speed) {
             active_.time_sec         = 0.f;
             active_.last_event_frame = b.start_frame - 1;
         } else {
+            // UNCONDITIONAL (bypasses log_enabled — see docs/TECH_DEBT.md
+            // #129, "mob morto volta pra Idle" investigation round 2): the
+            // exact decision point. Prints regardless of the per-instance
+            // log_enabled flag, which defaults false and is never toggled
+            // on anywhere in main.cpp — every prior [anim-diag] log in this
+            // file was effectively DEAD during normal play, which is why
+            // the previous round's fix could not be confirmed by a real
+            // log. This one always fires for every one-shot end-of-clip.
+            std::fprintf(stderr,
+                "[death-term][DECISION] action='%s' is_terminal=%d return_to='%s' "
+                "pending_return_=%u priority=%u -> %s\n",
+                b.action.c_str(), (int)b.is_terminal, b.return_to.c_str(),
+                static_cast<unsigned>(pending_return_),
+                static_cast<unsigned>(b.priority),
+                pending_return_ != 0xFF ? "RETURN_TO"
+                    : (b.is_terminal ? "HOLD_LAST_FRAME(terminal)" : "FALLBACK_TO_IDLE(FIX2)"));
             if (pending_return_ != 0xFF) {
                 uint8_t ret     = pending_return_;
                 pending_return_ = 0xFF;
-                bool applied = RequestStateImpl_(ret, /*force=*/true);
+                bool applied = RequestStateImpl_(ret, /*force=*/true, "AnimController::Update/RETURN_TO");
                 if (log_enabled) {
                     std::fprintf(stderr,
                         "[anim-diag][RETURN_TO] fired: '%s' -> requesting '%s' (id=%u) "
@@ -314,6 +382,22 @@ void AnimController::Update(float dt, float speed) {
                         static_cast<unsigned>(current_id_),
                         bindings_[current_id_].action.c_str());
                 }
+            } else if (b.is_terminal) {
+                // Terminal state BY DESIGN (e.g. Death, priority=99,
+                // return_to intentionally empty — see ANIMATION_SYSTEM_SPEC.md
+                // and docs/TECH_DEBT.md, mob-death-stuck-in-Idle
+                // investigation). This is NOT the misconfiguration FIX 2
+                // below guards against — hold the last frame and stop, same
+                // as the pre-FIX-2 behavior, but scoped ONLY to bindings that
+                // explicitly opted in.
+                active_.finished = true;
+                std::fprintf(stderr,
+                    "[death-term][APPLIED] '%s' is_terminal=true — active_.finished=true, "
+                    "current_id_ STAYS at %u ('%s'). If this actor still ends up on Idle "
+                    "after this line, the cause is NOT this branch — something else is "
+                    "requesting a state change afterward.\n",
+                    b.action.c_str(), static_cast<unsigned>(current_id_),
+                    bindings_[current_id_].action.c_str());
             } else {
                 // FIX 2: never leave the actor with no next state. A one-shot
                 // clip with no return_to configured previously just sat
@@ -321,17 +405,18 @@ void AnimController::Update(float dt, float speed) {
                 // "preso" symptom, independent of the end=-1 bug above — e.g.
                 // if return_to_action_id resolved to 0xFF because the return_to
                 // name was misspelled or missing from Bind()). Fall back to
-                // Idle so the actor always has somewhere to go.
+                // Idle so the actor always has somewhere to go. Skipped above
+                // for is_terminal==true bindings — those have no return_to ON
+                // PURPOSE (see the is_terminal branch), not by mistake.
                 auto idle_it = action_to_id_.find("Idle");
                 if (idle_it != action_to_id_.end() && idle_it->second != current_id_) {
-                    if (log_enabled) {
-                        std::fprintf(stderr,
-                            "[anim-diag][END] ⚠️ no return_to configured for '%s' "
-                            "(return_to_action_id=0xFF) — falling back to 'Idle' (id=%u) "
-                            "instead of sitting finished forever.\n",
-                            b.action.c_str(), static_cast<unsigned>(idle_it->second));
-                    }
-                    RequestStateImpl_(idle_it->second, /*force=*/true);
+                    std::fprintf(stderr,
+                        "[death-term][APPLIED] '%s' is_terminal=false, no return_to — "
+                        "FIX2 falling back to 'Idle' (id=%u). If this fired for a Death "
+                        "clip, is_terminal did NOT arrive as true on this binding — check "
+                        "the [death-term][BIND] log above for what Bind() actually received.\n",
+                        b.action.c_str(), static_cast<unsigned>(idle_it->second));
+                    RequestStateImpl_(idle_it->second, /*force=*/true, "AnimController::Update/FIX2-fallback");
                 } else {
                     active_.finished = true;
                     if (log_enabled) {

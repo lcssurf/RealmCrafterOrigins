@@ -746,7 +746,7 @@ void Model::AliasClip(const std::string& native_name, const std::string& new_nam
 // ComputeBones — evaluate animation, fill out_mats
 // ---------------------------------------------------------------------------
 void Model::ComputeBones(int clip_idx, float time_sec, int mesh_idx,
-                         glm::mat4* out_mats, int max_out) const {
+                         glm::mat4* out_mats, int max_out, bool loop) const {
     for (int i = 0; i < std::min(max_out, kMaxBones); ++i)
         out_mats[i] = glm::mat4(1.f);
 
@@ -774,7 +774,29 @@ void Model::ComputeBones(int clip_idx, float time_sec, int mesh_idx,
                          ? &clips_[clip_idx] : nullptr;
     float t = 0.f;
     if (clip) {
-        t = clip->duration_sec > 0.f ? std::fmod(time_sec, clip->duration_sec) : 0.f;
+        if (clip->duration_sec > 0.f) {
+            if (loop) {
+                t = std::fmod(time_sec, clip->duration_sec);
+            } else {
+                // Non-loop: clamp to just under duration_sec BEFORE any
+                // wrapping math, instead of fmod-ing time_sec directly.
+                // time_sec == duration_sec exactly is the steady-state a
+                // held one-shot sits at forever (see Actor::SubmitAs's own
+                // clamp) — fmod(duration_sec, duration_sec) is exactly 0.0
+                // in IEEE754, which silently sampled the clip's FIRST frame
+                // instead of its LAST. Clamping first sidesteps the
+                // degenerate case entirely; a small epsilon keeps sampling
+                // strictly inside the clip's valid range rather than
+                // exactly at its boundary.
+                float clamped = time_sec;
+                if (clamped >= clip->duration_sec) {
+                    clamped = clip->duration_sec - 1e-4f;
+                } else if (clamped < 0.f) {
+                    clamped = 0.f;
+                }
+                t = clamped;
+            }
+        }
     }
 
     std::vector<glm::mat4> global(anim_nodes_.size(), glm::mat4(1.f));

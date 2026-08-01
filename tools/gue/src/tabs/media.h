@@ -204,6 +204,13 @@ struct ActorAnimMap {
     float       blend_in  = 0.15f;
     std::string return_to;       // "" = no automatic return; else action name to return to
     int         priority  = 0;   // higher wins on conflict
+    // Explicit "hold last frame forever, no auto-return" flag — distinguishes
+    // return_to=="" BY DESIGN (e.g. Death) from BY MISTAKE (a misconfigured
+    // binding the client's AnimController fallback rescues into Idle).
+    // Default false preserves existing behavior for every binding that
+    // doesn't opt in. See docs/TECH_DEBT.md, mob-death-stuck-in-Idle
+    // investigation.
+    bool        is_terminal = false;
 };
 
 // ---------------------------------------------------------------------------

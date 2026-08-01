@@ -289,7 +289,7 @@ void Actor::Submit(Pipeline& pipeline) {
                 FillBlendedBones_(from_clip_idx_, from_t_, clip_idx_, anim_t_,
                                   blend_alpha, (int)mi, bones, kMaxBones);
             else
-                model_->ComputeBones(clip_idx_, anim_t_, (int)mi, bones, kMaxBones);
+                model_->ComputeBones(clip_idx_, anim_t_, (int)mi, bones, kMaxBones, loop_);
 
             SkinnedInstancedEntry e{};
             e.vao          = m.vao;
@@ -333,7 +333,7 @@ void Actor::SubmitWithMatrix(Pipeline& pipeline, const glm::mat4& model_matrix) 
                 FillBlendedBones_(from_clip_idx_, from_t_, clip_idx_, anim_t_,
                                   blend_alpha, (int)mi, bones, kMaxBones);
             else
-                model_->ComputeBones(clip_idx_, anim_t_, (int)mi, bones, kMaxBones);
+                model_->ComputeBones(clip_idx_, anim_t_, (int)mi, bones, kMaxBones, loop_);
 
             SkinnedInstancedEntry e{};
             e.vao          = m.vao;
@@ -393,7 +393,7 @@ void Actor::SubmitAs(const std::string& anim_name, float anim_t, bool loop,
         const int mat_idx = (mi < mesh_material_overrides_.size() && mesh_material_overrides_[mi] >= 0)
                             ? mesh_material_overrides_[mi] : m.material_idx;
         if (m.skinned) {
-            model_->ComputeBones(cidx, t, (int)mi, bones, kMaxBones);
+            model_->ComputeBones(cidx, t, (int)mi, bones, kMaxBones, loop);
             SkinnedInstancedEntry e{};
             e.vao          = m.vao;
             e.ebo          = m.ebo;

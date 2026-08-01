@@ -419,6 +419,7 @@ void MediaTab::EnsureTables(sqlite3* db) {
         "  blend_in     REAL    NOT NULL DEFAULT 0.15,"
         "  return_to    TEXT    NOT NULL DEFAULT '',"
         "  priority     INTEGER NOT NULL DEFAULT 0,"
+        "  is_terminal  INTEGER NOT NULL DEFAULT 0,"
         "  FOREIGN KEY(actor_def_id) REFERENCES media_actor_defs(id)"
         ")",
 
@@ -496,11 +497,15 @@ void MediaTab::EnsureTables(sqlite3* db) {
 
     // Additive migrations for media_actor_anims new columns (V11).
     const char* animColumns[] = {
-        "ALTER TABLE media_actor_anims ADD COLUMN loop      INTEGER NOT NULL DEFAULT 1",
-        "ALTER TABLE media_actor_anims ADD COLUMN speed     REAL    NOT NULL DEFAULT 1.0",
-        "ALTER TABLE media_actor_anims ADD COLUMN blend_in  REAL    NOT NULL DEFAULT 0.15",
-        "ALTER TABLE media_actor_anims ADD COLUMN return_to TEXT    NOT NULL DEFAULT ''",
-        "ALTER TABLE media_actor_anims ADD COLUMN priority  INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE media_actor_anims ADD COLUMN loop        INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE media_actor_anims ADD COLUMN speed       REAL    NOT NULL DEFAULT 1.0",
+        "ALTER TABLE media_actor_anims ADD COLUMN blend_in    REAL    NOT NULL DEFAULT 0.15",
+        "ALTER TABLE media_actor_anims ADD COLUMN return_to   TEXT    NOT NULL DEFAULT ''",
+        "ALTER TABLE media_actor_anims ADD COLUMN priority    INTEGER NOT NULL DEFAULT 0",
+        // is_terminal (mob-death-stuck-in-Idle investigation, see media.h's
+        // ActorAnimMap::is_terminal doc): explicit "hold last frame, no
+        // auto-return" flag, distinct from return_to=='' by mistake.
+        "ALTER TABLE media_actor_anims ADD COLUMN is_terminal INTEGER NOT NULL DEFAULT 0",
     };
     for (const char* s : animColumns)
         sqlite3_exec(db, s, nullptr, nullptr, nullptr);
@@ -902,7 +907,7 @@ void MediaTab::FetchAll(sqlite3* db) {
     // so the Actor Def editor can edit them inline without visiting the
     // Anim Clips registry.
     if (sqlite3_prepare_v2(db,
-        "SELECT id, actor_def_id, action, clip_id, loop, speed, blend_in, return_to, priority"
+        "SELECT id, actor_def_id, action, clip_id, loop, speed, blend_in, return_to, priority, is_terminal"
         " FROM media_actor_anims ORDER BY actor_def_id, action",
         -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -916,6 +921,7 @@ void MediaTab::FetchAll(sqlite3* db) {
             a.blend_in     = (float)sqlite3_column_double(stmt, 6);
             a.return_to    = colText(stmt, 7);
             a.priority     = sqlite3_column_int(stmt, 8);
+            a.is_terminal  = sqlite3_column_int(stmt, 9) != 0;
             // Denormalize the backing clip's fields into the map row.
             for (const auto& c : clips_) {
                 if (c.id == a.clip_id) {
@@ -1934,12 +1940,12 @@ void MediaTab::SaveAnimMap(sqlite3* db, ActorAnimMap& a) {
     if (a.id == 0) {
         rc = sqlite3_prepare_v2(db,
             "INSERT INTO media_actor_anims"
-            " (actor_def_id, action, clip_id, loop, speed, blend_in, return_to, priority)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, nullptr);
+            " (actor_def_id, action, clip_id, loop, speed, blend_in, return_to, priority, is_terminal)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, nullptr);
     } else {
         rc = sqlite3_prepare_v2(db,
             "UPDATE media_actor_anims"
-            " SET action=?, clip_id=?, loop=?, speed=?, blend_in=?, return_to=?, priority=?"
+            " SET action=?, clip_id=?, loop=?, speed=?, blend_in=?, return_to=?, priority=?, is_terminal=?"
             " WHERE id=?",
             -1, &stmt, nullptr);
     }
@@ -1954,6 +1960,7 @@ void MediaTab::SaveAnimMap(sqlite3* db, ActorAnimMap& a) {
         sqlite3_bind_double(stmt, 6, a.blend_in);
         sqlite3_bind_text  (stmt, 7, a.return_to.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int   (stmt, 8, a.priority);
+        sqlite3_bind_int   (stmt, 9, a.is_terminal ? 1 : 0);
     } else {
         sqlite3_bind_text  (stmt, 1, a.action.c_str(),    -1, SQLITE_TRANSIENT);
         sqlite3_bind_int   (stmt, 2, a.clip_id);
@@ -1962,7 +1969,8 @@ void MediaTab::SaveAnimMap(sqlite3* db, ActorAnimMap& a) {
         sqlite3_bind_double(stmt, 5, a.blend_in);
         sqlite3_bind_text  (stmt, 6, a.return_to.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int   (stmt, 7, a.priority);
-        sqlite3_bind_int   (stmt, 8, a.id);
+        sqlite3_bind_int   (stmt, 8, a.is_terminal ? 1 : 0);
+        sqlite3_bind_int   (stmt, 9, a.id);
     }
     if (sqlite3_step(stmt) == SQLITE_DONE) {
         if (a.id == 0) a.id = (int)sqlite3_last_insert_rowid(db);
@@ -3950,7 +3958,7 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
         ImGui::TextColored({0.8f, 0.9f, 1.f, 1.f}, "Animations");
         ImGui::BeginChild("##anims", {0, ad_anim_h_}, true);
 
-        if (ImGui::BeginTable("##anim_tbl", 11,
+        if (ImGui::BeginTable("##anim_tbl", 12,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit |
             ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable)) {
             ImGui::TableSetupScrollFreeze(1, 1);
@@ -3964,6 +3972,10 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
             ImGui::TableSetupColumn("Blend In",  ImGuiTableColumnFlags_WidthFixed,  65);
             ImGui::TableSetupColumn("Return To", ImGuiTableColumnFlags_WidthFixed,  90);
             ImGui::TableSetupColumn("Priority",  ImGuiTableColumnFlags_WidthFixed,  60);
+            // "Hold last frame forever, no auto-return" — for terminal
+            // one-shots like Death, distinct from return_to=='' by mistake
+            // (see ActorAnimMap::is_terminal doc, media.h).
+            ImGui::TableSetupColumn("Terminal",  ImGuiTableColumnFlags_WidthFixed,  55);
             ImGui::TableSetupColumn("##ops",     ImGuiTableColumnFlags_WidthFixed,  90);
             ImGui::TableHeadersRow();
 
@@ -4022,6 +4034,13 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                 if (a.priority > 99) a.priority = 99;
 
                 ImGui::TableNextColumn();
+                ImGui::Checkbox("##terminal", &a.is_terminal);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Hold the last frame forever when this clip ends "
+                                       "(no auto-return to Idle). Use for Death and other "
+                                       "one-shots that should NOT snap back on their own.");
+
+                ImGui::TableNextColumn();
                 if (ImGui::SmallButton("Save")) {
                     if (a.action.empty()) {
                         std::snprintf(statusMsg_, sizeof(statusMsg_),
@@ -4052,20 +4071,23 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
             a.blend_in      = 0.15f;
             a.return_to     = "";
             a.priority      = 0;
+            a.is_terminal   = false;
             SaveAnimMap(db, a);
         }
         ImGui::SameLine();
         if (ImGui::Button("Add Standard Actions")) {
-            struct StdAction { const char* action; bool loop; int priority; const char* return_to; };
+            struct StdAction { const char* action; bool loop; int priority; const char* return_to; bool is_terminal; };
             static const StdAction kStdActions[] = {
-                {"Idle",   true,  0,  ""},
-                {"Walk",   true,  1,  ""},
-                {"Run",    true,  1,  ""},
-                {"Jump",   false, 2,  "Idle"},
-                {"Attack", false, 2,  "Idle"},
-                {"Cast",   false, 2,  "Idle"},
-                {"Hit",    false, 3,  "Idle"},
-                {"Death",  false, 99, ""},
+                {"Idle",   true,  0,  "", false},
+                {"Walk",   true,  1,  "", false},
+                {"Run",    true,  1,  "", false},
+                {"Jump",   false, 2,  "Idle", false},
+                {"Attack", false, 2,  "Idle", false},
+                {"Cast",   false, 2,  "Idle", false},
+                {"Hit",    false, 3,  "Idle", false},
+                // Death: no return_to BY DESIGN — hold the last frame
+                // (dead pose) forever instead of snapping back to Idle.
+                {"Death",  false, 99, "", true},
             };
             for (const auto& sa : kStdActions) {
                 bool exists = false;
@@ -4079,6 +4101,7 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                     new_am.loop         = sa.loop;
                     new_am.priority     = sa.priority;
                     new_am.return_to    = sa.return_to;
+                    new_am.is_terminal  = sa.is_terminal;
                     new_am.speed        = 1.f;
                     new_am.blend_in     = 0.15f;
                     SaveAnimMap(db, new_am);

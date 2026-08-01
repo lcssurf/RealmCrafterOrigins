@@ -31,6 +31,15 @@ struct AnimBinding {
     float       blend_in    = 0.15f;
     std::string return_to;
     uint8_t     priority    = 0;
+    // Explicit "terminal state" signal (docs/TECH_DEBT.md, mob-death-stuck-
+    // in-Idle investigation) — distinguishes a one-shot with no return_to
+    // BY DESIGN (e.g. Death: should hold its last frame forever) from one
+    // missing return_to BY MISTAKE (the case Update()'s end-of-clip
+    // fallback-to-Idle exists to rescue). Default false preserves existing
+    // behavior for every binding that doesn't set it. NOT inferred from
+    // priority — a coincidentally-high-priority binding must not be treated
+    // as terminal.
+    bool        is_terminal  = false;
     float       duration_sec = 0.f;  // set via SetClipDuration() after clip load; 0 = unknown
     std::vector<AnimEvent> events;
     uint8_t     return_to_action_id = 0xFF;  // resolved in Bind()
@@ -79,13 +88,19 @@ public:
 
     // Request a state transition by action_id (0-based index from PNewActor).
     // Returns false if id is out of range or lower-priority than current.
-    bool RequestState(uint8_t action_id);
+    // origin: short caller tag (e.g. "PAnimateActor/other-actor"), used ONLY
+    // by the unconditional [death-term][TO_IDLE] trace in RequestStateImpl_
+    // (docs/TECH_DEBT.md #129 round 3 — "something forces Idle after the
+    // terminal branch already ran correctly"). Every call site in the
+    // codebase should pass a distinct tag so a real log pinpoints exactly
+    // which one fired.
+    bool RequestState(uint8_t action_id, const char* origin = "?");
 
     // Force a state transition by action_id, bypassing priority-block checks.
-    bool ForceState(uint8_t action_id);
+    bool ForceState(uint8_t action_id, const char* origin = "?");
 
     // Convenience: request by name.
-    bool RequestStateByName(const std::string& action);
+    bool RequestStateByName(const std::string& action, const char* origin = "?");
 
     // Advance the animation state by dt seconds.
     // speed is the actor's movement speed (for auto-locomotion).
@@ -136,7 +151,7 @@ public:
 private:
     // Core transition logic. force=true bypasses the priority check (used when
     // a one-shot finishes naturally and must return to its return_to action).
-    bool RequestStateImpl_(uint8_t action_id, bool force);
+    bool RequestStateImpl_(uint8_t action_id, bool force, const char* origin = "?");
     void DispatchEvents(int32_t from_frame, int32_t to_frame);
 
     std::vector<AnimBinding>                    bindings_;

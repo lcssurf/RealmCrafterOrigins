@@ -271,12 +271,20 @@ public:
     bool GetBoneWorldTransform(const std::string& name, glm::mat4* out) const;
 
     // Fill out_mats[0..kMaxBones-1] with the final bone matrices for the
-    // given clip at time_sec (loops). Upload to the bone SSBO before submit.
-    // `mesh_idx` selects which submesh's bone_offsets[] to use — because in
-    // multi-part models each submesh has its own mesh-local space and the
-    // per-bone inverse-bind differs across parts.
+    // given clip at time_sec. `mesh_idx` selects which submesh's
+    // bone_offsets[] to use — because in multi-part models each submesh has
+    // its own mesh-local space and the per-bone inverse-bind differs across
+    // parts.
+    // loop (default true, preserves prior behavior for any caller that
+    // doesn't pass it explicitly): when true, time_sec wraps via fmod, same
+    // as always. When false, time_sec is clamped to just under the clip's
+    // duration BEFORE the fmod — a one-shot clip held at exactly
+    // time_sec == duration_sec must sample its LAST frame, not wrap to
+    // frame 0 (fmod(duration_sec, duration_sec) == 0.0 in IEEE754, which
+    // silently produced the clip's first frame instead — see
+    // docs/TECH_DEBT.md #129, "mob morto volta pra Idle" investigation).
     void ComputeBones(int clip_idx, float time_sec, int mesh_idx,
-                      glm::mat4* out_mats, int max_out) const;
+                      glm::mat4* out_mats, int max_out, bool loop = true) const;
 
     // Like ComputeBones but blends two clips in LOCAL bone space before composing
     // the global hierarchy — this is the correct way to crossfade animations.

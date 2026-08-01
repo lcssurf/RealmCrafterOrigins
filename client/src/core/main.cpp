@@ -1044,6 +1044,7 @@ int main() {
         float       blend_in    = 0.15f;
         std::string return_to;
         uint8_t     priority    = 0;
+        bool        is_terminal = false;  // see rco::anim::AnimBinding::is_terminal
         struct AnimEvent { int32_t frame; std::string event_type; std::string payload; };
         std::vector<AnimEvent> events;
     };
@@ -1843,6 +1844,7 @@ int main() {
             ab.blend_in    = wa.blend_in;
             ab.return_to   = wa.return_to;
             ab.priority    = wa.priority;
+            ab.is_terminal = wa.is_terminal;
             for (const auto& ev : wa.events) {
                 rco::anim::AnimEvent aev;
                 aev.frame      = ev.frame;
@@ -1853,7 +1855,7 @@ int main() {
             bindings.push_back(std::move(ab));
         }
         player_anim_ctrl.Bind(bindings);
-        return player_anim_ctrl.RequestStateByName("Idle");
+        return player_anim_ctrl.RequestStateByName("Idle", "main.cpp/rebind_player_anim_controller");
     };
 
     spellbar.on_cast = [&](uint16_t spell_id, uint32_t target_rid) {
@@ -2094,6 +2096,7 @@ int main() {
                         wa.blend_in      = r.ReadF32();
                         wa.return_to     = r.ReadString();
                         wa.priority      = r.ReadU8();
+                        wa.is_terminal   = (r.ReadU8() != 0);
                         uint16_t ev_count = r.ReadU16();
                         for (uint16_t ei = 0; ei < ev_count && r.OK(); ++ei) {
                             WorldAnim::AnimEvent ev;
@@ -2151,6 +2154,7 @@ int main() {
                         ab.blend_in    = wa.blend_in;
                         ab.return_to   = wa.return_to;
                         ab.priority    = wa.priority;
+                        ab.is_terminal = wa.is_terminal;
                         for (const auto& ev : wa.events) {
                             rco::anim::AnimEvent aev;
                             aev.frame      = ev.frame;
@@ -2161,7 +2165,7 @@ int main() {
                         bindings.push_back(std::move(ab));
                     }
                     player_anim_ctrl.Bind(bindings);
-                    player_anim_ctrl.RequestStateByName("Idle");
+                    player_anim_ctrl.RequestStateByName("Idle", "main.cpp/PStartGame");
                 }
                 std::fprintf(stderr,
                     "[PStartGame] rid=%u player_meshes=%u player_anims=%u\n",
@@ -2334,6 +2338,7 @@ int main() {
                     int32_t     start_frame = 0, end_frame = -1;
                     float       fps = 30.f, speed = 1.f, blend_in = 0.15f;
                     uint8_t     loop = 1, priority = 0;
+                    uint8_t     is_terminal = 0;  // see rco::anim::AnimBinding::is_terminal
                     struct Ev { int32_t frame; std::string type, payload; };
                     std::vector<Ev> events;
                 };
@@ -2399,6 +2404,7 @@ int main() {
                     a.blend_in    = r.ReadF32();
                     a.return_to   = r.ReadString();
                     a.priority    = r.ReadU8();
+                    a.is_terminal = r.ReadU8();
                     uint16_t ev_count = r.ReadU16();
                     a.events.reserve(ev_count);
                     for (uint16_t ei = 0; ei < ev_count && r.OK(); ++ei) {
@@ -2480,6 +2486,7 @@ int main() {
                         wa.blend_in      = a.blend_in;
                         wa.return_to     = a.return_to;
                         wa.priority      = a.priority;
+                        wa.is_terminal   = (a.is_terminal != 0);
                         for (auto& ev : a.events) {
                             WorldAnim::AnimEvent wev;
                             wev.frame      = ev.frame;
@@ -2505,6 +2512,7 @@ int main() {
                             ab.blend_in    = wa.blend_in;
                             ab.return_to   = wa.return_to;
                             ab.priority    = wa.priority;
+                            ab.is_terminal = wa.is_terminal;
                             for (const auto& ev : wa.events) {
                                 rco::anim::AnimEvent aev;
                                 aev.frame      = ev.frame;
@@ -2515,7 +2523,7 @@ int main() {
                             bindings.push_back(std::move(ab));
                         }
                         player_anim_ctrl.Bind(bindings);
-                        player_anim_ctrl.RequestStateByName("Idle");
+                        player_anim_ctrl.RequestStateByName("Idle", "main.cpp/PNewActor-player-self");
                     }
                     player_yaw_offset = actor_yaw_offset;
                     player_y_offset   = actor_y_offset;
@@ -2637,6 +2645,7 @@ int main() {
                     wa.blend_in      = a.blend_in;
                     wa.return_to     = a.return_to;
                     wa.priority      = a.priority;
+                    wa.is_terminal   = (a.is_terminal != 0);
                     for (auto& ev : a.events) {
                         WorldAnim::AnimEvent wev;
                         wev.frame      = ev.frame;
@@ -2663,6 +2672,7 @@ int main() {
                         ab.blend_in    = wa.blend_in;
                         ab.return_to   = wa.return_to;
                         ab.priority    = wa.priority;
+                        ab.is_terminal = wa.is_terminal;
                         for (const auto& ev : wa.events) {
                             rco::anim::AnimEvent aev;
                             aev.frame      = ev.frame;
@@ -2672,8 +2682,25 @@ int main() {
                         }
                         bindings.push_back(std::move(ab));
                     }
+                    // Round 3 investigation (docs/TECH_DEBT.md #129) — a
+                    // re-arriving PNewActor for a rid that's ALREADY a
+                    // corpse (world_corpses) would land here on a FRESH
+                    // world_actors[rid] entry (a different WorldActorEntry
+                    // object than the corpse's — see world_actors[rid] just
+                    // above), so it can't be forcing the CORPSE's own
+                    // anim_ctrl to Idle directly. Logged anyway, unconditional,
+                    // to rule this in/out with real data instead of assuming.
+                    bool rid_is_also_a_corpse = std::any_of(
+                        world_corpses.begin(), world_corpses.end(),
+                        [rid](const CorpseEntry& c) { return c.rid == rid; });
+                    if (rid_is_also_a_corpse) {
+                        std::fprintf(stderr,
+                            "[death-term][PNEWACTOR] rid=%u re-arrived as PNewActor WHILE "
+                            "also present in world_corpses — investigate whether this is "
+                            "expected (rid reuse) or a stray resend.\n", rid);
+                    }
                     e.anim_ctrl.Bind(bindings);
-                    e.anim_ctrl.RequestStateByName("Idle");
+                    e.anim_ctrl.RequestStateByName("Idle", "main.cpp/PNewActor-other-actor");
                 }
                 // Drop any pre-existing Actor — it'll be rebuilt on next render
                 // against the (possibly new) appearance data.
@@ -2922,7 +2949,7 @@ int main() {
                     dodge_roll_end = event_now + static_cast<double>(roll_s);
                     dodge_roll_active = true;
                     dodge_roll_pending = false;
-                    player_anim_ctrl.ForceState(idle_action_id);
+                    player_anim_ctrl.ForceState(idle_action_id, "main.cpp/dodge-start");
                 } else if (event_code == rco::net::kCombatEventActionRejected &&
                            source_rid == player.runtimeId &&
                            static_cast<uint8_t>(value) == rco::net::kCombatActionDodge) {
@@ -2932,9 +2959,9 @@ int main() {
                 if (source_rid == player.runtimeId) {
                     if (event_code == rco::net::kCombatEventGuardStarted) {
                         local_guarding = true;
-                        player_anim_ctrl.ForceState(idle_action_id);
+                        player_anim_ctrl.ForceState(idle_action_id, "main.cpp/guard-started");
                     } else if (event_code == rco::net::kCombatEventParryStarted) {
-                        player_anim_ctrl.ForceState(idle_action_id);
+                        player_anim_ctrl.ForceState(idle_action_id, "main.cpp/parry-started");
                     }
                 }
 
@@ -3116,7 +3143,7 @@ int main() {
                     dodge_roll_active = false;
                     dodge_roll_pending = false;
                     if (player_anim_ctrl.IsReady()) {
-                        player_anim_ctrl.RequestStateByName("Death");
+                        player_anim_ctrl.RequestStateByName("Death", "main.cpp/pActorDead-player");
                     } else {
                         player_actor.PlayAnim("Death", false);
                     }
@@ -3136,7 +3163,7 @@ int main() {
                         corpse.base_y = corpse.actor.y;
                         corpse.sink_depth = kCorpseSinkDepth;
                         if (corpse.actor.anim_ctrl.IsReady()) {
-                            corpse.actor.anim_ctrl.RequestStateByName("Death");
+                            corpse.actor.anim_ctrl.RequestStateByName("Death", "main.cpp/pActorDead-corpse");
                         } else if (corpse.actor.actor) {
                             corpse.actor.actor->PlayAnim("Death", false);
                         }
@@ -3178,7 +3205,7 @@ int main() {
                     if (was_dead) {
                         bool reset_ok = false;
                         if (player_anim_ctrl.IsReady()) {
-                            reset_ok = player_anim_ctrl.RequestStateByName("Idle");
+                            reset_ok = player_anim_ctrl.RequestStateByName("Idle", "main.cpp/kPRepositionActor-respawn-reset");
                         }
                         if (!reset_ok) {
                             reset_ok = rebind_player_anim_controller();
@@ -3216,7 +3243,7 @@ int main() {
                     if (!player_dead && is_death_action) {
                         break; // stale death packet after respawn
                     }
-                    if (!player_anim_ctrl.RequestState(action_id)) {
+                    if (!player_anim_ctrl.RequestState(action_id, "main.cpp/PAnimateActor-player")) {
                         std::fprintf(stderr, "[anim] player rejected action_id=%u\n",
                                      static_cast<unsigned>(action_id));
                     }
@@ -3224,7 +3251,26 @@ int main() {
                 }
                 auto it = world_actors.find(rid);
                 if (it != world_actors.end()) {
-                    it->second.anim_ctrl.RequestState(action_id);
+                    // Round 3 investigation (docs/TECH_DEBT.md #129): a
+                    // PAnimateActor for `rid` landing HERE (world_actors,
+                    // not world_corpses) means the server still considers
+                    // this actor ALIVE — but if `rid` is simultaneously
+                    // sitting in world_corpses (should be impossible per
+                    // the pActorDead handler's erase, but logged
+                    // unconditionally to catch it if it isn't), that would
+                    // mean two DIFFERENT client-side objects exist for the
+                    // same server actor, and this call would be irrelevant
+                    // to the corpse's own anim_ctrl either way.
+                    bool rid_is_also_a_corpse = std::any_of(
+                        world_corpses.begin(), world_corpses.end(),
+                        [rid](const CorpseEntry& c) { return c.rid == rid; });
+                    if (rid_is_also_a_corpse) {
+                        std::fprintf(stderr,
+                            "[death-term][PANIMATE] rid=%u action_id=%u arrived via "
+                            "PAnimateActor for a world_actors entry WHILE also present in "
+                            "world_corpses — investigate.\n", rid, static_cast<unsigned>(action_id));
+                    }
+                    it->second.anim_ctrl.RequestState(action_id, "main.cpp/PAnimateActor-other-actor");
                     // Sync anim_name for backward compat with SubmitAs
                     if (it->second.anim_ctrl.IsReady()) {
                         it->second.anim_name = it->second.anim_ctrl.CurrentAction();
@@ -3255,7 +3301,7 @@ int main() {
                                 // TECH_DEBT: idle_action_id should come from appearance
                                 // bindings ("Idle") rather than a fixed index.
                                 constexpr uint8_t idle_action_id = 0;
-                                reset_ok = player_anim_ctrl.ForceState(idle_action_id);
+                                reset_ok = player_anim_ctrl.ForceState(idle_action_id, "main.cpp/attr-sync-respawn-reset");
                             }
                             if (!reset_ok) {
                                 reset_ok = rebind_player_anim_controller();
@@ -5738,7 +5784,7 @@ int main() {
                     if (player_anim_ctrl.IsReady()) {
                         // AnimController handles Idle/Walk/Run transitions via Update()
                         if (player_dead) {
-                            player_anim_ctrl.RequestStateByName("Death");
+                            player_anim_ctrl.RequestStateByName("Death", "main.cpp/per-frame-player-dead-loop");
                         }
                         player_anim_ctrl.Update(dt, player_dead ? 0.f : player_speed);
                     } else {

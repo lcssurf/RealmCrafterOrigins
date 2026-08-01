@@ -172,6 +172,7 @@ func BuildAppearanceFromDef(ctx context.Context, database *db.DB, def *db.ActorD
 			BlendIn:      a.BlendIn,
 			ReturnTo:     a.ReturnTo,
 			Priority:     a.Priority,
+			IsTerminal:   a.IsTerminal,
 			Events:       animEvents,
 		})
 	}

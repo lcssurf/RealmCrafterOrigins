@@ -97,6 +97,11 @@ func appendAnimBindings(p *pb, anims []AnimBinding) {
 		p.f32(b.BlendIn)
 		p.str(b.ReturnTo)
 		p.u8(b.Priority)
+		if b.IsTerminal {
+			p.u8(1)
+		} else {
+			p.u8(0)
+		}
 		ne := len(b.Events)
 		if ne > 65535 {
 			ne = 65535
