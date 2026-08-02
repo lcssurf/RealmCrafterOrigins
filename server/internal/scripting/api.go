@@ -24,6 +24,7 @@ func (r *Registry) registerAPI() {
 	r.registerTimerAPI()
 	r.registerLogAPI()
 	r.registerTimeAPI()
+	r.registerFXAPI()
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +420,55 @@ func (r *Registry) registerNPCCombatAPI() {
 		return 1
 	}))
 
+	// NPCCombat.spawn_impact(npc_id, x, z, radius, damage_min, damage_max, delay_ms [, opts]) -> impact_id | false
+	// opts = { telegraph_color="1,0.3,0.05,0.8", telegraph_style="ring_close",
+	//          vfx_path_impact="vfx:explosion", action_override="", reason_tag="" }
+	//
+	// The generic "schedule ONE ground impact" primitive — telegraph + AoE
+	// damage, reusing the exact same resolution pipeline as a normal special
+	// attack (ActorsInRadius/IsHostileTo/ground telegraph), but with no
+	// personal target and no windup-exclusivity (stacking several calls
+	// never blocks the caster's normal ability rotation). A "meteor shower"
+	// is just a script loop calling this N times with its OWN chosen
+	// positions/timing (random, staggered, in a line, whatever the specific
+	// encounter needs) — there is no fixed pattern baked into the engine.
+	// See docs/TECH_DEBT.md, mob AoE + multi-impact investigation.
+	r.L.SetField(mod, "spawn_impact", r.L.NewFunction(func(L *lua.LState) int {
+		npcRID := uint32(L.CheckNumber(1))
+		x := float32(L.CheckNumber(2))
+		z := float32(L.CheckNumber(3))
+		radius := float32(L.CheckNumber(4))
+		damageMin := int32(L.CheckNumber(5))
+		damageMax := int32(L.CheckNumber(6))
+		delayMs := int64(L.CheckNumber(7))
+		if r.w == nil || npcRID == 0 {
+			L.Push(lua.LFalse)
+			return 1
+		}
+
+		var telegraphColor, telegraphStyle, vfxPathImpact, actionOverride, reasonTag string
+		if opts := L.OptTable(8, nil); opts != nil {
+			telegraphColor = luaStrField(opts, "telegraph_color", "")
+			telegraphStyle = luaStrField(opts, "telegraph_style", "")
+			vfxPathImpact = luaStrField(opts, "vfx_path_impact", "")
+			actionOverride = luaStrField(opts, "action_override", "")
+			reasonTag = luaStrField(opts, "reason_tag", "")
+		}
+
+		id, ok := world.SpawnScriptedImpact(
+			r.w, npcRID, x, z, radius, damageMin, damageMax, delayMs,
+			telegraphColor, telegraphStyle, vfxPathImpact,
+			actionOverride, reasonTag,
+			nowMs(),
+		)
+		if !ok {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		L.Push(lua.LNumber(id))
+		return 1
+	}))
+
 	r.L.SetGlobal("NPCCombat", mod)
 }
 
@@ -543,6 +593,28 @@ func (r *Registry) registerActorAPI() {
 		}
 		L.Push(lua.LString(actor.Name))
 		return 1
+	}))
+
+	// Actor.get_pos(rid) -> x, y, z — current world position. Needed by any
+	// script that computes its own impact points for NPCCombat.spawn_impact
+	// (e.g. scattering several around a target for a "meteor shower"
+	// pattern) — without this there was no way for a script to know WHERE
+	// to spawn a raw impact relative to a target.
+	r.L.SetField(mod, "get_pos", r.L.NewFunction(func(L *lua.LState) int {
+		actor, ok := lookup(L)
+		if !ok {
+			L.Push(lua.LNumber(0))
+			L.Push(lua.LNumber(0))
+			L.Push(lua.LNumber(0))
+			return 3
+		}
+		actor.Mu.Lock()
+		x, y, z := actor.X, actor.Y, actor.Z
+		actor.Mu.Unlock()
+		L.Push(lua.LNumber(x))
+		L.Push(lua.LNumber(y))
+		L.Push(lua.LNumber(z))
+		return 3
 	}))
 
 	// Actor.play_action(rid, action_name) — semantic action: looks up action_id in
@@ -940,6 +1012,57 @@ func (r *Registry) registerWorldAPI() {
 		return 1
 	}))
 
+	// World.SpawnTempProp(model_path, start_pos, end_pos, duration_ms [, scale] [, on_arrival_fx_key]) -> prop_id
+	// start_pos/end_pos = {x=,y=,z=[,yaw=]}. Creates an EPHEMERAL WorldObject
+	// (not zone_scenery-backed, never persisted — see Area.SpawnEphemeralObject)
+	// that the client animates from start to end over duration_ms using the
+	// SAME ease-in-out transform interpolation PWorldObjectUpdate already
+	// drives for authored scenery, then auto-removes. Independent of
+	// NPCCombat.spawn_impact (gameplay/damage) — a script synchronizes the
+	// two purely by passing the same delay/duration to both, e.g. a falling
+	// meteor mesh (this) landing at the same moment an AoE impact (that)
+	// resolves. See docs/TECH_DEBT.md, FX.play + SpawnTempProp investigation.
+	//
+	// scale (optional, default 1.0): raw model files are typically authored
+	// at a "natural" size meant to be scaled DOWN per placement — the same
+	// way zone_scenery.sx works for authored scenery (LoadWorldObjects,
+	// db.go). This was previously hardcoded to 1.0 with no way to override
+	// it, which is why a first test (a small decorative rock model) came
+	// out gigantic — nothing about SpawnTempProp itself was broken, the
+	// scale was just never exposed to the caller. Fixed here, not by
+	// picking a different default model.
+	r.L.SetField(mod, "SpawnTempProp", r.L.NewFunction(func(L *lua.LState) int {
+		area := r.ctx.area
+		if area == nil {
+			L.Push(lua.LNumber(0))
+			return 1
+		}
+		modelPath := L.CheckString(1)
+		startTbl := L.CheckTable(2)
+		endTbl := L.CheckTable(3)
+		durationMs := int64(L.CheckNumber(4))
+		scale := float32(L.OptNumber(5, 1.0))
+		onArrivalFXKey := L.OptString(6, "")
+
+		startX := float32(luaNumField(startTbl, "x", 0))
+		startY := float32(luaNumField(startTbl, "y", 0))
+		startZ := float32(luaNumField(startTbl, "z", 0))
+		startYaw := float32(luaNumField(startTbl, "yaw", 0))
+		endX := float32(luaNumField(endTbl, "x", 0))
+		endY := float32(luaNumField(endTbl, "y", 0))
+		endZ := float32(luaNumField(endTbl, "z", 0))
+		endYaw := float32(luaNumField(endTbl, "yaw", 0))
+
+		id := area.SpawnEphemeralObject(
+			modelPath, scale,
+			startX, startY, startZ, startYaw,
+			endX, endY, endZ, endYaw,
+			durationMs, onArrivalFXKey,
+		)
+		L.Push(lua.LNumber(id))
+		return 1
+	}))
+
 	// World.TeleportToAreaSpawn(player_id) -> ok(bool)
 	// Resets the player's live position to their cached spawn coordinates
 	// (Actor.SpawnX/Y/Z/Yaw, resolved once at login by handleStartGame — see
@@ -1106,6 +1229,40 @@ func (r *Registry) registerTimeAPI() {
 		return 1
 	}))
 	r.L.SetGlobal("Time", mod)
+}
+
+// ---------------------------------------------------------------------------
+// FX API  —  FX.play(fx_key, x, y, z, magnitude)
+//
+// Thin bridge to world.BroadcastFXAtPosition, which reuses the EXACT same
+// abilityFXHook every combat VFX (windup/impact/blood) already goes
+// through — no new client-side handling needed, PCreateEmitter already
+// consumes an arbitrary fx_key + position with no combat context
+// requirement. See docs/TECH_DEBT.md, FX.play + SpawnTempProp
+// investigation.
+// ---------------------------------------------------------------------------
+
+func (r *Registry) registerFXAPI() {
+	mod := r.L.NewTable()
+
+	// FX.play(fx_key, x, y, z [, magnitude]) — fires a fx_templates VFX
+	// (see media/fx_templates, same catalog Attack/Death/spell FX use) at
+	// an arbitrary world position. No caster/target/ability context —
+	// pure "play this effect here."
+	r.L.SetField(mod, "play", r.L.NewFunction(func(L *lua.LState) int {
+		if r.ctx.area == nil {
+			return 0
+		}
+		fxKey := L.CheckString(1)
+		x := float32(L.CheckNumber(2))
+		y := float32(L.CheckNumber(3))
+		z := float32(L.CheckNumber(4))
+		magnitude := float32(L.OptNumber(5, 1.0))
+		world.BroadcastFXAtPosition(r.ctx.area, fxKey, x, y, z, magnitude)
+		return 0
+	}))
+
+	r.L.SetGlobal("FX", mod)
 }
 
 // ---------------------------------------------------------------------------

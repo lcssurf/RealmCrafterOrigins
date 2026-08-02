@@ -66,23 +66,30 @@ func TestTryStartNPCCastByRIDStartsWindupAndStoresOverride(t *testing.T) {
 
 	npc.Mu.Lock()
 	defer npc.Mu.Unlock()
-	if npc.SpecialAbilityID != 5001 {
-		t.Fatalf("special ability mismatch: got=%d want=5001", npc.SpecialAbilityID)
+	if len(npc.PendingImpacts) != 1 {
+		t.Fatalf("expected exactly 1 pending impact, got=%d", len(npc.PendingImpacts))
 	}
-	if npc.SpecialTargetRID != target.RuntimeID {
-		t.Fatalf("special target mismatch: got=%d want=%d", npc.SpecialTargetRID, target.RuntimeID)
+	entry := npc.PendingImpacts[0]
+	if entry.Ability.ID != 5001 {
+		t.Fatalf("special ability mismatch: got=%d want=5001", entry.Ability.ID)
 	}
-	if npc.SpecialActionOverride != "AttackHeavy" {
-		t.Fatalf("special action override mismatch: got=%q want=%q", npc.SpecialActionOverride, "AttackHeavy")
+	if entry.TargetRID != target.RuntimeID {
+		t.Fatalf("special target mismatch: got=%d want=%d", entry.TargetRID, target.RuntimeID)
 	}
-	if npc.SpecialReasonTag != "npc_ai" {
-		t.Fatalf("special reason tag mismatch: got=%q", npc.SpecialReasonTag)
+	if entry.ActionOverride != "AttackHeavy" {
+		t.Fatalf("special action override mismatch: got=%q want=%q", entry.ActionOverride, "AttackHeavy")
 	}
-	if npc.SpecialClientTraceID != "trace-a" {
-		t.Fatalf("special trace mismatch: got=%q", npc.SpecialClientTraceID)
+	if entry.ReasonTag != "npc_ai" {
+		t.Fatalf("special reason tag mismatch: got=%q", entry.ReasonTag)
 	}
-	if npc.SpecialWindupUntil <= npc.LastSpecialAt {
-		t.Fatalf("windup window not configured: windupUntil=%d lastSpecialAt=%d", npc.SpecialWindupUntil, npc.LastSpecialAt)
+	if entry.ClientTraceID != "trace-a" {
+		t.Fatalf("special trace mismatch: got=%q", entry.ClientTraceID)
+	}
+	if entry.ResolveAt <= npc.LastSpecialAt {
+		t.Fatalf("windup window not configured: resolveAt=%d lastSpecialAt=%d", entry.ResolveAt, npc.LastSpecialAt)
+	}
+	if !entry.GatesAbilityCasts {
+		t.Fatalf("classic cast path should set GatesAbilityCasts=true")
 	}
 }
 
@@ -195,7 +202,10 @@ func TestTryStartNPCCastByRIDInvalidOverrideFallsBack(t *testing.T) {
 	}
 
 	npc.Mu.Lock()
-	got := npc.SpecialActionOverride
+	got := ""
+	if len(npc.PendingImpacts) > 0 {
+		got = npc.PendingImpacts[len(npc.PendingImpacts)-1].ActionOverride
+	}
 	npc.Mu.Unlock()
 	if got != "" {
 		t.Fatalf("invalid override should fallback to empty override, got=%q", got)
@@ -270,17 +280,21 @@ func TestTryStartPlayerCastByRIDConsumesSPAndStartsWindup(t *testing.T) {
 	if player.Stamina != 30 {
 		t.Fatalf("player SP should be consumed: got=%d want=30", player.Stamina)
 	}
-	if player.SpecialAbilityID != 7001 {
-		t.Fatalf("special ability mismatch: got=%d want=7001", player.SpecialAbilityID)
+	if len(player.PendingImpacts) != 1 {
+		t.Fatalf("expected exactly 1 pending impact, got=%d", len(player.PendingImpacts))
 	}
-	if player.SpecialActionOverride != "AttackHeavy" {
-		t.Fatalf("special override mismatch: got=%q want=%q", player.SpecialActionOverride, "AttackHeavy")
+	entry := player.PendingImpacts[0]
+	if entry.Ability.ID != 7001 {
+		t.Fatalf("special ability mismatch: got=%d want=7001", entry.Ability.ID)
 	}
-	if player.SpecialReasonTag != "player_input" {
-		t.Fatalf("special reason mismatch: got=%q want=%q", player.SpecialReasonTag, "player_input")
+	if entry.ActionOverride != "AttackHeavy" {
+		t.Fatalf("special override mismatch: got=%q want=%q", entry.ActionOverride, "AttackHeavy")
 	}
-	if player.SpecialWindupUntil <= player.LastSpecialAt {
-		t.Fatalf("windup not configured: until=%d last=%d", player.SpecialWindupUntil, player.LastSpecialAt)
+	if entry.ReasonTag != "player_input" {
+		t.Fatalf("special reason mismatch: got=%q want=%q", entry.ReasonTag, "player_input")
+	}
+	if entry.ResolveAt <= player.LastSpecialAt {
+		t.Fatalf("windup not configured: resolveAt=%d last=%d", entry.ResolveAt, player.LastSpecialAt)
 	}
 }
 

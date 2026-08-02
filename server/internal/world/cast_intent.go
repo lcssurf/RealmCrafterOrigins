@@ -151,7 +151,19 @@ func canActorStartAbilityNow(caster, target *Actor, abilityID int, now int64) st
 	}
 
 	caster.Mu.Lock()
-	activeWindup := caster.SpecialWindupUntil > now
+	// activeWindup: is there a still-charging GatesAbilityCasts=true entry?
+	// Mirrors the old caster.SpecialWindupUntil>now scalar check exactly —
+	// only entries from the classic ability-windup path (startNPCSpecialCast)
+	// count. Raw NPCCombat.spawn_impact impacts (GatesAbilityCasts=false)
+	// never block a new ability cast, by design (see PendingImpact doc,
+	// actor.go).
+	activeWindup := false
+	for _, p := range caster.PendingImpacts {
+		if p.GatesAbilityCasts && p.ResolveAt > now {
+			activeWindup = true
+			break
+		}
+	}
 	lastSpecialAt := caster.LastSpecialAt
 	if caster.AbilityCooldowns == nil {
 		caster.AbilityCooldowns = make(map[int]int64)

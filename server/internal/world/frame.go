@@ -394,6 +394,32 @@ func WorldObjectsPayload(objects []WorldObject, overrides map[int]*WorldObjectSt
 	return []byte(p)
 }
 
+// EphemeralObjectSpawnPayload encodes one script-spawned temporary
+// WorldObject for PWorldObjectSpawn (Lua World.SpawnTempProp — see
+// Area.SpawnEphemeralObject). Format: id(u32) + model_path(str) +
+// scale(f32) + start_x/y/z/yaw(f32x4) + end_x/y/z/yaw(f32x4) +
+// duration_ms(u32). Deliberately a SEPARATE encoder from
+// WorldObjectsPayload (not reused/extended) — this is a single-object
+// live-spawn packet with a start/end transform pair for client-side
+// interpolation, not a bulk snapshot of static authored state; conflating
+// the two formats would make both harder to evolve independently.
+func EphemeralObjectSpawnPayload(obj *EphemeralObject) []byte {
+	var p pb
+	p.u32(uint32(obj.ID))
+	p.str(obj.ModelPath)
+	p.f32(obj.Scale)
+	p.f32(obj.StartX)
+	p.f32(obj.StartY)
+	p.f32(obj.StartZ)
+	p.f32(obj.StartYaw)
+	p.f32(obj.EndX)
+	p.f32(obj.EndY)
+	p.f32(obj.EndZ)
+	p.f32(obj.EndYaw)
+	p.u32(uint32(obj.DurationMs))
+	return []byte(p)
+}
+
 // LightsPayload encodes a slice of static point lights for PZoneLights.
 // Format: count(u16) + for each: name(str)+x(f32)+y(f32)+z(f32)+
 //         color_r(f32)+color_g(f32)+color_b(f32)+intensity(f32)+radius(f32)+

@@ -107,6 +107,24 @@ func BroadcastAbilityFX(area *Area, caster, target *Actor, ability AbilityTempla
 	)
 }
 
+// BroadcastFXAtPosition fires a fx_templates VFX at an arbitrary world
+// position with no combat context — the primitive behind Lua's FX.play
+// (scripting/api.go). Thin wrapper around the SAME abilityFXHook every
+// combat VFX already goes through (BroadcastAbilityFX above); casterRID/
+// targetRID/abilityID are zeroed and phase is fixed to "script" so a
+// client-side consumer can tell a script-triggered burst apart from a real
+// ability's windup/impact FX if it ever needs to (today the client doesn't
+// care — see docs/TECH_DEBT.md, FX.play + SpawnTempProp investigation).
+func BroadcastFXAtPosition(area *Area, vfxKey string, x, y, z, magnitude float32) {
+	abilityFXHookMu.RLock()
+	h := abilityFXHook
+	abilityFXHookMu.RUnlock()
+	if h == nil || area == nil || vfxKey == "" {
+		return
+	}
+	h(area, 0, 0, 0, vfxKey, "", x, y, z, magnitude, "script")
+}
+
 // BroadcastBloodFX sends an impact blood VFX for a hit event.
 // Actual packet serialization/broadcast is owned by the net hook.
 func BroadcastBloodFX(area *Area, caster, target *Actor, vfxPath string) {

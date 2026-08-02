@@ -76,14 +76,18 @@ func TestDispatchNPCAIDecisionCanStartCastViaScript(t *testing.T) {
 
 	npc.Mu.Lock()
 	defer npc.Mu.Unlock()
-	if npc.SpecialAbilityID != 6201 {
-		t.Fatalf("special ability mismatch: got=%d want=6201", npc.SpecialAbilityID)
+	if len(npc.PendingImpacts) != 1 {
+		t.Fatalf("expected exactly 1 pending impact, got=%d", len(npc.PendingImpacts))
 	}
-	if npc.SpecialActionOverride != "AttackHeavy" {
-		t.Fatalf("special action override mismatch: got=%q want=%q", npc.SpecialActionOverride, "AttackHeavy")
+	entry := npc.PendingImpacts[0]
+	if entry.Ability.ID != 6201 {
+		t.Fatalf("special ability mismatch: got=%d want=6201", entry.Ability.ID)
 	}
-	if npc.SpecialReasonTag != "boss_phase" {
-		t.Fatalf("special reason tag mismatch: got=%q want=%q", npc.SpecialReasonTag, "boss_phase")
+	if entry.ActionOverride != "AttackHeavy" {
+		t.Fatalf("special action override mismatch: got=%q want=%q", entry.ActionOverride, "AttackHeavy")
+	}
+	if entry.ReasonTag != "boss_phase" {
+		t.Fatalf("special reason tag mismatch: got=%q want=%q", entry.ReasonTag, "boss_phase")
 	}
 }
 
@@ -155,10 +159,14 @@ func TestDispatchNPCAIDecisionSupportsNpcDecideAbilityAlias(t *testing.T) {
 
 	npc.Mu.Lock()
 	defer npc.Mu.Unlock()
-	if npc.SpecialAbilityID != 6202 {
-		t.Fatalf("special ability mismatch: got=%d want=6202", npc.SpecialAbilityID)
+	if len(npc.PendingImpacts) != 1 {
+		t.Fatalf("expected exactly 1 pending impact, got=%d", len(npc.PendingImpacts))
 	}
-	if npc.SpecialReasonTag != "boss_phase_alias" {
-		t.Fatalf("special reason tag mismatch: got=%q want=%q", npc.SpecialReasonTag, "boss_phase_alias")
+	entry := npc.PendingImpacts[0]
+	if entry.Ability.ID != 6202 {
+		t.Fatalf("special ability mismatch: got=%d want=6202", entry.Ability.ID)
+	}
+	if entry.ReasonTag != "boss_phase_alias" {
+		t.Fatalf("special reason tag mismatch: got=%q want=%q", entry.ReasonTag, "boss_phase_alias")
 	}
 }

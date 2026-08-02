@@ -74,14 +74,18 @@ func TestNPCCombatAPICanCastAndTryCast(t *testing.T) {
 
 	npc.Mu.Lock()
 	defer npc.Mu.Unlock()
-	if npc.SpecialAbilityID != 6101 {
-		t.Fatalf("special ability mismatch: got=%d want=6101", npc.SpecialAbilityID)
+	if len(npc.PendingImpacts) != 1 {
+		t.Fatalf("expected exactly 1 pending impact, got=%d", len(npc.PendingImpacts))
 	}
-	if npc.SpecialActionOverride != "AttackHeavy" {
-		t.Fatalf("special action override mismatch: got=%q want=%q", npc.SpecialActionOverride, "AttackHeavy")
+	entry := npc.PendingImpacts[0]
+	if entry.Ability.ID != 6101 {
+		t.Fatalf("special ability mismatch: got=%d want=6101", entry.Ability.ID)
 	}
-	if npc.SpecialReasonTag != "npc_ai" {
-		t.Fatalf("special reason tag mismatch: got=%q want=%q", npc.SpecialReasonTag, "npc_ai")
+	if entry.ActionOverride != "AttackHeavy" {
+		t.Fatalf("special action override mismatch: got=%q want=%q", entry.ActionOverride, "AttackHeavy")
+	}
+	if entry.ReasonTag != "npc_ai" {
+		t.Fatalf("special reason tag mismatch: got=%q want=%q", entry.ReasonTag, "npc_ai")
 	}
 }
 

@@ -754,6 +754,26 @@ struct CombatTelegraphMeta {
     int      parry_window_ms = 0;
     std::string style;
     std::string reason_tag;
+    // World-space impact center, captured server-side ONCE at windup start
+    // (Actor.SpecialImpactX/Z, see server/internal/world/actor.go) — the
+    // ground telegraph draws exactly here, not at the mob's or target's
+    // live position. has_impact stays false for older/legacy payloads
+    // (e.g. legacySpecialAbilityTemplate windups from before this field
+    // existed) — callers fall back to the target's current position.
+    bool     has_impact = false;
+    float    impact_x = 0.f;
+    float    impact_z = 0.f;
+    // Which PendingImpact this event belongs to (server:
+    // PendingImpact.ID/NewImpactID, actor.go/combat_special.go) — a mob can
+    // now have SEVERAL concurrent impacts in flight (NPCCombat.spawn_impact
+    // lets a boss script stack them), so source_rid alone is no longer
+    // enough to tell WHICH ground telegraph a resolution event (hit/parry/
+    // critHit) belongs to. has_impact_id false for legacy/no-meta events —
+    // callers fall back to source_rid-keyed behavior (works as long as that
+    // source only ever has ONE concurrent telegraph, same as before this
+    // round).
+    bool     has_impact_id = false;
+    uint64_t impact_id = 0;
 };
 
 static CombatTelegraphMeta ParseCombatTelegraphMeta(const std::string& raw_text) {
@@ -802,8 +822,24 @@ static CombatTelegraphMeta ParseCombatTelegraphMeta(const std::string& raw_text)
         } else if (key == "reason") {
             meta.reason_tag = val;
             has_reason = !meta.reason_tag.empty();
+        } else if (key == "impact_x") {
+            float v = 0.f;
+            if (ParseFloatStrict(val, v)) meta.impact_x = v;
+        } else if (key == "impact_z") {
+            float v = 0.f;
+            if (ParseFloatStrict(val, v)) { meta.impact_z = v; meta.has_impact = true; }
+        } else if (key == "impact_id") {
+            float v = 0.f;
+            if (ParseFloatStrict(val, v) && v >= 0.f) {
+                meta.impact_id = static_cast<uint64_t>(v);
+                meta.has_impact_id = true;
+            }
         }
     }
+    // has_impact only flips true once BOTH impact_x and impact_z parsed —
+    // impact_z is the later key in the wire format (buildSpecialWindupMetaText,
+    // combat_special.go), so gating on it here means a truncated/malformed
+    // payload with only impact_x never silently produces a (real_x, 0) point.
 
     meta.valid = has_telegraph_hint || has_radius || has_color || has_reason;
     return meta;
@@ -1702,6 +1738,12 @@ int main() {
     bool rmb_press_handled = false;
     bool local_guarding = false;
     struct SpecialParryTelegraph {
+        // source_rid: the caster — was the map key before this round; now a
+        // plain field, since one caster can have SEVERAL of these active at
+        // once (NPCCombat.spawn_impact lets a boss script stack concurrent
+        // impacts). The billboard above the head still anchors to this
+        // actor's position, same as always.
+        uint32_t source_rid = 0;
         uint32_t target_rid = 0;
         double   start_time = 0.0;
         double   end_time = 0.0;
@@ -1710,8 +1752,23 @@ int main() {
         ImU32    outer_color = IM_COL32(255, 70, 70, 190);
         ImU32    inner_color = IM_COL32(255, 230, 80, 235);
         std::string reason_tag;
+        // Ground telegraph impact center (world-space, server-authoritative,
+        // see CombatTelegraphMeta::has_impact doc). has_impact_pos==false
+        // for legacy/no-meta windups — the ground ring then falls back to
+        // the target's live position each frame (best-effort, not the same
+        // "fixed mark" guarantee, but avoids drawing at the origin).
+        bool     has_impact_pos = false;
+        float    impact_x = 0.f;
+        float    impact_z = 0.f;
     };
-    std::unordered_map<uint32_t, SpecialParryTelegraph> special_parry_telegraphs; // key = source mob rid
+    // Keyed by impact_id (server: PendingImpact.ID), NOT source_rid anymore —
+    // a single caster can have multiple concurrent telegraphs in flight
+    // (see NPCCombat.spawn_impact, docs/TECH_DEBT.md mob AoE + multi-impact
+    // investigation). Legacy/no-meta events (no impact_id) fall back to
+    // using source_rid itself as the map key, which only works correctly
+    // if that source never has more than one concurrent telegraph — true
+    // for every windup that predates this round.
+    std::unordered_map<uint64_t, SpecialParryTelegraph> special_parry_telegraphs;
     struct ParryJudgementFx {
         uint32_t source_rid = 0;
         bool success = false;
@@ -2713,10 +2770,12 @@ int main() {
                 uint32_t rid = r.ReadU32();
                 if (!r.OK()) break;
                 world_actors.erase(rid);
-                special_parry_telegraphs.erase(rid);
+                // Keyed by impact_id now, not source_rid (see
+                // special_parry_telegraphs doc) — erase by VALUE (source or
+                // target matching the actor that's gone), not by map key.
                 for (auto it = special_parry_telegraphs.begin();
                      it != special_parry_telegraphs.end();) {
-                    if (it->second.target_rid == rid) {
+                    if (it->second.source_rid == rid || it->second.target_rid == rid) {
                         it = special_parry_telegraphs.erase(it);
                     } else {
                         ++it;
@@ -2879,7 +2938,17 @@ int main() {
                 const double event_now = glfwGetTime();
                 bool telegraph_meta_consumed = false;
                 CombatTelegraphMeta telegraph_meta{};
-                if (event_code == rco::net::kCombatEventSpecialWindup && !text.empty()) {
+                // Parsed for BOTH the windup event (radius/color/impact_x/z/
+                // impact_id) AND the resolution events (parry/hit/critHit
+                // only ever carry impact_id, via buildImpactResolutionMetaText
+                // server-side) — a mob can have several concurrent
+                // telegraphs now, so a resolution event needs impact_id to
+                // know WHICH one to remove.
+                if ((event_code == rco::net::kCombatEventSpecialWindup ||
+                     event_code == rco::net::kCombatEventSpecialParry ||
+                     event_code == rco::net::kCombatEventSpecialHit ||
+                     event_code == rco::net::kCombatEventSpecialCritHit) &&
+                    !text.empty()) {
                     telegraph_meta = ParseCombatTelegraphMeta(text);
                     telegraph_meta_consumed = telegraph_meta.valid;
                 }
@@ -2887,6 +2956,7 @@ int main() {
                     const double windup_s =
                         (value > 0) ? (static_cast<double>(value) / 1000.0) : 1.2;
                     SpecialParryTelegraph tg;
+                    tg.source_rid = source_rid;
                     tg.target_rid = target_rid;
                     tg.start_time = event_now;
                     const double windup_clamped = (windup_s < 0.25) ? 0.25 : windup_s;
@@ -2903,13 +2973,39 @@ int main() {
                     if (!telegraph_meta.reason_tag.empty()) {
                         tg.reason_tag = telegraph_meta.reason_tag;
                     }
+                    if (telegraph_meta.has_impact) {
+                        tg.has_impact_pos = true;
+                        tg.impact_x = telegraph_meta.impact_x;
+                        tg.impact_z = telegraph_meta.impact_z;
+                    }
                     tg.inner_color = DefaultInnerTelegraphColorForReason(tg.reason_tag);
-                    special_parry_telegraphs[source_rid] = tg;
+                    // Keyed by impact_id when the server sent one (always,
+                    // today) — falls back to source_rid only for a legacy/
+                    // no-meta windup, which only ever has ONE concurrent
+                    // telegraph anyway (see special_parry_telegraphs doc).
+                    const uint64_t key = telegraph_meta.has_impact_id
+                        ? telegraph_meta.impact_id
+                        : static_cast<uint64_t>(source_rid);
+                    special_parry_telegraphs[key] = tg;
                 } else if ((event_code == rco::net::kCombatEventSpecialParry ||
                             event_code == rco::net::kCombatEventSpecialHit ||
                             event_code == rco::net::kCombatEventSpecialCritHit) &&
                            source_rid != 0) {
-                    special_parry_telegraphs.erase(source_rid);
+                    if (telegraph_meta.has_impact_id) {
+                        special_parry_telegraphs.erase(telegraph_meta.impact_id);
+                    } else {
+                        // Legacy fallback: no impact_id on this event, so
+                        // erase by VALUE (matching source_rid) instead of
+                        // assuming the map key equals source_rid.
+                        for (auto it = special_parry_telegraphs.begin();
+                             it != special_parry_telegraphs.end();) {
+                            if (it->second.source_rid == source_rid) {
+                                it = special_parry_telegraphs.erase(it);
+                            } else {
+                                ++it;
+                            }
+                        }
+                    }
                 }
                 if ((event_code == rco::net::kCombatEventSpecialParry ||
                      event_code == rco::net::kCombatEventSpecialHit ||
@@ -3054,9 +3150,11 @@ int main() {
                         msg = actor_name(source_rid) + " landed a critical hit on " +
                               actor_name(target_rid) + " for " + std::to_string(value) + " damage.";
                         break;
-                    case rco::net::kCombatEventSpecialWindup:
+                    case rco::net::kCombatEventSpecialWindup: {
                         msg = actor_name(source_rid) + " is charging a special attack. Parry at the last moment.";
-                        if (auto it = special_parry_telegraphs.find(source_rid);
+                        const uint64_t lookup_key = telegraph_meta.has_impact_id
+                            ? telegraph_meta.impact_id : static_cast<uint64_t>(source_rid);
+                        if (auto it = special_parry_telegraphs.find(lookup_key);
                             it != special_parry_telegraphs.end()) {
                             const std::string phase_label =
                                 TelegraphPhaseLabelFromReason(it->second.reason_tag);
@@ -3065,6 +3163,7 @@ int main() {
                             }
                         }
                         break;
+                    }
                     case rco::net::kCombatEventSpecialParry:
                         msg = actor_name(target_rid) + " parried " + actor_name(source_rid) + "'s special.";
                         if (value > 0) {
@@ -3170,10 +3269,11 @@ int main() {
                         world_corpses.push_back(std::move(corpse));
                         world_actors.erase(wit);
                     }
-                    special_parry_telegraphs.erase(dead_rid);
+                    // Keyed by impact_id now — erase by VALUE (source or
+                    // target matching the dead actor), not by map key.
                     for (auto it = special_parry_telegraphs.begin();
                          it != special_parry_telegraphs.end();) {
-                        if (it->second.target_rid == dead_rid) {
+                        if (it->second.source_rid == dead_rid || it->second.target_rid == dead_rid) {
                             it = special_parry_telegraphs.erase(it);
                         } else {
                             ++it;
@@ -3570,6 +3670,81 @@ int main() {
                     obj.pitch     = target_pitch;
                     obj.roll      = target_roll;
                     break;
+                }
+                break;
+            }
+
+            case rco::net::kPWorldObjectSpawn: {
+                // Create ONE ephemeral WorldObject at runtime (Lua
+                // World.SpawnTempProp — see server/internal/world/area.go
+                // SpawnEphemeralObject/EphemeralObjectSpawnPayload). Not
+                // zone_scenery-backed — just appended to the SAME
+                // world_static_objects vector regular scenery lives in, so
+                // every existing per-frame lazy-actor-init/render/anim-
+                // interpolation loop picks it up with zero new code: the
+                // object is born already mid-flight (anim_active=true,
+                // from=start, to=end, duration=duration_ms/1000), so it
+                // animates start->end via the exact same ease-in-out lerp
+                // PWorldObjectUpdate already drives (main render loop,
+                // "Static world objects" block).
+                uint32_t object_id  = r.ReadU32();
+                std::string model_path = r.ReadString();
+                float scale         = r.ReadF32();
+                float start_x       = r.ReadF32();
+                float start_y       = r.ReadF32();
+                float start_z       = r.ReadF32();
+                float start_yaw     = r.ReadF32();
+                float end_x         = r.ReadF32();
+                float end_y         = r.ReadF32();
+                float end_z         = r.ReadF32();
+                float end_yaw       = r.ReadF32();
+                uint32_t duration_ms = r.ReadU32();
+                if (!r.OK() || model_path.empty()) break;
+
+                WorldObjectEntry e;
+                e.id           = static_cast<int>(object_id);
+                e.model_path   = model_path;
+                e.scale        = scale;
+                e.x            = start_x;
+                e.y            = start_y;
+                e.z            = start_z;
+                e.yaw          = start_yaw;
+                e.pitch        = 0.f;
+                e.roll         = 0.f;
+                e.black_cutout = false;
+                e.visible      = true;
+                // No dynamic-collision-shape data is ever sent for an
+                // ephemeral prop (see kPDynamicCollisionShapes, sent once
+                // per area on entry for authored is_dynamic=1 scenery only)
+                // — a falling meteor mesh is visual-only, never a
+                // gameplay-collidable obstacle.
+                e.collision    = false;
+                e.interactable = false;
+
+                e.anim_from_x = start_x; e.anim_from_y = start_y; e.anim_from_z = start_z;
+                e.anim_from_yaw = start_yaw; e.anim_from_scale = scale;
+                e.anim_to_x = end_x; e.anim_to_y = end_y; e.anim_to_z = end_z;
+                e.anim_to_yaw = end_yaw; e.anim_to_scale = scale;
+                e.anim_start_time = static_cast<float>(glfwGetTime());
+                e.anim_duration   = static_cast<float>(duration_ms) / 1000.f;
+                e.anim_active     = e.anim_duration > 0.f;
+
+                world_static_objects.push_back(std::move(e));
+                break;
+            }
+
+            case rco::net::kPWorldObjectDespawn: {
+                // Removes ONE ephemeral WorldObject (auto-fired server-side
+                // when SpawnTempProp's duration elapses — see
+                // Area.SpawnEphemeralObject's ScheduleCall). Never fired for
+                // authored zone_scenery objects (those never despawn).
+                uint32_t object_id = r.ReadU32();
+                if (!r.OK()) break;
+                for (auto it = world_static_objects.begin(); it != world_static_objects.end(); ++it) {
+                    if (static_cast<uint32_t>(it->id) == object_id) {
+                        world_static_objects.erase(it);
+                        break;
+                    }
                 }
                 break;
             }
@@ -6427,7 +6602,7 @@ int main() {
                     auto* ol = ImGui::GetForegroundDrawList();
                     float sw = static_cast<float>(window.Width());
                     float sh = static_cast<float>(window.Height());
-                    std::vector<uint32_t> expired;
+                    std::vector<uint64_t> expired; // impact_id, not source_rid — see special_parry_telegraphs doc
                     auto project_to_screen = [&](float wx, float wy, float wz, ImVec2& out) -> bool {
                         glm::vec4 c = proj * view * glm::vec4(wx, wy, wz, 1.f);
                         if (c.w <= 0.f) return false;
@@ -6464,14 +6639,14 @@ int main() {
                             std::clamp(lerp_ch(aa, ba), 0, 255));
                     };
 
-                    for (const auto& [source_rid, tg] : special_parry_telegraphs) {
-                        auto sit = world_actors.find(source_rid);
+                    for (const auto& [impact_id, tg] : special_parry_telegraphs) {
+                        auto sit = world_actors.find(tg.source_rid);
                         if (sit == world_actors.end()) {
-                            expired.push_back(source_rid);
+                            expired.push_back(impact_id);
                             continue;
                         }
                         if (now > tg.end_time + 0.35) {
-                            expired.push_back(source_rid);
+                            expired.push_back(impact_id);
                             continue;
                         }
 
@@ -6528,6 +6703,85 @@ int main() {
                         ol->AddCircle(center, guide_px, MulAlpha(guide_col, 0.90f), 64, 2.2f);
                         ol->AddCircle(center, inner_px, inner_col, 64, 3.0f);
 
+                        // Ground telegraph — TRUE world-space ring at the
+                        // ACTUAL impact point (not the mob's head like the
+                        // billboard above, a different signal for a
+                        // different purpose: that one is parry timing,
+                        // anchored to the source; this one is "where the
+                        // AoE lands", anchored to the impact). Chosen over
+                        // building a new world-space decal/quad renderer
+                        // (shared/renderer has none today — would be new
+                        // GL pipeline infrastructure, untestable without
+                        // compiling) because sampling N points on the real
+                        // world-space circle and projecting each
+                        // individually to screen space is perspective-
+                        // correct (foreshortens into an ellipse at oblique
+                        // camera angles exactly like a real ground marker
+                        // would, unlike a single anchor + fixed-pixel-
+                        // radius circle, which can't represent an accurate
+                        // world-space extent from any angle but straight
+                        // down) and terrain-following (each point samples
+                        // its own height via terrain.SampleHeight, same
+                        // helper already used for ground markers elsewhere
+                        // in this file). See docs/TECH_DEBT.md, mob AoE +
+                        // ground telegraph investigation.
+                        {
+                            std::optional<glm::vec2> impact_xz;
+                            if (tg.has_impact_pos) {
+                                impact_xz = glm::vec2{tg.impact_x, tg.impact_z};
+                            } else if (tg.target_rid == player.runtimeId) {
+                                // Legacy/no-meta windup — best-effort fallback
+                                // to the target's LIVE position (not a fixed
+                                // mark, since the server never told us one).
+                                impact_xz = glm::vec2{player.x, player.z};
+                            } else {
+                                auto tit = world_actors.find(tg.target_rid);
+                                if (tit != world_actors.end()) {
+                                    impact_xz = glm::vec2{tit->second.x, tit->second.z};
+                                }
+                            }
+                            if (impact_xz.has_value()) {
+                                // Grows from 35% -> 100% of the ability's
+                                // real radius as urgency rises (0 at windup
+                                // start, 1 exactly at impact) — the ring
+                                // reaches its true, full-size danger area
+                                // right when the hit actually lands, not
+                                // before. Reddens the same way, independent
+                                // of outer_col/the billboard above (own
+                                // color so the head billboard is untouched):
+                                // starts at the ability's configured color,
+                                // shifts toward a hot saturated red as
+                                // impact approaches.
+                                const float ring_world_radius =
+                                    outer_world * (0.35f + 0.65f * urgency);
+                                const ImU32 ring_hot_red = IM_COL32(255, 25, 20, 255);
+                                const ImU32 ring_base_col =
+                                    LerpColor(tg.outer_color, ring_hot_red, urgency);
+                                const ImU32 ring_col = MulAlpha(
+                                    ring_base_col,
+                                    std::clamp((0.55f + urgency * 0.70f) * pulse, 0.30f, 1.55f));
+
+                                constexpr int kRingSegments = 32;
+                                ImVec2 ring_pts[kRingSegments];
+                                bool ring_ok = true;
+                                for (int seg = 0; seg < kRingSegments && ring_ok; ++seg) {
+                                    const float ang = (static_cast<float>(seg) /
+                                                        static_cast<float>(kRingSegments)) *
+                                                       6.28318530718f;
+                                    const float px = impact_xz->x + std::cos(ang) * ring_world_radius;
+                                    const float pz = impact_xz->y + std::sin(ang) * ring_world_radius;
+                                    const float py = terrain.SampleHeight(px, pz) + 0.05f;
+                                    ring_ok = project_to_screen(px, py, pz, ring_pts[seg]);
+                                }
+                                if (ring_ok) {
+                                    ol->AddConvexPolyFilled(ring_pts, kRingSegments,
+                                                             MulAlpha(ring_col, 0.16f + urgency * 0.14f));
+                                    ol->AddPolyline(ring_pts, kRingSegments, ring_col,
+                                                     ImDrawFlags_Closed, 2.5f + urgency * 2.0f);
+                                }
+                            }
+                        }
+
                         if (tg.target_rid == player.runtimeId) {
                             const char* lbl = parry_now ? "PARRY AGORA!" : "PARRY";
                             ImVec2 ts = ImGui::CalcTextSize(lbl);
@@ -6543,8 +6797,8 @@ int main() {
                                         IM_COL32(255, 255, 255, 220), timer_text);
                         }
                     }
-                    for (uint32_t rid : expired) {
-                        special_parry_telegraphs.erase(rid);
+                    for (uint64_t impact_id : expired) {
+                        special_parry_telegraphs.erase(impact_id);
                     }
 
                     for (auto it = parry_judgements.begin(); it != parry_judgements.end();) {

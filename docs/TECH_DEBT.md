@@ -3386,3 +3386,396 @@ frame, corpo caído) e não mais reverter pro primeiro frame do clipe.
 Confirmar também que animações em loop (Idle/Walk/Run) e one-shots com
 `return_to` (Attack/Hit/Cast/Jump) continuam idênticas — sem regressão.
 Nada commitado, nada compilado nesta rodada.
+
+## 130. IA de mob mais dinâmica: AoE real + telegraph no chão
+
+Implementado (não compilado, não commitado) a partir da investigação que
+mapeou: `ability_templates`/`npc_ability_loadouts` já usados por mobs
+(o "ataque especial com parry" já é data-driven, não hardcoded — o único
+mob configurado hoje era coincidência de seed, não limitação de código);
+`ActorsInRadius` (`spell.go:110-127`) existia como scaffold sem nenhum
+caller; telegraph visual existia só como billboard 2D acima da cabeça
+(`special_parry_telegraphs`), sem nenhuma marcação real no chão.
+
+**1 — Posição de impacto fixa:** capturada UMA VEZ em `startNPCSpecialCast`
+(`combat_special.go`), como a posição do TARGET no instante em que o
+windup começa — nunca recalculada depois. Novos campos
+`Actor.SpecialImpactX/Z` (`actor.go`). `resolveActorWindup` lê esses
+campos (`windupImpactX/Z`) ANTES de limpar o windup, e usa esse ponto fixo
+tanto pro raio de dano quanto pro telegraph — nunca a posição atual
+(possivelmente já movida) do mob ou do alvo. Chega ao cliente via 2 novas
+chaves no meta-string já existente do evento de windup:
+`impact_x=...;impact_z=...`, apendadas no FIM de
+`buildSpecialWindupMetaText` (compatível com parsers antigos baseados em
+key=value, que ignoram chaves desconhecidas).
+
+**2 — Servidor, AoE real (círculo):** `resolveActorWindup` agora resolve o
+alvo PRIMÁRIO exatamente como antes (dodge/parry/guard só pra ele —
+são janelas reativas pessoais, ligadas a ser o alvo anunciado, não fazem
+sentido pra quem só está no raio de espalhamento). A lógica de dano
+(cálculo, guard, `ApplyDamage`, broadcasts, morte) foi extraída pra
+`resolveSpecialImpactOnVictim` (nova função, mesmo corpo que já existia,
+sem mudança de comportamento pro alvo primário) — reaproveitada num loop
+sobre `ActorsInRadius(area, windupImpactX, windupImpactZ,
+ability.TelegraphRadius)`, filtrando com o novo helper `IsHostileTo(a, b)`
+(`a.IsNPC != b.IsNPC` — o único modelo de facção que existe hoje, mesmo
+critério já usado em `tickAI`/`lookForTarget`) e pulando o alvo primário
+(já resolvido) e o próprio caster. Escopo: só CÍRCULO — cone/linha
+continuam documentados como próxima fase (exigem matemática de ângulo que
+não existe em nenhum lugar do código hoje).
+
+**3 — Cliente, telegraph real no chão:** escolhida a abordagem (a) do
+enunciado — reaproveitar a técnica de overlay já usada (billboard/ImGui),
+mas world-space DE VERDADE em vez de um ponto-âncora único com raio em
+pixels. Decisão e motivo: um círculo desenhado como "1 ponto 3D projetado
++ raio fixo em pixels" (a técnica do billboard acima da cabeça) NÃO
+representa corretamente uma extensão world-space sob qualquer ângulo de
+câmera — um círculo real no chão se projeta como ELIPSE quando visto de
+lado, não como círculo. Em vez disso: amostra N=32 pontos no círculo
+world-space REAL ao redor do centro de impacto, cada um com sua própria
+altura de terreno (`terrain.SampleHeight`, mesmo helper já usado em outros
+marcadores de chão no arquivo), projeta cada ponto individualmente pra
+tela (`project_to_screen`, já existia) e conecta com
+`ImGui::AddPolyline`/`AddConvexPolyFilled` (mesmo padrão já usado em
+`main.cpp:6451` pra outro propósito — não é API nova). Isso é
+perspectiva-correto (vira elipse em ângulo oblíquo, como um marcador real
+faria) e acompanha terreno irregular (altura por vértice), sem precisar de
+nenhuma infra nova de renderer (decal/quad world-space real teria sido
+opção (b), rejeitada por exigir pipeline GL novo, não-testável sem
+compilar).
+`CombatTelegraphMeta` (parser) e `SpecialParryTelegraph` (estado) ganharam
+`impact_x/z`/`has_impact`/`has_impact_pos` — quando ausente (windup
+legado sem meta), cai pra posição ATUAL do alvo (best-effort, não é mais
+"marca fixa" mas evita desenhar na origem). Raio e cor reaproveitam
+`tg.radius`/`outer_col` já calculados pro billboard — mesmo timing de
+início/fim (`tg.start_time`/`tg.end_time`, o mesmo windup que o servidor
+usa pra resolver o dano).
+
+**4 — Billboard de parry intocado:** o código do billboard acima da
+cabeça (`ol->AddCircle(center, outer_px, ...)` etc.) não foi alterado — o
+telegraph de chão foi inserido como um bloco adicional na MESMA iteração
+do loop, depois dos 3 círculos do billboard e antes do label de
+"PARRY"/timer, sem tocar nenhuma variável que o billboard já usa. Os dois
+sinais coexistem: billboard = timing de parry (perto da cabeça, sempre do
+mesmo tamanho em tela), anel no chão = área real de impacto (world-space,
+onde o dano vai cair).
+
+**5 — Mob de teste configurado:** `dist/server/rco.db`,
+`ability_templates` id=777 (`orc_boss_ground_slam_v1`) —
+`telegraph_type='ring_close'`, `telegraph_radius=4.0`, `windup_ms=1400`
+(longo o suficiente pra ver o telegraph e reagir), `base_damage_min/max=
+20/30`. `npc_ability_loadouts` id=7 — `actor_def_id=11` (Orc Boss, TODOS
+os spawns desse tipo, incluindo `npc_spawns.id=13` já existente em
+"Training Camp"), sem `phase_tag`/`condition_lua` (sempre disponível,
+mais simples pra validar o fluxo), `priority=100`, `max_distance=3.0`.
+
+**Riscos/limitações aceitos nesta rodada:**
+- Cone/linha: só dados (`TelegraphType`), sem matemática de hit-check nem
+  desenho — próxima fase.
+- Bystanders no raio de AoE não têm dodge/parry pessoal contra o splash
+  (só o alvo primário) — decisão de design, revisável.
+- Telegraph de chão sem posição de impacto (windup legado, sem meta) cai
+  pra posição atual do alvo a cada frame — não é uma marca fixa nesse
+  caso específico, só nos windups que já passam por
+  `buildSpecialWindupMetaText` (que é o único caminho de produção hoje).
+
+**Quando atacar:** aguardando o dev buildar (server + client) e testar —
+matar/enfrentar um Orc Boss (`actor_def_id=11`) deve mostrar o anel
+laranja no chão junto com o billboard de parry de sempre, dano de fato
+atingindo qualquer hostil dentro do raio de 4 unidades do ponto de
+impacto (não só o alvo original), e o alvo primário ainda conseguindo
+dodge/parry normalmente. Nada commitado, nada compilado nesta rodada.
+
+**Ajuste pedido pelo dev (visibilidade do teste):**
+- `dist/server/rco.db`, `ability_templates` id=777: dano subiu de 20-30
+  pra 45-70 (bem mais perceptível), e `vfx_path_impact` setado pra
+  `'vfx:explosion'` (já existe em `fx_templates`, catálogo carregado pelo
+  cliente em `fx_catalog`) — como `resolveSpecialImpactOnVictim` já chama
+  `BroadcastAbilityFX(..., FXPhaseImpact)` por vítima (primário + cada
+  splash de AoE), só precisava de um `vfx_path_impact` não-vazio pra
+  disparar (antes estava em branco, então `BroadcastAbilityFX` retornava
+  cedo sem broadcastar nada — `combat_fx.go:74`). Nenhuma mudança de
+  código nova pra isso, só dado.
+- `client/src/core/main.cpp`, bloco do anel no chão: agora CRESCE e
+  ESQUENTA a cor conforme o impacto se aproxima — raio vai de 35% até
+  100% do raio real da habilidade (`ring_world_radius = outer_world *
+  (0.35 + 0.65*urgency)`, `urgency` já existia, vai de 0 no início do
+  windup até 1 exatamente no impacto), e a cor faz lerp da cor configurada
+  da habilidade até um vermelho saturado (`LerpColor(tg.outer_color,
+  IM_COL32(255,25,20,255), urgency)`) — variável PRÓPRIA (`ring_col`),
+  não reaproveita `outer_col` do billboard, então o billboard de cima da
+  cabeça continua 100% intocado. Espessura da linha e preenchimento também
+  aumentam com `urgency` pra reforçar a leitura visual do timing.
+
+## 131. Chuva de meteoros — primitiva Lua genérica + escalar→lista (windups concorrentes)
+
+Implementado o design aprovado na rodada anterior (nada compilado, nada
+commitado).
+
+**1 — Servidor: `Actor.PendingImpacts` (lista, não mais escalar).**
+`server/internal/world/actor.go` — os campos escalares
+`SpecialWindupUntil/SpecialTargetRID/SpecialAbilityID/SpecialActionOverride/
+SpecialReasonTag/SpecialClientTraceID/SpecialImpactX/Z` foram REMOVIDOS,
+substituídos por `PendingImpacts []PendingImpact` + a struct nova
+`PendingImpact` (`ID`, `ResolveAt`, `TargetRID`, `ImpactX/Z`, `Ability`,
+`ActionOverride`, `ReasonTag`, `ClientTraceID`, `GatesAbilityCasts`) +
+`NewImpactID()` (contador global `sync/atomic`, único no processo inteiro,
+não por-ator — o cliente só vê um `impact_id` achatado).
+
+`resolveActorWindup` foi substituído por `ResolveActorPendingImpacts`
+(`combat_special.go`) — itera `actor.PendingImpacts`, resolve/remove cada
+entrada com `ResolveAt<=now` via `resolvePendingImpactEntry` (nova função,
+mesmo corpo de lógica de antes: target missing/dead/out-of-range/dodge/
+parry só quando `TargetRID>0`; impacto + AoE via `ActorsInRadius`/
+`IsHostileTo`/`resolveSpecialImpactOnVictim` sempre). `startNPCSpecialCast`
+agora dá `append` de UMA entrada com `GatesAbilityCasts=true` (caminho
+clássico, inalterado no comportamento). `canActorStartAbilityNow`
+(`cast_intent.go`) checa `any(p.GatesAbilityCasts && p.ResolveAt>now)` em
+vez do campo escalar. Todo call site que resetava os campos escalares em
+morte/respawn/leash/logout/kick (`area.go` x4, `net/client.go` x2) agora
+faz `actor.PendingImpacts = nil`.
+
+**2 — `NPCCombat.spawn_impact` registrado em `api.go`.**
+```lua
+NPCCombat.spawn_impact(npc_id, x, z, radius, damage_min, damage_max, delay_ms [, opts])
+-> impact_id (number) | false
+```
+Ponte pro novo `world.SpawnScriptedImpact` (`combat_special.go`) — faz
+`append` de uma `PendingImpact` com `TargetRID=0` (raw, sem dodge/parry/
+guard pessoal) e `GatesAbilityCasts=false` (nunca bloqueia a rotação normal
+de abilities do mob). Um "chuva de meteoros" é só um script Lua chamando
+isso N vezes com posições/delays escolhidos por ELE — zero conceito de
+"impact_count"/"stagger"/"spread" na engine, exatamente como pedido.
+
+**3 — Cliente: `special_parry_telegraphs` agora é `map<impact_id,
+SpecialParryTelegraph>`.** `main.cpp` — struct ganhou campo `source_rid`
+(era a chave do map antes; agora é só um campo, já que um mob pode ter
+VÁRIOS telegraphs concorrentes). Todos os ~10 pontos de leitura/escrita do
+mapa atualizados: inserção no windup usa `impact_id` (de
+`telegraph_meta.impact_id`) como chave quando presente, cai pra
+`source_rid` só em windup legado sem meta; toda remoção por VALOR (morte
+de ator/corpse) passou a checar `source_rid`/`target_rid` como campos, não
+como chave; o loop de render itera por `impact_id`, usa `tg.source_rid`
+pra achar a posição do mob (billboard) — o anel no chão (item anterior,
+#130) já usava `tg.impact_x/z` diretamente, não a chave do mapa, então não
+precisou de mudança.
+
+**4 — `impact_id` no wire, windup E resolução.** `buildSpecialWindupMetaText`
+ganhou parâmetro `impactID uint64`, novo `impact_id=N` no fim do
+meta-string (mesmo padrão aditivo de `impact_x/z`). Nova função
+`buildImpactResolutionMetaText(impactID)` usada nos eventos de resolução
+(`combatEventHitDodged`, `combatEventSpecialParry`,
+`combatEventSpecialHit`/`CritHit` — antes mandavam `text=""`, agora mandam
+`"meta:impact_id=N"`). Cliente (`ParseCombatTelegraphMeta`) ganhou parsing
+de `impact_id`; o parse agora roda tanto pro evento de windup quanto pros
+de resolução (antes só rodava pro windup).
+
+**Confirmado — caminho single-target de hoje sem regressão:**
+`startNPCSpecialCast` sempre gera exatamente 1 `PendingImpact` por chamada
+(mesmo hoje como sempre), `resolvePendingImpactEntry` roda a MESMA
+sequência de checks (missing/dead/out-of-range/dodge/parry/guard/dano/FX/
+morte) que `resolveActorWindup` rodava antes — só trocou de onde os campos
+vêm (struct da lista em vez de campos soltos do Actor). Testes Go
+atualizados pra ler `npc.PendingImpacts[0]` em vez dos campos escalares
+removidos (`npc_ai_decision_test.go`, `npc_combat_api_test.go`,
+`player_combat_api_test.go`, `cast_intent_test.go`,
+`combat_special_test.go`, `combat_telegraph_meta_test.go`) — mesmas
+asserções, só a forma de acessar o dado mudou.
+
+**Confirmado — `spawn_impact` não bloqueia outras abilities do mob:**
+`canActorStartAbilityNow` só considera `GatesAbilityCasts=true`; entradas
+de `spawn_impact` (`GatesAbilityCasts=false`) ficam invisíveis pra essa
+checagem — um boss pode empilhar 5 `spawn_impact()` e continuar castando
+sua special normal (com parry) no meio da chuva de meteoros sem nenhum
+conflito. Do lado do `ProcessNPCSpecialAttack`, o mesmo vale pro "handled"
+que decide se pula o ataque básico daquele tick — só entradas gating
+contam.
+
+**Quando atacar:** aguardando o dev buildar (server + client) e escrever um
+script de teste (`NPCCombat.spawn_impact` em loop) pra validar múltiplos
+anéis simultâneos na tela, cada um resolvendo/desaparecendo
+independentemente, e confirmar que o ataque especial com parry do Orc Boss
+continua idêntico. Nada corrigido além do pedido, nada compilado, nada
+commitado.
+
+**Script de teste + gap encontrado (`Actor.get_pos`):** ao escrever o
+script de teste, faltava uma peça — nenhuma API Lua devolvia a posição
+mundial de um ator (`NPCCombat.get_context` só devolve `distance`
+relativo), então um script não tinha como calcular POSIÇÕES pra espalhar
+os meteoros ao redor do alvo. Adicionado `Actor.get_pos(rid) -> x, y, z`
+(`server/internal/scripting/api.go`, mesmo padrão de `get_hp`/`get_name`)
+— peça de propósito geral, não específica de meteoro.
+
+`dist/server/scripts/events/orc_boss_meteor_shower.lua` (novo, mesmo
+padrão de `forest_troll_boss.lua` — hook `Event.on("npc_decide_ability",
+...)`, carregado via `LoadDir("scripts")`): confirma via
+`NPCCombat.get_loadout` que o NPC tem a ability 777
+(`orc_boss_ground_slam_v1`) configurada (data-driven — não checa nome/id
+do NPC), aguarda `NPCCombat.can_cast` liberar (cooldown), e então:
+- dispara o hit central de sempre via `NPCCombat.try_cast(...)` — mantém
+  windup/telegraph/dodge/parry/guard do Ground Slam exatamente como já
+  estava, e consome o cooldown da ability normalmente;
+- espalha 4 meteoros extras ao redor da posição do alvo
+  (`Actor.get_pos`) via `NPCCombat.spawn_impact`, ângulo/distância
+  aleatórios dentro de `METEOR_MIN_SPREAD..METEOR_SPREAD`, escalonados por
+  `METEOR_STAGGER_MS` — todos os números (contagem, raio, dano, spread,
+  stagger) são constantes NO SCRIPT, não na engine nem no banco.
+
+**Quando atacar:** aguardando o dev buildar e ativar o script — matar/
+enfrentar o Orc Boss deve mostrar o hit central de sempre MAIS 4 anéis
+extras aparecendo ao redor, cada um crescendo/esquentando e explodindo
+independentemente. Nada compilado, nada commitado.
+
+## 132. FX.play + World.SpawnTempProp (duas primitivas Lua genéricas)
+
+Implementado o design aprovado (nada compilado, nada commitado).
+
+**1 — `FX.play(fx_key, x, y, z[, magnitude])`.** Ponte fina de verdade:
+`world.BroadcastFXAtPosition` (novo, `combat_fx.go`) chama o MESMO
+`abilityFXHook` que `BroadcastAbilityFX` já usa, com
+`casterRID=targetRID=abilityID=0`, `phase="script"`. `FX.play` registrado
+em `api.go` (`registerFXAPI`, nova, chamada em `registerAPI`). **Zero
+mudança de cliente** — `PCreateEmitter` já era consumido genericamente por
+`vfxPath`+posição, sem exigir contexto de combate (confirmado antes de
+implementar, não só suposto).
+
+**2 — `World.SpawnTempProp(model_path, start_pos, end_pos, duration_ms[,
+on_arrival_fx_key]) -> prop_id`.**
+- **Servidor:** `Area.ephemeralObjects map[int]*EphemeralObject` (novo
+  campo, `area.go`) + struct `EphemeralObject`. ID space separado de
+  `zone_scenery` via `NewEphemeralObjectID()` (base `1_000_000_000` +
+  contador atômico — nunca colide com IDs reais de banco, e evita a
+  pegadinha de round-trip signed/unsigned que IDs negativos teriam no
+  encoder `uint32`).
+- **2 pacotes novos:** `PWorldObjectSpawn=147` (id + model_path + scale +
+  transform inicial + transform final + duration_ms) e
+  `PWorldObjectDespawn=148` (só o id, espelha `pActorGone`) —
+  registrados em `protocol/packets.go`, `client/src/net/protocol.h`, e
+  no alias local do pacote `world` (`combat.go`, mesmo padrão de
+  `pWorldObjectUpdate`).
+- **Sem scan/timer novo:** `SpawnEphemeralObject` reusa
+  `Area.ScheduleCall` (o MESMO mecanismo que já processa `Timer.after` do
+  Lua, checado a cada ~100ms via `tickAI`) pra agendar a remoção — nenhuma
+  fila/scan nova precisou ser escrita, ao contrário do que a investigação
+  cogitou ("mesmo padrão 2x no código" acabou sendo literalmente
+  reaproveitável, não só um padrão parecido).
+- **Cliente:** 2 `case` novos (`kPWorldObjectSpawn`/`kPWorldObjectDespawn`,
+  `main.cpp`). Spawn cria um `WorldObjectEntry` NOVO e o insere direto em
+  `world_static_objects` — mesmo vetor que scenery normal usa — já nascendo
+  com `anim_active=true`/`anim_from=start`/`anim_to=end`/
+  `anim_duration=duration_ms/1000`. **Zero lerp novo escrito**: o loop de
+  render que já existia (`main.cpp` ~6317-6329, "ease-in-out lerp") e os
+  loops de lazy-init de `Actor`/`Model` (`obj.actor || obj.model_path.empty()
+  continue` — várias ocorrências já existentes) pegam a entrada nova
+  automaticamente, do jeito que já pegam qualquer objeto de scenery.
+  Despawn só dá `erase` do vetor pelo id.
+- `World.SpawnTempProp` registrado em `registerWorldAPI` (`api.go`), logo
+  depois de `GetTransform` — chama `area.SpawnEphemeralObject(...)`. Se
+  `on_arrival_fx_key` não for vazio, `SpawnEphemeralObject`'s callback de
+  despawn chama `BroadcastFXAtPosition` na posição final — conveniência
+  interna que reusa o item 1, não um acoplamento novo (script podia ter
+  chamado `FX.play` manualmente também).
+
+**Confirmado — zero mudança de cliente pro FX.play:** `PCreateEmitter` já
+era um pacote genérico (`vfxPath` + posição + magnitude/phase), nenhum
+handler do cliente precisou saber que agora existe um caminho "script"
+disparando ele.
+
+**Confirmado — as duas primitivas continuam independentes:**
+`World.SpawnTempProp`/`Area.SpawnEphemeralObject` não referenciam
+`Actor.PendingImpacts`/`NPCCombat.spawn_impact` em nenhum ponto, e
+vice-versa — a única "ligação" entre as duas é o script escolhendo o MESMO
+`delay_ms`/`duration_ms` nas duas chamadas, exatamente como já demonstrado
+no `orc_boss_meteor_shower.lua` da rodada anterior (que ainda não usa essas
+duas peças novas — próximo passo natural seria atualizar aquele script pra
+fazer o meteoro CAIR visualmente, não só o dano/telegraph).
+
+**Quando atacar:** aguardando o dev buildar (server + client) e testar as
+duas primitivas isoladamente antes de plugar no script do Orc Boss — `FX.play`
+disparando um efeito qualquer numa posição arbitrária, e `SpawnTempProp`
+fazendo um mesh simples se mover de um ponto a outro e sumir sozinho. Nada
+compilado, nada commitado.
+
+**Script atualizado — as 3 primitivas combinadas.**
+`dist/server/scripts/events/orc_boss_meteor_shower.lua` — cada iteração do
+loop de meteoros extras agora chama `World.SpawnTempProp` (mesh de pedra
+caindo de `impact_y+40` até `impact_y`) e `NPCCombat.spawn_impact`
+(telegraph+dano) com o MESMO `delay_ms`, sincronizados por variável, não
+número duplicado. `on_arrival_fx_key="vfx:explosion"` na própria
+`SpawnTempProp` dispara a explosão na chegada — nenhuma chamada separada
+de `FX.play` precisou existir pra isso.
+
+- **Mesh:** `assets/models/Meshes/Foliage/Rocks/n_Rock_01.b3d`
+  (`media_models.id=1734`) — pedra pequena já catalogada, usada como
+  placeholder; nada no script depende de ser especificamente essa.
+- **Altura de impacto — `World.SampleGroundHeight`/equivalente NÃO existe
+  em Lua ainda** (confirmado via grep em `scripting/api.go` — só
+  `Actor.get_pos` está exposto). Fallback documentado no próprio script:
+  usa o Y do ALVO como estimativa de altura do chão local (o alvo
+  normalmente já está em pé no chão, e os meteoros caem dentro do raio de
+  espalhamento — aproximação razoável, mas não é sample real por ponto;
+  terreno muito irregular sob um `mx,mz` específico pode fazer o mesh
+  pousar visualmente acima/abaixo da superfície real). Corrigir isso de
+  verdade exigiria um binding Lua novo tipo `World.SampleGroundHeight(x,
+  z)` espelhando `Area.Heightmap.SampleWorld` do servidor — não
+  implementado nesta rodada, fora de escopo.
+
+**Quando atacar:** aguardando o dev buildar e testar o encontro completo —
+matar/enfrentar o Orc Boss deve mostrar 4 pedras caindo do céu ao redor do
+alvo (cada uma com telegraph crescendo/esquentando embaixo), explodindo ao
+pousar com dano real em área, mais o golpe central de sempre. Nada
+compilado, nada commitado.
+
+**Bug reportado pelo dev — meteoro gigante e sem cor.** Causa raiz do
+tamanho, confirmada: `World.SpawnTempProp` (`api.go`) chamava
+`area.SpawnEphemeralObject(modelPath, 1.0, ...)` — `scale` HARDCODED em
+1.0, nunca exposto pro Lua, apesar de `SpawnEphemeralObject` já aceitar um
+`scale` de verdade. Modelos brutos deste asset pack são autorados em
+tamanho nativo enorme — confirmado direto no banco
+(`SELECT MIN/MAX/AVG(sx) FROM zone_scenery` → ~0.02-0.05, nunca perto de
+1.0). **Corrigido:** `World.SpawnTempProp` ganhou um parâmetro `scale`
+opcional (novo 5º argumento, `on_arrival_fx_key` virou 6º) — sem esse
+parâmetro antes, não tinha COMO o script pedir um tamanho razoável.
+`orc_boss_meteor_shower.lua` atualizado com `METEOR_SCALE = 0.03` (dentro
+da faixa real observada no banco).
+
+**Sobre a cor:** não isolei uma causa raiz separada — `Actor::Init`
+(`shared/renderer/src/actor.cpp:23-31`) só faz `ModelCacheGet(model_path,
+mm)`, o MESMO caminho que scenery normal usa; não existe plumbing de
+material/cor por instância pra `WorldObjectEntry` genérico (nem scenery
+normal tem isso — cor vem inteiramente do material embutido no arquivo do
+modelo). Hipótese mais provável: era sintoma do MESMO bug de escala — a
+100x maior que o normal, a câmera provavelmente ficava efetivamente DENTRO
+da geometria, vendo poucos polígonos enormes de perto (textura esticada
+ao extremo ou face de trás sem culling correto), o que pode aparecer como
+"sem cor"/plano. Recomendo re-testar depois do fix de escala antes de
+assumir que é um bug separado — se continuar sem cor com o tamanho
+corrigido, aí sim vale investigar o pipeline de materiais desse modelo
+específico (ou trocar por outro já confirmado com textura, ex: qualquer
+modelo já usado em `zone_scenery` existente).
+
+Nada compilado, nada commitado.
+
+**Confirmado pelo dev — hipótese de escala DESCARTADA, é o material
+mesmo.** Depois do fix de escala, o objeto ficou pequeno mas "chapado"
+(achatado, sem volume aparente) e branco — não era proximidade de câmera.
+Investigação: TODA linha de `zone_scenery` neste banco tem
+`material_id=0` (`SELECT ... FROM zone_scenery` — zero exceções), ou seja,
+nenhum objeto de cenário deste projeto usa o campo `material_id` de
+verdade — todos dependem 100% do material embutido no próprio arquivo do
+modelo (confirmado em código: `Actor::Init`,
+`shared/renderer/src/actor.cpp:23-31`, só faz `ModelCacheGet`, sem nenhum
+override de material pra `WorldObjectEntry`; `LoadWorldObjects`, `db.go`,
+só usa `material_id` pra checar `black_cutout`, nunca pra buscar
+albedo/normal/ORM). A família `Rocks/*` (`n_Rock_01`..`14`) muito
+provavelmente não tem material funcional embutido nesse asset pack.
+
+**Trocado o mesh:** `METEOR_MODEL_PATH` agora aponta pra
+`Meshes/Town Builder/m_FenceWall_Post.b3d` — não é modelo de meteoro, mas
+é um modelo REALMENTE colocado e renderizando certo em Training Camp hoje
+(prova por uso existente, não suposição). `METEOR_SCALE` ajustado pra
+`0.02`, igual ao `sx` real desse modelo em todas as colocações existentes.
+Documentado no próprio script pra trocar por um mesh de meteoro de verdade
+assim que um for adicionado ao catálogo com material confirmado.
+
+Nada compilado, nada commitado.

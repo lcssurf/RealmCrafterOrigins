@@ -79,10 +79,14 @@ func TestPlayerCombatAPICanCastAndTryCast(t *testing.T) {
 	if player.Stamina != 25 {
 		t.Fatalf("player SP mismatch after cast: got=%d want=25", player.Stamina)
 	}
-	if player.SpecialAbilityID != 7301 {
-		t.Fatalf("special ability mismatch: got=%d want=7301", player.SpecialAbilityID)
+	if len(player.PendingImpacts) != 1 {
+		t.Fatalf("expected exactly 1 pending impact, got=%d", len(player.PendingImpacts))
 	}
-	if player.SpecialActionOverride != "AttackHeavy" {
-		t.Fatalf("special action override mismatch: got=%q want=%q", player.SpecialActionOverride, "AttackHeavy")
+	entry := player.PendingImpacts[0]
+	if entry.Ability.ID != 7301 {
+		t.Fatalf("special ability mismatch: got=%d want=7301", entry.Ability.ID)
+	}
+	if entry.ActionOverride != "AttackHeavy" {
+		t.Fatalf("special action override mismatch: got=%q want=%q", entry.ActionOverride, "AttackHeavy")
 	}
 }

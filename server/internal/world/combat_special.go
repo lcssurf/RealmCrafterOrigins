@@ -11,168 +11,259 @@ import (
 	"strings"
 )
 
-// resolveActorWindup resolves a previously armed special windup for any actor.
+// ResolveActorPendingImpacts resolves every one of actor.PendingImpacts whose
+// ResolveAt has passed — each entry independently, using ITS OWN TargetRID
+// (0 = no personal target, e.g. NPCCombat.spawn_impact) rather than a single
+// caller-supplied target. Entries not yet due stay in the list untouched.
+// Replaces the old resolveActorWindup, which only ever handled ONE scalar
+// windup per actor — see Actor.PendingImpacts doc (actor.go) and
+// docs/TECH_DEBT.md, mob AoE + multi-impact investigation.
 //
-// Returns handled=true when an active windup was present (including while still
-// charging). killedTarget is true when the impact kills the current target.
-func resolveActorWindup(area *Area, actor, target *Actor, now int64) (handled bool, killedTarget bool) {
-	if area == nil || actor == nil || target == nil {
+// Returns handled=true if at least one GatesAbilityCasts=true entry was
+// either still charging or resolved THIS call — mirrors the old
+// windupUntil>0 semantics for "skip normal melee this tick" (ProcessNPCSpecialAttack).
+// Raw spawn_impact entries (GatesAbilityCasts=false) never contribute —
+// meteors falling in the background must not stall the boss's normal attack
+// pattern. killedAny is true if any impact resolved this call killed its
+// primary target (0 for target-less entries never counts here).
+func ResolveActorPendingImpacts(area *Area, actor *Actor, now int64) (handled bool, killedAny bool) {
+	if area == nil || actor == nil {
 		return false, false
 	}
 
 	actor.Mu.Lock()
-	windupUntil := actor.SpecialWindupUntil
-	windupTarget := actor.SpecialTargetRID
-	windupAbilityID := actor.SpecialAbilityID
-	windupActionOverride := actor.SpecialActionOverride
+	pending := actor.PendingImpacts
 	actor.Mu.Unlock()
-
-	if windupUntil <= 0 {
+	if len(pending) == 0 {
 		return false, false
 	}
-	if now < windupUntil {
-		return true, false
-	}
-	ability := resolveSpecialAbilityTemplate(windupAbilityID)
 
-	// Clear windup first so impact resolves exactly once.
+	var stillCharging []PendingImpact
+	for _, entry := range pending {
+		if entry.GatesAbilityCasts {
+			handled = true // charging or about to resolve this call — either way, gates melee this tick
+		}
+		if now < entry.ResolveAt {
+			stillCharging = append(stillCharging, entry)
+			continue
+		}
+		if resolvePendingImpactEntry(area, actor, entry, now) {
+			killedAny = true
+		}
+	}
+
 	actor.Mu.Lock()
-	actor.SpecialWindupUntil = 0
-	actor.SpecialTargetRID = 0
-	actor.SpecialAbilityID = 0
-	actor.SpecialActionOverride = ""
-	actor.SpecialReasonTag = ""
-	actor.SpecialClientTraceID = ""
+	actor.PendingImpacts = stillCharging
 	actor.Mu.Unlock()
 
-	// If target changed mid-windup, resolve against the originally telegraphed target.
-	if windupTarget != 0 {
-		if target == nil || target.RuntimeID != windupTarget {
-			forced, ok := area.GetActor(windupTarget)
-			if !ok || forced == nil {
-				if recover := resolveStageAction(windupActionOverride, ability.ActionRecover, "Idle"); recover != "" {
-					BroadcastAnimate(area, actor, recover)
-				}
-				log.Printf("special: cancelled cast actor=%d ability=%d reason=target_missing",
-					actor.RuntimeID, windupAbilityID)
-				return true, false
+	return handled, killedAny
+}
+
+// resolvePendingImpactEntry resolves ONE due PendingImpact. Entries with a
+// TargetRID run the full personal-target flow (missing/dead/out-of-range
+// cancel, dodge, parry — unchanged from the old single-windup path).
+// Entries with TargetRID==0 (raw spawn_impact) skip all of that — there is
+// no "the target" to escape or react to a splash — and go straight to the
+// AoE resolution, where every hostile actor in radius (including what would
+// otherwise be a "primary" target) is treated uniformly.
+func resolvePendingImpactEntry(area *Area, actor *Actor, entry PendingImpact, now int64) (killedTarget bool) {
+	ability := entry.Ability
+
+	var primary *Actor
+	if entry.TargetRID != 0 {
+		forced, ok := area.GetActor(entry.TargetRID)
+		if !ok || forced == nil {
+			if recover := resolveStageAction(entry.ActionOverride, ability.ActionRecover, "Idle"); recover != "" {
+				BroadcastAnimate(area, actor, recover)
 			}
-			target = forced
+			log.Printf("special: cancelled impact=%d actor=%d ability=%d reason=target_missing",
+				entry.ID, actor.RuntimeID, ability.ID)
+			return false
 		}
-	}
-	if target == nil || target.IsDead() {
-		if recover := resolveStageAction(windupActionOverride, ability.ActionRecover, "Idle"); recover != "" {
-			BroadcastAnimate(area, actor, recover)
+		primary = forced
+		if primary.IsDead() {
+			if recover := resolveStageAction(entry.ActionOverride, ability.ActionRecover, "Idle"); recover != "" {
+				BroadcastAnimate(area, actor, recover)
+			}
+			log.Printf("special: cancelled impact=%d actor=%d ability=%d reason=target_dead",
+				entry.ID, actor.RuntimeID, ability.ID)
+			return false
 		}
-		log.Printf("special: cancelled cast actor=%d ability=%d reason=target_dead",
-			actor.RuntimeID, windupAbilityID)
-		return true, false
-	}
-	if !inSpecialRange(actor, target, ability.RangeMin, ability.RangeMax) {
-		// Target escaped the special impact radius.
-		if recover := resolveStageAction(windupActionOverride, ability.ActionRecover, "Idle"); recover != "" {
-			BroadcastAnimate(area, actor, recover)
+		if !inSpecialRange(actor, primary, ability.RangeMin, ability.RangeMax) {
+			if recover := resolveStageAction(entry.ActionOverride, ability.ActionRecover, "Idle"); recover != "" {
+				BroadcastAnimate(area, actor, recover)
+			}
+			log.Printf("special: cancelled impact=%d actor=%d ability=%d target=%d reason=out_of_range",
+				entry.ID, actor.RuntimeID, ability.ID, primary.RuntimeID)
+			return false
 		}
-		log.Printf("special: cancelled cast actor=%d ability=%d target=%d reason=out_of_range",
-			actor.RuntimeID, windupAbilityID, target.RuntimeID)
-		return true, false
+
+		primary.Mu.Lock()
+		if primary.DodgeUntil > now {
+			primary.LastCombatAt = now
+			primary.Mu.Unlock()
+
+			BroadcastCombatEvent(area, combatEventHitDodged, actor.RuntimeID, primary.RuntimeID, 0,
+				buildImpactResolutionMetaText(entry.ID))
+			if recover := resolveStageAction(entry.ActionOverride, ability.ActionRecover, "Idle"); recover != "" {
+				BroadcastAnimate(area, actor, recover)
+			}
+			return false
+		}
+		primary.Mu.Unlock()
+
+		primary.Mu.Lock()
+		parryActive := primary.ParryUntil > now
+		parryAge := now - primary.LastParryAt
+		parryWindow := ability.ParryWindowMs
+		if parryWindow <= 0 {
+			parryWindow = npcSpecialParryExactMs
+		}
+		if parryActive && parryAge >= 0 && parryAge <= parryWindow {
+			// Consume the parry so the same window doesn't double-count.
+			primary.ParryUntil = 0
+			primary.LastCombatAt = now
+			primary.Mu.Unlock()
+
+			BroadcastCombatEvent(area, combatEventSpecialParry, actor.RuntimeID, primary.RuntimeID, int16(parryAge),
+				buildImpactResolutionMetaText(entry.ID))
+			if recover := resolveStageAction(entry.ActionOverride, ability.ActionRecover, "Idle"); recover != "" {
+				BroadcastAnimate(area, actor, recover)
+			}
+			return false
+		}
+		primary.Mu.Unlock()
 	}
 
-	target.Mu.Lock()
-	if target.DodgeUntil > now {
-		target.LastCombatAt = now
-		target.Mu.Unlock()
-
-		BroadcastCombatEvent(area, combatEventHitDodged, actor.RuntimeID, target.RuntimeID, 0, "")
-		if recover := resolveStageAction(windupActionOverride, ability.ActionRecover, "Idle"); recover != "" {
-			BroadcastAnimate(area, actor, recover)
-		}
-		return true, false
-	}
-	target.Mu.Unlock()
-
-	target.Mu.Lock()
-	parryActive := target.ParryUntil > now
-	parryAge := now - target.LastParryAt
-	parryWindow := ability.ParryWindowMs
-	if parryWindow <= 0 {
-		parryWindow = npcSpecialParryExactMs
-	}
-	if parryActive && parryAge >= 0 && parryAge <= parryWindow {
-		// Consume the parry so the same window doesn't double-count.
-		target.ParryUntil = 0
-		target.LastCombatAt = now
-		target.Mu.Unlock()
-
-		BroadcastCombatEvent(area, combatEventSpecialParry, actor.RuntimeID, target.RuntimeID, int16(parryAge), "")
-		if recover := resolveStageAction(windupActionOverride, ability.ActionRecover, "Idle"); recover != "" {
-			BroadcastAnimate(area, actor, recover)
-		}
-		return true, false
-	}
-	target.Mu.Unlock()
-
-	if impact := resolveStageAction(windupActionOverride, ability.ActionImpact, "Attack"); impact != "" {
+	if impact := resolveStageAction(entry.ActionOverride, ability.ActionImpact, "Attack"); impact != "" {
 		BroadcastAnimate(area, actor, impact)
 	}
-	damage, isCrit := specialAttackDamage(actor, target, ability)
 
-	// Guard: reduce ability damage if the target is defending (mirrors ProcessAttack).
-	target.Mu.Lock()
-	if target.Guarding && target.Stamina > 0 {
+	radius := ability.TelegraphRadius
+	if radius <= 0 {
+		radius = 1.45 // matches buildSpecialWindupMetaText's own fallback
+	}
+
+	// Primary target (if any): dodge/parry above already gated on THIS
+	// actor specifically — those are precise, personally-timed reactive
+	// windows tied to being the telegraphed target, and stay scoped to the
+	// primary target only. Resolved BEFORE the AoE loop so the loop can
+	// skip it by RuntimeID.
+	if primary != nil {
+		if resolveSpecialImpactOnVictim(area, actor, primary, ability, entry.ID, ability.ID) {
+			killedTarget = true
+		}
+	}
+
+	// AoE splash (circle only for now — cone/line need angle/line math not
+	// present anywhere in this codebase yet; documented as a follow-up, see
+	// docs/TECH_DEBT.md). Uses entry.ImpactX/Z, captured/chosen ONCE when
+	// this entry was created — NOT any actor's possibly-since-moved live
+	// position. This is what makes the ground telegraph and the actual
+	// damage area agree exactly.
+	for _, victim := range ActorsInRadius(area, entry.ImpactX, entry.ImpactZ, radius) {
+		if victim == nil || victim == actor {
+			continue // caster never hits itself
+		}
+		if primary != nil && victim.RuntimeID == primary.RuntimeID {
+			continue // primary target already resolved above
+		}
+		if victim.IsDead() || !IsHostileTo(actor, victim) {
+			continue
+		}
+		if resolveSpecialImpactOnVictim(area, actor, victim, ability, entry.ID, ability.ID) {
+			killedTarget = true
+		}
+	}
+
+	return killedTarget
+}
+
+// resolveSpecialImpactOnVictim applies one special-ability hit to one
+// victim: damage roll, guard mitigation, ApplyDamage, floating number +
+// combat event, blood FX, HP broadcast, ability FX, skill tracking, and
+// death handling. Shared by resolvePendingImpactEntry's primary-target
+// resolution and its AoE splash loop so both hit exactly the same way — the
+// only difference between them is that dodge/parry are checked by the
+// caller BEFORE calling this, and only for the primary target.
+// impactID travels in the hit/crit combat events' meta text (impact_id=N,
+// same additive key=value pattern as buildSpecialWindupMetaText's
+// impact_x/z) so the client knows WHICH of possibly several concurrent
+// ground telegraphs from this source_rid to remove.
+func resolveSpecialImpactOnVictim(area *Area, actor, victim *Actor, ability AbilityTemplate, impactID uint64, abilityID int) (justDied bool) {
+	damage, isCrit := specialAttackDamage(actor, victim, ability)
+	meta := buildImpactResolutionMetaText(impactID)
+
+	// Guard: reduce ability damage if the victim is defending (mirrors ProcessAttack).
+	victim.Mu.Lock()
+	if victim.Guarding && victim.Stamina > 0 {
 		damage = (damage*guardDamagePct + 99) / 100 // ceil(damage * pct / 100)
 		if damage < 1 {
 			damage = 1
 		}
-		target.Stamina -= guardHitSPCost
+		victim.Stamina -= guardHitSPCost
 		guardEnded := false
-		if target.Stamina <= 0 {
-			target.Stamina = 0
-			target.Guarding = false
-			target.GuardUntil = 0
+		if victim.Stamina <= 0 {
+			victim.Stamina = 0
+			victim.Guarding = false
+			victim.GuardUntil = 0
 			guardEnded = true
 		}
-		target.Mu.Unlock()
+		victim.Mu.Unlock()
 
-		BroadcastCombatEvent(area, combatEventHitGuarded, actor.RuntimeID, target.RuntimeID, int16(damage), "")
+		BroadcastCombatEvent(area, combatEventHitGuarded, actor.RuntimeID, victim.RuntimeID, int16(damage), meta)
 		if guardEnded {
-			BroadcastCombatEvent(area, combatEventGuardEnded, target.RuntimeID, target.RuntimeID, 0, "")
+			BroadcastCombatEvent(area, combatEventGuardEnded, victim.RuntimeID, victim.RuntimeID, 0, "")
 		}
 	} else {
-		target.Mu.Unlock()
+		victim.Mu.Unlock()
 	}
 
-	hp, justDied := ApplyDamage(target, damage, actor.RuntimeID)
+	hp, justDied := ApplyDamage(victim, damage, actor.RuntimeID)
 	if isCrit {
-		BroadcastFloatingNumber(area, target, int16(damage), 1)
-		BroadcastCombatEvent(area, combatEventSpecialCritHit, actor.RuntimeID, target.RuntimeID, int16(damage), "")
+		BroadcastFloatingNumber(area, victim, int16(damage), 1)
+		BroadcastCombatEvent(area, combatEventSpecialCritHit, actor.RuntimeID, victim.RuntimeID, int16(damage), meta)
 	} else {
-		BroadcastFloatingNumber(area, target, int16(damage), 0)
-		BroadcastCombatEvent(area, combatEventSpecialHit, actor.RuntimeID, target.RuntimeID, int16(damage), "")
+		BroadcastFloatingNumber(area, victim, int16(damage), 0)
+		BroadcastCombatEvent(area, combatEventSpecialHit, actor.RuntimeID, victim.RuntimeID, int16(damage), meta)
 	}
-	if damage > 0 && target.IsNPC && GetBloodMode() == "all" {
+	if damage > 0 && victim.IsNPC && GetBloodMode() == "all" {
 		if bloodFX := GetBloodFX(); bloodFX != "" {
-			BroadcastBloodFX(area, actor, target, bloodFX)
+			BroadcastBloodFX(area, actor, victim, bloodFX)
 		}
 	}
-	BroadcastHPUpdate(area, target, hp)
-	BroadcastAbilityFX(area, actor, target, ability, FXPhaseImpact)
-	if !actor.IsNPC && actor.CharacterID != "" && target.IsNPC {
+	BroadcastHPUpdate(area, victim, hp)
+	BroadcastAbilityFX(area, actor, victim, ability, FXPhaseImpact)
+	if !actor.IsNPC && actor.CharacterID != "" && victim.IsNPC {
 		GetCombatWindowManager().TrackSkill(
 			actor.RuntimeID,
-			target.RuntimeID,
-			uint32(windupAbilityID),
-			int32(target.Level),
+			victim.RuntimeID,
+			uint32(abilityID),
+			int32(victim.Level),
 			actor.CharacterID,
 		)
 	}
 	if justDied {
-		BroadcastAnimate(area, target, "Death")
-		BroadcastActorDead(area, target.RuntimeID, actor.RuntimeID)
-		OnNPCKilled(area, target, actor.RuntimeID)
-		runSpecialKillHook(area, actor, target)
+		BroadcastAnimate(area, victim, "Death")
+		BroadcastActorDead(area, victim.RuntimeID, actor.RuntimeID)
+		OnNPCKilled(area, victim, actor.RuntimeID)
+		runSpecialKillHook(area, actor, victim)
 	}
-	return true, justDied
+	return justDied
+}
+
+// IsHostileTo mirrors the only faction model this combat system has today:
+// NPCs are hostile to players and vice versa (see area.go's tickAI, which
+// splits area.actors into npcs/players purely on the IsNPC bool — no
+// parties/factions/pets exist yet). Extracted here as its own helper (did
+// not exist before — every prior combat path only ever had ONE fixed
+// attacker/target pair, so hostility was implicit) because AoE splash needs
+// to test it against an arbitrary list of nearby actors.
+func IsHostileTo(a, b *Actor) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.IsNPC != b.IsNPC
 }
 
 // ProcessNPCSpecialAttack runs the NPC "special/parry-check" flow.
@@ -192,8 +283,8 @@ func ProcessNPCSpecialAttack(area *Area, npc, target *Actor, now int64) (handled
 	}
 	npc.Mu.Unlock()
 
-	// 1) Resolve active windup (shared flow for any actor).
-	if handled, killed := resolveActorWindup(area, npc, target, now); handled {
+	// 1) Resolve any pending impacts (shared flow for any actor).
+	if handled, killed := ResolveActorPendingImpacts(area, npc, now); handled {
 		return true, killed
 	}
 
@@ -338,18 +429,36 @@ func startNPCSpecialCast(
 		windupMs = npcSpecialWindupMsLegacy
 	}
 
+	// Impact center captured ONCE here, at windup start, from the target's
+	// CURRENT position — never recomputed at resolution time (see
+	// PendingImpact.ImpactX/Z doc, actor.go). This is what both the AoE
+	// damage radius (resolvePendingImpactEntry) and the client's ground
+	// telegraph use as their single source of truth.
+	target.Mu.Lock()
+	impactX := target.X
+	impactZ := target.Z
+	target.Mu.Unlock()
+
+	impactID := NewImpactID()
+
 	npc.Mu.Lock()
 	previousLastSpecialAt := npc.LastSpecialAt
 	if npc.AbilityCooldowns == nil {
 		npc.AbilityCooldowns = make(map[int]int64)
 	}
 	markNPCSpecialChainCastStarted(npc, now, previousLastSpecialAt)
-	npc.SpecialWindupUntil = now + windupMs
-	npc.SpecialTargetRID = target.RuntimeID
-	npc.SpecialAbilityID = ability.ID
-	npc.SpecialActionOverride = actionOverride
-	npc.SpecialReasonTag = reasonTag
-	npc.SpecialClientTraceID = clientTraceID
+	npc.PendingImpacts = append(npc.PendingImpacts, PendingImpact{
+		ID:                impactID,
+		ResolveAt:         now + windupMs,
+		TargetRID:         target.RuntimeID,
+		ImpactX:           impactX,
+		ImpactZ:           impactZ,
+		Ability:           ability,
+		ActionOverride:    actionOverride,
+		ReasonTag:         reasonTag,
+		ClientTraceID:     clientTraceID,
+		GatesAbilityCasts: true, // classic single-target path — blocks a second cast while charging, same as the old scalar SpecialWindupUntil did
+	})
 	npc.LastSpecialAt = now
 	npc.LastCombatAt = now
 	if ability.ID > 0 {
@@ -363,13 +472,104 @@ func startNPCSpecialCast(
 		npc.RuntimeID,
 		target.RuntimeID,
 		int16(windupMs),
-		buildSpecialWindupMetaText(ability, reasonTag, clientTraceID),
+		buildSpecialWindupMetaText(ability, reasonTag, clientTraceID, impactX, impactZ, impactID),
 	)
 	if windupAction := resolveStageAction(actionOverride, ability.ActionWindup, "Attack"); windupAction != "" {
 		BroadcastAnimate(area, npc, windupAction)
 	}
 	BroadcastAbilityFX(area, npc, target, ability, FXPhaseWindup)
 	return true
+}
+
+// SpawnScriptedImpact schedules ONE "raw" impact (telegraph + AoE damage,
+// no personal target) at a script-chosen position and delay — the engine
+// primitive behind NPCCombat.spawn_impact (scripting/api.go). Reuses the
+// EXACT SAME resolution pipeline as the classic single-target special path
+// (resolvePendingImpactEntry, ActorsInRadius, IsHostileTo,
+// resolveSpecialImpactOnVictim) — the only difference is TargetRID=0 (no
+// dodge/parry/guard personal-target checks — a mere AoE bystander doesn't
+// get those) and GatesAbilityCasts=false (never blocks the caster's normal
+// ability rotation — see canActorStartAbilityNow, cast_intent.go).
+//
+// A "meteor shower" is nothing more than a Lua script calling this several
+// times with script-chosen positions/delays — there is no fixed
+// "impact_count"/"stagger"/"spread" concept anywhere in the engine; the
+// PATTERN is entirely the script's decision. See docs/TECH_DEBT.md, mob AoE
+// + multi-impact investigation.
+//
+// Returns (impactID, true) on success, (0, false) if npcRID doesn't resolve
+// to a live actor in some area.
+func SpawnScriptedImpact(
+	w *World,
+	casterRID uint32,
+	x, z float32,
+	radius float32,
+	damageMin, damageMax int32,
+	delayMs int64,
+	telegraphColorRGBA, telegraphStyle, vfxPathImpact string,
+	actionOverride, reasonTag string,
+	now int64,
+) (uint64, bool) {
+	if w == nil || casterRID == 0 {
+		return 0, false
+	}
+	caster, area := w.FindActor(casterRID)
+	if caster == nil || area == nil || caster.IsDead() {
+		return 0, false
+	}
+	if delayMs < 0 {
+		delayMs = 0
+	}
+	if radius <= 0 {
+		radius = 1.45
+	}
+	if reasonTag == "" {
+		reasonTag = "script_spawn_impact"
+	}
+
+	ability := AbilityTemplate{
+		Name:            "scripted_spawn_impact",
+		TelegraphType:   telegraphStyle,
+		TelegraphRadius: radius,
+		TelegraphColorRGBA: telegraphColorRGBA,
+		BaseDamageMin:   damageMin,
+		BaseDamageMax:   damageMax,
+		ActionWindup:    "Attack",
+		ActionImpact:    "Attack",
+		ActionRecover:   "Idle",
+		VFXPathImpact:   vfxPathImpact,
+		Enabled:         true,
+	}
+
+	impactID := NewImpactID()
+
+	caster.Mu.Lock()
+	caster.PendingImpacts = append(caster.PendingImpacts, PendingImpact{
+		ID:                impactID,
+		ResolveAt:         now + delayMs,
+		TargetRID:         0, // raw impact — no personal target, no dodge/parry/guard checks
+		ImpactX:           x,
+		ImpactZ:           z,
+		Ability:           ability,
+		ActionOverride:    actionOverride,
+		ReasonTag:         reasonTag,
+		GatesAbilityCasts: false, // never blocks the caster's normal ability rotation
+	})
+	caster.Mu.Unlock()
+
+	BroadcastCombatEvent(
+		area,
+		combatEventSpecialWindup,
+		caster.RuntimeID,
+		0, // no personal target
+		int16(delayMs),
+		buildSpecialWindupMetaText(ability, reasonTag, "", x, z, impactID),
+	)
+	if windupAction := resolveStageAction(actionOverride, ability.ActionWindup, "Attack"); windupAction != "" {
+		BroadcastAnimate(area, caster, windupAction)
+	}
+	BroadcastAbilityFX(area, caster, nil, ability, FXPhaseWindup)
+	return impactID, true
 }
 
 func specialAttackDamage(npc, target *Actor, ability AbilityTemplate) (int32, bool) {
@@ -526,7 +726,19 @@ func getStatValueForScaling(actor *Actor, statName string) int32 {
 	return 0
 }
 
-func buildSpecialWindupMetaText(ability AbilityTemplate, reasonTag, clientTraceID string) string {
+// buildImpactResolutionMetaText carries impact_id on the RESOLUTION events
+// (dodge/parry/hit/critHit) — the counterpart to buildSpecialWindupMetaText,
+// which carries it (plus impact_x/z) on the WINDUP event. Same additive
+// "meta:key=value;..." format, parsed client-side by the same
+// ParseCombatTelegraphMeta. Without this, a client that has multiple
+// concurrent telegraphs from the same source_rid (a boss stacking several
+// NPCCombat.spawn_impact calls) would have no way to know WHICH one just
+// resolved and should stop drawing.
+func buildImpactResolutionMetaText(impactID uint64) string {
+	return fmt.Sprintf("meta:impact_id=%d", impactID)
+}
+
+func buildSpecialWindupMetaText(ability AbilityTemplate, reasonTag, clientTraceID string, impactX, impactZ float32, impactID uint64) string {
 	reason := sanitizeCombatMetaValue(reasonTag)
 	if reason == "" {
 		reason = "npc_ai"
@@ -547,15 +759,23 @@ func buildSpecialWindupMetaText(ability AbilityTemplate, reasonTag, clientTraceI
 	if parryWindowMs <= 0 {
 		parryWindowMs = npcSpecialParryExactMs
 	}
+	// impact_x/impact_z: world-space ground telegraph center (see
+	// PendingImpact.ImpactX/Z doc, actor.go). impact_id: which
+	// PendingImpact this is — lets the client tell apart multiple
+	// concurrent telegraphs from the same source_rid (see
+	// buildImpactResolutionMetaText, used on the matching resolution
+	// event). Both appended at the end so older clients parsing this same
+	// "meta:" string with a key=value scanner (ParseCombatTelegraphMeta,
+	// main.cpp) simply ignore unknown keys rather than breaking.
 	trace := sanitizeCombatMetaValue(clientTraceID)
 	if trace == "" {
 		return fmt.Sprintf(
-			"meta:telegraph=parry;ability=%d;reason=%s;radius=%.2f;color=%s;style=%s;window_ms=%d",
-			ability.ID, reason, radius, color, style, parryWindowMs,
+			"meta:telegraph=parry;ability=%d;reason=%s;radius=%.2f;color=%s;style=%s;window_ms=%d;impact_x=%.3f;impact_z=%.3f;impact_id=%d",
+			ability.ID, reason, radius, color, style, parryWindowMs, impactX, impactZ, impactID,
 		)
 	}
 	return fmt.Sprintf(
-		"meta:telegraph=parry;ability=%d;reason=%s;radius=%.2f;color=%s;style=%s;window_ms=%d;trace=%s",
-		ability.ID, reason, radius, color, style, parryWindowMs, trace,
+		"meta:telegraph=parry;ability=%d;reason=%s;radius=%.2f;color=%s;style=%s;window_ms=%d;trace=%s;impact_x=%.3f;impact_z=%.3f;impact_id=%d",
+		ability.ID, reason, radius, color, style, parryWindowMs, trace, impactX, impactZ, impactID,
 	)
 }

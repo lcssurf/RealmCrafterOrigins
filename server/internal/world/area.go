@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -272,6 +273,48 @@ type Area struct {
 	// the Lua function, resets callCtx) — mirrors droppedItems/deadNPCs.
 	scMu      sync.Mutex
 	scheduled []scheduledCall
+
+	// Ephemeral (script-spawned) WorldObjects — Lua World.SpawnTempProp.
+	// Separate map (own ID space, see NewEphemeralObjectID) from the
+	// authored a.Objects/objectOverrides pair: these are NEVER zone_scenery
+	// rows, never persisted, and always short-lived (auto-removed by the
+	// ScheduleCall despawn timer set up in SpawnEphemeralObject). Mirrors
+	// droppedItems/objectOverrides in shape only.
+	eoMu             sync.Mutex
+	ephemeralObjects map[int]*EphemeralObject
+}
+
+// EphemeralObject is one script-spawned, temporary WorldObject in flight —
+// e.g. a meteor mesh falling from start to end over duration. Not
+// zone_scenery-backed; exists only in memory/network for its lifetime. See
+// Area.SpawnEphemeralObject and docs/TECH_DEBT.md, FX.play + SpawnTempProp
+// investigation.
+type EphemeralObject struct {
+	ID          int
+	ModelPath   string
+	Scale       float32
+	StartX, StartY, StartZ, StartYaw float32
+	EndX, EndY, EndZ, EndYaw         float32
+	SpawnedAt   int64 // unix ms
+	DurationMs  int64
+	OnArrivalFXKey string // "" = no FX fired on arrival
+}
+
+// kEphemeralObjectIDBase + a monotonic counter gives ephemeral objects an ID
+// space that can never collide with a real zone_scenery row id (those are
+// small positive DB autoincrement values — zone_scenery will never have a
+// billion rows). Simpler and safer than negative IDs, which would need a
+// signed/unsigned round-trip through WorldObjectsPayload's uint32 encoding.
+const kEphemeralObjectIDBase = 1_000_000_000
+
+var nextEphemeralObjectSeq int64
+
+// NewEphemeralObjectID hands out a process-wide unique id for one
+// EphemeralObject. sync/atomic, not a mutex — mirrors NewImpactID
+// (actor.go) for the same reason: called from arbitrary goroutines with no
+// natural shared lock.
+func NewEphemeralObjectID() int {
+	return kEphemeralObjectIDBase + int(atomic.AddInt64(&nextEphemeralObjectSeq, 1))
 }
 
 type scheduledCall struct {
@@ -312,7 +355,8 @@ func NewArea(name string) *Area {
 		actors:       make(map[uint32]*Actor),
 		droppedItems: make(map[uint32]*DroppedItem),
 		Waypoints:    make(map[int]*Waypoint),
-		objectOverrides: make(map[int]*WorldObjectState),
+		objectOverrides:  make(map[int]*WorldObjectState),
+		ephemeralObjects: make(map[int]*EphemeralObject),
 	}
 }
 
@@ -554,12 +598,7 @@ func leashNPC(npc *Actor, a *Area) {
 	npc.ParryUntil = 0
 	npc.DodgeUntil = 0
 	npc.AITarget = nil
-	npc.SpecialWindupUntil = 0
-	npc.SpecialTargetRID = 0
-	npc.SpecialAbilityID = 0
-	npc.SpecialActionOverride = ""
-	npc.SpecialReasonTag = ""
-	npc.SpecialClientTraceID = ""
+	npc.PendingImpacts = nil
 	npc.SpecialChainCount = 0
 	npc.AbilityCooldowns = make(map[int]int64)
 	npc.AIMode = AIReturn
@@ -588,12 +627,7 @@ func startWander(npc *Actor) {
 // Priority: patrol > wander > idle. Must be called with npc.Mu held.
 func postChaseMode(npc *Actor) {
 	npc.AITarget = nil
-	npc.SpecialWindupUntil = 0
-	npc.SpecialTargetRID = 0
-	npc.SpecialAbilityID = 0
-	npc.SpecialActionOverride = ""
-	npc.SpecialReasonTag = ""
-	npc.SpecialClientTraceID = ""
+	npc.PendingImpacts = nil
 	npc.SpecialChainCount = 0
 	if npc.StartWaypointID > 0 {
 		npc.CurrentWaypointID = npc.StartWaypointID
@@ -932,40 +966,19 @@ func (a *Area) tickAI(tickSec float32) {
 		}
 	}
 
-	// Resolve pending special windups for players.
+	// Resolve pending special windups/impacts for players. Target lookup
+	// and missing/dead-target cancellation now live inside
+	// resolvePendingImpactEntry (called via ResolveActorPendingImpacts) —
+	// it resolves each entry against ITS OWN TargetRID, so this loop no
+	// longer needs to pre-fetch a single target itself.
 	for _, player := range players {
 		player.Mu.Lock()
-		windupUntil := player.SpecialWindupUntil
-		targetRID := player.SpecialTargetRID
+		hasPending := len(player.PendingImpacts) > 0
 		player.Mu.Unlock()
-
-		if windupUntil == 0 {
+		if !hasPending {
 			continue
 		}
-
-		if targetRID == 0 {
-			player.Mu.Lock()
-			player.SpecialWindupUntil = 0
-			player.SpecialTargetRID = 0
-			player.SpecialAbilityID = 0
-			player.Mu.Unlock()
-			continue
-		}
-
-		a.Mu.RLock()
-		target := a.actors[targetRID]
-		a.Mu.RUnlock()
-		if target == nil {
-			// Target left the area; clear pending special state.
-			player.Mu.Lock()
-			player.SpecialWindupUntil = 0
-			player.SpecialTargetRID = 0
-			player.SpecialAbilityID = 0
-			player.Mu.Unlock()
-			continue
-		}
-
-		resolveActorWindup(a, player, target, now)
+		ResolveActorPendingImpacts(a, player, now)
 	}
 	_ = toKill
 }
@@ -1238,6 +1251,77 @@ func (a *Area) SetWorldObjectCollision(id int, collision bool) bool {
 	return true
 }
 
+// SpawnEphemeralObject creates ONE temporary, script-spawned WorldObject
+// (Lua World.SpawnTempProp — scripting/api.go) that moves from
+// (startX,startY,startZ,startYaw) to (endX,endY,endZ,endYaw) over
+// durationMs, then auto-removes itself. Not zone_scenery-backed, never
+// persisted — exists only in a.ephemeralObjects and on connected clients
+// for its lifetime. Reuses Area.ScheduleCall (the SAME timer mechanism
+// Lua's Timer.after already uses, checked every ~100ms via tickAI) for the
+// despawn — no new ticker/scan loop needed.
+//
+// If onArrivalFXKey is non-empty, BroadcastFXAtPosition fires at the END
+// transform the moment the object is removed — purely a convenience
+// (reuses FX.play's own primitive internally); a script can just as well
+// call FX.play itself instead/additionally, the two are not coupled.
+//
+// Returns the new object's id.
+func (a *Area) SpawnEphemeralObject(
+	modelPath string,
+	scale float32,
+	startX, startY, startZ, startYaw float32,
+	endX, endY, endZ, endYaw float32,
+	durationMs int64,
+	onArrivalFXKey string,
+) int {
+	if a == nil {
+		return 0
+	}
+	if durationMs < 0 {
+		durationMs = 0
+	}
+
+	obj := &EphemeralObject{
+		ID:             NewEphemeralObjectID(),
+		ModelPath:      modelPath,
+		Scale:          scale,
+		StartX:         startX,
+		StartY:         startY,
+		StartZ:         startZ,
+		StartYaw:       startYaw,
+		EndX:           endX,
+		EndY:           endY,
+		EndZ:           endZ,
+		EndYaw:         endYaw,
+		SpawnedAt:      time.Now().UnixMilli(),
+		DurationMs:     durationMs,
+		OnArrivalFXKey: onArrivalFXKey,
+	}
+
+	a.eoMu.Lock()
+	a.ephemeralObjects[obj.ID] = obj
+	a.eoMu.Unlock()
+
+	a.BroadcastAll(buildFrame(pWorldObjectSpawn, EphemeralObjectSpawnPayload(obj)))
+
+	id := obj.ID
+	a.ScheduleCall(durationMs, func() {
+		a.eoMu.Lock()
+		delete(a.ephemeralObjects, id)
+		a.eoMu.Unlock()
+
+		var p pb
+		p.u32(uint32(id))
+		a.BroadcastAll(buildFrame(pWorldObjectDespawn, p))
+
+		if onArrivalFXKey != "" {
+			BroadcastFXAtPosition(a, onArrivalFXKey, endX, endY, endZ, 1.0)
+		}
+	})
+
+	return obj.ID
+}
+
 // SpawnDropsForNPC rolls the drop table for npc and adds any results to the world.
 func (a *Area) SpawnDropsForNPC(npc *Actor) {
 	if npc == nil {
@@ -1326,12 +1410,7 @@ func (a *Area) respawnNPC(npc *Actor) {
 	npc.GuardUntil = 0
 	npc.ParryUntil = 0
 	npc.DodgeUntil = 0
-	npc.SpecialWindupUntil = 0
-	npc.SpecialTargetRID = 0
-	npc.SpecialAbilityID = 0
-	npc.SpecialActionOverride = ""
-	npc.SpecialReasonTag = ""
-	npc.SpecialClientTraceID = ""
+	npc.PendingImpacts = nil
 	npc.SpecialChainCount = 0
 	npc.AbilityCooldowns = make(map[int]int64)
 	postChaseMode(npc)

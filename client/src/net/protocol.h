@@ -88,6 +88,8 @@ constexpr uint16_t kPWorldObjectUpdate = 143; // S->C: runtime transform/visibil
 constexpr uint16_t kPObjectInteract    = 144; // C->S: player interacts with a WorldObject (mirrors kPRightClick, object_id instead of actor RID)
 constexpr uint16_t kPDynamicCollisionShapes = 145; // S->C: local-space box/wedge collision shapes for is_dynamic=1 scenery objects, sent once on area entry
 constexpr uint16_t kPZoneEmitters      = 146; // S->C: placed zone_emitters (fx_template_id + loop) for current area, sent once on area entry
+constexpr uint16_t kPWorldObjectSpawn   = 147; // S->C: create ONE ephemeral WorldObject at runtime (Lua World.SpawnTempProp) — model_path + start transform + end transform + duration; not zone_scenery-backed, never persisted
+constexpr uint16_t kPWorldObjectDespawn = 148; // S->C: remove ONE ephemeral WorldObject (auto-fired when SpawnTempProp's duration elapses) — mirrors kPActorGone's single-id format
 
 // ---------------------------------------------------------------------------
 // Result codes

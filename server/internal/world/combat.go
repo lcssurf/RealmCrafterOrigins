@@ -26,6 +26,8 @@ const (
 	pWorldObjectUpdate uint16 = 143
 	pRepositionActor uint16 = 49
 	pChatMessage     uint16 = 16
+	pWorldObjectSpawn   uint16 = 147
+	pWorldObjectDespawn uint16 = 148
 )
 
 const (

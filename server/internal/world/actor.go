@@ -3,6 +3,7 @@ package world
 import (
 	"log"
 	"sync"
+	"sync/atomic"
 )
 
 const sendChSize = 64
@@ -60,12 +61,18 @@ type Actor struct {
 	LastGuardAt           int64         // unix ms of last guard action
 	LastParryAt           int64         // unix ms of last parry action
 	LastInterruptAt       int64         // unix ms of last interrupt action
-	SpecialWindupUntil    int64         // unix ms when NPC special windup resolves (0 = inactive)
-	SpecialTargetRID      uint32        // runtimeID of the current special target
-	SpecialAbilityID      int           // active ability template id for the current special windup
-	SpecialActionOverride string        // optional per-cast action override resolved from cast intent
-	SpecialReasonTag      string        // trace tag for ability decisions (npc_ai/player_input/script_combo...)
-	SpecialClientTraceID  string        // optional client trace correlation id
+	// PendingImpacts: every windup/scheduled impact currently in flight for
+	// this actor — replaces the old single scalar SpecialWindupUntil/
+	// SpecialTargetRID/SpecialAbilityID/SpecialImpactX/Z/... fields (kept as
+	// a 1-element append for the classic single-target special path, so
+	// that path's behavior is unchanged; see startNPCSpecialCast,
+	// combat_special.go). A slice, not a scalar, because
+	// NPCCombat.spawn_impact (scripting/api.go) needs to let a boss script
+	// schedule MULTIPLE concurrent impacts (a "meteor shower" pattern is
+	// just N calls to spawn_impact with script-chosen positions/delays —
+	// the engine has no fixed "impact_count" concept, see
+	// docs/TECH_DEBT.md, mob AoE + multi-impact investigation).
+	PendingImpacts        []PendingImpact
 	LastSpecialAt         int64         // unix ms of last special windup start
 	LastAbilityDecisionAt int64         // unix ms of last special/script decision evaluation
 	SpecialChainCount     int           // consecutive special casts in current chain window
@@ -211,6 +218,64 @@ type AnimEvent struct {
 	Frame     int32
 	EventType string
 	Payload   string
+}
+
+// PendingImpact is one scheduled windup/impact for an actor — replaces the
+// old scalar Special* fields (SpecialWindupUntil/SpecialTargetRID/...). An
+// actor can have any number of these in flight at once (Actor.PendingImpacts),
+// which is what lets a boss script stack several concurrent/staggered
+// impacts (NPCCombat.spawn_impact, scripting/api.go) without interfering
+// with its normal single-target special-attack windup. See
+// docs/TECH_DEBT.md, mob AoE + multi-impact investigation.
+type PendingImpact struct {
+	// ID: globally unique (see nextImpactID/NewImpactID below), travels to
+	// the client via the windup/hit/parry/critHit combat events' meta text
+	// (impact_id=N) so the client knows which of possibly SEVERAL active
+	// ground telegraphs from the same source_rid to update/remove.
+	ID        uint64
+	ResolveAt int64 // unix ms
+
+	// TargetRID: 0 for a "raw" scheduled impact with no personal target
+	// (NPCCombat.spawn_impact) — dodge/parry/guard only run for a >0
+	// TargetRID (see resolvePendingImpactEntry, combat_special.go),
+	// matching the existing rule that those are personally-timed reactive
+	// windows, not something a mere
+	// AoE bystander gets. >0 for the classic single-target special path
+	// (startNPCSpecialCast) — that target's dodge/parry/guard still apply
+	// exactly as before.
+	TargetRID uint32
+
+	// ImpactX/Z: world-space impact center, captured/chosen ONCE when this
+	// entry is created — never recomputed at resolution time. Single
+	// source of truth for both the AoE damage radius (ActorsInRadius) and
+	// the client's ground telegraph.
+	ImpactX float32
+	ImpactZ float32
+
+	Ability        AbilityTemplate // real ability (classic path) or a synthetic one built from spawn_impact's args
+	ActionOverride string
+	ReasonTag      string
+	ClientTraceID  string
+
+	// GatesAbilityCasts: true only for entries created by the classic
+	// ability-windup path (startNPCSpecialCast) — canActorStartAbilityNow
+	// (cast_intent.go) checks this (not PendingImpacts' mere non-emptiness)
+	// to decide "is a real special windup in progress," so a boss stacking
+	// several spawn_impact() calls never blocks its own normal ability
+	// rotation, and vice versa.
+	GatesAbilityCasts bool
+}
+
+var nextImpactID uint64
+
+// NewImpactID hands out a process-wide unique PendingImpact.ID. Not
+// per-actor — must stay unique across the whole server so the client (which
+// only ever sees a flat impact_id, not which actor "owns" the counter) can
+// never collide two different actors' impacts. sync/atomic, not a mutex:
+// called from arbitrary goroutines (AI tick, scripting calls) with no
+// natural shared lock.
+func NewImpactID() uint64 {
+	return atomic.AddUint64(&nextImpactID, 1)
 }
 
 // AnimBinding maps a game action to a concrete animation clip with full

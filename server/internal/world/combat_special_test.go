@@ -26,8 +26,13 @@ func TestProcessNPCSpecialAttackParryExactTiming(t *testing.T) {
 
 	now := time.Now().UnixMilli()
 	npc.Mu.Lock()
-	npc.SpecialWindupUntil = now - 1
-	npc.SpecialTargetRID = target.RuntimeID
+	npc.PendingImpacts = append(npc.PendingImpacts, PendingImpact{
+		ID:                NewImpactID(),
+		ResolveAt:         now - 1,
+		TargetRID:         target.RuntimeID,
+		Ability:           legacySpecialAbilityTemplate(),
+		GatesAbilityCasts: true,
+	})
 	npc.Mu.Unlock()
 
 	target.Mu.Lock()
@@ -52,7 +57,7 @@ func TestProcessNPCSpecialAttackParryExactTiming(t *testing.T) {
 	}
 
 	npc.Mu.Lock()
-	if npc.SpecialWindupUntil != 0 || npc.SpecialTargetRID != 0 {
+	if len(npc.PendingImpacts) != 0 {
 		npc.Mu.Unlock()
 		t.Fatalf("expected special windup state to be cleared after resolve")
 	}
@@ -83,8 +88,13 @@ func TestProcessNPCSpecialAttackHitsHardWithoutParry(t *testing.T) {
 
 	now := time.Now().UnixMilli()
 	npc.Mu.Lock()
-	npc.SpecialWindupUntil = now - 1
-	npc.SpecialTargetRID = target.RuntimeID
+	npc.PendingImpacts = append(npc.PendingImpacts, PendingImpact{
+		ID:                NewImpactID(),
+		ResolveAt:         now - 1,
+		TargetRID:         target.RuntimeID,
+		Ability:           legacySpecialAbilityTemplate(),
+		GatesAbilityCasts: true,
+	})
 	npc.Mu.Unlock()
 
 	target.Mu.Lock()
@@ -163,9 +173,13 @@ func TestProcessNPCSpecialAttackInvokesKillHookOnLethalHit(t *testing.T) {
 
 	now := time.Now().UnixMilli()
 	npc.Mu.Lock()
-	npc.SpecialWindupUntil = now - 1
-	npc.SpecialTargetRID = target.RuntimeID
-	npc.SpecialAbilityID = 9901
+	npc.PendingImpacts = append(npc.PendingImpacts, PendingImpact{
+		ID:                NewImpactID(),
+		ResolveAt:         now - 1,
+		TargetRID:         target.RuntimeID,
+		Ability:           resolveSpecialAbilityTemplate(9901),
+		GatesAbilityCasts: true,
+	})
 	npc.Mu.Unlock()
 
 	handled, killed := ProcessNPCSpecialAttack(area, npc, target, now)

@@ -87,6 +87,8 @@ const (
 	PObjectInteract      uint16 = 144 // C->S: player interacts with a WorldObject (mirrors PRightClick, but object_id instead of actor RID)
 	PDynamicCollisionShapes uint16 = 145 // S->C: local-space box/wedge collision shapes for is_dynamic=1 scenery objects, sent once on area entry
 	PZoneEmitters        uint16 = 146 // S->C: placed zone_emitters (fx_template_id + loop) for the current area, sent once on area entry
+	PWorldObjectSpawn    uint16 = 147 // S->C: create ONE ephemeral WorldObject at runtime (Lua World.SpawnTempProp) — model_path + start transform + end transform + duration; not zone_scenery-backed, never persisted
+	PWorldObjectDespawn  uint16 = 148 // S->C: remove ONE ephemeral WorldObject (auto-fired when SpawnTempProp's duration elapses) — mirrors pActorGone's single-id format
 )
 
 // EmitterType values for PCreateEmitter.

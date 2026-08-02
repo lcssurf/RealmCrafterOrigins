@@ -546,7 +546,13 @@ func (r *Registry) DispatchNPCAIDecision(area *world.Area, npc, target *world.Ac
 			continue
 		}
 		npc.Mu.Lock()
-		started := npc.SpecialWindupUntil > now
+		started := false
+		for _, p := range npc.PendingImpacts {
+			if p.GatesAbilityCasts && p.ResolveAt > now {
+				started = true
+				break
+			}
+		}
 		npc.Mu.Unlock()
 		if started {
 			return true
