@@ -385,6 +385,23 @@ void Pipeline::gBufferPass_() {
             sh->SetMat4("u_modelMatrix",  r.model);
             sh->SetUInt("u_materialIndex", static_cast<unsigned>(r.material_idx));
             sh->SetFloat("u_characterMask", r.readability_mask);
+            // Direct-albedo bypass (see DynamicDrawRequest::tex_albedo in
+            // pipeline.h) — always used when the caller supplied a plain GL
+            // texture, not only for glTF/GLB sources. actor.cpp already sets
+            // this from the SAME m.tex_albedo the working Assets/Model
+            // preview binds directly via glBindTextureUnit (preview_viewport.cpp's
+            // "is_static" forward path) — reusing that already-proven handle
+            // sidesteps ARB_bindless_texture residency timing entirely rather
+            // than trying to detect which sources are "risky". The bindless
+            // SSBO path above (material_idx) still supplies normal/ORM/AO/
+            // opacity — only albedo is swapped when this is set.
+            const bool useDirectAlbedo = r.tex_albedo != 0;
+            sh->SetBool("u_useDirectAlbedo", useDirectAlbedo);
+            if (useDirectAlbedo) {
+                glBindTextureUnit(10, r.tex_albedo);
+                sh->SetInt("u_directAlbedo", 10);
+            }
+
             if (r.vao) {
                 glBindVertexArray(r.vao);
             } else {

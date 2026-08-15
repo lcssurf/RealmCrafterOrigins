@@ -268,7 +268,7 @@ void PreviewViewport::Clear() {
     collision_mesh_simplified_budget_ = -1.f;
 }
 
-void PreviewViewport::FitCameraToModel() {
+void PreviewViewport::FitCameraToModel(const char* reason) {
     const auto& mdl = actor_.model();
     if (!mdl.IsLoaded()) return;
 
@@ -299,6 +299,17 @@ void PreviewViewport::FitCameraToModel() {
     cam_far_      = std::max(200.f,  radius * 10.f);
     cam_dist_min_ = std::max(0.01f,  radius * 0.05f);
     cam_dist_max_ = std::max(50.f,   radius * 20.f);
+
+    // TEMP DEBUG (investigating item-disappears-on-socket-preview report) —
+    // confirms/denies the "SetActorScale resets the camera out from under
+    // the user" hypothesis by showing who called this and where the camera
+    // ended up. Remove once the regression is confirmed/fixed.
+    std::fprintf(stderr,
+        "[preview-cam-fit] reason='%s' actor_scale_=%f\n"
+        "  target=(%.4f, %.4f, %.4f) yaw=%.2f pitch=%.2f dist=%.4f (min=%.4f max=%.4f)\n",
+        reason, actor_scale_,
+        cam_target_.x, cam_target_.y, cam_target_.z, cam_yaw_, cam_pitch_, cam_dist_,
+        cam_dist_min_, cam_dist_max_);
 }
 
 void PreviewViewport::ReloadCurrent() {
@@ -344,7 +355,7 @@ bool PreviewViewport::LoadModel(const std::string& path) {
     if (actor_.CurrentAnim().empty() && actor_.model().ClipCount() > 0)
         actor_.PlayAnim(actor_.model().ClipName(0), true);
 
-    FitCameraToModel();
+    FitCameraToModel("LoadModel");
     return actor_.IsLoaded();
 }
 
@@ -371,7 +382,7 @@ bool PreviewViewport::LoadSpherePrimitive() {
     actor_.Init("", rco::renderer::kSpherePrimitivePath, mm);
     if (engine_) engine_->MarkMaterialsDirty();
 
-    FitCameraToModel();
+    FitCameraToModel("LoadSpherePrimitive");
     return actor_.IsLoaded();
 }
 
@@ -634,16 +645,69 @@ void PreviewViewport::RenderToEngineFrame_(int w, int h, float dt) {
             // Unknown bone name (stale binding) — skip rather than draw at
             // a misleading location.
         } else {
-            glm::mat4 actorModel(1.0f);
-            actorModel = glm::translate(actorModel, actor_.position + glm::vec3(0.f, actor_.y_offset, 0.f));
-            actorModel = glm::rotate(actorModel, glm::radians(actor_.yaw), glm::vec3(0.f, 1.f, 0.f));
-            if (actor_.yaw_offset != 0.f)
-                actorModel = glm::rotate(actorModel, glm::radians(actor_.yaw_offset), glm::vec3(0.f, 1.f, 0.f));
-            actorModel = glm::scale(actorModel, glm::vec3(actor_.scale));
+            // actor_.scale (the body's import-scale × actor-def multiplier,
+            // e.g. 0.02) is needed to place the BONE correctly — boneMat's
+            // translation is expressed in the body model's own unscaled
+            // coordinate space (bone matrices are baked at import time and
+            // never multiplied by actor_.scale; see GetBoneWorldTransform).
+            // But it must NOT scale the item's own geometry: local_transform
+            // already carries the item's OWN scale (ov.offset_scale *
+            // t.model_scale, composed in items.cpp DrawItemPreview) — piling
+            // the body's 0.02 on top of that shrank a full-size weapon down
+            // to near-nothing (e.g. a 50cm bow to ~1cm), invisible in
+            // practice at the tight cam_dist this preview fits to. Confirmed
+            // by forcing that factor to 50.0 as a throwaway test: the weapon
+            // reappeared, grotesquely oversized as expected, proving the
+            // shrink — not shader/culling/textures — was the cause all along.
+            //
+            // Fix: compute the bone's WORLD POSITION using the full
+            // (scaled) body transform, but build the final matrix's
+            // rotation from body-yaw * bone-local-rotation only, with NO
+            // scale baked in, so local_transform's own scale isn't touched.
+            glm::mat4 bodyTranslate(1.0f);
+            bodyTranslate = glm::translate(bodyTranslate, actor_.position + glm::vec3(0.f, actor_.y_offset, 0.f));
 
-            glm::mat4 world = actorModel * boneMat * attachment_spec_.local_transform;
+            glm::mat4 bodyRot(1.0f);
+            bodyRot = glm::rotate(bodyRot, glm::radians(actor_.yaw), glm::vec3(0.f, 1.f, 0.f));
+            if (actor_.yaw_offset != 0.f)
+                bodyRot = glm::rotate(bodyRot, glm::radians(actor_.yaw_offset), glm::vec3(0.f, 1.f, 0.f));
+
+            glm::mat4 bodyModelScaled = bodyTranslate * bodyRot *
+                glm::scale(glm::mat4(1.0f), glm::vec3(actor_.scale));
+            glm::vec3 bonePosWorld = glm::vec3(bodyModelScaled * boneMat * glm::vec4(0.f, 0.f, 0.f, 1.f));
+
+            // Rotation only, no scale: body's own yaw/yaw_offset composed
+            // with the bone's own local orientation (boneMat's 3x3 — e.g.
+            // the hand bone's authored grip angle). Dropping bodyRot would
+            // stop the weapon turning with the character; dropping
+            // boneMat's rotation would break the socket's authored grip
+            // alignment — both are kept, only the scale is excluded.
+            glm::mat3 combinedRot = glm::mat3(bodyRot) * glm::mat3(boneMat);
+
+            glm::mat4 world = glm::translate(glm::mat4(1.0f), bonePosWorld)
+                             * glm::mat4(combinedRot)
+                             * attachment_spec_.local_transform;
             attachment_.SubmitWithMatrix(*pipeline_, world);
             attachment_world_ = world;
+
+            // Verification log — keep until the fix is confirmed in-app,
+            // then remove. bonePosWorld should match the position already
+            // validated in earlier rounds (dist_from_cam_target ~1.0-1.1);
+            // rot_col0_len should be ~1.0 now (no scale baked into the
+            // rotation any more), vs. actor_.scale (~0.02) which is what
+            // was silently multiplying the geometry before this fix.
+            {
+                static std::string s_lastLoggedVerifyPath = "\x01";
+                if (s_lastLoggedVerifyPath != attachment_path_) {
+                    s_lastLoggedVerifyPath = attachment_path_;
+                    float rotCol0Len = glm::length(glm::vec3(combinedRot[0]));
+                    std::fprintf(stderr,
+                        "[attach-scale-fix] bonePosWorld=(%f, %f, %f)"
+                        " rot_col0_len=%f (should be ~1.0)  actor_.scale=%f (no longer applied to geometry)\n",
+                        bonePosWorld.x, bonePosWorld.y, bonePosWorld.z,
+                        rotCol0Len, actor_.scale);
+                }
+            }
         }
     }
 
@@ -1001,9 +1065,25 @@ void PreviewViewport::DrawAttachmentGizmo_(const ImVec2& image_pos, const ImVec2
     // Axis length scales with camera distance so the gizmo stays legible
     // whether the dev is zoomed into a ring or framing the whole actor.
     const float axisLen = std::max(0.05f, cam_dist_ * 0.12f);
-    glm::vec3 xTip = origin + glm::normalize(glm::vec3(world[0])) * axisLen;
-    glm::vec3 yTip = origin + glm::normalize(glm::vec3(world[1])) * axisLen;
-    glm::vec3 zTip = origin + glm::normalize(glm::vec3(world[2])) * axisLen;
+    // World/Local toggle (SetAttachmentGizmoWorldSpace) — position (origin)
+    // is unaffected either way; only the axis DIRECTIONS differ. Local
+    // (default) keeps the pre-existing behavior: axes are the attachment's
+    // own rotated basis, so they visually rotate with the item as
+    // offset_rot changes. World uses the fixed global basis instead, so the
+    // axes stay put regardless of the item's current rotation.
+    glm::vec3 xDir, yDir, zDir;
+    if (attachment_gizmo_world_space_) {
+        xDir = glm::vec3(1.f, 0.f, 0.f);
+        yDir = glm::vec3(0.f, 1.f, 0.f);
+        zDir = glm::vec3(0.f, 0.f, 1.f);
+    } else {
+        xDir = glm::normalize(glm::vec3(world[0]));
+        yDir = glm::normalize(glm::vec3(world[1]));
+        zDir = glm::normalize(glm::vec3(world[2]));
+    }
+    glm::vec3 xTip = origin + xDir * axisLen;
+    glm::vec3 yTip = origin + yDir * axisLen;
+    glm::vec3 zTip = origin + zDir * axisLen;
 
     addLine3D(origin, xTip, IM_COL32(255, 60, 60, 255), 3.0f);
     addLine3D(origin, yTip, IM_COL32(60, 255, 60, 255), 3.0f);
@@ -1154,6 +1234,19 @@ void PreviewViewport::SetAnimActions(std::vector<AnimActionEntry> actions,
         sel_action_name_ = anim_actions_[0].action;
         PlayActionEntry_(anim_actions_[0]);
     }
+}
+
+void PreviewViewport::SelectActionByName(const std::string& name) {
+    for (int i = 0; i < (int)anim_actions_.size(); ++i) {
+        if (anim_actions_[i].action != name) continue;
+        if (i == sel_action_) return; // already selected/playing — same guard the dropdown click has
+        sel_action_      = i;
+        sel_action_name_ = name;
+        PlayActionEntry_(anim_actions_[i]);
+        return;
+    }
+    // Not found — leave current selection untouched rather than clearing it,
+    // so an exhausted weapon-fallback resolution doesn't blank the preview.
 }
 
 void PreviewViewport::PlayActionEntry_(const AnimActionEntry& e) {
@@ -1328,7 +1421,7 @@ void PreviewViewport::DrawImGui() {
         }
     }
 
-    if (ImGui::Button("Reset cam")) FitCameraToModel();
+    if (ImGui::Button("Reset cam")) FitCameraToModel("ResetCamButton");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(120.f);
     ImGui::SliderFloat("Light", &sun_intensity_, 0.0f, 4.0f, "%.2f");

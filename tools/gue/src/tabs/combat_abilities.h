@@ -57,6 +57,12 @@ struct CombatAbilityTemplate {
     bool        enabled = true;
     // UI icon shown on the hotbar (migrateV53). "" = legacy placeholder rect.
     std::string icon_path;
+    // on_cast_script (generic scripting Fase 2) — the specific Lua event
+    // name fired when THIS ability starts casting, instead of the generic
+    // "ability_cast" fallback. "" = no specific script (default — normal
+    // damage/CC/status-effect resolution only). See
+    // server/internal/scripting/registry.go DispatchAbilityCast.
+    std::string on_cast_script;
 };
 
 struct NPCAbilityLoadoutEntry {

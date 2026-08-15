@@ -510,6 +510,28 @@ void MediaTab::EnsureTables(sqlite3* db) {
     for (const char* s : animColumns)
         sqlite3_exec(db, s, nullptr, nullptr, nullptr);
 
+    // Additive migrations for media_actor_meshes rigid bone-attachment
+    // fields (server migrateV52). SELECTed further down (Actor mesh slots
+    // query) but were never mirrored here — on a DB the Go server hasn't
+    // migrated yet, that SELECT fails outright (SQLITE_ERROR: no such
+    // column) and silently drops every mesh slot for every actor def.
+    // Currently masked in existing DBs only because the server already
+    // added these columns at some point; kept here for parity so a fresh
+    // GUE-only DB doesn't hit the same class of bug as
+    // ability_templates.on_cast_script (combat_abilities.cpp).
+    const char* meshSlotColumns[] = {
+        "ALTER TABLE media_actor_meshes ADD COLUMN bone_name    TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE media_actor_meshes ADD COLUMN offset_pos_x REAL NOT NULL DEFAULT 0.0",
+        "ALTER TABLE media_actor_meshes ADD COLUMN offset_pos_y REAL NOT NULL DEFAULT 0.0",
+        "ALTER TABLE media_actor_meshes ADD COLUMN offset_pos_z REAL NOT NULL DEFAULT 0.0",
+        "ALTER TABLE media_actor_meshes ADD COLUMN offset_rot_x REAL NOT NULL DEFAULT 0.0",
+        "ALTER TABLE media_actor_meshes ADD COLUMN offset_rot_y REAL NOT NULL DEFAULT 0.0",
+        "ALTER TABLE media_actor_meshes ADD COLUMN offset_rot_z REAL NOT NULL DEFAULT 0.0",
+        "ALTER TABLE media_actor_meshes ADD COLUMN offset_scale REAL NOT NULL DEFAULT 1.0",
+    };
+    for (const char* s : meshSlotColumns)
+        sqlite3_exec(db, s, nullptr, nullptr, nullptr);
+
     // Actor-def gameplay defaults (mirrors server migrateV8). Each ALTER is
     // a no-op when the column is already present; errors are ignored on
     // purpose so this runs unconditionally every launch.
@@ -702,6 +724,68 @@ bool MediaTab::VocabContains(const std::string& name) const {
     return false;
 }
 
+void MediaTab::LoadAnimVocabTree(sqlite3* db) {
+    anim_vocab_tree_.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT id, name, parent_id FROM anim_vocabulary ORDER BY name",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        return;
+    }
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        VocabNode n;
+        n.id        = sqlite3_column_int(stmt, 0);
+        n.name      = colText(stmt, 1);
+        n.parent_id = sqlite3_column_int(stmt, 2);
+        anim_vocab_tree_.push_back(std::move(n));
+    }
+    sqlite3_finalize(stmt);
+}
+
+void MediaTab::LoadWeaponAnimStyleKeysMedia(sqlite3* db) {
+    weapon_anim_style_keys_.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT style_key FROM weapon_anim_styles WHERE enabled = 1 ORDER BY style_key",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        return;
+    }
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        weapon_anim_style_keys_.push_back(colText(stmt, 0));
+    }
+    sqlite3_finalize(stmt);
+}
+
+std::string MediaTab::ResolveActionForWeapon(const std::string& base_action,
+                                              const std::string& style_key,
+                                              const std::vector<ActorAnimMap>& anim_map) const {
+    // Same fallback-cascade shape as BroadcastAnimate (combat_events.go):
+    // try the composite, then walk parent_id until a bound action is found
+    // or the chain runs out. maxFallbackDepth mirrors that file's constant.
+    constexpr int kMaxFallbackDepth = 8;
+
+    std::string resolved = style_key.empty() ? base_action : (base_action + "_" + style_key);
+    for (int i = 0; i < kMaxFallbackDepth && !resolved.empty(); ++i) {
+        for (const auto& a : anim_map) {
+            if (a.action == resolved) return resolved;
+        }
+        std::string parent;
+        for (const auto& n : anim_vocab_tree_) {
+            if (n.name != resolved) continue;
+            if (n.parent_id != 0) {
+                for (const auto& p : anim_vocab_tree_) {
+                    if (p.id == n.parent_id) { parent = p.name; break; }
+                }
+            }
+            break;
+        }
+        resolved = parent;
+    }
+    return ""; // fallback exhausted — mirrors "missing_action_binding" server-side
+}
+
 void MediaTab::LoadSocketVocabNames(sqlite3* db) {
     socket_vocab_names_.clear();
 
@@ -728,6 +812,8 @@ void MediaTab::FetchAll(sqlite3* db) {
     actor_defs_.clear();
 
     LoadAnimVocabNames(db);
+    LoadAnimVocabTree(db);
+    LoadWeaponAnimStyleKeysMedia(db);
     LoadBoneConventions(db);
 
     sqlite3_stmt* stmt = nullptr;
@@ -4059,6 +4145,121 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
             ImGui::EndTable();
         }
 
+        // Weapon Variant Coverage (Option A UX, item 3): for every base
+        // action this actor already has an entry for, list its weapon-style
+        // children from the vocabulary tree and show whether THIS actor def
+        // has its own clip (configured) or would land on the generic clip
+        // at runtime (fallback) — resolved with the exact same walk
+        // BroadcastAnimate uses, replayed locally via ResolveActionForWeapon.
+        // Dead bindings (style no longer active) are already flagged in the
+        // Animation Vocabulary tree (Settings tab) — skipped here to avoid
+        // warning about the same thing twice in two screens.
+        //
+        // Source is weapon_anim_styles (PHYSICAL grip/pose), NOT weapon_kits
+        // (skill pool) — corrected from an earlier iteration that grouped by
+        // kit_key, which was the wrong granularity for animation.
+        if (!weapon_anim_style_keys_.empty()) {
+            ImGui::Spacing();
+            ImGui::TextColored({0.8f, 0.9f, 1.f, 1.f}, "Weapon Variant Coverage");
+            ImGui::TextDisabled(
+                "Whether this actor has its OWN clip per weapon style below, or "
+                "would fall back to the generic action above at runtime.");
+            if (ImGui::BeginTable("##wvc_tbl", 3,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+                ImGui::TableSetupColumn("Base action",      ImGuiTableColumnFlags_WidthFixed, 100);
+                ImGui::TableSetupColumn("Weapon anim style", ImGuiTableColumnFlags_WidthFixed, 120);
+                ImGui::TableSetupColumn("Status");
+                ImGui::TableHeadersRow();
+
+                int wvc_row_id = 0;
+                for (const auto& base : anim_vocab_tree_) {
+                    if (base.parent_id != 0) continue; // only roots act as "base actions"
+
+                    // Copied BY VALUE (not kept as a pointer/reference into
+                    // d.anim_map) — the "Configure" button below can
+                    // push_back() into d.anim_map mid-loop, which may
+                    // reallocate the vector and invalidate any pointer into
+                    // it taken earlier in this same frame.
+                    ActorAnimMap base_binding;
+                    bool has_base_binding = false;
+                    for (const auto& a : d.anim_map)
+                        if (a.action == base.name) { base_binding = a; has_base_binding = true; break; }
+                    if (!has_base_binding) continue; // this actor doesn't use this base action at all
+
+                    const std::string prefix = base.name + "_";
+                    for (const auto& child : anim_vocab_tree_) {
+                        if (child.parent_id != base.id) continue;
+                        if (child.name.size() <= prefix.size() ||
+                            child.name.compare(0, prefix.size(), prefix) != 0)
+                            continue; // a plain verb child (e.g. Slash), not a weapon composite
+                        std::string style_key = child.name.substr(prefix.size());
+
+                        bool style_alive = false;
+                        for (const auto& s : weapon_anim_style_keys_)
+                            if (s == style_key) { style_alive = true; break; }
+                        if (!style_alive) continue; // dead style — flagged in the vocab tree instead
+
+                        ImGui::PushID(wvc_row_id++);
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(base.name.c_str());
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(style_key.c_str());
+                        ImGui::TableNextColumn();
+
+                        bool has_specific = false;
+                        for (const auto& a : d.anim_map)
+                            if (a.action == child.name) { has_specific = true; break; }
+                        if (has_specific) {
+                            ImGui::TextColored({0.6f, 1.0f, 0.6f, 1.f}, "%s (configured)", child.name.c_str());
+                        } else {
+                            ImGui::TextColored({0.75f, 0.75f, 0.75f, 1.f}, "(fallback -> %s)", base.name.c_str());
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip(
+                                    "No clip bound for '%s' yet — click Configure to add a row "
+                                    "for it in the Animations table above.",
+                                    child.name.c_str());
+                            }
+                            ImGui::SameLine();
+                            // Jumps straight to the fix: creates the missing
+                            // row right here (same screen — clip binding for
+                            // an Actor Def always happens in THIS Animations
+                            // table, never in a separate tab; Settings ->
+                            // Animation Vocabulary only manages the action
+                            // NAME/fallback tree, not which Actor Def has
+                            // which clip). Pre-fills loop/speed/blend_in/
+                            // return_to/priority/is_terminal from the base
+                            // action's own binding — the most sensible
+                            // starting point — and leaves Source/Clip empty
+                            // for the dev to fill in above.
+                            if (ImGui::SmallButton("Configure")) {
+                                ActorAnimMap a  = base_binding;
+                                a.id            = 0;
+                                a.clip_id       = 0;
+                                a.action        = child.name;
+                                a.source_path   = "";
+                                a.clip_override = "";
+                                SaveAnimMap(db, a);
+                                d.anim_map.push_back(a);
+                                std::snprintf(statusMsg_, sizeof(statusMsg_),
+                                    "Added '%s' to the Animations table above — set its "
+                                    "Source/Clip.", child.name.c_str());
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip(
+                                    "Adds a row for '%s' to the Animations table above, "
+                                    "copying loop/speed/priority/etc. from '%s'. Set Source "
+                                    "file and Clip name there to finish.",
+                                    child.name.c_str(), base.name.c_str());
+                            }
+                        }
+                        ImGui::PopID();
+                    }
+                }
+                ImGui::EndTable();
+            }
+        }
+
         ImGui::Spacing();
         if (ImGui::Button("+ Add animation")) {
             ActorAnimMap a;
@@ -4431,7 +4632,21 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                 }
                 // Live scale preview — cheap to set every frame; lets the
                 // user drag the Scale slider and see the result immediately.
-                preview_->SetActorScale(editActorDef_.scale);
+                //
+                // BUG FIX: was SetActorScale(editActorDef_.scale) alone —
+                // editActorDef_.scale is the ActorDef's OWN multiplier
+                // ("filhote"/"pai grandão", tooltip above at d.scale slider:
+                // "Multiplies the model's import-scale"), not a replacement
+                // for the Body model's own import scale (MediaModel.scale,
+                // e.g. 0.02 for an asset authored in different units). The
+                // Assets/Model preview (this file, ~line 2973) gets it right
+                // — SetActorScale(show->scale) where show is the MediaModel
+                // itself. This path fed only the actor-def multiplier and
+                // silently dropped mdl->scale, so a small-import-scale model
+                // rendered ~1/mdl->scale times too big here even though the
+                // ruler/gizmo (which reads mdl->scale separately for its own
+                // size display) showed the correct number.
+                preview_->SetActorScale(mdl->scale * editActorDef_.scale);
                 preview_->SetCollisionShapes({});
                 preview_->SetCollisionPreviewVisible(false);
 
@@ -4515,6 +4730,104 @@ void MediaTab::DrawActorDefs(sqlite3* db) {
                                 editActorDef_.anim_map[idx].end_frame = frame;
                         }
                     );
+                }
+
+                // "Simulate weapon equipped" (Option A UX, item 4). Reuses
+                // the preview's existing selection mechanism
+                // (SelectActionByName -> same sel_action_/PlayActionEntry_
+                // path the dropdown click already uses) instead of a
+                // parallel preview state — this is not a second player, it's
+                // the same one being told which resolved action to select.
+                //
+                // Source is weapon_anim_styles (PHYSICAL grip/pose), NOT
+                // weapon_kits (skill pool) — corrected from an earlier
+                // iteration that simulated by kit_key, the wrong granularity
+                // for animation.
+                if (!weapon_anim_style_keys_.empty()) {
+                    // All nodes, not just roots — lets the dev simulate a
+                    // more specific base like "Slash" with a weapon style,
+                    // not only the generic "Attack". Mirrors the same
+                    // extension made to DrawAddWeaponBindingForm's dropdown
+                    // (settings.cpp) — the fallback walk this preview calls
+                    // (ResolveActionForWeapon below) already handles any
+                    // depth, so this is purely a UI list change.
+                    std::vector<std::pair<const VocabNode*, int>> allNodes; // (node, depth)
+                    {
+                        std::function<void(int, int)> addChildren = [&](int parent_id, int depth) {
+                            for (const auto& n : anim_vocab_tree_) {
+                                if (n.parent_id != parent_id) continue;
+                                allNodes.emplace_back(&n, depth);
+                                addChildren(n.id, depth + 1);
+                            }
+                        };
+                        addChildren(0, 0);
+                    }
+
+                    if (!allNodes.empty()) {
+                        if (sim_weapon_base_idx_  >= (int)allNodes.size()) sim_weapon_base_idx_ = -1;
+                        if (sim_weapon_style_idx_ >= (int)weapon_anim_style_keys_.size()) sim_weapon_style_idx_ = -1;
+
+                        ImGui::Spacing();
+                        ImGui::Separator();
+                        ImGui::TextColored({0.8f, 0.9f, 1.f, 1.f}, "Simulate weapon equipped");
+                        ImGui::TextDisabled("(preview only — does not change any saved data)");
+
+                        ImGui::SetNextItemWidth(140);
+                        const char* base_label = (sim_weapon_base_idx_ >= 0)
+                            ? allNodes[sim_weapon_base_idx_].first->name.c_str() : "(action)";
+                        if (ImGui::BeginCombo("##sim_base", base_label)) {
+                            for (int i = 0; i < (int)allNodes.size(); ++i) {
+                                bool is_sel = (i == sim_weapon_base_idx_);
+                                std::string indented(allNodes[i].second * 2, ' ');
+                                indented += allNodes[i].first->name;
+                                if (ImGui::Selectable(indented.c_str(), is_sel))
+                                    sim_weapon_base_idx_ = i;
+                            }
+                            ImGui::EndCombo();
+                        }
+                        ImGui::SameLine();
+                        ImGui::TextUnformatted("as if equipping");
+                        ImGui::SameLine();
+
+                        ImGui::SetNextItemWidth(140);
+                        const char* style_label = (sim_weapon_style_idx_ >= 0)
+                            ? weapon_anim_style_keys_[sim_weapon_style_idx_].c_str() : "(None)";
+                        if (ImGui::BeginCombo("##sim_style", style_label)) {
+                            bool none_sel = (sim_weapon_style_idx_ < 0);
+                            if (ImGui::Selectable("(None)", none_sel)) sim_weapon_style_idx_ = -1;
+                            for (int i = 0; i < (int)weapon_anim_style_keys_.size(); ++i) {
+                                bool is_sel = (i == sim_weapon_style_idx_);
+                                if (ImGui::Selectable(weapon_anim_style_keys_[i].c_str(), is_sel))
+                                    sim_weapon_style_idx_ = i;
+                            }
+                            ImGui::EndCombo();
+                        }
+
+                        if (sim_weapon_base_idx_ >= 0 && sim_weapon_style_idx_ >= 0) {
+                            const std::string& base  = allNodes[sim_weapon_base_idx_].first->name;
+                            const std::string& style = weapon_anim_style_keys_[sim_weapon_style_idx_];
+                            std::string resolved = ResolveActionForWeapon(base, style, editActorDef_.anim_map);
+
+                            if (resolved.empty()) {
+                                ImGui::TextColored({1.0f, 0.4f, 0.3f, 1.f},
+                                    "Fallback exhausted — this actor would NOT animate for "
+                                    "'%s' with '%s' equipped.", base.c_str(), style.c_str());
+                            } else {
+                                std::string composite = base + "_" + style;
+                                if (resolved == composite) {
+                                    ImGui::TextColored({0.6f, 1.0f, 0.6f, 1.f},
+                                        "Playing '%s' (configured).", resolved.c_str());
+                                } else {
+                                    ImGui::TextColored({0.75f, 0.75f, 0.75f, 1.f},
+                                        "Playing '%s' (fallback — no binding for '%s').",
+                                        resolved.c_str(), composite.c_str());
+                                }
+                                preview_->SelectActionByName(resolved);
+                            }
+                        } else {
+                            ImGui::TextDisabled("Pick an action and a weapon anim style to simulate.");
+                        }
+                    }
                 }
 
                 preview_->DrawImGui();

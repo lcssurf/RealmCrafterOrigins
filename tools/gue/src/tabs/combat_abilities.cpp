@@ -341,6 +341,21 @@ bool CombatAbilitiesTab::DrawAbilityFields(CombatAbilityTemplate& row) {
         ImGui::TextDisabled("(no icon)");
     }
 
+    // on_cast_script (generic scripting Fase 2) — Lua event name fired
+    // when this ability starts casting, instead of the generic
+    // "ability_cast" fallback. "" = normal damage/CC/status-effect
+    // resolution only, no extra script.
+    {
+        char ocsBuf[128];
+        std::strncpy(ocsBuf, row.on_cast_script.c_str(), sizeof(ocsBuf) - 1);
+        ocsBuf[sizeof(ocsBuf) - 1] = 0;
+        if (ImGui::InputText("On Cast Script (event name)", ocsBuf, sizeof(ocsBuf))) {
+            row.on_cast_script = ocsBuf;
+            changed = true;
+        }
+        ImGui::TextDisabled("Fired when this ability starts casting, in addition to normal resolution.");
+    }
+
     ImGui::Separator();
     ImGui::TextUnformatted("Timeline");
     if (ImGui::InputInt("Windup (ms)", &row.windup_ms)) changed = true;
@@ -834,6 +849,16 @@ void CombatAbilitiesTab::EnsureTables(sqlite3* db) {
         "sfx_path_windup TEXT NOT NULL DEFAULT ''");
     add_column_if_missing("ability_templates", "sfx_path_impact",
         "sfx_path_impact TEXT NOT NULL DEFAULT ''");
+    // icon_path (migrateV53) and on_cast_script (migrateV62) are both
+    // SELECTed/bound by FetchAbilities/SaveAbility below but were never
+    // mirrored here — on a DB the Go server hasn't migrated yet, that made
+    // the whole ability list query fail (SQLITE_ERROR: no such column) and
+    // FetchAbilities return early with an empty abilities_, silently
+    // hiding every ability, not just newly-inserted ones.
+    add_column_if_missing("ability_templates", "icon_path",
+        "icon_path TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing("ability_templates", "on_cast_script",
+        "on_cast_script TEXT NOT NULL DEFAULT ''");
     add_column_if_missing("skill_progression_config", "xp_curve_exponent",
         "xp_curve_exponent REAL NOT NULL DEFAULT 2.0");
     add_column_if_missing("skill_progression_config", "xp_irregularity",
@@ -970,7 +995,7 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
         "       mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type, "
         "       mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity, "
         "       mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, "
-        "       enabled, dimension, icon_path "
+        "       enabled, dimension, icon_path, on_cast_script "
         "FROM ability_templates ORDER BY id";
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1027,6 +1052,7 @@ void CombatAbilitiesTab::FetchAbilities(sqlite3* db) {
         row.enabled = sqlite3_column_int(stmt, 44) != 0;
         if (const auto* text = sqlite3_column_text(stmt, 45)) row.dimension = reinterpret_cast<const char*>(text);
         if (const auto* text = sqlite3_column_text(stmt, 46)) row.icon_path = reinterpret_cast<const char*>(text);
+        if (const auto* text = sqlite3_column_text(stmt, 47)) row.on_cast_script = reinterpret_cast<const char*>(text);
         abilities_.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
@@ -1476,8 +1502,8 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
             "vfx_path_windup, vfx_path_impact, sfx_path_windup, sfx_path_impact, "
             "mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type, "
             "mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity, "
-            "mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, enabled, dimension, icon_path"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+            "mastery_primary_bonus_per_lvl, mastery_cooldown_redux_per_lvl, enabled, dimension, icon_path, on_cast_script"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
             SetStatus("Ability create error: %s", sqlite3_errmsg(db));
@@ -1497,7 +1523,7 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
             "vfx_path_windup=?, vfx_path_impact=?, sfx_path_windup=?, sfx_path_impact=?, "
             "mastery_xp_per_use=?, mastery_max_level=?, mastery_xp_curve_type=?, "
             "mastery_xp_curve_base=?, mastery_xp_curve_exponent=?, mastery_xp_irregularity=?, "
-            "mastery_primary_bonus_per_lvl=?, mastery_cooldown_redux_per_lvl=?, enabled=?, dimension=?, icon_path=? "
+            "mastery_primary_bonus_per_lvl=?, mastery_cooldown_redux_per_lvl=?, enabled=?, dimension=?, icon_path=?, on_cast_script=? "
             "WHERE id=?";
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1552,8 +1578,9 @@ bool CombatAbilitiesTab::SaveAbility(sqlite3* db, CombatAbilityTemplate& row) {
     sqlite3_bind_int(stmt, 44, row.enabled ? 1 : 0);
     sqlite3_bind_text(stmt, 45, row.dimension.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 46, row.icon_path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 47, row.on_cast_script.c_str(), -1, SQLITE_TRANSIENT);
     if (!is_new) {
-        sqlite3_bind_int(stmt, 47, row.id);
+        sqlite3_bind_int(stmt, 48, row.id);
     }
 
     rc = sqlite3_step(stmt);
@@ -1912,7 +1939,17 @@ void CombatAbilitiesTab::Draw(sqlite3* db) {
         need_fetch_ = true;
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("%s", status_msg_);
+    // A query/prepare failure (e.g. a column the server has migrated but
+    // this DB/GUE build hasn't caught up on yet) leaves status_msg_ holding
+    // "... error: ..." while abilities_ silently stays empty — that used to
+    // render as the same easy-to-miss gray TextDisabled as a normal "Loaded
+    // N abilities" message. Red text makes it obvious the empty list is a
+    // failure, not "there's nothing here".
+    if (std::strstr(status_msg_, "rror") != nullptr) {
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", status_msg_);
+    } else {
+        ImGui::TextDisabled("%s", status_msg_);
+    }
     ImGui::Separator();
     ImGui::TextWrapped(
         "Define each skill's mastery: how XP scales, what bonus it grants per level, "

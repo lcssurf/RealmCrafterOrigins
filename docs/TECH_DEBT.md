@@ -3778,4 +3778,288 @@ provavelmente não tem material funcional embutido nesse asset pack.
 Documentado no próprio script pra trocar por um mesh de meteoro de verdade
 assim que um for adicionado ao catálogo com material confirmado.
 
+---
+
+## Bug reportado pelo dev — personagem preso em Walk/Run após respawn
+
+**Sintoma:** depois de morrer e respawnar, o personagem anda/ataca
+normalmente, mas nunca mais volta a mostrar "Idle parado" — fica preso em
+Walk/Run mesmo parado.
+
+**Duas hipóteses iniciais descartadas por leitura de código:** CC (Fase 1,
+Crowd Control) e resíduo de `CharacterPhysics::velocity_`. Nenhuma das duas
+tem qualquer ligação real com a máquina de animação — CC só afeta
+`net/client.go` (clamp de movimento) e `cast_intent.go` (gate de cast);
+`velocity_` é resetado explicitamente em `PlayerController::Reset()` no
+handler de `kPRepositionActor` do respawn, e `CharacterPhysics::Move()`
+recebe a posição atual como parâmetro a cada chamada (não guarda estado
+entre frames). A decisão Idle/Walk/Run é 100% client-side, baseada em
+delta de posição por frame (`main.cpp:6028-6031` → `AnimController::Update`,
+`anim_controller.cpp:216-230`) — nenhuma das duas hipóteses alimenta esse
+cálculo.
+
+**Bug adormecido encontrado no caminho (não era a causa deste sintoma, mas
+era real):** `main.cpp` fazia `player_anim_ctrl.ForceState(idle_action_id,
+...)` no reset de animação do respawn, com `idle_action_id` HARDCODED em
+`0` — assumindo que o índice 0 do vocabulário de animação é sempre "Idle".
+Essa suposição só valia porque a query que carrega os bindings
+(`server/internal/db/db.go:3171`, `SELECT ... FROM media_actor_anims WHERE
+actor_def_id = ?`) não tinha `ORDER BY`, e por acaso a linha "Idle" tem o
+menor `id` no banco atual — qualquer reordenação futura quebraria isso
+silenciosamente, forçando incondicionalmente (`force=true`) qualquer OUTRA
+ação no lugar de Idle.
+
+**Corrigido, mesmo não sendo a causa do bug de hoje:**
+- `server/internal/db/db.go:3171-3173` — query ganhou `ORDER BY id`, ordem
+  agora estável e previsível.
+- `client/src/renderer/anim_controller.h`/`.cpp` — novo método
+  `ForceStateByName()` (mesmo padrão que `RequestStateByName()` já tinha
+  pra `RequestState()`), eliminando de vez a dependência de índice mágico.
+- `client/src/core/main.cpp` (handler de `kPStatUpdate`/respawn) — troca de
+  `ForceState(idle_action_id=0, ...)` por `ForceStateByName("Idle", ...)`.
+
+**Causa REAL, confirmada via log real (`player_anim_ctrl.log_enabled =
+true` temporário + respawn de verdade no client, feito pelo dev):** o log
+mostrou `[anim-diag][LOCO] speed=0.000 cur='Run' -> requesting 'Idle'`
+repetindo todo frame, SEM nunca aparecer o log incondicional
+`[death-term][TO_IDLE]` — ou seja, o pedido de transição pra Idle nem
+chegava a entrar em `RequestStateImpl_`. Isso só acontece se
+`RequestStateByName`/`ForceStateByName` retornam `false` no gate anterior:
+
+```cpp
+inline bool AnimBindingIsValid(const AnimBinding& b) {
+    return b.source_path.empty() || b.duration_sec > 0.f;
+}
+```
+
+O binding "Idle" do player usa um clipe EXTERNO
+(`assets/anims/Idle.fbx`, confirmado em `media_anim_clips`), então sua
+validade depende inteiramente de `duration_sec > 0`. Root cause:
+`rebind_player_anim_controller` (`main.cpp:1914-1942`, chamado como
+fallback pelos dois handlers de respawn) reconstruía `bindings_` do zero
+via `AnimController::Bind()` — mas nunca repopulava `duration_sec` em
+nenhum `AnimBinding` novo, deixando-o no default `0.f`. Como `Bind()`
+substitui `bindings_` por inteiro, e nada re-chama `SetClipDuration()`
+depois, uma única execução dessa função (por qualquer motivo, nem
+precisava ser no respawn) deixava "Idle" permanentemente inválido pro
+resto da sessão — todo pedido subsequente de voltar a Idle falhava
+silenciosamente, inclusive o `ForceStateByName` que tinha acabado de ser
+corrigido.
+
+**Corrigido:** `rebind_player_anim_controller` agora seta
+`ab.duration_sec = player_actor.ClipDuration(wa.action);` na construção de
+cada `AnimBinding` — `player_actor` já tem o clipe carregado nesse ponto
+(o `LoadAnim` original rodou na criação do actor), então `ClipDuration()`
+só lê o valor já resolvido, sem precisar recarregar nada.
+
+**Testado e aprovado pelo dev — as três correções:**
+1. `ORDER BY id` na query de `media_actor_anims`.
+2. `ForceStateByName("Idle", ...)` no lugar do índice mágico `0`.
+3. `rebind_player_anim_controller` repopulando `duration_sec` — a causa
+   real do sintoma relatado.
+
+`player_anim_ctrl.log_enabled = true` era temporário só pra essa
+investigação — já revertido pro padrão (`false`).
+
 Nada compilado, nada commitado.
+
+---
+
+## Buffs/Debuffs/CC — Fase 2 (buffs/debuffs de stat)
+
+Fase 2 ativou `StatMod`/`ActiveEffects` para `Kind==Buff`/`Debuff` sobre o
+mesmo modelo de dado da Fase 1 (CC): `Actor.ActiveStatModsLocked` +
+`applyActiveStatMods` (Flat somado, depois Pct multiplicado, sobre
+`DerivedStats` — mesma mecânica de "gear temporário" que os bônus de item já
+usam), as 3 regras de `StackRule` (`refresh`, `stack_up_to_max`,
+`ignore_if_active`, `Actor.applyStackRuleLocked`), duração escalada por
+`Buff/DebuffDurationPct` de quem aplicou (mesma fórmula da Fase 1 pra CC),
+GUE (`status_effects.h/.cpp`) com `Kind` editável e `stat_mods_json`/
+`max_stacks`, e dado de teste (`/testbuff`/`/testdebuff`,
+`test_status_effects.lua`).
+
+**Bug reportado pelo dev — buff de velocidade sem efeito perceptível.**
+`MovementSpeedMult` genuinamente não mudava na tela de stats depois de
+`/testbuff`, mesmo com toda a fiação (cliente já lia
+`player.derived.MovementSpeedMult` em `PlayerController::Update`, servidor
+já recalculava `actor.Derived` corretamente). Investigação por log real (não
+suposição) isolou 3 pontos: aplicação do StatMod, o hook de reenvio de
+`PFullStats`, e o recebimento no cliente.
+
+**CONFIRMADO PELO DEV — RESOLVIDO.** Bug de ordem encontrado e corrigido: o
+reenvio de PFullStats (`handleStatusEffectBroadcast`) disparava ANTES de
+`RecomputeDerivedStatsFast` atualizar `Derived` — o cliente recebia o valor
+ANTIGO do stat, nunca o buffado/debuffado. Corrigido reordenando
+recompute → broadcast nos DOIS caminhos (`TryApplyStatMod` na aplicação,
+`tickStatusEffects` na expiração). Lição geral: qualquer hook que reenvie
+estado sincronizado precisa rodar DEPOIS do recálculo que ele está tentando
+reportar, nunca antes — vale conferir essa ordem em qualquer hook futuro
+parecido (ex: se um dia reenviarmos outro pacote de stat a partir de um
+evento).
+
+Fase 2 (buffs/debuffs de stat) fechada e testada: aplicação, expiração,
+stacking (3 regras), duração escalada por Buff/DebuffDurationPct,
+sincronização correta cliente-servidor.
+
+**CONFIRMADO PELO DEV — RESOLVIDO.** DoT/HoT testado e funcionando:
+dano/cura gradual por tick, morte por DoT correta (drops/XP/animação),
+stacking com ticks independentes por instância, sincronização de HP sem
+bug de ordem.
+
+**SISTEMA DE STATUS EFFECTS — COMPLETO (Fases 1, 2 e 3):**
+- **Fase 1:** CC (stun/root/silence/slow) — gate de movimento e cast,
+  feedback visual, fórmula de chance/resistência (CCChance do atacante vs
+  CCResistance do defensor).
+- **Fase 2:** Buffs/Debuffs de stat — StatMods (Flat+Pct) sobre stats
+  derivados, 3 regras de stacking (refresh/stack_up_to_max/
+  ignore_if_active), duração escalada por BuffDurationPct/
+  DebuffDurationPct do atacante.
+- **Fase 3:** DoT/HoT — tick periódico reusando ApplyDamage/ApplyHeal
+  existentes.
+
+Arquitetura: modelo de dado único (`ActiveStatusEffect`) cobrindo os três
+tipos, autoria completa via GUE (`status_effects.h/.cpp`), zero hardcode
+por skill — qualquer ability futura referencia um
+`status_effect_template_id` e herda toda a infraestrutura (aplicação,
+tick, expiração, stacking, sincronização) de graça.
+
+**Pendente (polish, não bloqueante):** barra de ícones completa no
+cliente (hoje só o indicador mínimo de anel) — usar `SkillHotbar` como
+modelo, mesmo padrão de `cooldown_total_ms_at_receipt`/
+`ComputeLocalRemainingMs` já usado no hotbar.
+
+---
+
+## VISÃO FUTURA — Sistema de Plugins/Marketplace (não iniciado, aguarda sessão dedicada)
+
+Motivada pela investigação do sistema de scripting do RealmCrafter (RC)
+original — ver seção acima, "Investigação: Sistema de Scripting do RC
+original" — que mapeou o quão mais exposto/genérico o scripting do RC é
+(qualquer entidade carrega um `Script$` como campo de dado comum,
+atributos por string, acesso irrestrito a SQL). Essa flexibilidade é
+exatamente o que viabilizaria os dois públicos-alvo abaixo, identificados
+pelo dev.
+
+**Dois públicos-alvo:**
+1. **Asset Store pra desenvolvedores** — vender sistemas prontos (ex:
+   harvesting completo, crafting, guild system) como pacotes
+   plug-and-play, instaláveis em OUTROS projetos baseados na engine RCO,
+   similar a um Asset Store/Marketplace próprio.
+2. **DLC/Battle Pass pra jogadores** — conteúdo vivo entregue a um jogo já
+   publicado (novos itens, quests, cosméticos, progressão sazonal),
+   possivelmente com integração de pagamento/entitlement via Steam.
+
+**Perguntas em aberto que uma investigação dedicada precisa responder:**
+- Formato de empacotamento de plugin (o quê exatamente um pacote contém:
+  scripts Lua, migrações de schema, assets/modelos/ícones, tudo junto?).
+- Como evitar CONFLITO de dados entre plugins de devs diferentes
+  instalados no mesmo projeto (IDs de tabela, nomes de script colidindo).
+- Versionamento e compatibilidade (um plugin feito pra uma versão do
+  engine funciona nas seguintes?).
+- Mecanismo de instalação (ferramenta no GUE tipo "Import Plugin"?).
+- Pra DLC/battle pass: como conteúdo novo chega a um servidor/cliente JÁ
+  RODANDO, sem rebuild completo — hot-load de dados vs. patch de binário.
+- Integração com Steamworks SDK (DLC entitlements, achievements,
+  workshop) — nunca investigada ainda no projeto.
+
+**Pré-requisito já em construção:** Fase 1 do sistema de scripting
+genérico (ganchos `area_enter`/`area_exit`, trigger volumes, key-value
+store livre) — é a base necessária pra QUALQUER um dos dois caminhos
+acima, independente de qual formato de empacotamento for escolhido
+depois. Vale seguir com ela agora; a decisão de formato de
+plugin/marketplace fica para quando o dev tiver energia/tempo pra uma
+sessão de investigação dedicada a isso.
+
+## 133. Animação de skill/ability sincronizada com timing real — COMPLETO
+
+**CONFIRMADO PELO DEV — testado e aprovado.** Encadeamento de três bugs,
+cada um revelado só depois do anterior ser corrigido:
+
+1. **Escala de velocidade só cobria "Attack\*".** `AttackSpeedMult`
+   (derived stat que já controla o cooldown real do ataque básico,
+   `combat_basic.go:46-50`) só escalava a reprodução de clipes cujo nome
+   começava com `Attack`. Generalizado: `AnimController::
+   SetActionTargetDuration(action, target_duration_sec)` +
+   `action_target_duration_sec_` (mapa genérico, `anim_controller.h`/`.cpp`)
+   — qualquer ação com duração-alvo conhecida (windup_ms de
+   `ability_templates`, não só `CombatDelay`) agora escala do mesmo jeito.
+   Correlação feita no cliente: `main.cpp`'s `pending_windup_target_by_rid`
+   guarda o `windup_ms` recebido via `kCombatEventSpecialWindup` (mesmo
+   `value` já usado pro telégrafo de parry) e casa com o `action_id` do
+   `kPAnimateActor` seguinte pro MESMO `rid` (os dois pacotes sempre saem
+   juntos server-side — `combat_special.go`'s `startNPCSpecialCast`/
+   `SpawnScriptedImpact`).
+2. **Binding `SkillBow` mal configurado — dado, não código.**
+   `media_actor_anims` tinha `loop=1`/`return_to=''` (a lógica de
+   `RETURN_TO` só roda pra bindings não-loop, `anim_controller.cpp` —
+   um clipe em loop nunca marca `active_.finished=true`). Corrigido pra
+   `loop=0`/`return_to='Idle'`/`priority=2`, igualando o padrão já usado
+   por `Attack_bow`.
+3. **CAUSA RAIZ FINAL: teto hardcoded de 1 segundo no fallback de
+   `end_frame`.** `anim_controller.cpp`'s cálculo de fim-de-clipe pra
+   bindings com `end_frame` cru inválido (`-1`) fazia
+   `min(1.0s, duração_real)` incondicionalmente — sempre cortava em ~1s
+   mesmo com a duração real já conhecida (via `SetClipDuration`) e
+   legitimamente maior. Nunca exposto antes porque `Attack`/`Attack_bow`
+   sempre duram <1s por coincidência; `SkillBow` (~3.067s) foi o primeiro
+   clipe longo o bastante pra revelar. Corrigido distinguindo dois casos:
+   clipe **externo** (`source_path` próprio — arquivo dedicado por ação,
+   como os três testados aqui) usa a duração real direto, sem teto; clipe
+   **embutido** (múltiplas ações compartilhando um timeline interno único,
+   sem `source_path`) mantém o teto conservador de 1s — essa é a proteção
+   original do "FIX 1" (item anterior desta mesma investigação, bug de
+   clipe travado por 31s num timeline compartilhado) e precisava
+   permanecer intacta pra esse caso específico, senão o fix reabriria
+   exatamente o bug que o FIX 1 resolveu.
+
+**Lição pra próximas investigações de timing de animação "cortando antes
+do fim":** sempre verificar limites/tetos hardcoded antigos no motor de
+animação primeiro, não só a calibração de dado (`windup_ms`,
+`duration_sec` etc.) — um clipe suficientemente longo pode expor uma
+proteção antiga nunca antes testada nesse regime de duração.
+
+## 134. Combat Intent modularizado (CombatIntentController) — COMPLETO
+
+Consolida toda a lógica de combate/movimento (antes espalhada em ~9
+pontos de `main.cpp`) em `client/src/core/combat_intent.h` — estado
+(`target`, `approach_active`, out-of-range timer, cadência de ataque) e
+decisão (alcance, pausa por movimento, timeout, disparo) numa única
+`Update()` chamada uma vez por frame.
+
+**Comportamento final:**
+- Auto-attack contínuo enquanto o jogador está parado e o alvo no
+  alcance.
+- Mover PAUSA o golpe sem cancelar a intenção (`combat_target`
+  permanece armado; retoma sozinho ao parar de se mover — sem novo
+  clique).
+- Turn-to-face durante o golpe (bug corrigido nesta mesma leva —
+  quebrado silenciosamente pela composição de nome de animação por
+  arma: o gate usava `==` exato contra `"Attack"` em vez de
+  prefix-match, então parava de disparar assim que a ação virava
+  `"Attack_<weapon_style>"`).
+- Timeout de 5s cancela a intenção (mesma limpeza usada por Esc/troca
+  de alvo) se o jogador ficar fora de alcance, parado, sem approach
+  automático ativo cobrindo isso.
+
+**Bug de fundo encontrado no caminho:** `last_player_pos` era uma
+variável COMPARTILHADA entre vários sistemas (renderização/animação do
+jogador local, ripple de água, e — nesta leva — os cálculos de
+`player_is_moving` do combate), sobrescrita incondicionalmente cedo no
+frame (`main.cpp:6854`, bloco de água). Qualquer cálculo de
+`player_is_moving` feito DEPOIS desse ponto no mesmo frame sempre lia
+delta≈0 contra a própria posição atual, mascarando movimento real —
+foi exatamente isso que causou uma regressão de "auto-attack disparando
+durante o movimento" numa rodada anterior desta mesma leva, quando um
+recálculo local de `player_is_moving` foi adicionado após esse ponto do
+arquivo pra resolver um erro de compilação (`C2065`, variável fora de
+escopo), reproduzindo sem querer o mesmo bug estrutural.
+
+Corrigido estruturalmente, não só localmente: `CombatIntentController`
+guarda seu PRÓPRIO snapshot de posição anterior (`prev_player_pos_`),
+atualizado uma única vez por frame dentro do seu próprio `Update()` —
+imune a qualquer outro sistema do arquivo escrever em
+`last_player_pos` antes ou depois. Nenhum outro consumidor de
+`last_player_pos` (renderização, ripple) foi tocado; eles continuam
+com o comportamento de sempre.
+
+**CONFIRMADO PELO DEV.**

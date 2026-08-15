@@ -54,7 +54,9 @@ void Inventory::SetSlot(uint8_t slot, uint16_t item_id, uint8_t qty, uint8_t dur
                         const std::string& model_path, float model_scale,
                         const std::string& socket_name, bool has_override,
                         const float override_pos[3], const float override_rot[3],
-                        float override_scale, const std::string& icon_path) {
+                        float override_scale, const std::string& icon_path,
+                        float model_import_scale,
+                        const std::string& weapon_anim_style) {
     if (slot >= kTotalSlots) return;
     slots_[slot].item_id = item_id;
     slots_[slot].quantity = qty;
@@ -66,6 +68,7 @@ void Inventory::SetSlot(uint8_t slot, uint16_t item_id, uint8_t qty, uint8_t dur
     slots_[slot].name = name;
     slots_[slot].model_path = model_path;
     slots_[slot].model_scale = model_scale;
+    slots_[slot].model_import_scale = model_import_scale > 0.f ? model_import_scale : 1.f;
     slots_[slot].socket_name = socket_name;
     slots_[slot].has_override = has_override;
     if (override_pos) {
@@ -80,6 +83,7 @@ void Inventory::SetSlot(uint8_t slot, uint16_t item_id, uint8_t qty, uint8_t dur
     }
     slots_[slot].override_scale = override_scale;
     slots_[slot].icon_path = icon_path;
+    slots_[slot].weapon_anim_style = weapon_anim_style;
 }
 
 void Inventory::Clear() { slots_ = {}; }

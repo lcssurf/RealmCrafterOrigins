@@ -2,6 +2,7 @@ package scripting
 
 import (
 	"log"
+	"time"
 
 	lua "github.com/yuin/gopher-lua"
 	"realm-crafter/server/internal/protocol"
@@ -697,6 +698,97 @@ func (r *Registry) registerActorAPI() {
 		return 0
 	}))
 
+	// Actor.set_global(rid, key, value) -> bool
+	// Actor.get_global(rid, key) -> string ("" if unset)
+	// Generic per-character key-value store — CONTENT/SCRIPT data only
+	// (quest flags, "seen this cutscene", one-off per-player state a
+	// content script wants to remember across sessions). NEVER for combat
+	// stats — those stay in Actor.Derived/Health/etc, typed fields the
+	// combat pipeline can actually compute with. See docs/TECH_DEBT.md,
+	// generic scripting Fase 1. Backed by the actor_globals table via
+	// scripting.GlobalsBridge (net/globals_bridge.go) — always a string,
+	// same as RC's ActorGlobal$.
+	r.L.SetField(mod, "set_global", r.L.NewFunction(func(L *lua.LState) int {
+		actor, ok := lookup(L)
+		if !ok || r.globals == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		key := L.CheckString(2)
+		value := L.CheckString(3)
+		if err := r.globals.SetActorGlobal(actor.RuntimeID, key, value); err != nil {
+			log.Printf("scripting: Actor.set_global failed: %v", err)
+			L.Push(lua.LFalse)
+			return 1
+		}
+		L.Push(lua.LTrue)
+		return 1
+	}))
+
+	r.L.SetField(mod, "get_global", r.L.NewFunction(func(L *lua.LState) int {
+		actor, ok := lookup(L)
+		if !ok || r.globals == nil {
+			L.Push(lua.LString(""))
+			return 1
+		}
+		key := L.CheckString(2)
+		value, err := r.globals.GetActorGlobal(actor.RuntimeID, key)
+		if err != nil {
+			log.Printf("scripting: Actor.get_global failed: %v", err)
+			L.Push(lua.LString(""))
+			return 1
+		}
+		L.Push(lua.LString(value))
+		return 1
+	}))
+
+	// Actor.apply_status_effect(source_rid, ability_id [, target_rid]) -> bool
+	// The self/ally entry point for the Buffs/Debuffs/CC system — the
+	// on-hit path (combat_special.go's TryApplyStatusEffect) only ever fires
+	// from a landed attack, which can't express "buff yourself" or "buff an
+	// ally". target_rid defaults to source_rid (self-cast) when omitted, so
+	// `Actor.apply_status_effect(rid, ability_id)` from a "buff" script is
+	// the minimal self-buff call. Same underlying TryApplyStatusEffect
+	// (status_effects.go) an on-hit debuff uses — a script can equally use
+	// this to land a debuff/CC on a specific target if it already has one
+	// resolved, though the normal enemy-debuff path is still the automatic
+	// on-hit one.
+	r.L.SetField(mod, "apply_status_effect", r.L.NewFunction(func(L *lua.LState) int {
+		source, ok := lookup(L)
+		if !ok {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		abilityID := int(L.CheckNumber(2))
+		target := source
+		if L.GetTop() >= 3 && L.Get(3) != lua.LNil {
+			targetRID := uint32(L.CheckNumber(3))
+			if r.ctx.area == nil {
+				L.Push(lua.LFalse)
+				return 1
+			}
+			t, tok := r.ctx.area.GetActor(targetRID)
+			if !tok {
+				L.Push(lua.LFalse)
+				return 1
+			}
+			target = t
+		}
+		ability, aok := world.GetAbilityTemplateByID(abilityID)
+		if !aok || r.ctx.area == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		now := time.Now().UnixMilli()
+		applied := world.TryApplyStatusEffect(r.ctx.area, source, target, ability, now)
+		if applied {
+			L.Push(lua.LTrue)
+		} else {
+			L.Push(lua.LFalse)
+		}
+		return 1
+	}))
+
 	r.L.SetGlobal("Actor", mod)
 }
 
@@ -1088,6 +1180,48 @@ func (r *Registry) registerWorldAPI() {
 		// silently drift out of sync with the terrain (see TeleportToSpawn's
 		// doc-comment) and freeze the player's movement entirely if it does.
 		L.Push(lua.LBool(actor.TeleportToSpawn(area.Heightmap)))
+		return 1
+	}))
+
+	// World.set_global(area_name, key, value) -> bool
+	// World.get_global(area_name, key) -> string ("" if unset)
+	// Generic per-area key-value store — same CONTENT/SCRIPT-data-only rule
+	// as Actor.set_global (see its doc comment): world state like "has the
+	// bridge been repaired", "which faction controls this outpost this
+	// week" — NEVER combat numbers. Backed by world_globals via
+	// scripting.GlobalsBridge, same as RC's per-world SuperGlobal but keyed
+	// by (area_name, key) instead of a fixed-size numeric array.
+	r.L.SetField(mod, "set_global", r.L.NewFunction(func(L *lua.LState) int {
+		if r.globals == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		areaName := L.CheckString(1)
+		key := L.CheckString(2)
+		value := L.CheckString(3)
+		if err := r.globals.SetWorldGlobal(areaName, key, value); err != nil {
+			log.Printf("scripting: World.set_global failed: %v", err)
+			L.Push(lua.LFalse)
+			return 1
+		}
+		L.Push(lua.LTrue)
+		return 1
+	}))
+
+	r.L.SetField(mod, "get_global", r.L.NewFunction(func(L *lua.LState) int {
+		if r.globals == nil {
+			L.Push(lua.LString(""))
+			return 1
+		}
+		areaName := L.CheckString(1)
+		key := L.CheckString(2)
+		value, err := r.globals.GetWorldGlobal(areaName, key)
+		if err != nil {
+			log.Printf("scripting: World.get_global failed: %v", err)
+			L.Push(lua.LString(""))
+			return 1
+		}
+		L.Push(lua.LString(value))
 		return 1
 	}))
 

@@ -1,5 +1,10 @@
 package world
 
+import (
+	"log"
+	"time"
+)
+
 // attributes.go is the central source of truth for character attributes:
 // the canonical attribute registry (typing), the PrimaryStats/DerivedStats
 // structs (typing), the balance coefficients, and the formulas that compute
@@ -550,6 +555,105 @@ func applyDerivedBonus(d *DerivedStats, key string, value float64) {
 	}
 }
 
+// applyDerivedPct multiplies the matching DerivedStats field by (1+pct) —
+// the "Pct" half of a StatMod (actor.go), applied AFTER all Flat bonuses
+// (item + status effect) have already been summed into d, same order the
+// design calls for ("Flat somado, Pct multiplicado"). Mirrors
+// applyDerivedBonus's switch/key list exactly; unknown keys are ignored,
+// same as applyDerivedBonus.
+func applyDerivedPct(d *DerivedStats, key string, pct float64) {
+	mult := 1.0 + pct
+	switch key {
+	case "health_max":
+		d.HealthMax = int32(float64(d.HealthMax) * mult)
+	case "health_regen":
+		d.HealthRegen = float32(float64(d.HealthRegen) * mult)
+	case "energy_max":
+		d.EnergyMax = int32(float64(d.EnergyMax) * mult)
+	case "energy_regen":
+		d.EnergyRegen = float32(float64(d.EnergyRegen) * mult)
+	case "melee_defense_value":
+		d.MeleeDefenseValue = int32(float64(d.MeleeDefenseValue) * mult)
+	case "ranged_defense_value":
+		d.RangedDefenseValue = int32(float64(d.RangedDefenseValue) * mult)
+	case "magic_defense_value":
+		d.MagicDefenseValue = int32(float64(d.MagicDefenseValue) * mult)
+	case "melee_evasion_value":
+		d.MeleeEvasionValue = int32(float64(d.MeleeEvasionValue) * mult)
+	case "ranged_evasion_value":
+		d.RangedEvasionValue = int32(float64(d.RangedEvasionValue) * mult)
+	case "magic_evasion_value":
+		d.MagicEvasionValue = int32(float64(d.MagicEvasionValue) * mult)
+	case "melee_hit_value":
+		d.MeleeHitValue = int32(float64(d.MeleeHitValue) * mult)
+	case "ranged_hit_value":
+		d.RangedHitValue = int32(float64(d.RangedHitValue) * mult)
+	case "magic_hit_value":
+		d.MagicHitValue = int32(float64(d.MagicHitValue) * mult)
+	case "melee_crit_value":
+		d.MeleeCritValue = int32(float64(d.MeleeCritValue) * mult)
+	case "ranged_crit_value":
+		d.RangedCritValue = int32(float64(d.RangedCritValue) * mult)
+	case "magic_crit_value":
+		d.MagicCritValue = int32(float64(d.MagicCritValue) * mult)
+	case "melee_dmg_min":
+		d.MeleeDmgMin = int32(float64(d.MeleeDmgMin) * mult)
+	case "melee_dmg_max":
+		d.MeleeDmgMax = int32(float64(d.MeleeDmgMax) * mult)
+	case "ranged_dmg_min":
+		d.RangedDmgMin = int32(float64(d.RangedDmgMin) * mult)
+	case "ranged_dmg_max":
+		d.RangedDmgMax = int32(float64(d.RangedDmgMax) * mult)
+	case "magic_dmg_min":
+		d.MagicDmgMin = int32(float64(d.MagicDmgMin) * mult)
+	case "magic_dmg_max":
+		d.MagicDmgMax = int32(float64(d.MagicDmgMax) * mult)
+	case "crit_damage_mult":
+		d.CritDamageMult = float32(float64(d.CritDamageMult) * mult)
+	case "attack_speed_mult":
+		d.AttackSpeedMult = float32(float64(d.AttackSpeedMult) * mult)
+	case "movement_speed_mult":
+		d.MovementSpeedMult = float32(float64(d.MovementSpeedMult) * mult)
+	case "cooldown_speed_pct":
+		d.CooldownSpeedPct = float32(float64(d.CooldownSpeedPct) * mult)
+	case "skill_damage_boost_pct":
+		d.SkillDamageBoostPct = float32(float64(d.SkillDamageBoostPct) * mult)
+	case "buff_duration_pct":
+		d.BuffDurationPct = float32(float64(d.BuffDurationPct) * mult)
+	case "debuff_duration_pct":
+		d.DebuffDurationPct = float32(float64(d.DebuffDurationPct) * mult)
+	case "range_bonus_pct":
+		d.RangeBonusPct = float32(float64(d.RangeBonusPct) * mult)
+	case "bonus_damage_flat":
+		d.BonusDamageFlat = int32(float64(d.BonusDamageFlat) * mult)
+	case "cc_chance_value":
+		d.CCChanceValue = int32(float64(d.CCChanceValue) * mult)
+	case "cc_resistance_value":
+		d.CCResistanceValue = int32(float64(d.CCResistanceValue) * mult)
+	case "damage_reduction_flat":
+		d.DamageReductionFlat = int32(float64(d.DamageReductionFlat) * mult)
+	}
+}
+
+// applyActiveStatMods overlays every StatMod from the actor's currently
+// active buffs/debuffs onto d — Flats first (same mechanism as gear,
+// applyDerivedBonus), then Pcts (applyDerivedPct, multiplies the
+// post-Flat value). This is the "temporary/expirable gear" pass called out
+// in the Fase 2 design: identical shape to the item-bonus overlay in
+// RecomputeDerivedStats, just sourced from mods instead of itemBonuses.
+func applyActiveStatMods(d *DerivedStats, mods []StatMod) {
+	for _, m := range mods {
+		if m.Flat != 0 {
+			applyDerivedBonus(d, m.Stat, m.Flat)
+		}
+	}
+	for _, m := range mods {
+		if m.Pct != 0 {
+			applyDerivedPct(d, m.Stat, m.Pct)
+		}
+	}
+}
+
 // =============================================================================
 // RECOMPUTE
 // =============================================================================
@@ -599,11 +703,47 @@ func RecomputeDerivedStats(actor *Actor, itemBonuses map[string]float64) {
 		}
 	}
 
+	// Fase 2 (Buffs/Debuffs/CC): active stat-modifier buffs/debuffs overlay
+	// on top of gear, same "temporary gear" framing as the design — read
+	// under Mu since ActiveEffects is mutated elsewhere under the same lock.
+	now := time.Now().UnixMilli()
+	actor.Mu.Lock()
+	mods := actor.ActiveStatModsLocked(now)
+	actor.Mu.Unlock()
+	if len(mods) > 0 {
+		// TEMP DIAG (Buffs/Debuffs/CC — "MovementSpeedMult não muda"
+		// investigation): before/after the overlay itself, isolated from
+		// whatever RecomputeDerivedStatsFast's caller does afterward.
+		beforeMult := derived.MovementSpeedMult
+		applyActiveStatMods(&derived, mods)
+		log.Printf("[statmod-diag] RecomputeDerivedStats: actor=%d mods=%+v MovementSpeedMult before=%.4f after=%.4f",
+			actor.RuntimeID, mods, beforeMult, derived.MovementSpeedMult)
+	}
+
 	actor.Mu.Lock()
 	actor.Derived = derived
 	actor.EffectivePrimary = effectivePrimary
 	actor.HealthMax = derived.HealthMax
 	actor.EnergyMax = derived.EnergyMax
 	actor.StaminaMax = staminaBase + level*staminaPerLevel
+	actor.LastItemBonuses = itemBonuses
 	actor.Mu.Unlock()
+}
+
+// RecomputeDerivedStatsFast re-derives actor.Derived using the itemBonuses
+// cached from the last full RecomputeDerivedStats call (equip change/login/
+// spawn) — gear/level/weapon/armor haven't changed, only ActiveEffects has.
+// This is the cache-invalidation hook the Fase 2 design calls for: called
+// from TryApplyStatMod/tickStatusEffects (status_effects.go, area.go)
+// whenever a buff/debuff is applied or expires, on the SAME 100ms tick
+// already driving CC expiry — avoids re-querying db.GetEquippedAttributes
+// on every status-effect tick.
+func RecomputeDerivedStatsFast(actor *Actor) {
+	if actor == nil {
+		return
+	}
+	actor.Mu.Lock()
+	bonuses := actor.LastItemBonuses
+	actor.Mu.Unlock()
+	RecomputeDerivedStats(actor, bonuses)
 }

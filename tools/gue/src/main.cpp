@@ -29,8 +29,10 @@
 #include "tabs/items.h"
 #include "tabs/spells.h"
 #include "tabs/combat_abilities.h"
+#include "tabs/status_effects.h"
 #include "tabs/progression_config.h"
 #include "tabs/weapon_kits.h"
+#include "tabs/weapon_anim_styles.h"
 #include "tabs/equipment_slots.h"
 #include "tabs/actors.h"
 #include "tabs/areas.h"
@@ -164,9 +166,11 @@ int main() {
     gue::ItemsTab        itemsTab;
     gue::SpellsTab       spellsTab;
     gue::CombatAbilitiesTab combatAbilitiesTab;
+    gue::StatusEffectsTab statusEffectsTab;
     gue::FXTemplatesTab  fxTemplatesTab;
     gue::ProgressionConfigTab progressionConfigTab;
     gue::WeaponKitsTab   weaponKitsTab;
+    gue::WeaponAnimStylesTab weaponAnimStylesTab;
     gue::EquipmentSlotsTab equipmentSlotsTab;
     gue::ActorsTab       actorsTab;
     gue::AreasTab        areasTab;
@@ -290,6 +294,10 @@ int main() {
                 weaponKitsTab.Draw(db);
                 ImGui::EndTabItem();
             }
+            if (ImGui::BeginTabItem("Weapon Anim Styles")) {
+                weaponAnimStylesTab.Draw(db);
+                ImGui::EndTabItem();
+            }
             if (ImGui::BeginTabItem("Equipment Slots")) {
                 equipmentSlotsTab.Draw(db);
                 ImGui::EndTabItem();
@@ -300,6 +308,10 @@ int main() {
             }
             if (ImGui::BeginTabItem("Combat Abilities")) {
                 combatAbilitiesTab.Draw(db);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Status Effects")) {
+                statusEffectsTab.Draw(db);
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Progression Config")) {

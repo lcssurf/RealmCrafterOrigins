@@ -85,7 +85,7 @@ func (c *ClientConn) processCombatAction(action uint8, targetRID uint32) {
 		if now-c.actor.LastDodgeAt < combatDodgeCooldownMs {
 			c.actor.Mu.Unlock()
 			if area := c.combatActionAreaForAnimate(); area != nil {
-				world.BroadcastAnimate(area, c.actor, "Idle")
+				world.BroadcastAnimate(area, c.actor, c.actor.IdleAction())
 			}
 			c.rejectCombatAction(action, "Dodge is on cooldown.")
 			return
@@ -93,7 +93,7 @@ func (c *ClientConn) processCombatAction(action uint8, targetRID uint32) {
 		if c.actor.Stamina < combatDodgeSPCost {
 			c.actor.Mu.Unlock()
 			if area := c.combatActionAreaForAnimate(); area != nil {
-				world.BroadcastAnimate(area, c.actor, "Idle")
+				world.BroadcastAnimate(area, c.actor, c.actor.IdleAction())
 			}
 			c.rejectCombatAction(action, "Not enough SP for dodge.")
 			return
@@ -106,7 +106,7 @@ func (c *ClientConn) processCombatAction(action uint8, targetRID uint32) {
 		c.actor.Mu.Unlock()
 
 		if area := c.combatActionAreaForAnimate(); area != nil {
-			world.BroadcastAnimate(area, c.actor, "Idle")
+			world.BroadcastAnimate(area, c.actor, c.actor.IdleAction())
 		}
 		world.BroadcastSPUpdate(c.actor, sp)
 		c.broadcastCombatEvent(
@@ -123,7 +123,7 @@ func (c *ClientConn) processCombatAction(action uint8, targetRID uint32) {
 		if now-c.actor.LastGuardAt < combatGuardCooldownMs {
 			c.actor.Mu.Unlock()
 			if area := c.combatActionAreaForAnimate(); area != nil {
-				world.BroadcastAnimate(area, c.actor, "Idle")
+				world.BroadcastAnimate(area, c.actor, c.actor.IdleAction())
 			}
 			c.rejectCombatAction(action, "Defense skill is on cooldown.")
 			return
@@ -131,7 +131,7 @@ func (c *ClientConn) processCombatAction(action uint8, targetRID uint32) {
 		if c.actor.Stamina < combatGuardSPCost {
 			c.actor.Mu.Unlock()
 			if area := c.combatActionAreaForAnimate(); area != nil {
-				world.BroadcastAnimate(area, c.actor, "Idle")
+				world.BroadcastAnimate(area, c.actor, c.actor.IdleAction())
 			}
 			c.rejectCombatAction(action, "Not enough SP for defense skill.")
 			return
@@ -145,7 +145,7 @@ func (c *ClientConn) processCombatAction(action uint8, targetRID uint32) {
 		c.actor.Mu.Unlock()
 
 		if area := c.combatActionAreaForAnimate(); area != nil {
-			world.BroadcastAnimate(area, c.actor, "Idle")
+			world.BroadcastAnimate(area, c.actor, c.actor.IdleAction())
 		}
 		world.BroadcastSPUpdate(c.actor, sp)
 		c.broadcastCombatEvent(
@@ -174,7 +174,7 @@ func (c *ClientConn) processCombatAction(action uint8, targetRID uint32) {
 		if now-c.actor.LastParryAt < combatParryCooldownMs {
 			c.actor.Mu.Unlock()
 			if area := c.combatActionAreaForAnimate(); area != nil {
-				world.BroadcastAnimate(area, c.actor, "Idle")
+				world.BroadcastAnimate(area, c.actor, c.actor.IdleAction())
 			}
 			c.rejectCombatAction(action, "Parry is on cooldown.")
 			return
@@ -182,7 +182,7 @@ func (c *ClientConn) processCombatAction(action uint8, targetRID uint32) {
 		if c.actor.Stamina < combatParrySPCost {
 			c.actor.Mu.Unlock()
 			if area := c.combatActionAreaForAnimate(); area != nil {
-				world.BroadcastAnimate(area, c.actor, "Idle")
+				world.BroadcastAnimate(area, c.actor, c.actor.IdleAction())
 			}
 			c.rejectCombatAction(action, "Not enough SP for parry.")
 			return
@@ -195,7 +195,7 @@ func (c *ClientConn) processCombatAction(action uint8, targetRID uint32) {
 		c.actor.Mu.Unlock()
 
 		if area := c.combatActionAreaForAnimate(); area != nil {
-			world.BroadcastAnimate(area, c.actor, "Idle")
+			world.BroadcastAnimate(area, c.actor, c.actor.IdleAction())
 		}
 		world.BroadcastSPUpdate(c.actor, sp)
 		c.broadcastCombatEvent(

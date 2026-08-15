@@ -333,10 +333,17 @@ bool ItemsTab::ResolveActorDefSocket(sqlite3* db, int actor_def_id,
     if (actor_def_id <= 0) return false;
 
     sqlite3_stmt* stmt = nullptr;
+    // Also fetch mm.scale (body model's own import-scale, e.g. 0.02 for an
+    // asset authored in different units) and mad.scale (the actor def's own
+    // size-override multiplier) — same two factors DrawActorDefs' preview
+    // composes via mdl->scale * editActorDef_.scale. Without both, this
+    // preview's character renders at raw 1.0 scale regardless of either
+    // value, same bug class as the Actor Def preview fix.
     if (sqlite3_prepare_v2(db,
-        "SELECT mm.file_path"
+        "SELECT mm.file_path, mm.scale, mad.scale"
         " FROM media_actor_meshes am"
         " JOIN media_models mm ON mm.id = am.model_id"
+        " JOIN media_actor_defs mad ON mad.id = am.actor_def_id"
         " WHERE am.actor_def_id = ?"
         " ORDER BY (am.slot != 0), am.id LIMIT 1",
         -1, &stmt, nullptr) != SQLITE_OK) {
@@ -345,10 +352,14 @@ bool ItemsTab::ResolveActorDefSocket(sqlite3* db, int actor_def_id,
     sqlite3_bind_int(stmt, 1, actor_def_id);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
         const unsigned char* p = sqlite3_column_text(stmt, 0);
-        out.body_model_path = p ? reinterpret_cast<const char*>(p) : "";
+        out.body_model_path  = p ? reinterpret_cast<const char*>(p) : "";
+        out.body_model_scale = (float)sqlite3_column_double(stmt, 1);
+        out.actor_def_scale  = (float)sqlite3_column_double(stmt, 2);
     }
     sqlite3_finalize(stmt);
     if (out.body_model_path.empty()) return false;
+    if (out.body_model_scale <= 0.f) out.body_model_scale = 1.f;
+    if (out.actor_def_scale  <= 0.f) out.actor_def_scale  = 1.f;
 
     if (sqlite3_prepare_v2(db,
         "SELECT bone_name, offset_pos_x, offset_pos_y, offset_pos_z,"
@@ -376,6 +387,23 @@ bool ItemsTab::ResolveActorDefSocket(sqlite3* db, int actor_def_id,
     return found;
 }
 
+float ItemsTab::ResolveModelImportScale(sqlite3* db, const std::string& model_path) {
+    if (model_path.empty()) return 1.f;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT scale FROM media_models WHERE file_path = ? LIMIT 1",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        return 1.f;
+    }
+    sqlite3_bind_text(stmt, 1, model_path.c_str(), -1, SQLITE_TRANSIENT);
+    float scale = 1.f;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        scale = (float)sqlite3_column_double(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return scale > 0.f ? scale : 1.f;
+}
+
 void ItemsTab::Fetch(sqlite3* db) {
     items_.clear();
     selected_ = -1;
@@ -383,11 +411,22 @@ void ItemsTab::Fetch(sqlite3* db) {
     if (preview_icon_tex_) { glDeleteTextures(1, &preview_icon_tex_); preview_icon_tex_ = 0; }
     preview_icon_path_.clear();
 
+    // script_on_target (server migrateV62) is SELECTed/bound below but this
+    // tab has no EnsureTables of its own — on a DB the Go server hasn't
+    // migrated yet, the SELECT below fails outright (SQLITE_ERROR: no such
+    // column) and items_ silently stays empty, same class of bug as
+    // ability_templates.on_cast_script in combat_abilities.cpp. Unconditional
+    // ALTER, error ignored (duplicate column = already applied), same
+    // pattern MediaTab uses for its own additive migrations.
+    sqlite3_exec(db,
+        "ALTER TABLE item_templates ADD COLUMN script_on_target TEXT NOT NULL DEFAULT ''",
+        nullptr, nullptr, nullptr);
+
     sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "SELECT id, name, item_type, slot_type, weapon_damage, armor_level, "
         "       weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit "
-        "       , model_path, model_scale, socket_name, icon_path "
+        "       , model_path, model_scale, socket_name, icon_path, script_on_target, weapon_anim_style "
         "FROM item_templates ORDER BY id";
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -418,6 +457,10 @@ void ItemsTab::Fetch(sqlite3* db) {
         t.socket_name = sock ? sock : "";
         const char* icon = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 16));
         t.icon_path = icon ? icon : "";
+        const char* sot = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 17));
+        t.script_on_target = sot ? sot : "";
+        const char* was = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 18));
+        t.weapon_anim_style = was ? was : "";
         items_.push_back(t);
     }
     sqlite3_finalize(stmt);
@@ -448,6 +491,32 @@ void ItemsTab::FetchWeaponKitOptions(sqlite3* db) {
     sqlite3_finalize(stmt);
 }
 
+// weapon_anim_styles is a SEPARATE catalog from weapon_kits (PHYSICAL
+// grip/pose archetype vs. skill pool) — see WeaponAnimStyleOption doc in
+// items.h. Mirrors FetchWeaponKitOptions structurally; different table.
+void ItemsTab::FetchWeaponAnimStyleOptions(sqlite3* db) {
+    weapon_anim_style_options_.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT style_key, display_name FROM weapon_anim_styles "
+        "WHERE enabled=1 ORDER BY style_key";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        WeaponAnimStyleOption opt;
+        const char* k = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        const char* d = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        opt.style_key = k ? k : "";
+        opt.display_name = d ? d : "";
+        weapon_anim_style_options_.push_back(opt);
+    }
+    sqlite3_finalize(stmt);
+}
+
 bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
     sqlite3_stmt* stmt = nullptr;
     int rc;
@@ -457,8 +526,8 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         const char* sql =
             "INSERT INTO item_templates "
             "(name, item_type, slot_type, weapon_damage, armor_level, "
-            " weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name, icon_path) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+            " weapon_dimension, weapon_hands, weapon_range, max_stack, item_value, stackable, weapon_kit, model_path, model_scale, socket_name, icon_path, script_on_target, weapon_anim_style) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) goto err;
         sqlite3_bind_text(stmt, 1, t.name.c_str(), -1, SQLITE_TRANSIENT);
@@ -477,6 +546,8 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         sqlite3_bind_double(stmt, 14, static_cast<double>(t.model_scale));
         sqlite3_bind_text(stmt, 15, t.socket_name.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 16, t.icon_path.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 17, t.script_on_target.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 18, t.weapon_anim_style.c_str(), -1, SQLITE_TRANSIENT);
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE) goto err;
         t.id = (int)sqlite3_last_insert_rowid(db);
@@ -485,7 +556,7 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         const char* sql =
             "UPDATE item_templates SET "
             "name=?, item_type=?, slot_type=?, weapon_damage=?, armor_level=?, "
-            "weapon_dimension=?, weapon_hands=?, weapon_range=?, max_stack=?, item_value=?, stackable=?, weapon_kit=?, model_path=?, model_scale=?, socket_name=?, icon_path=? "
+            "weapon_dimension=?, weapon_hands=?, weapon_range=?, max_stack=?, item_value=?, stackable=?, weapon_kit=?, model_path=?, model_scale=?, socket_name=?, icon_path=?, script_on_target=?, weapon_anim_style=? "
             "WHERE id=?";
         rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) goto err;
@@ -505,7 +576,9 @@ bool ItemsTab::Save(sqlite3* db, ItemTemplate& t) {
         sqlite3_bind_double(stmt, 14, static_cast<double>(t.model_scale));
         sqlite3_bind_text(stmt, 15, t.socket_name.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 16, t.icon_path.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 17, t.id);
+        sqlite3_bind_text(stmt, 17, t.script_on_target.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 18, t.weapon_anim_style.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 19, t.id);
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE) goto err;
     }
@@ -661,7 +734,67 @@ bool ItemsTab::DrawFields(ItemTemplate& t) {
         }
 
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Skills granted to the player when this item is equipped.\nOptional. Leave (none) for items that don't provide a kit.");
+            ImGui::SetTooltip("Skills granted to the player when this item is equipped.\n"
+                               "Optional. Leave (none) for items that don't provide a kit.\n"
+                               "This does NOT affect animation — see 'Weapon Anim Style' below for that.");
+        }
+    }
+
+    // Weapon Anim Style — PHYSICAL grip/pose archetype, a SEPARATE catalog
+    // from Weapon Kit above. Independent of both Weapon Kit (skills) and
+    // Dimension/Hands (damage/range): many items with different kits and
+    // stats can share one style, e.g. every 1-handed sword uses "sword_1h"
+    // regardless of which skills or how much damage it deals. Drives the
+    // "{BaseAction}_{StyleKey}" composite animation lookup in the Animation
+    // Vocabulary tab and the Actor Def preview's "Simulate weapon equipped".
+    {
+        static char current_style_label_buf[256];
+        std::strcpy(current_style_label_buf, "(none)");
+        if (!t.weapon_anim_style.empty()) {
+            bool found = false;
+            for (const auto& opt : weapon_anim_style_options_) {
+                if (opt.style_key == t.weapon_anim_style) {
+                    std::snprintf(current_style_label_buf, sizeof(current_style_label_buf), "%s [%s]",
+                        opt.display_name.empty() ? opt.style_key.c_str() : opt.display_name.c_str(),
+                        opt.style_key.c_str());
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                std::snprintf(current_style_label_buf, sizeof(current_style_label_buf), "[%s] (missing)",
+                    t.weapon_anim_style.c_str());
+            }
+        }
+        const char* current_style_label = current_style_label_buf;
+
+        if (ImGui::BeginCombo("Weapon Anim Style", current_style_label)) {
+            const bool none_sel = t.weapon_anim_style.empty();
+            if (ImGui::Selectable("(none)", none_sel)) {
+                t.weapon_anim_style = "";
+                changed = true;
+            }
+
+            for (const auto& opt : weapon_anim_style_options_) {
+                const bool sel = (opt.style_key == t.weapon_anim_style);
+                char label[256];
+                std::snprintf(label, sizeof(label), "%s [%s]",
+                    opt.display_name.empty() ? opt.style_key.c_str() : opt.display_name.c_str(),
+                    opt.style_key.c_str());
+                if (ImGui::Selectable(label, sel)) {
+                    t.weapon_anim_style = opt.style_key;
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("How this weapon is physically held/swung, used to pick the "
+                               "right animation (sword_1h, staff, bow...).\nIndependent of "
+                               "Weapon Kit (skills) and Dimension/Hands (damage/range) — "
+                               "many different kits/stats can share one style.\nOptional. "
+                               "Leave (none) for items whose actor uses the generic action.");
         }
     }
 
@@ -768,6 +901,22 @@ bool ItemsTab::DrawFields(ItemTemplate& t) {
         }
     } else if (gue::ui::SearchableComboString("Socket", t.socket_name, socketVocab_, "(none)")) {
         changed = true;
+    }
+
+    // script_on_target (generic scripting Fase 2) — the Lua event name
+    // fired when this item is used WITH a target (e.g. a tool used on a
+    // resource node); only meaningful for item_type==4 (Script Item), but
+    // left editable regardless (same free-text convention already used
+    // for other script-name fields elsewhere in the GUE).
+    {
+        char sotBuf[128];
+        std::strncpy(sotBuf, t.script_on_target.c_str(), sizeof(sotBuf) - 1);
+        sotBuf[sizeof(sotBuf) - 1] = 0;
+        if (ImGui::InputText("Script On Target (event name)", sotBuf, sizeof(sotBuf))) {
+            t.script_on_target = sotBuf;
+            changed = true;
+        }
+        ImGui::TextDisabled("Fired when used ON a target (e.g. tool-on-resource-node). Script Item only.");
     }
 
     ImGui::SeparatorText("Per-actor Overrides");
@@ -924,8 +1073,42 @@ void ItemsTab::DrawItemPreview(sqlite3* db, ItemTemplate& t) {
         return;
     }
 
+    // Set the composed actor scale BEFORE LoadModel (not after, as this used
+    // to do) so that when the body model actually changes (different item's
+    // actor def), LoadModel's own FitCameraToModel("LoadModel") call — which
+    // reads back actor_scale_ for its bounds math — sees the correct value
+    // and frames the NEW model correctly on first show. refit_camera=false
+    // below means the composed-scale write itself never re-fits, so this
+    // ordering is what gives a new model its one legitimate initial fit
+    // without also re-fitting on every subsequent frame the value repeats.
+    const float composedActorScale = sock.body_model_scale * sock.actor_def_scale;
+    preview_->SetActorScale(composedActorScale, /*refit_camera=*/false);
+
     if (preview_->CurrentPath() != sock.body_model_path)
         preview_->LoadModel(sock.body_model_path);
+
+    // Reassert AFTER LoadModel too — not because LoadModel/actor_.Init are
+    // known to touch actor_.scale today (they don't: Actor::Init never
+    // writes the `scale` field, only ModelCacheGet + anim autoplay), but a
+    // captured log during this investigation showed FitCameraToModel firing
+    // with actor_scale_ back at the 1.0 default right around when the body
+    // model loads, undoing the composition above. Whatever the exact path
+    // was, calling this a second time is a no-op when the value already
+    // matches (SetActorScale's own 1e-6 epsilon check) and costs nothing,
+    // so it closes the door on that class of bug regardless of ordering
+    // assumptions elsewhere in this function or in PreviewViewport.
+    preview_->SetActorScale(composedActorScale, /*refit_camera=*/false);
+
+    // Character's own render scale — body model's import-scale composed
+    // with the actor def's size-override multiplier (item 2/3 investigation:
+    // same composition as DrawActorDefs' preview, applied here because this
+    // is a separate character instance with its own PreviewViewport::actor_
+    // state). Without this the socket bone positions (and the character
+    // itself) render at raw 1.0 scale, which also throws off the weapon's
+    // apparent position/proportions relative to the body even though the
+    // weapon's OWN scale composition below was already correct.
+    // (Actual SetActorScale call is above, before LoadModel — see comment
+    // there for why the ordering matters and why refit_camera is false.)
 
     // socketMat: the actor def's socket-binding offset (bone -> socket).
     glm::mat4 socketMat(1.0f);
@@ -943,7 +1126,15 @@ void ItemsTab::DrawItemPreview(sqlite3* db, ItemTemplate& t) {
     itemMat = glm::rotate(itemMat, glm::radians(ov.offset_rot_x), glm::vec3(1, 0, 0));
     itemMat = glm::rotate(itemMat, glm::radians(ov.offset_rot_y), glm::vec3(0, 1, 0));
     itemMat = glm::rotate(itemMat, glm::radians(ov.offset_rot_z), glm::vec3(0, 0, 1));
+    // itemModelImportScale: the weapon's OWN media_models.scale — same factor
+    // ResolveActorDefSocket already fetches for the BODY model (body_model_scale),
+    // but the item side never had an equivalent lookup. Without this, changing
+    // a weapon's import-scale in Assets/Model has zero effect here: t.model_scale
+    // is a fully separate, hand-entered field (DrawFields' "Model Scale"
+    // InputFloat) that nothing keeps in sync with the model's own scale.
+    const float itemModelImportScale = ResolveModelImportScale(db, t.model_path);
     const float itemScale = (ov.offset_scale > 0.f ? ov.offset_scale : 1.f) *
+                             itemModelImportScale *
                              (t.model_scale  > 0.f ? t.model_scale  : 1.f);
     itemMat = glm::scale(itemMat, glm::vec3(itemScale));
 
@@ -954,6 +1145,19 @@ void ItemsTab::DrawItemPreview(sqlite3* db, ItemTemplate& t) {
     preview_->SetAttachment(spec);
 
     ImGui::Text("Socket '%s' -> bone '%s'", t.socket_name.c_str(), sock.bone_name.c_str());
+    ImGui::SameLine();
+    // World/Local gizmo axis toggle — same concept/labels as the Zones
+    // viewport's "World"/"Local" button (zones_viewport.cpp), reused here so
+    // the offset_rot sliders above have a fixed frame of reference to judge
+    // against when the item itself is heavily rotated.
+    if (ImGui::SmallButton(gizmoWorldSpace_ ? "Gizmo: World" : "Gizmo: Local")) {
+        gizmoWorldSpace_ = !gizmoWorldSpace_;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Local: axes rotate with the item's own offset_rot.\n"
+                           "World: axes stay fixed to global X/Y/Z regardless of rotation.");
+    }
+    preview_->SetAttachmentGizmoWorldSpace(gizmoWorldSpace_);
     preview_->DrawImGui();
 }
 
@@ -964,6 +1168,7 @@ void ItemsTab::DrawItemPreview(sqlite3* db, ItemTemplate& t) {
 void ItemsTab::Draw(sqlite3* db) {
     if (needFetch_) { Fetch(db); needFetch_ = false; }
     FetchWeaponKitOptions(db);
+    FetchWeaponAnimStyleOptions(db);
     LoadSocketVocabulary(db);
     LoadActorDefs(db);
     LoadModelOptions(db);
@@ -972,7 +1177,11 @@ void ItemsTab::Draw(sqlite3* db) {
     ImGui::SameLine();
     if (ImGui::Button("New Item")) { newItem_ = {}; showNew_ = true; selected_ = -1; previewOverrideIdx_ = -1; }
     ImGui::SameLine();
-    ImGui::TextDisabled("%s", statusMsg_);
+    if (std::strstr(statusMsg_, "rror") != nullptr) {
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", statusMsg_);
+    } else {
+        ImGui::TextDisabled("%s", statusMsg_);
+    }
     ImGui::Separator();
 
     float listW = 240.f;

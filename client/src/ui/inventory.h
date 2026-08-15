@@ -18,6 +18,11 @@ struct InventoryItem {
     std::string name;
     std::string model_path;
     float model_scale = 1.f;
+    // Model's own import-scale (media_models.scale), independent of
+    // model_scale above (item_templates.model_scale, hand-entered). See
+    // ItemsTab::ResolveModelImportScale in the GUE for the same factor
+    // resolved for the socket preview.
+    float model_import_scale = 1.f;
     std::string socket_name;
     bool has_override = false;
     float override_pos[3] = {0.f, 0.f, 0.f};
@@ -26,6 +31,12 @@ struct InventoryItem {
     // UI icon path (migrateV53). Empty = legacy behaviour, slot keeps
     // drawing name/durability text only, no image.
     std::string icon_path;
+    // Equipped weapon's physical grip/pose archetype (item_templates.
+    // weapon_anim_style — "sword_1h", "bow"...), same value server-side
+    // Actor.BasicAttackAnimStyle carries. "" = no style configured. Read by
+    // main.cpp to feed AnimController::SetWeaponAnimStyle for the local
+    // player's client-side auto-locomotion (Walk/Run/Idle).
+    std::string weapon_anim_style;
 
     bool empty() const { return item_id == 0; }
 };
@@ -52,7 +63,9 @@ public:
                  const std::string& model_path, float model_scale,
                  const std::string& socket_name, bool has_override,
                  const float override_pos[3], const float override_rot[3],
-                 float override_scale, const std::string& icon_path);
+                 float override_scale, const std::string& icon_path,
+                 float model_import_scale = 1.f,
+                 const std::string& weapon_anim_style = "");
     void Clear();
 
     // Renders both sub-windows (each checks its own visibility flag).

@@ -82,6 +82,11 @@ func tryStartCastByRIDAt(w *World, intent CastIntent, now int64, expectedCasterK
 	if !caster.IsNPC {
 		broadcastCastResourceUpdate(area, caster, ability)
 	}
+	// Generic scripting Fase 2 — fires for every SUCCESSFUL cast start
+	// (player or NPC, same shared ability_templates row), after every
+	// other gate (windup/GCD/cooldown/range/resource/weapon) already
+	// passed. See docs/TECH_DEBT.md, Registry.DispatchAbilityCast.
+	runAbilityCastHook(area, caster, target, ability.ID)
 	return finish(true, "ok")
 }
 
@@ -172,6 +177,13 @@ func canActorStartAbilityNow(caster, target *Actor, abilityID int, now int64) st
 	if activeWindup {
 		return "ability_in_windup"
 	}
+	// CC gate (Fase 1, Buffs/Debuffs/CC): silence blocks casting, stun
+	// implies silence (IsSilenced already checks both — see actor.go).
+	// Same single funnel every NPC AND player cast already goes through —
+	// zero new plumbing needed beyond this one check.
+	if caster.IsSilenced() {
+		return "silenced"
+	}
 	globalGCDMs := resolveNPCGlobalGCDMs(caster)
 	if globalGCDMs < 0 {
 		globalGCDMs = 0
@@ -187,6 +199,23 @@ func canActorStartAbilityNow(caster, target *Actor, abilityID int, now int64) st
 	}
 	if !hasCastResource(caster, ability) {
 		return "resource_insufficient"
+	}
+	// Weapon-vs-ability validation: RequiredWeaponDimension=="" (the
+	// default — every ability that existed before this check was added)
+	// means unrestricted, same as today. When set, the caster's CURRENTLY
+	// EQUIPPED weapon (caster.BasicAttackDim, server-side, resolved at
+	// equip time — never the client's hotbar) must match. This is the
+	// ONLY place that enforces it: closes the gap where a client could
+	// send kPCastSkillSlot for any ability regardless of what's actually
+	// equipped, since the hotbar filtering is client-side UX, not a
+	// security boundary.
+	if requiredDim, ok := parseCombatDimensionString(ability.RequiredWeaponDimension); ok {
+		caster.Mu.Lock()
+		equippedDim := caster.BasicAttackDim
+		caster.Mu.Unlock()
+		if equippedDim != requiredDim {
+			return "wrong_weapon"
+		}
 	}
 	return "ok"
 }

@@ -4,6 +4,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const sendChSize = 64
@@ -73,11 +74,28 @@ type Actor struct {
 	// the engine has no fixed "impact_count" concept, see
 	// docs/TECH_DEBT.md, mob AoE + multi-impact investigation).
 	PendingImpacts        []PendingImpact
+	// ActiveEffects: every currently-active status effect on this actor —
+	// Fase 1 scope is CC only (stun/root/silence/slow); buffs/debuffs with
+	// stat modifiers and DoT/HoT are a future phase (see
+	// ActiveStatusEffect doc below). Same shape/pattern as PendingImpacts —
+	// a slice of timed entries with a global ID, resolved by a periodic
+	// tick (tickStatusEffects, area.go) rather than a scalar per-status
+	// field, so multiple effects (e.g. slow + silence at once) can coexist
+	// without one clobbering the other.
+	ActiveEffects         []ActiveStatusEffect
 	LastSpecialAt         int64         // unix ms of last special windup start
 	LastAbilityDecisionAt int64         // unix ms of last special/script decision evaluation
 	SpecialChainCount     int           // consecutive special casts in current chain window
 	AbilityCooldowns      map[int]int64 // last cast start (unix ms) by ability id
 	SkillLevels           map[int]int   // mastery level by ability id (player runtime cache)
+	// InsideTriggers: generic-scripting Fase 1 — set of Trigger.ID this actor
+	// is CURRENTLY inside, written only by Area.tickAreaTriggers (area.go)
+	// under Mu. Compared against each tick's fresh containment test to
+	// derive trigger_enter/trigger_exit transitions (see
+	// world.SetZoneTriggerHook) — a plain "am I inside right now" scan
+	// (like the older, still-present but unused CheckTrigger) can't tell
+	// enter from exit on its own.
+	InsideTriggers map[int]bool
 
 	// Combat config — set once at spawn, then read-only.
 	SpawnID         int // source npc_spawns.id when spawned from authored spawn rows
@@ -90,16 +108,37 @@ type Actor struct {
 	Radius          float32
 	Primary          PrimaryStats // 5 primary stats (runtime source of truth)
 	EffectivePrimary PrimaryStats // base + item primary bonuses; result of last recompute. Base is in Primary. Used to display total primaries client-side.
-	Derived          DerivedStats // cached computed stats from Primary + level + gear
+	Derived          DerivedStats // cached computed stats from Primary + level + gear + active buffs/debuffs
+	// LastItemBonuses: the itemBonuses map passed to the last full
+	// RecomputeDerivedStats call (equip change/login/spawn) — cached so
+	// RecomputeDerivedStatsFast (attributes.go) can cheaply re-derive
+	// actor.Derived (gear + level unchanged, only ActiveEffects changed)
+	// without re-querying the DB. Read/written only under Mu.
+	LastItemBonuses map[string]float64
 	Strength        int32        // legacy mirror of Primary.STR (temporary migration field)
 	WeaponDamage    int32
 	CachedArmor     int32
 	BasicAttackDim  CombatDimension // dimension of the basic attack (from equipped weapon)
+	// BasicAttackAnimStyle: the equipped weapon's PHYSICAL grip/pose
+	// archetype (item_templates.weapon_anim_style — "sword_1h", "staff",
+	// "bow"...), populated at the exact same points as BasicAttackDim
+	// (login, inventory swap, use-item equip — see client.go). "" when the
+	// weapon has no style configured (every weapon predates this column, and
+	// most still won't have it set) — BroadcastAttack falls back to the
+	// plain "Attack" action for an empty style, so this is zero-behavior-
+	// change for anyone who hasn't configured a style yet.
+	BasicAttackAnimStyle string
 
 	// Respawn — NPCs only, read-only after spawn.
 	SpawnX, SpawnY, SpawnZ, SpawnYaw float32
 	SpawnAreaName                    string
 	RespawnDelay                     int64 // ms; 0 = permanent death
+	// SpawnScript (generic scripting Fase 2, NPCs only) — copied once from
+	// npc_spawns.spawn_script at initial spawn (main.go), read-only after.
+	// Reused as-is on every respawn (respawnNPC, area.go) — the NPC's own
+	// spawn-point identity doesn't change across deaths. See
+	// Registry.DispatchNPCSpawn.
+	SpawnScript string
 
 	// Waypoint patrol — NPCs only, set once at spawn time.
 	StartWaypointID    int   // first waypoint in the route (0 = no patrol)
@@ -278,6 +317,235 @@ func NewImpactID() uint64 {
 	return atomic.AddUint64(&nextImpactID, 1)
 }
 
+// CCType identifies which kind of crowd-control an ActiveStatusEffect with
+// Kind==StatusKindCC represents. Fase 1 scope — see docs/TECH_DEBT.md,
+// Buffs/Debuffs/CC investigation.
+type CCType string
+
+const (
+	CCStun    CCType = "stun"    // blocks movement AND ability casts
+	CCRoot    CCType = "root"    // blocks movement only
+	CCSilence CCType = "silence" // blocks ability casts only
+	CCSlow    CCType = "slow"    // movement speed multiplier <1, not a hard block
+)
+
+// StatusEffectKind is the broad category of an ActiveStatusEffect. Fase 1
+// only ever produces StatusKindCC — StatusKindBuff/StatusKindDebuff exist
+// here now so the Kind field/wire format doesn't need to change shape when
+// stat-modifier buffs/debuffs and DoT/HoT are added in a future phase.
+type StatusEffectKind string
+
+const (
+	StatusKindBuff   StatusEffectKind = "buff"
+	StatusKindDebuff StatusEffectKind = "debuff"
+	StatusKindCC     StatusEffectKind = "cc"
+)
+
+// StatMod is one flat/pct modifier a buff/debuff applies to a derived stat
+// while active. Stat is a DerivedStats key — the SAME string keys already
+// used by item_attributes/applyDerivedBonus (attributes.go's attributeDefs
+// table), so a StatMod and a gear bonus configure identically. Flat is added
+// (same as a gear bonus); Pct is a multiplier applied AFTER all flats are
+// summed (0.20 = +20%), same convention as everywhere else in this codebase
+// that uses a "Pct" suffix. See applyDerivedFlat/applyDerivedPct
+// (attributes.go).
+type StatMod struct {
+	Stat string
+	Flat float64
+	Pct  float64
+}
+
+// ActiveStatusEffect is one currently-active status effect on an actor.
+// Fase 1 populated only the CC-relevant fields (Kind, CCType, timing,
+// StackRule="refresh"). Fase 2 (this round) activates StatMods for
+// Kind==StatusKindBuff/StatusKindDebuff — DoT/HoT tick fields are still a
+// future phase. See docs/TECH_DEBT.md, Buffs/Debuffs/CC investigation +
+// Fase 1/Fase 2 implementation.
+type ActiveStatusEffect struct {
+	ID        uint64 // global unique id, NewImpactID() — same counter/pattern as PendingImpact.ID, travels to the client via PStatusEffectDelta
+	TemplateID int    // status_effect_templates row id (GUE-authored)
+	Kind      StatusEffectKind
+	CCType    CCType // only meaningful when Kind==StatusKindCC
+	AppliedAt int64  // unix ms
+	ExpiresAt int64  // unix ms
+	SourceRID uint32 // who applied it — dispel/attribution, future phase
+	// StackRule: "refresh" (reapplying the same effect on the same actor
+	// extends/resets ExpiresAt instead of adding a second concurrent entry),
+	// "stack_up_to_max" (up to TemplateMaxStacks concurrent entries, each
+	// contributing its own StatMods — see applyStackRuleLocked, actor.go),
+	// or "ignore_if_active" (a new application is dropped while one is
+	// already active). CC (Kind==StatusKindCC) only ever uses "refresh" —
+	// stun/root/silence/slow are boolean gates, not stackable magnitudes.
+	StackRule string
+	// StatMods: copied from the template at apply time (not looked up live
+	// at derived-stat-compute time) so a later GUE edit to the template
+	// never retroactively changes an already-active effect — same
+	// copy-in-at-apply-time convention as PendingImpact copying ability
+	// fields. Only meaningful when Kind==StatusKindBuff/StatusKindDebuff.
+	StatMods []StatMod
+	// TemplateMaxStacks: copied from the template at apply time, same
+	// reasoning as StatMods — needed by applyStackRuleLocked without a
+	// second template lookup while holding actor.Mu.
+	TemplateMaxStacks int
+	// TickIntervalMs/TickDamageMin/TickDamageMax/IsHeal: Fase 3 (DoT/HoT).
+	// TickIntervalMs<=0 means this effect has no tick (a plain stat buff/
+	// debuff, or CC). Copied from the template at apply time, same
+	// reasoning as StatMods. See tickStatusEffects (area.go).
+	TickIntervalMs int64
+	TickDamageMin  int32
+	TickDamageMax  int32
+	IsHeal         bool
+	// LastTickAt: unix ms of the last tick applied (set to AppliedAt when
+	// the effect is created, so the FIRST tick fires one full interval
+	// AFTER application, not immediately — a 5s DoT with a 1s interval
+	// ticks at +1/+2/+3/+4/+5s, 5 ticks, not 6).
+	LastTickAt int64
+}
+
+// findActiveCCLocked returns the index of an existing ActiveEffects entry
+// with Kind==StatusKindCC and the given CCType, or -1. Caller must hold
+// actor.Mu.
+func (a *Actor) findActiveCCLocked(ccType CCType) int {
+	for i := range a.ActiveEffects {
+		if a.ActiveEffects[i].Kind == StatusKindCC && a.ActiveEffects[i].CCType == ccType {
+			return i
+		}
+	}
+	return -1
+}
+
+// hasActiveCCLocked reports whether a still-unexpired CC of the given type
+// is present. Caller must hold actor.Mu. Internal helper for the
+// IsStunned/IsRooted/IsSilenced/SlowMultiplier public methods below (those
+// lock Mu themselves — never call this from outside actor.go without
+// already holding Mu, or you'll deadlock).
+func (a *Actor) hasActiveCCLocked(ccType CCType, now int64) bool {
+	i := a.findActiveCCLocked(ccType)
+	return i >= 0 && a.ActiveEffects[i].ExpiresAt > now
+}
+
+// applyStackRuleLocked inserts/refreshes effect into a.ActiveEffects
+// according to effect.StackRule, implementing the 3 rules designed since
+// Fase 1 but only activated now (Fase 2, stat-modifier buffs/debuffs).
+// Caller must hold a.Mu. Returns false if the application was dropped
+// (ignore_if_active with one already active) — the caller should skip the
+// broadcast/derived-stat-recompute in that case, same as a failed CC roll.
+func (a *Actor) applyStackRuleLocked(effect ActiveStatusEffect) bool {
+	switch effect.StackRule {
+	case "ignore_if_active":
+		for i := range a.ActiveEffects {
+			if a.ActiveEffects[i].TemplateID == effect.TemplateID {
+				return false
+			}
+		}
+		a.ActiveEffects = append(a.ActiveEffects, effect)
+		return true
+
+	case "stack_up_to_max":
+		max := effect.TemplateMaxStacks
+		if max <= 0 {
+			max = 1
+		}
+		oldestIdx, oldestExpires, count := -1, int64(0), 0
+		for i := range a.ActiveEffects {
+			if a.ActiveEffects[i].TemplateID != effect.TemplateID {
+				continue
+			}
+			count++
+			if oldestIdx == -1 || a.ActiveEffects[i].ExpiresAt < oldestExpires {
+				oldestIdx = i
+				oldestExpires = a.ActiveEffects[i].ExpiresAt
+			}
+		}
+		if count >= max {
+			// Already at the stack cap — refresh the OLDEST stack in place
+			// (same magnitude, new duration) instead of growing past max.
+			a.ActiveEffects[oldestIdx] = effect
+		} else {
+			a.ActiveEffects = append(a.ActiveEffects, effect)
+		}
+		return true
+
+	default: // "refresh" — same behavior Fase 1 CC already relies on
+		for i := range a.ActiveEffects {
+			if a.ActiveEffects[i].TemplateID == effect.TemplateID {
+				a.ActiveEffects[i] = effect
+				return true
+			}
+		}
+		a.ActiveEffects = append(a.ActiveEffects, effect)
+		return true
+	}
+}
+
+// ActiveStatModsLocked returns every StatMod contributed by currently
+// unexpired Kind==Buff/Debuff effects (each stack of a stack_up_to_max
+// effect contributes its own entry, since they're stored as separate
+// ActiveEffects entries — see applyStackRuleLocked). Caller must hold a.Mu.
+func (a *Actor) ActiveStatModsLocked(now int64) []StatMod {
+	var mods []StatMod
+	for i := range a.ActiveEffects {
+		eff := &a.ActiveEffects[i]
+		if eff.ExpiresAt <= now {
+			continue
+		}
+		if eff.Kind != StatusKindBuff && eff.Kind != StatusKindDebuff {
+			continue
+		}
+		mods = append(mods, eff.StatMods...)
+	}
+	return mods
+}
+
+// IsStunned reports whether a stun is currently active. Stun blocks BOTH
+// movement (net/client.go's move handler) and ability casts
+// (canActorStartAbilityNow, cast_intent.go).
+func (a *Actor) IsStunned() bool {
+	now := time.Now().UnixMilli()
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return a.hasActiveCCLocked(CCStun, now)
+}
+
+// IsRooted reports whether a root (or stun, which implies root) is
+// currently active. Blocks movement only — casts remain allowed under a
+// pure root.
+func (a *Actor) IsRooted() bool {
+	now := time.Now().UnixMilli()
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return a.hasActiveCCLocked(CCRoot, now) || a.hasActiveCCLocked(CCStun, now)
+}
+
+// IsSilenced reports whether a silence (or stun, which implies silence) is
+// currently active. Blocks ability casts only — movement remains allowed
+// under a pure silence.
+func (a *Actor) IsSilenced() bool {
+	now := time.Now().UnixMilli()
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return a.hasActiveCCLocked(CCSilence, now) || a.hasActiveCCLocked(CCStun, now)
+}
+
+// SlowMultiplier returns the movement-speed multiplier from an active slow
+// effect (1.0 = no slow, in [0,1]). Fase 1 uses one fixed multiplier
+// (slowMultiplierFase1, below) rather than a per-template configurable
+// strength — the status_effect_templates schema this round only has
+// kind/cc_type/duration/stack_rule (see docs/TECH_DEBT.md), no "strength"
+// field yet; that's a natural Fase 2 addition once slow needs to vary in
+// intensity per effect.
+func (a *Actor) SlowMultiplier() float32 {
+	now := time.Now().UnixMilli()
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.hasActiveCCLocked(CCSlow, now) {
+		return slowMultiplierFase1
+	}
+	return 1.0
+}
+
+const slowMultiplierFase1 float32 = 0.5
+
 // AnimBinding maps a game action to a concrete animation clip with full
 // playback metadata. SourcePath empty = clip is embedded in the body model.
 // ClipOverride holds the FBX-native clip name when SourcePath is empty, so
@@ -320,6 +588,22 @@ func (a *Actor) SetPrimaryStats(p PrimaryStats) {
 	a.Primary = p
 	a.Strength = p.STR
 	a.Mu.Unlock()
+}
+
+// IdleAction returns the composite Idle animation action name for this
+// actor's equipped weapon style ("Idle_" + BasicAttackAnimStyle) — a thin
+// convenience wrapper over ComposeWeaponAction (anim_weapon_style.go), kept
+// as a method since Idle is by far the most common call site (every
+// BroadcastAnimate("Idle", ...) call in the codebase uses this instead).
+// Falls back to plain "Idle" when no style is set — BroadcastAnimate's own
+// fallback cascade (AnimFallbackParent) further walks back to "Idle" if no
+// Actor Def has a specific clip bound for the composite, so this is safe
+// even before any Animation Vocabulary binding exists for a given style.
+// Read-only access to BasicAttackAnimStyle — call sites that already hold
+// a.Mu should read the field directly instead to avoid a self-deadlock
+// (this method takes no lock itself).
+func (a *Actor) IdleAction() string {
+	return ComposeWeaponAction(a, "Idle")
 }
 
 // ActorType returns the type byte sent in PNewActor.

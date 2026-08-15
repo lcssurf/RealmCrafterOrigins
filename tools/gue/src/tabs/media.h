@@ -420,6 +420,36 @@ private:
     void LoadAnimVocabNames(sqlite3* db);
     bool VocabContains(const std::string& name) const;
 
+    // Weapon-composite fallback support (Option A UX). Mirrors id+parent_id
+    // from the SAME anim_vocabulary table SettingsTab's tree editor already
+    // manages — needed here (in addition to the flat anim_vocab_names_ used
+    // by the combo) to walk the parent chain locally, exactly like
+    // server/internal/world/combat_events.go's BroadcastAnimate does at
+    // runtime, so the preview never guesses at a resolution the server
+    // wouldn't also reach.
+    struct VocabNode {
+        int         id        = 0;
+        std::string name;
+        int         parent_id = 0;
+    };
+    void LoadAnimVocabTree(sqlite3* db);
+    // Source is weapon_anim_styles (PHYSICAL grip/pose archetype), NOT
+    // weapon_kits (skill pool) — corrected from an earlier iteration that
+    // read weapon_kits.kit_key here, the wrong granularity: many
+    // differently-kitted weapons can share one grip/pose and must resolve to
+    // the same composite binding.
+    void LoadWeaponAnimStyleKeysMedia(sqlite3* db);
+
+    // Resolves "{base_action}_{style_key}" against anim_map, falling back up
+    // the anim_vocabulary parent chain (same algorithm/depth cap as
+    // AnimFallbackParent in combat_events.go) until a bound action is found
+    // or the chain is exhausted. style_key empty = resolve base_action alone.
+    // Returns "" when exhausted (matches the server's "fallback exhausted,
+    // nothing plays" case).
+    std::string ResolveActionForWeapon(const std::string& base_action,
+                                        const std::string& style_key,
+                                        const std::vector<ActorAnimMap>& anim_map) const;
+
     // Socket vocabulary (B2) — flat list for the socket combo in the socket editor.
     void LoadSocketVocabNames(sqlite3* db);
 
@@ -430,7 +460,17 @@ private:
     std::vector<std::pair<int, std::string>> drop_list_options_;
     std::vector<PlayerSpawnOption> player_spawns_;
     std::vector<std::string>   anim_vocab_names_;
+    std::vector<VocabNode>     anim_vocab_tree_;          // id+parent_id, for fallback walks
+    std::vector<std::string>   weapon_anim_style_keys_;   // enabled WeaponAnimStyle.style_key values
     std::vector<std::string>   socket_vocab_names_; // B3a
+
+    // "Simulate weapon" preview controls (Option A UX, item 4) — session-only,
+    // not persisted. base action + style key chosen here are composed and
+    // resolved via ResolveActionForWeapon(), then the preview is told to
+    // select the RESOLVED action by name — reusing PreviewViewport's existing
+    // select-by-name mechanism (SelectActionByName), not a parallel preview.
+    int  sim_weapon_base_idx_  = -1;
+    int  sim_weapon_style_idx_ = -1;  // -1 = "None" (no simulation, current behavior)
 
     bool needFetch_        = true;
     char statusMsg_[256]   = {};

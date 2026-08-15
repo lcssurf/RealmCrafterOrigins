@@ -30,6 +30,7 @@
 #include "window.h"
 #include "paths.h"
 #include "player_controller.h"
+#include "combat_intent.h"
 #include "../net/connection.h"
 #include "../net/protocol.h"
 #include "../net/codec.h"
@@ -1713,16 +1714,17 @@ int main() {
     std::unique_ptr<rco::renderer::Actor> player_weapon_actor;
     std::string player_weapon_model_path;
 
-    // Combat state
-    uint32_t combat_target     = 0;
-    double   last_attack_sent  = 0.0;
-    // Sticky "approach in progress" latch, owned here (not PlayerController —
-    // see player_controller.h's approach_requested doc). Set true ONLY by the
-    // explicit Attack-button handler (LMB "attack_click" block below), never
-    // by the passive 0.85s auto-attack resend. Cleared on PlayerController::
-    // Update()'s Result::approach_arrived / Result::approach_cancelled_by_input,
-    // and wherever combat_target itself is cleared (target lost/deselected).
-    bool     combat_approach_active = false;
+    // Combat state — target, approach-latch, out-of-range timeout,
+    // movement-pause, and auto-attack cadence all live in
+    // CombatIntentController now (client/src/core/combat_intent.h). See its
+    // header comment for why this was consolidated (a movement-pause
+    // regression caused by the same state being read/written from several
+    // independent main.cpp call sites). PlayerController's own
+    // approach_requested doc still applies: the approach latch is owned
+    // here (by combat_intent, not PlayerController), read every frame via
+    // combat_intent.ApproachActive() and cleared via SetApproachActive()
+    // when PlayerController reports approach_arrived/approach_cancelled_by_input.
+    rco::gameplay::CombatIntentController combat_intent;
     bool     player_dead       = false;
     glm::mat4 view_mat{1.f}, proj_mat{1.f};
     bool      dodge_roll_active = false;
@@ -1769,6 +1771,21 @@ int main() {
     // if that source never has more than one concurrent telegraph — true
     // for every windup that predates this round.
     std::unordered_map<uint64_t, SpecialParryTelegraph> special_parry_telegraphs;
+    // rid -> real windup target duration, populated from kCombatEventSpecialWindup's
+    // `value` (ability_templates.windup_ms or spawn_impact's delayMs — see
+    // combat_special.go's startNPCSpecialCast/SpawnScriptedImpact, which
+    // ALWAYS broadcast that PCombatEvent immediately followed by the
+    // matching PAnimateActor for the same actor). Consumed by the
+    // kPAnimateActor handler right before RequestState, correlating this
+    // windup duration with whatever action name that particular request
+    // resolves to (AnimController::SetActionTargetDuration) — same
+    // generalized "scale playback to fit the real window" principle
+    // AttackSpeedMult already gets for the basic attack, just fed from a
+    // different, per-ability source of truth. set_at guards against reusing
+    // a stale value if PAnimateActor is ever delayed/dropped and a later,
+    // unrelated one arrives for the same rid.
+    struct PendingWindupTarget { float duration_sec = 0.f; double set_at = 0.0; };
+    std::unordered_map<uint32_t, PendingWindupTarget> pending_windup_target_by_rid;
     struct ParryJudgementFx {
         uint32_t source_rid = 0;
         bool success = false;
@@ -1777,6 +1794,34 @@ int main() {
         double end_time = 0.0;
     };
     std::vector<ParryJudgementFx> parry_judgements;
+
+    // Fase 1, Buffs/Debuffs/CC (see docs/TECH_DEBT.md) — active CC state per
+    // actor, keyed by (rid, cc_type) since Fase 1's "refresh" stack rule
+    // means at most one CC of a given type is ever active per actor (see
+    // server world.ActiveStatusEffect doc). Populated by kPStatusEffectDelta
+    // (server/internal/net/status_effect_bridge.go — real implementation as
+    // of this round; previously dead wire). Drives BOTH the local player's
+    // movement gate (main loop, near dodge_delta_override) and a minimal
+    // world-space ring visual for ANY actor with active CC (reusing the
+    // exact ring-drawing technique already built for the AoE ground
+    // telegraph — see special_parry_telegraphs' ring block).
+    struct ActiveCCState {
+        std::string kind;    // "cc" | "buff" | "debuff" (Fase 2, Buffs/Debuffs/CC)
+        std::string cc_type; // "stun" | "root" | "silence" | "slow" — only set when kind=="cc"
+        double      received_at = 0.0; // local glfwGetTime() when this delta arrived
+        double      duration_s  = 0.0; // server-sent duration_ms / 1000 — see SkillHotbar's
+                                        // cooldown_total_ms_at_receipt/cooldown_set_at_ms pattern,
+                                        // same "local countdown from a server-stamped duration" idea
+        std::string icon_path;
+    };
+    // key = "<rid>:<cc_type>" for kind=="cc" (e.g. "1042:stun") so multiple
+    // concurrent CC types on the SAME actor (e.g. slowed AND silenced at
+    // once) don't collide/overwrite each other; "<rid>:<kind>:<template_id>"
+    // for kind=="buff"/"debuff" (Fase 2) — cc_type is meaningless for a stat
+    // mod, template_id disambiguates multiple concurrent buffs/debuffs
+    // instead. Either way, the FIRST ':' always separates rid from the rest
+    // — see the parsing loop below, which only ever splits on that.
+    std::unordered_map<std::string, ActiveCCState> active_cc_by_actor;
 
     // Player movement controller (gravity, slope, jump, sprint, click-to-move)
     rco::PlayerController player_ctrl{};
@@ -1902,6 +1947,20 @@ int main() {
             ab.return_to   = wa.return_to;
             ab.priority    = wa.priority;
             ab.is_terminal = wa.is_terminal;
+            // Without this, external-clip bindings (non-empty source_path,
+            // e.g. Idle/Slash loaded from assets/anims/*.fbx) come back from
+            // Bind() with duration_sec=0 — AnimBindingIsValid() then rejects
+            // them FOREVER (Bind() replaces bindings_ wholesale; nothing
+            // re-runs SetClipDuration() afterward), silently failing every
+            // subsequent RequestStateByName/ForceStateByName("Idle") call for
+            // the rest of the session. Confirmed via real [anim-diag] log:
+            // respawn calls this as a fallback, after which the player got
+            // stuck looping Run/Walk because Idle could never be reached
+            // again — see docs/TECH_DEBT.md, respawn-stuck-in-Walk/Run
+            // investigation. player_actor already has the clip loaded at
+            // this point (LoadAnim ran when the actor was first created), so
+            // ClipDuration() here just reads the cached value — no reload.
+            ab.duration_sec = player_actor.ClipDuration(wa.action);
             for (const auto& ev : wa.events) {
                 rco::anim::AnimEvent aev;
                 aev.frame      = ev.frame;
@@ -2329,8 +2388,7 @@ int main() {
                 area_portals.clear();
                 world_items.clear();
                 shop.open = false;
-                combat_target = 0;
-                combat_approach_active = false;
+                combat_intent.ClearTarget();
                 special_parry_telegraphs.clear();
                 parry_judgements.clear();
                 active_character_readability_tuning = character_readability_tuning;
@@ -2904,10 +2962,25 @@ int main() {
                     }
                     // Trailing field (migrateV53), last per-item.
                     std::string icon_path = r.ReadString();
+                    // Trailing field, appended after icon_path — the weapon
+                    // model's own import-scale (media_models.scale), distinct
+                    // from model_scale (item_templates.model_scale) above.
+                    // See GetMediaModelScaleByPath (server) / B5's mesh_scale
+                    // composition below for why this is a separate factor.
+                    float model_import_scale = r.ReadF32();
+                    // Trailing field, appended after model_import_scale — the
+                    // equipped weapon's grip/pose archetype
+                    // (item_templates.weapon_anim_style), same string
+                    // server-side Actor.BasicAttackAnimStyle carries. Feeds
+                    // the local player's client-side auto-locomotion
+                    // composition (see player_anim_ctrl.SetWeaponAnimStyle
+                    // below).
+                    std::string weapon_anim_style = r.ReadString();
                     if (!r.OK()) break;
                     inventory.SetSlot(slot, iid, qty, dur, name, itype, stype, wdmg, armor,
                                      model_path, model_scale, socket_name, has_override != 0,
-                                     override_pos, override_rot, override_scale, icon_path);
+                                     override_pos, override_rot, override_scale, icon_path,
+                                     model_import_scale, weapon_anim_style);
                 }
                 break;
             }
@@ -2955,6 +3028,14 @@ int main() {
                 if (event_code == rco::net::kCombatEventSpecialWindup && source_rid != 0) {
                     const double windup_s =
                         (value > 0) ? (static_cast<double>(value) / 1000.0) : 1.2;
+                    // Stash for the kPAnimateActor handler (see
+                    // pending_windup_target_by_rid's doc) — that packet
+                    // always follows this one immediately for the same
+                    // actor (combat_special.go broadcasts them back to
+                    // back), so it'll correlate this real windup duration
+                    // with whatever action name gets requested next.
+                    pending_windup_target_by_rid[source_rid] =
+                        PendingWindupTarget{static_cast<float>(windup_s), event_now};
                     SpecialParryTelegraph tg;
                     tg.source_rid = source_rid;
                     tg.target_rid = target_rid;
@@ -3237,8 +3318,7 @@ int main() {
                 if (dead_rid == player.runtimeId) {
                     player_dead    = true;
                     player.health  = 0;
-                    combat_target  = 0;
-                    combat_approach_active = false;
+                    combat_intent.ClearTarget();
                     dodge_roll_active = false;
                     dodge_roll_pending = false;
                     if (player_anim_ctrl.IsReady()) {
@@ -3279,9 +3359,8 @@ int main() {
                             ++it;
                         }
                     }
-                    if (combat_target == dead_rid) {
-                        combat_target = 0;
-                        combat_approach_active = false;
+                    if (combat_intent.Target() == dead_rid) {
+                        combat_intent.ClearTarget();
                     }
                     audio.PlaySfx(rco::audio::SfxId::NPCDeath);
                 }
@@ -3343,9 +3422,50 @@ int main() {
                     if (!player_dead && is_death_action) {
                         break; // stale death packet after respawn
                     }
-                    if (!player_anim_ctrl.RequestState(action_id, "main.cpp/PAnimateActor-player")) {
-                        std::fprintf(stderr, "[anim] player rejected action_id=%u\n",
-                                     static_cast<unsigned>(action_id));
+                    // TEMP DEBUG (sword_1h Attack-not-falling-back-visually
+                    // investigation) — the client does ZERO name-based
+                    // fallback of its own: RequestState(action_id) trusts
+                    // the server's index directly against player_anims
+                    // (built from the SAME PNewActor array server's
+                    // actor.Appearance.Anims was serialized from — see
+                    // frame.go appendAnimBindings). If this request is
+                    // rejected (priority-blocked by a currently-playing
+                    // one-shot, see RequestStateImpl_'s priority check in
+                    // anim_controller.cpp), the OLD animation just keeps
+                    // playing silently — no retry, no client-side fallback
+                    // attempt. Logging requested name + before/after
+                    // CurrentAction to confirm/deny that exact mechanism.
+                    {
+                        const std::string requested_name =
+                            action_id < player_anims.size() ? player_anims[action_id].action : "<out-of-range>";
+                        // Correlate a recent windup-duration event (see
+                        // pending_windup_target_by_rid's doc) with THIS
+                        // request so the clip scales to fit the real
+                        // ability windup window (e.g. "SkillBow"), not just
+                        // Attack. 0.75s freshness window: comfortably above
+                        // any real windup_ms while still rejecting a stale
+                        // leftover from an unrelated earlier cast.
+                        if (auto pit = pending_windup_target_by_rid.find(rid);
+                            pit != pending_windup_target_by_rid.end()) {
+                            if (glfwGetTime() - pit->second.set_at <= 0.75) {
+                                player_anim_ctrl.SetActionTargetDuration(
+                                    requested_name, pit->second.duration_sec);
+                            }
+                            pending_windup_target_by_rid.erase(pit);
+                        }
+                        const std::string before_action = player_anim_ctrl.CurrentAction();
+                        const bool accepted =
+                            player_anim_ctrl.RequestState(action_id, "main.cpp/PAnimateActor-player");
+                        const std::string after_action = player_anim_ctrl.CurrentAction();
+                        std::fprintf(stderr,
+                            "[wire-confirm][client] received action_id=%u requested_name='%s' "
+                            "accepted=%d before='%s' after='%s'\n",
+                            static_cast<unsigned>(action_id), requested_name.c_str(),
+                            accepted ? 1 : 0, before_action.c_str(), after_action.c_str());
+                        if (!accepted) {
+                            std::fprintf(stderr, "[anim] player rejected action_id=%u\n",
+                                         static_cast<unsigned>(action_id));
+                        }
                     }
                     break;
                 }
@@ -3369,6 +3489,19 @@ int main() {
                             "[death-term][PANIMATE] rid=%u action_id=%u arrived via "
                             "PAnimateActor for a world_actors entry WHILE also present in "
                             "world_corpses — investigate.\n", rid, static_cast<unsigned>(action_id));
+                    }
+                    if (auto pit = pending_windup_target_by_rid.find(rid);
+                        pit != pending_windup_target_by_rid.end()) {
+                        // Same correlation as the local-player branch above
+                        // — see pending_windup_target_by_rid's doc.
+                        if (glfwGetTime() - pit->second.set_at <= 0.75) {
+                            const std::string& requested_name = it->second.anim_ctrl.ActionNameById(action_id);
+                            if (!requested_name.empty()) {
+                                it->second.anim_ctrl.SetActionTargetDuration(
+                                    requested_name, pit->second.duration_sec);
+                            }
+                        }
+                        pending_windup_target_by_rid.erase(pit);
                     }
                     it->second.anim_ctrl.RequestState(action_id, "main.cpp/PAnimateActor-other-actor");
                     // Sync anim_name for backward compat with SubmitAs
@@ -3398,10 +3531,12 @@ int main() {
                         if (was_dead && !player_dead) {
                             bool reset_ok = false;
                             if (player_anim_ctrl.IsReady()) {
-                                // TECH_DEBT: idle_action_id should come from appearance
-                                // bindings ("Idle") rather than a fixed index.
-                                constexpr uint8_t idle_action_id = 0;
-                                reset_ok = player_anim_ctrl.ForceState(idle_action_id, "main.cpp/attr-sync-respawn-reset");
+                                // By NAME, not by hardcoded index — bindings_
+                                // order comes from a DB query with no ORDER BY
+                                // (see docs/TECH_DEBT.md, respawn-stuck-in-
+                                // Walk/Run investigation), so "index 0 == Idle"
+                                // was never a real guarantee.
+                                reset_ok = player_anim_ctrl.ForceStateByName("Idle", "main.cpp/attr-sync-respawn-reset");
                             }
                             if (!reset_ok) {
                                 reset_ok = rebind_player_anim_controller();
@@ -3478,6 +3613,13 @@ int main() {
                 player.derived.CritDamageMult    = r.ReadF32();
                 player.derived.AttackSpeedMult   = r.ReadF32();
                 player.derived.MovementSpeedMult = r.ReadF32();
+                // TEMP DIAG (Buffs/Debuffs/CC — "MovementSpeedMult não
+                // muda" investigation): every PFullStats this client
+                // receives, unconditionally — confirms the packet actually
+                // arrives and what value it carries at the exact moment
+                // it's parsed.
+                std::fprintf(stderr, "[statmod-diag] kPFullStats received: MovementSpeedMult=%.4f\n",
+                             player.derived.MovementSpeedMult);
                 player.derived.CooldownSpeedPct  = r.ReadF32();
                 player.derived.SkillDamageBoostPct = r.ReadF32();
                 player.derived.BuffDurationPct     = r.ReadF32();
@@ -3745,6 +3887,53 @@ int main() {
                         world_static_objects.erase(it);
                         break;
                     }
+                }
+                break;
+            }
+
+            case rco::net::kPStatusEffectDelta: {
+                // Fase 1, Buffs/Debuffs/CC (see docs/TECH_DEBT.md) — real
+                // implementation as of this round; previously a reserved-
+                // but-dead packet ID (see ingame_packet_gate.cpp, which
+                // used to silently swallow this before reaching here).
+                // Format (server/internal/net/status_effect_bridge.go):
+                // target_rid(u32) + template_id(u32) + kind(str) +
+                // cc_type(str) + duration_ms(u32, relative) +
+                // icon_path(str) + applied(bool).
+                uint32_t    target_rid  = r.ReadU32();
+                uint32_t    template_id = r.ReadU32();
+                std::string kind        = r.ReadString();
+                std::string cc_type     = r.ReadString();
+                uint32_t    duration_ms = r.ReadU32();
+                std::string icon_path   = r.ReadString();
+                bool        applied     = r.ReadBool();
+                if (!r.OK() || target_rid == 0) break;
+                // Fase 2 (Buffs/Debuffs/CC): kind=="buff"/"debuff" now also
+                // flow through here — previously this handler dropped
+                // anything that wasn't kind=="cc" with a non-empty cc_type.
+                // See the ActiveCCState/active_cc_by_actor key-format
+                // comment (declaration site) for why buff/debuff key on
+                // template_id instead of cc_type.
+                std::string key;
+                if (kind == "cc") {
+                    if (cc_type.empty()) break;
+                    key = std::to_string(target_rid) + ":" + cc_type;
+                } else if (kind == "buff" || kind == "debuff") {
+                    key = std::to_string(target_rid) + ":" + kind + ":" + std::to_string(template_id);
+                } else {
+                    break;
+                }
+
+                if (applied) {
+                    ActiveCCState st;
+                    st.kind        = kind;
+                    st.cc_type     = cc_type;
+                    st.received_at = glfwGetTime();
+                    st.duration_s  = static_cast<double>(duration_ms) / 1000.0;
+                    st.icon_path   = icon_path;
+                    active_cc_by_actor[key] = st;
+                } else {
+                    active_cc_by_actor.erase(key);
                 }
                 break;
             }
@@ -5617,6 +5806,23 @@ int main() {
                     }
                 }
 
+                // Fase 1, Buffs/Debuffs/CC (see docs/TECH_DEBT.md) — same
+                // gate PATTERN as the UI-focus check right below
+                // (WantCaptureKeyboard), just a different reason movement
+                // should be suppressed this frame. Root blocks movement
+                // (dodge included — a root is "you cannot move," no
+                // carve-out for dash mechanics); stun implies root
+                // server-side (Actor.IsRooted() also checks CCStun — see
+                // actor.go) so checking both "stun" and "root" keys here
+                // mirrors that. Purely LOCAL-PLAYER-side prediction/gating
+                // — the server is still the authority and will reject any
+                // movement that slips through anyway (net/client.go's
+                // ccBlocked check), this just avoids the client visibly
+                // trying to move and getting snapped back every frame.
+                bool player_stunned_or_rooted =
+                    active_cc_by_actor.count(std::to_string(player.runtimeId) + ":stun") > 0 ||
+                    active_cc_by_actor.count(std::to_string(player.runtimeId) + ":root") > 0;
+
                 // ---- Player movement (keyboard, click-to-move, gravity, slope, jump) ----
                 // Gate is normally "keyboard free" (don't move via typed keys
                 // while a UI dialog/chat has focus) — but a dodge roll isn't
@@ -5624,25 +5830,35 @@ int main() {
                 // even while some UI has keyboard focus, same as before this
                 // reformulation (dodge used to run in a completely separate,
                 // ungated block).
-                if ((!ImGui::GetIO().WantCaptureKeyboard && !skill_loadout_open) ||
-                    dodge_delta_override.has_value()) {
+                if (((!ImGui::GetIO().WantCaptureKeyboard && !skill_loadout_open) ||
+                     dodge_delta_override.has_value()) &&
+                    !player_stunned_or_rooted) {
                     bool rmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
                     bool lmb_held = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
 
                     // Turn-to-face-target: "in the attack window" = the
                     // Attack animation is the actor's currently active
-                    // state (same CurrentAction() comparison already used
-                    // elsewhere, e.g. main.cpp's Walk/Run submit checks).
+                    // state. Prefix match, NOT ==: CurrentAction() is now
+                    // often a weapon-style composite ("Attack_bow",
+                    // "Attack_sword_1h" — world.ComposeWeaponAction,
+                    // server-side) rather than plain "Attack" whenever the
+                    // equipped weapon has a style configured. An exact
+                    // match here silently stopped turn-to-face from ever
+                    // firing for any such weapon — same class of bug
+                    // already fixed for isLocomotion (server,
+                    // combat_events.go) and loco_eligible (client,
+                    // anim_controller.cpp) earlier this session, just never
+                    // caught here since this check predates weapon styles.
                     // target_pos resolves combat_target's RENDERED position
                     // (world_actors' smoothed x/y/z, same lookup pattern as
                     // the target ring/nameplate below) — std::nullopt when
                     // there's no target selected or it's no longer present
                     // (died/left range), which PlayerController treats as
                     // "no override, behave normally."
-                    bool is_attacking = player_anim_ctrl.CurrentAction() == "Attack";
+                    bool is_attacking = player_anim_ctrl.CurrentAction().rfind("Attack", 0) == 0;
                     std::optional<glm::vec3> attack_target_pos;
-                    if (combat_target != 0) {
-                        auto tgt_it = world_actors.find(combat_target);
+                    if (combat_intent.Target() != 0) {
+                        auto tgt_it = world_actors.find(combat_intent.Target());
                         if (tgt_it != world_actors.end()) {
                             attack_target_pos = glm::vec3(tgt_it->second.x, tgt_it->second.y, tgt_it->second.z);
                         }
@@ -5690,18 +5906,18 @@ int main() {
                     rco::PlayerController::Result pc_result = player_ctrl.Update(
                         w, dt, player_dead, player, collision_world,
                         camera.GetYaw(), rmb_held, lmb_held,
-                        is_attacking, attack_target_pos, combat_approach_active,
+                        is_attacking, attack_target_pos, combat_intent.ApproachActive(),
                         dodge_delta_override);
-                    // combat_approach_active is a sticky latch this file owns (see
-                    // its declaration doc) — PlayerController only ever reports
-                    // outcomes, never persists the flag itself. Clear on either:
-                    // approach reached AttackRange (arrived — passive auto-attack
-                    // timer takes over) or WASD/click-to-move preempted it this
-                    // frame (must not silently resume when the player lets go of
-                    // WASD; only another explicit Attack-button press can restart
-                    // it).
+                    // combat_intent's approach latch is a sticky flag this file
+                    // owns (see CombatIntentController's header doc) —
+                    // PlayerController only ever reports outcomes, never persists
+                    // the flag itself. Clear on either: approach reached
+                    // AttackRange (arrived — passive auto-attack timer takes
+                    // over) or WASD/click-to-move preempted it this frame (must
+                    // not silently resume when the player lets go of WASD; only
+                    // another explicit Attack-button press can restart it).
                     if (pc_result.approach_arrived || pc_result.approach_cancelled_by_input) {
-                        combat_approach_active = false;
+                        combat_intent.SetApproachActive(false);
                     }
                 }
 
@@ -5961,6 +6177,20 @@ int main() {
                         if (player_dead) {
                             player_anim_ctrl.RequestStateByName("Death", "main.cpp/per-frame-player-dead-loop");
                         }
+                        // Attack swing tracks AttackSpeedMult (same derived
+                        // stat that already gates the real attack-cooldown
+                        // timing at line ~7292 below) — see
+                        // AnimController::SetAttackSpeedMult. Only affects
+                        // the Attack/Attack_<style> binding; Update()'s own
+                        // `speed` param below stays the raw movement speed
+                        // for Idle/Walk/Run selection, untouched by this.
+                        player_anim_ctrl.SetAttackSpeedMult(player.derived.AttackSpeedMult);
+                        // Weapon-style-aware Walk/Run/Idle — re-read from
+                        // inventory.GetSlot(0) fresh every frame (same "no
+                        // cache" pattern as B5's equipped_item reads below),
+                        // so swapping weapons updates this immediately, same
+                        // reactivity already guaranteed for Idle server-side.
+                        player_anim_ctrl.SetWeaponAnimStyle(inventory.GetSlot(0).weapon_anim_style);
                         player_anim_ctrl.Update(dt, player_dead ? 0.f : player_speed);
                     } else {
                         // Legacy fallback: drive player_actor directly and advance time
@@ -6041,23 +6271,52 @@ int main() {
                                 } else {
                                     b5_bone_not_found_logged = false;
 
-                                    glm::mat4 player_actor_matrix(1.f);
-                                    player_actor_matrix = glm::translate(
-                                        player_actor_matrix,
+                                    // Body scale (player_actor.scale) is needed to place the
+                                    // BONE correctly — bone_world's translation is expressed in
+                                    // the body model's own unscaled coordinate space (bone
+                                    // matrices are baked at import time, never multiplied by
+                                    // actor.scale; see GetBoneWorldTransform). It must NOT scale
+                                    // the weapon's own geometry: socket_matrix/override_matrix/
+                                    // mesh_scale below already carry the item's OWN scale — piling
+                                    // the body's scale on top of that double-scales the weapon
+                                    // (same bug class fixed today in the GUE's item-socket
+                                    // preview, tools/gue/src/preview_viewport.cpp — this is a
+                                    // SEPARATE, unshared implementation for the real client, so
+                                    // that fix never touched this code path).
+                                    //
+                                    // Fix: compute the bone's WORLD POSITION using the full
+                                    // (scaled) body transform, but build the final matrix's
+                                    // rotation from body-yaw * bone-local-rotation only, with NO
+                                    // scale baked in, so the weapon's own scale chain isn't touched.
+                                    glm::mat4 bodyTranslate(1.f);
+                                    bodyTranslate = glm::translate(
+                                        bodyTranslate,
                                         player_actor.position + glm::vec3(0.f, player_actor.y_offset, 0.f));
-                                    player_actor_matrix = glm::rotate(
-                                        player_actor_matrix,
+
+                                    glm::mat4 bodyRot(1.f);
+                                    bodyRot = glm::rotate(
+                                        bodyRot,
                                         glm::radians(player_actor.yaw),
                                         glm::vec3(0.f, 1.f, 0.f));
                                     if (player_actor.yaw_offset != 0.f) {
-                                        player_actor_matrix = glm::rotate(
-                                            player_actor_matrix,
+                                        bodyRot = glm::rotate(
+                                            bodyRot,
                                             glm::radians(player_actor.yaw_offset),
                                             glm::vec3(0.f, 1.f, 0.f));
                                     }
-                                    player_actor_matrix = glm::scale(
-                                        player_actor_matrix,
-                                        glm::vec3(player_actor.scale));
+
+                                    glm::mat4 bodyModelScaled = bodyTranslate * bodyRot *
+                                        glm::scale(glm::mat4(1.f), glm::vec3(player_actor.scale));
+                                    glm::vec3 bonePosWorld = glm::vec3(
+                                        bodyModelScaled * bone_world * glm::vec4(0.f, 0.f, 0.f, 1.f));
+
+                                    // Rotation only, no scale: body's own yaw/yaw_offset composed
+                                    // with the bone's own local orientation (bone_world's 3x3 —
+                                    // e.g. the hand bone's authored grip angle). Dropping bodyRot
+                                    // would stop the weapon turning with the character; dropping
+                                    // bone_world's rotation would break the socket's authored
+                                    // grip alignment — both are kept, only the scale is excluded.
+                                    glm::mat3 combinedRot = glm::mat3(bodyRot) * glm::mat3(bone_world);
 
                                     const auto build_socket_transform = [](const float pos[3],
                                                                           const float rot_deg[3],
@@ -6080,11 +6339,21 @@ int main() {
                                             equipped_item.override_scale);
                                     }
 
+                                    // model_import_scale: the weapon model's OWN media_models.scale
+                                    // (e.g. 0.02 for an asset authored in different units) — same
+                                    // factor the GUE's Item socket preview now composes in
+                                    // (ItemsTab::ResolveModelImportScale). Previously missing here
+                                    // entirely: mesh_scale used to be ONLY equipped_item.model_scale
+                                    // (item_templates.model_scale, a separate hand-entered field),
+                                    // so fixing a weapon's import-scale in Assets/Model never reached
+                                    // this render path. override_scale (above, in override_matrix) is
+                                    // a third, independent factor — unchanged.
                                     const float mesh_scale =
-                                        equipped_item.model_scale > 0.f ? equipped_item.model_scale : 1.f;
+                                        (equipped_item.model_import_scale > 0.f ? equipped_item.model_import_scale : 1.f) *
+                                        (equipped_item.model_scale > 0.f ? equipped_item.model_scale : 1.f);
                                     const glm::mat4 item_world =
-                                        player_actor_matrix *
-                                        bone_world *
+                                        glm::translate(glm::mat4(1.f), bonePosWorld) *
+                                        glm::mat4(combinedRot) *
                                         socket_matrix *
                                         override_matrix *
                                         glm::scale(glm::mat4(1.f), glm::vec3(mesh_scale));
@@ -6571,9 +6840,9 @@ int main() {
 
                 last_player_pos = {player.x, player.z};
 
-                // ---- Target indicator: ring on ground under combat_target ----
-                if (combat_target != 0) {
-                    auto tit = world_actors.find(combat_target);
+                // ---- Target indicator: ring on ground under combat_intent's target ----
+                if (combat_intent.Target() != 0) {
+                    auto tit = world_actors.find(combat_intent.Target());
                     if (tit != world_actors.end()) {
                         float tx = tit->second.x, tz = tit->second.z;
                         float ty = terrain.SampleHeight(tx, tz) + 0.05f;
@@ -6598,7 +6867,8 @@ int main() {
 
                 // NPC special attack telegraph and parry judgement feedback.
                 // The circle is billboarded (screen-facing) and anchored in air.
-                if (!special_parry_telegraphs.empty() || !parry_judgements.empty()) {
+                if (!special_parry_telegraphs.empty() || !parry_judgements.empty() ||
+                    !active_cc_by_actor.empty()) {
                     auto* ol = ImGui::GetForegroundDrawList();
                     float sw = static_cast<float>(window.Width());
                     float sh = static_cast<float>(window.Height());
@@ -6857,6 +7127,82 @@ int main() {
                                     MulAlpha(IM_COL32(255, 255, 255, 220), alpha_mul), sub);
                         ++it;
                     }
+
+                    // Fase 1, Buffs/Debuffs/CC — MINIMAL visual feedback:
+                    // a colored world-space ring at the base of any actor
+                    // (self included) with active CC, reusing the exact
+                    // ring-drawing technique already built for the AoE
+                    // ground telegraph (project N points on a world-space
+                    // circle, sample terrain height per-vertex, project each
+                    // to screen, connect with AddPolyline/AddConvexPolyFilled
+                    // — see docs/TECH_DEBT.md's ground-telegraph investigation
+                    // for why this beats a single-anchor-point + fixed-pixel
+                    // radius circle). A full buff-bar with icons/timers is
+                    // explicitly NOT built this round — see
+                    // docs/TECH_DEBT.md, Fase 1 scope note.
+                    {
+                        std::vector<std::string> expired_cc_keys;
+                        for (const auto& [key, cc] : active_cc_by_actor) {
+                            double remaining = cc.duration_s - (now - cc.received_at);
+                            if (remaining <= 0.0) {
+                                expired_cc_keys.push_back(key);
+                                continue;
+                            }
+                            // key = "<rid>:<cc_type>" — split back out.
+                            const std::size_t sep = key.find(':');
+                            if (sep == std::string::npos) continue;
+                            uint32_t rid = 0;
+                            try { rid = static_cast<uint32_t>(std::stoul(key.substr(0, sep))); }
+                            catch (...) { continue; }
+
+                            float ax = 0.f, ay = 0.f, az = 0.f;
+                            bool have_pos = false;
+                            if (rid == player.runtimeId) {
+                                ax = player.x; ay = player.y; az = player.z;
+                                have_pos = true;
+                            } else if (auto ait = world_actors.find(rid); ait != world_actors.end()) {
+                                ax = ait->second.x; ay = ait->second.y; az = ait->second.z;
+                                have_pos = true;
+                            }
+                            if (!have_pos) continue;
+
+                            ImU32 ring_col;
+                            if (cc.cc_type == "stun")         ring_col = IM_COL32(230, 210, 40, 235);
+                            else if (cc.cc_type == "root")    ring_col = IM_COL32(140, 90, 40, 235);
+                            else if (cc.cc_type == "silence") ring_col = IM_COL32(140, 60, 220, 235);
+                            else if (cc.cc_type == "slow")    ring_col = IM_COL32(70, 190, 230, 235);
+                            // Fase 2 (Buffs/Debuffs/CC): stat-modifier
+                            // buffs/debuffs have no cc_type — color by kind
+                            // instead. Same minimal ring indicator as CC,
+                            // no icon/magnitude shown yet (full buff bar is
+                            // still a future polish phase).
+                            else if (cc.kind == "buff")       ring_col = IM_COL32(60, 220, 100, 235);
+                            else /* debuff */                 ring_col = IM_COL32(220, 60, 90, 235);
+
+                            constexpr int kCCRingSegments = 24;
+                            constexpr float kCCRingRadius = 0.6f;
+                            ImVec2 ring_pts[kCCRingSegments];
+                            bool ring_ok = true;
+                            for (int seg = 0; seg < kCCRingSegments && ring_ok; ++seg) {
+                                const float ang = (static_cast<float>(seg) /
+                                                    static_cast<float>(kCCRingSegments)) * 6.28318530718f;
+                                const float px = ax + std::cos(ang) * kCCRingRadius;
+                                const float pz = az + std::sin(ang) * kCCRingRadius;
+                                const float py = terrain.SampleHeight(px, pz) + 0.05f;
+                                ring_ok = project_to_screen(px, py, pz, ring_pts[seg]);
+                            }
+                            if (ring_ok) {
+                                const float pulse = 0.75f + 0.25f *
+                                    std::sin(static_cast<float>(now * 10.0));
+                                ol->AddConvexPolyFilled(ring_pts, kCCRingSegments, MulAlpha(ring_col, 0.20f));
+                                ol->AddPolyline(ring_pts, kCCRingSegments, MulAlpha(ring_col, pulse),
+                                                 ImDrawFlags_Closed, 3.0f);
+                            }
+                        }
+                        for (const auto& key : expired_cc_keys) {
+                            active_cc_by_actor.erase(key);
+                        }
+                    }
                 }
 
                 // Particles render inside pipeline->End() forward-pass callback above.
@@ -6865,6 +7211,18 @@ int main() {
                 // Left-click: select closest actor within 55 px of cursor.
                 // ms_lmb_click is set by the orbit section above: true for one
                 // frame when LMB is pressed.
+                //
+                // explicit_attack_click_confirmed: set inside the block below
+                // when this frame's click just (re)confirmed combat_intent's
+                // target (not a stale target from an earlier click, not a
+                // dialog-NPC click). Declared at this outer scope, not inside
+                // the nested `{ }` below, because the consolidated
+                // combat_intent.Update() call (auto-attack section further
+                // down) needs to read it and lives in a sibling block — same
+                // scoping mismatch that caused the player_is_moving
+                // regression when it was locally re-declared post-hoc; see
+                // combat_intent.h's header comment.
+                bool explicit_attack_click_confirmed = false;
                 {
                     // Snapshot before this block's branches consume/clear ms_lmb_click,
                     // for the explicit-Attack handler below (Mouse1/"Attack" binding,
@@ -6986,62 +7344,41 @@ int main() {
                                 // F-key only now (see the F-key handler
                                 // below, mirrors the item pickup binding);
                                 // clicking one just clears any combat target.
-                                combat_target = 0;
-                                combat_approach_active = false;
+                                combat_intent.ClearTarget();
                             } else {
-                                combat_target    = best_id;
+                                combat_intent.SetTarget(best_id);
                                 this_click_confirmed_combat_target = true;
                             }
                         } else {
-                            combat_target    = 0;
-                            combat_approach_active = false;
+                            combat_intent.ClearTarget();
                         }
                     }
                     ms_lmb_click = false;  // consumed; reset for next frame
 
+                    // Pause-not-cancel: while the player is physically
+                    // moving, no attack packet gets sent from EITHER this
+                    // explicit-click path or the passive auto-attack resend
+                    // below — the swing itself pauses — but combat_target
+                    // (the "keep attacking this target" intent) is left
+                    // completely untouched either way, so the very next
+                    // stationary frame resumes automatically with no new
+                    // click needed. Same 0.02 threshold/position-delta
+                    // pattern already used for the Walk/Run locomotion
                     // Explicit Attack (Mouse1 press, this frame's click): if this
-                    // SAME click just (re)confirmed a combat target — not merely a
-                    // leftover combat_target from an earlier click — and it's in
-                    // range, force an immediate PAttackActor instead of waiting up
-                    // to the passive auto-attack resend's effective_interval_sec
-                    // below (kCombatDelayMs / AttackSpeedMult). Gating on this_click_confirmed_combat_target
-                    // (rather than combat_target != 0 alone) is what stops a click
-                    // on a dialog NPC (interact branch above, which never sets that
-                    // flag and leaves combat_target untouched) from attacking a
-                    // stale target from a previous combat click. Clicking the same
-                    // already-selected combat target again still sets the flag
-                    // (the combat-select branch always runs when best_id resolves
-                    // to a non-dialog actor, regardless of whether it matches the
-                    // previous combat_target), so re-attacking the current target
-                    // keeps working. Resets last_attack_sent so that resend doesn't
-                    // immediately duplicate this one. Out of range: sets
-                    // combat_approach_active — the ONLY place that latch is set
-                    // (see its declaration doc and player_controller.h) — so
-                    // PlayerController::Update starts walking the player into
-                    // range; the passive 0.85s auto-attack timer picks up the
-                    // attack once there.
-                    if (attack_click && this_click_confirmed_combat_target
-                        && combat_target != 0 && !local_guarding
-                        && !dodge_roll_active && conn.IsConnected()) {
-                        auto atk_it = world_actors.find(combat_target);
-                        if (atk_it != world_actors.end()) {
-                            float adx = atk_it->second.x - player.x;
-                            float adz = atk_it->second.z - player.z;
-                            float arange = player.derived.AttackRange;
-                            bool in_range = arange > 0.f && adx * adx + adz * adz <= arange * arange;
-                            if (in_range) {
-                                rco::net::Writer aw;
-                                aw.WriteU32(combat_target);
-                                conn.SendPacket(rco::net::kPAttackActor, aw);
-                                last_attack_sent = now;
-                            } else {
-                                // Out of range: this explicit Attack press is what
-                                // turns approach on — never the passive auto-attack
-                                // timer below, and never mere target selection.
-                                combat_approach_active = true;
-                            }
-                        }
-                    }
+                    // SAME click just (re)confirmed combat_intent's target — not
+                    // merely a leftover target from an earlier click — record it
+                    // so the consolidated combat_intent.Update() call below (the
+                    // single place that now decides range/movement/send for
+                    // BOTH the explicit click and the passive resend) treats
+                    // this as an explicit attack this frame. Gating on
+                    // this_click_confirmed_combat_target (rather than
+                    // combat_intent.Target() != 0 alone) is what stops a click
+                    // on a dialog NPC (interact branch above, which never sets
+                    // that flag and leaves the target untouched) from attacking
+                    // a stale target from a previous combat click.
+                    explicit_attack_click_confirmed = attack_click && this_click_confirmed_combat_target
+                        && combat_intent.Target() != 0 && !local_guarding
+                        && !dodge_roll_active && conn.IsConnected();
                 }
 
                 // ---- Tab: cycle to nearest hostile actor ----
@@ -7055,7 +7392,7 @@ int main() {
                         bool  found_after_current = false;
                         // Two-pass: prefer actor after current target in list order,
                         // fall back to globally closest.
-                        bool  past_current = (combat_target == 0);
+                        bool  past_current = (combat_intent.Target() == 0);
                         for (auto& [rid, e] : world_actors) {
                             if (e.actor_type == 2) continue; // skip dialog-only NPCs
                             glm::vec4 clip = proj * view * glm::vec4(e.x, e.y+1.f, e.z, 1.f);
@@ -7063,7 +7400,7 @@ int main() {
                             float sx = (clip.x/clip.w*0.5f+0.5f)*sw - sw*0.5f;
                             float sy = (1.f-clip.y/clip.w*0.5f-0.5f)*sh - sh*0.5f;
                             float d  = sx*sx + sy*sy;
-                            if (rid == combat_target) { past_current = true; continue; }
+                            if (rid == combat_intent.Target()) { past_current = true; continue; }
                             if (past_current && d < best) {
                                 best = d; best_id = rid; found_after_current = true;
                             }
@@ -7072,46 +7409,51 @@ int main() {
                             for (auto& [rid, e] : world_actors) {
                                 if (e.actor_type == 2) continue;
                                 glm::vec4 clip = proj * view * glm::vec4(e.x, e.y+1.f, e.z, 1.f);
-                                if (clip.w <= 0.f || rid == combat_target) continue;
+                                if (clip.w <= 0.f || rid == combat_intent.Target()) continue;
                                 float sx = (clip.x/clip.w*0.5f+0.5f)*sw - sw*0.5f;
                                 float sy = (1.f-clip.y/clip.w*0.5f-0.5f)*sh - sh*0.5f;
                                 float d  = sx*sx + sy*sy;
                                 if (d < best) { best = d; best_id = rid; }
                             }
                         }
-                        if (best_id) combat_target = best_id;
+                        if (best_id) combat_intent.SetTarget(best_id);
                     }
                     tab_prev = tab_cur;
                 }
 
-                // Auto-attack: send PAttackActor while target is selected, at the
-                // SAME effective cadence the server's cooldown gate actually
-                // enforces (combat_basic.go:42-54), not a fixed interval — a
-                // fixed client timer would under-utilize AttackSpeedMult for any
-                // character with DEX invested (server would already accept
-                // faster resends than the client was bothering to send).
-                //
-                // WARNING: kCombatDelayMs MUST stay in sync with server's
-                // CombatDelay (server/internal/world/combat.go:7) — same
-                // "must stay in sync" contract already used for derived_stats.h
-                // (see that file's header comment) and its formula constants.
-                constexpr float kCombatDelayMs = 800.0f;
-                float atk_speed = player.derived.AttackSpeedMult;
-                if (atk_speed <= 0.0f) atk_speed = 1.0f;
-                // Same formula as combat_basic.go:50's effectiveDelay, just in
-                // seconds (client's `now`/last_attack_sent are glfwGetTime()
-                // seconds) instead of the server's milliseconds.
-                double effective_interval_sec =
-                    static_cast<double>((kCombatDelayMs / 1000.0f) / atk_speed);
-                if (combat_target && !player_dead && conn.IsConnected()
-                    && !skill_loadout_open
-                    && !local_guarding
-                    && !dodge_roll_active
-                    && now - last_attack_sent >= effective_interval_sec) {
-                    rco::net::Writer aw;
-                    aw.WriteU32(combat_target);
-                    conn.SendPacket(rco::net::kPAttackActor, aw);
-                    last_attack_sent = now;
+                // Auto-attack + explicit-click attack, unified: one call into
+                // CombatIntentController::Update() per frame decides range,
+                // movement-pause, the out-of-range cancel timeout, and
+                // whether to send PAttackActor — for BOTH the explicit click
+                // (explicit_attack_click_confirmed, set above) and the
+                // passive resend. See combat_intent.h for the full contract;
+                // this replaces what used to be two independently-maintained
+                // copies of the same range/movement logic (the split that
+                // caused the movement-pause regression this round fixes).
+                {
+                    rco::gameplay::CombatIntentController::Input ci_in;
+                    ci_in.now                = now;
+                    ci_in.player_pos         = {player.x, player.z};
+                    ci_in.player_dead        = player_dead;
+                    ci_in.conn_connected     = conn.IsConnected();
+                    ci_in.blocked            = skill_loadout_open || local_guarding || dodge_roll_active;
+                    ci_in.attack_range       = player.derived.AttackRange;
+                    ci_in.attack_speed_mult  = player.derived.AttackSpeedMult;
+                    ci_in.explicit_attack_click = explicit_attack_click_confirmed;
+                    if (combat_intent.Target() != 0) {
+                        auto ci_it = world_actors.find(combat_intent.Target());
+                        if (ci_it != world_actors.end()) {
+                            ci_in.target_exists = true;
+                            ci_in.target_pos    = {ci_it->second.x, ci_it->second.z};
+                        }
+                    }
+
+                    auto ci_result = combat_intent.Update(ci_in);
+                    if (ci_result.send_attack_packet) {
+                        rco::net::Writer aw;
+                        aw.WriteU32(combat_intent.Target());
+                        conn.SendPacket(rco::net::kPAttackActor, aw);
+                    }
                 }
             }
         }
@@ -7275,7 +7617,7 @@ int main() {
                         }
                         if (!has_ability) continue;
 
-                        if (combat_target == 0) {
+                        if (combat_intent.Target() == 0) {
                             static double s_last_no_target_log_at = -9999.0;
                             if (now - s_last_no_target_log_at >= 0.6) {
                                 std::fprintf(stderr, "[cast] no target selected\n");
@@ -7285,7 +7627,7 @@ int main() {
                             continue;
                         }
 
-                        send_cast_skill_slot(static_cast<uint8_t>(i), combat_target);
+                        send_cast_skill_slot(static_cast<uint8_t>(i), combat_intent.Target());
                     }
                 }
 
@@ -7319,9 +7661,8 @@ int main() {
                         controls_ui.SetVisible(false);
                         skill_loadout_screen.SetOpen(false);
                         quest_log.journal_visible = false;
-                    } else if (combat_target != 0) {
-                        combat_target = 0;
-                        combat_approach_active = false;
+                    } else if (combat_intent.Target() != 0) {
+                        combat_intent.ClearTarget();
                     }
                 }
 
@@ -7511,8 +7852,8 @@ int main() {
                 }
 
                 // Target indicator + HP bar over selected actor.
-                if (combat_target) {
-                    auto it = world_actors.find(combat_target);
+                if (combat_intent.Target()) {
+                    auto it = world_actors.find(combat_intent.Target());
                     if (it != world_actors.end()) {
                         auto& e = it->second;
                         float ey = e.y + 1.9f;
@@ -7541,8 +7882,7 @@ int main() {
                                               IM_COL32(0, 200, 0, 200));
                         }
                     } else {
-                        combat_target = 0; // actor gone
-                        combat_approach_active = false;
+                        combat_intent.ClearTarget(); // actor gone
                     }
                 }
 
@@ -7553,8 +7893,8 @@ int main() {
 
                 // Spell bar — compute distance to target for range checks.
                 float target_dist_for_spells = 0.f;
-                if (combat_target != 0) {
-                    auto tit2 = world_actors.find(combat_target);
+                if (combat_intent.Target() != 0) {
+                    auto tit2 = world_actors.find(combat_intent.Target());
                     if (tit2 != world_actors.end()) {
                         float ddx = tit2->second.x - player.x;
                         float ddz = tit2->second.z - player.z;
@@ -7562,7 +7902,7 @@ int main() {
                     }
                 }
                 spellbar.Render(window.Width(), window.Height(),
-                                combat_target, static_cast<float>(now),
+                                combat_intent.Target(), static_cast<float>(now),
                                 player_dead || skill_loadout_screen.IsOpen(),
                                 player.mana, target_dist_for_spells);
                 skill_hotbar.Render(window.Width(), window.Height());
@@ -7591,8 +7931,8 @@ int main() {
                                     IM_COL32(220, 220, 255, 120), 1.5f);
                     // AoE preview around target (yellow).
                     if (spellbar.hovered_aoe_radius > 0.f &&
-                        spellbar.hovered_aoe_type == 1 && combat_target != 0) {
-                        auto tit3 = world_actors.find(combat_target);
+                        spellbar.hovered_aoe_type == 1 && combat_intent.Target() != 0) {
+                        auto tit3 = world_actors.find(combat_intent.Target());
                         if (tit3 != world_actors.end()) {
                             float ty = terrain.SampleHeight(tit3->second.x, tit3->second.z);
                             DrawWorldCircle(tit3->second.x, tit3->second.z, ty,

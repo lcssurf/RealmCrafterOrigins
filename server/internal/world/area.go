@@ -348,6 +348,99 @@ func (a *Area) CheckTrigger(actor *Actor) *Trigger {
 	return nil
 }
 
+// TriggerScriptByID returns the Script field of the Trigger with the given
+// ID, or "" if not found — generic scripting Fase 2, lets
+// Registry.DispatchTriggerEnter/Exit resolve the entity-specific script
+// name without needing the whole Trigger struct threaded through the hook.
+func (a *Area) TriggerScriptByID(id int) string {
+	a.Mu.RLock()
+	defer a.Mu.RUnlock()
+	for i := range a.Triggers {
+		if a.Triggers[i].ID == id {
+			return a.Triggers[i].Script
+		}
+	}
+	return ""
+}
+
+// tickAreaTriggers is the real enter/exit dispatcher for Trigger volumes —
+// generic scripting Fase 1 (see docs/TECH_DEBT.md). Unlike CheckTrigger
+// above (dead code: defined but never called from production — confirmed
+// by grep before this round), this actually runs every tickAI pass
+// (~100ms, same cadence as tickStatusEffects) and fires trigger_enter/
+// trigger_exit for every transition, on every live trigger volume — not
+// just "the first one containing the actor right now".
+//
+// Players only (act.IsNPC skipped) — mirrors area_enter/area_exit
+// (dispatched from net/client.go on login/portal), which are also
+// player-only; NPCs don't run player-facing scripts on zone/trigger
+// transitions in this design.
+func (a *Area) tickAreaTriggers() {
+	a.Mu.RLock()
+	actors := make([]*Actor, 0, len(a.actors))
+	for _, act := range a.actors {
+		if !act.IsNPC {
+			actors = append(actors, act)
+		}
+	}
+	a.Mu.RUnlock()
+	if len(a.Triggers) == 0 || len(actors) == 0 {
+		return
+	}
+
+	for _, act := range actors {
+		act.Mu.Lock()
+		x, z := act.X, act.Z
+		act.Mu.Unlock()
+
+		stillInside := make(map[int]bool, len(a.Triggers))
+		var entered []int
+		for i := range a.Triggers {
+			t := &a.Triggers[i]
+			dx := x - t.X
+			dz := z - t.Z
+			if dx*dx+dz*dz > t.Radius*t.Radius {
+				continue
+			}
+			stillInside[t.ID] = true
+
+			act.Mu.Lock()
+			already := act.InsideTriggers[t.ID]
+			act.Mu.Unlock()
+			if already {
+				continue
+			}
+			if t.TriggerOnce {
+				if t.fired == nil {
+					t.fired = make(map[uint32]bool)
+				}
+				if t.fired[act.RuntimeID] {
+					continue // already fired for this actor, ever — never re-enters
+				}
+				t.fired[act.RuntimeID] = true
+			}
+			entered = append(entered, t.ID)
+		}
+
+		act.Mu.Lock()
+		var exited []int
+		for id := range act.InsideTriggers {
+			if !stillInside[id] {
+				exited = append(exited, id)
+			}
+		}
+		act.InsideTriggers = stillInside
+		act.Mu.Unlock()
+
+		for _, id := range entered {
+			runZoneTriggerHook(a, act, id, true)
+		}
+		for _, id := range exited {
+			runZoneTriggerHook(a, act, id, false)
+		}
+	}
+}
+
 // NewArea creates an empty Area.
 func NewArea(name string) *Area {
 	return &Area{
@@ -604,7 +697,7 @@ func leashNPC(npc *Actor, a *Area) {
 	npc.AIMode = AIReturn
 	npc.WaypointPauseUntil = 0
 	npc.Mu.Unlock()
-	BroadcastAnimate(a, npc, "Walk")
+	BroadcastAnimate(a, npc, ComposeWeaponAction(npc, "Walk"))
 }
 
 // pickWanderTarget selects a new random XZ destination within the NPC's wander
@@ -648,6 +741,8 @@ func (a *Area) tickAI(tickSec float32) {
 	now := time.Now().UnixMilli()
 	a.tickDropDespawn(now)
 	a.tickScheduledCalls(now)
+	a.tickStatusEffects(now)
+	a.tickAreaTriggers()
 
 	// Snapshot live NPCs.
 	a.Mu.RLock()
@@ -713,7 +808,7 @@ func (a *Area) tickAI(tickSec float32) {
 				npc.X = npc.WanderTargetX
 				npc.Z = npc.WanderTargetZ
 				broadcastNPCPosition(a, npc)
-				BroadcastAnimate(a, npc, "Idle")
+				BroadcastAnimate(a, npc, npc.IdleAction())
 				npc.Mu.Lock()
 				pauseMs := npc.WanderPauseMinMs
 				if npc.WanderPauseMaxMs > npc.WanderPauseMinMs {
@@ -743,7 +838,7 @@ func (a *Area) tickAI(tickSec float32) {
 				}
 				npc.Yaw = yaw
 				broadcastNPCPosition(a, npc)
-				BroadcastAnimate(a, npc, "Walk")
+				BroadcastAnimate(a, npc, ComposeWeaponAction(npc, "Walk"))
 			}
 
 		case AIWanderPause:
@@ -802,7 +897,7 @@ func (a *Area) tickAI(tickSec float32) {
 					npc.AIMode = AIWait
 				}
 				npc.Mu.Unlock()
-				BroadcastAnimate(a, npc, "Idle")
+				BroadcastAnimate(a, npc, npc.IdleAction())
 			} else {
 				dx2 := wp.X - npc.X
 				dz2 := wp.Z - npc.Z
@@ -822,7 +917,7 @@ func (a *Area) tickAI(tickSec float32) {
 				}
 				npc.Yaw = yaw
 				broadcastNPCPosition(a, npc)
-				BroadcastAnimate(a, npc, "Walk")
+				BroadcastAnimate(a, npc, ComposeWeaponAction(npc, "Walk"))
 			}
 
 		case AIPatrolPause:
@@ -877,11 +972,11 @@ func (a *Area) tickAI(tickSec float32) {
 				npc.Mu.Lock()
 				postChaseMode(npc)
 				npc.Mu.Unlock()
-				BroadcastAnimate(a, npc, "Idle")
+				BroadcastAnimate(a, npc, npc.IdleAction())
 			} else {
 				moveNPCToPoint(npc, npc.SpawnX, npc.SpawnZ, a, tickSec)
 				broadcastNPCPosition(a, npc)
-				BroadcastAnimate(a, npc, "Walk")
+				BroadcastAnimate(a, npc, ComposeWeaponAction(npc, "Walk"))
 			}
 
 		case AIChase:
@@ -889,7 +984,7 @@ func (a *Area) tickAI(tickSec float32) {
 				npc.Mu.Lock()
 				endChase(npc)
 				npc.Mu.Unlock()
-				BroadcastAnimate(a, npc, "Idle")
+				BroadcastAnimate(a, npc, npc.IdleAction())
 				continue
 			}
 
@@ -898,7 +993,7 @@ func (a *Area) tickAI(tickSec float32) {
 				npc.Mu.Lock()
 				endChase(npc)
 				npc.Mu.Unlock()
-				BroadcastAnimate(a, npc, "Idle")
+				BroadcastAnimate(a, npc, npc.IdleAction())
 				continue
 			}
 			target.Mu.Lock()
@@ -908,7 +1003,7 @@ func (a *Area) tickAI(tickSec float32) {
 				npc.Mu.Lock()
 				endChase(npc)
 				npc.Mu.Unlock()
-				BroadcastAnimate(a, npc, "Idle")
+				BroadcastAnimate(a, npc, npc.IdleAction())
 				continue
 			}
 
@@ -937,7 +1032,7 @@ func (a *Area) tickAI(tickSec float32) {
 						npc.Mu.Lock()
 						endChase(npc)
 						npc.Mu.Unlock()
-						BroadcastAnimate(a, npc, "Idle")
+						BroadcastAnimate(a, npc, npc.IdleAction())
 					}
 					continue
 				}
@@ -954,14 +1049,14 @@ func (a *Area) tickAI(tickSec float32) {
 						npc.Mu.Lock()
 						endChase(npc)
 						npc.Mu.Unlock()
-						BroadcastAnimate(a, npc, "Idle")
+						BroadcastAnimate(a, npc, npc.IdleAction())
 					}
 				}
 			} else {
 				// Not in attack range — step toward the target.
 				moveNPCToward(npc, target, a, tickSec)
 				broadcastNPCPosition(a, npc)
-				BroadcastAnimate(a, npc, "Walk")
+				BroadcastAnimate(a, npc, ComposeWeaponAction(npc, "Walk"))
 			}
 		}
 	}
@@ -1396,6 +1491,104 @@ func (a *Area) tickScheduledCalls(now int64) {
 	}
 }
 
+// tickStatusEffects expires due entries from every actor's ActiveEffects
+// (Fase 1: CC only — stun/root/silence/slow, see status_effects.go/actor.go).
+// Mirrors tickDropDespawn/tickScheduledCalls: snapshot actors under the
+// area lock, then do the per-actor collect-under-actor-lock/filter/
+// broadcast work outside it. Runs every ~100ms via tickAI, same cadence as
+// PendingImpacts resolution — no new ticker.
+func (a *Area) tickStatusEffects(now int64) {
+	a.Mu.RLock()
+	actors := make([]*Actor, 0, len(a.actors))
+	for _, act := range a.actors {
+		actors = append(actors, act)
+	}
+	a.Mu.RUnlock()
+
+	for _, act := range actors {
+		act.Mu.Lock()
+		if len(act.ActiveEffects) == 0 {
+			act.Mu.Unlock()
+			continue
+		}
+		// Fase 3 (DoT/HoT): dead actors don't tick — their ActiveEffects
+		// gets cleared on respawn anyway (client.go/area.go respawn
+		// handlers), and a corpse ticking further "damage" is meaningless.
+		dead := act.DeadAt > 0
+		var ticks []statusEffectTickWork
+		if !dead {
+			// Tick detection BEFORE the expire/remaining split below, so an
+			// effect ticks on the SAME pass it expires (duration_ms=5000,
+			// tick_interval_ms=1000 → ticks at 1/2/3/4/5s, 5 ticks total,
+			// the 5th landing exactly at expiry — not 4). Mutates
+			// LastTickAt in place on act.ActiveEffects; the split loop
+			// right after reads the same (now-updated) slice.
+			for i := range act.ActiveEffects {
+				eff := &act.ActiveEffects[i]
+				if eff.TickIntervalMs <= 0 {
+					continue
+				}
+				if now-eff.LastTickAt < eff.TickIntervalMs {
+					continue
+				}
+				eff.LastTickAt = now
+				ticks = append(ticks, statusEffectTickWork{
+					sourceRID: eff.SourceRID,
+					dmgMin:    eff.TickDamageMin,
+					dmgMax:    eff.TickDamageMax,
+					isHeal:    eff.IsHeal,
+				})
+			}
+		}
+		var expired []ActiveStatusEffect
+		var remaining []ActiveStatusEffect
+		for _, eff := range act.ActiveEffects {
+			if now >= eff.ExpiresAt {
+				expired = append(expired, eff)
+			} else {
+				remaining = append(remaining, eff)
+			}
+		}
+		act.ActiveEffects = remaining
+		act.Mu.Unlock()
+
+		// Applied AFTER releasing act.Mu — ApplyDamage/ApplyHeal (spell.go)
+		// lock act.Mu themselves; holding it here would deadlock. A tick
+		// can kill act (DoT), handled the same way any other lethal hit is
+		// (see applyStatusEffectTick).
+		for _, t := range ticks {
+			applyStatusEffectTick(a, act, t.sourceRID, t.dmgMin, t.dmgMax, t.isHeal)
+		}
+
+		statModExpired := false
+		for _, eff := range expired {
+			if eff.Kind == StatusKindBuff || eff.Kind == StatusKindDebuff {
+				statModExpired = true
+				break
+			}
+		}
+
+		// Order matters here too (same bug/fix as TryApplyStatMod,
+		// status_effects.go): Derived MUST be recomputed BEFORE
+		// BroadcastStatusEffectDelta fires — that call is what triggers
+		// handleStatusEffectBroadcast's PFullStats resend, which reads
+		// act.Derived at the moment it runs. Recomputing first (Fase 2
+		// cache invalidation: actor.Derived still has the now-expired
+		// effect's Flat/Pct baked in until this runs) means the resend
+		// below sees the POST-expiry value. CC expiry needs no recompute
+		// (IsStunned/IsRooted/etc. already re-scan ActiveEffects live —
+		// see actor.go) — statModExpired stays false for a pure-CC batch.
+		if statModExpired {
+			RecomputeDerivedStatsFast(act)
+		}
+
+		for _, eff := range expired {
+			tmpl, _ := resolveStatusEffectTemplate(eff.TemplateID)
+			BroadcastStatusEffectDelta(a, act.RuntimeID, eff, tmpl, false, now)
+		}
+	}
+}
+
 // respawnNPC resets an NPC and adds it back to the area.
 func (a *Area) respawnNPC(npc *Actor) {
 	npc.Mu.Lock()
@@ -1411,13 +1604,26 @@ func (a *Area) respawnNPC(npc *Actor) {
 	npc.ParryUntil = 0
 	npc.DodgeUntil = 0
 	npc.PendingImpacts = nil
+	npc.ActiveEffects = nil
 	npc.SpecialChainCount = 0
 	npc.AbilityCooldowns = make(map[int]int64)
 	postChaseMode(npc)
 	npc.Mu.Unlock()
 
+	// Fase 2 cache invalidation: whatever was active before death (a stat
+	// buff/debuff bakes its Flat/Pct into npc.Derived — unlike CC, which
+	// re-scans ActiveEffects live) must not survive into the fresh spawn's
+	// cached Derived. ActiveEffects is already cleared above; this just
+	// makes the cache agree.
+	RecomputeDerivedStatsFast(npc)
+
 	a.AddActor(npc)
 
 	// Broadcast PNewActor so clients see the NPC again.
 	a.BroadcastAll(buildFrame(pNewActor, NewActorPayload(npc)))
+
+	// Generic scripting Fase 2 — same "spawn script" the initial startup
+	// spawn fires (main.go, DispatchNPCSpawn called directly there), via
+	// the hook indirection since we're deep in the tick loop here.
+	runNPCSpawnHook(a, npc)
 }

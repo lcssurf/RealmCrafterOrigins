@@ -105,6 +105,7 @@ type Registry struct {
 	w      *world.World
 	quest  QuestBridge
 	inventory InventoryBridge
+	globals GlobalsBridge
 	ctx    callCtx
 }
 
@@ -253,6 +254,42 @@ func (r *Registry) safeCall(fn *lua.LFunction, args ...lua.LValue) error {
 	return r.L.CallByParam(lua.P{Fn: fn, NRet: 0, Protect: true}, args...)
 }
 
+// dispatchEntityScript is the shared "specific script, else generic
+// fallback" firing logic behind every fire-and-forget entity dispatch
+// (InteractNPC/HandleChoice/ObjectInteract/HandleObjectChoice/
+// ItemUseScript/DispatchPlayerAction/DispatchAreaEnter/DispatchAreaExit/
+// DispatchTriggerEnter/DispatchTriggerExit/DispatchAbilityCast/
+// DispatchNPCSpawn) — generic scripting Fase 2, see docs/TECH_DEBT.md.
+// Eliminates the identical "look up r.events[name], range, safeCall, log
+// on error" block that was copy-pasted across all of them.
+//
+// specificEvent, when non-empty (the entity has its own script configured
+// — e.g. ability_templates.on_cast_script, npc_spawns.spawn_script), is
+// fired ALONE, in place of fallbackEvent — NOT in addition to it. An
+// entity with no specific script configured (specificEvent=="", the
+// default/legacy case for every entity that predates this field) always
+// falls through to fallbackEvent, exactly reproducing today's behavior —
+// see docs/TECH_DEBT.md's "confirmed: zero behavior change" note.
+//
+// Caller must already hold r.mu and have set up r.ctx if the handlers need
+// area/caster/pendingDialog context (same pre-condition every refactored
+// call site already had before this helper existed).
+func (r *Registry) dispatchEntityScript(specificEvent, fallbackEvent, logLabel string, args ...lua.LValue) {
+	eventName := fallbackEvent
+	if specificEvent != "" {
+		eventName = specificEvent
+	}
+	handlers, ok := r.events[eventName]
+	if !ok {
+		return
+	}
+	for _, fn := range handlers {
+		if err := r.safeCall(fn, args...); err != nil {
+			log.Printf("scripting: %s handler: %v", logLabel, err)
+		}
+	}
+}
+
 // nowMs returns current time in unix milliseconds.
 func nowMs() int64 { return time.Now().UnixMilli() }
 
@@ -275,11 +312,8 @@ func (r *Registry) InteractNPC(player, npc *world.Actor, area *world.Area) *Dial
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ctx = callCtx{area: area, caster: player}
-	for _, fn := range r.events["npc_interact"] {
-		if err := r.safeCall(fn, lua.LNumber(player.RuntimeID), lua.LNumber(npc.RuntimeID)); err != nil {
-			log.Printf("scripting: npc_interact: %v", err)
-		}
-	}
+	r.dispatchEntityScript("", "npc_interact", "npc_interact",
+		lua.LNumber(player.RuntimeID), lua.LNumber(npc.RuntimeID))
 	pending := r.ctx.pendingDialog
 	r.ctx = callCtx{}
 	return pending
@@ -290,11 +324,8 @@ func (r *Registry) HandleChoice(player, npc *world.Actor, area *world.Area, choi
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ctx = callCtx{area: area, caster: player}
-	for _, fn := range r.events["npc_choice"] {
-		if err := r.safeCall(fn, lua.LNumber(player.RuntimeID), lua.LNumber(npc.RuntimeID), lua.LNumber(choice)); err != nil {
-			log.Printf("scripting: npc_choice: %v", err)
-		}
-	}
+	r.dispatchEntityScript("", "npc_choice", "npc_choice",
+		lua.LNumber(player.RuntimeID), lua.LNumber(npc.RuntimeID), lua.LNumber(choice))
 	pending := r.ctx.pendingDialog
 	r.ctx = callCtx{}
 	return pending
@@ -307,11 +338,8 @@ func (r *Registry) ObjectInteract(player *world.Actor, objectID int, area *world
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ctx = callCtx{area: area, caster: player}
-	for _, fn := range r.events["object_interact"] {
-		if err := r.safeCall(fn, lua.LNumber(player.RuntimeID), lua.LNumber(objectID)); err != nil {
-			log.Printf("scripting: object_interact: %v", err)
-		}
-	}
+	r.dispatchEntityScript("", "object_interact", "object_interact",
+		lua.LNumber(player.RuntimeID), lua.LNumber(objectID))
 	pending := r.ctx.pendingDialog
 	r.ctx = callCtx{}
 	return pending
@@ -323,11 +351,8 @@ func (r *Registry) HandleObjectChoice(player *world.Actor, objectID int, area *w
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ctx = callCtx{area: area, caster: player}
-	for _, fn := range r.events["object_choice"] {
-		if err := r.safeCall(fn, lua.LNumber(player.RuntimeID), lua.LNumber(objectID), lua.LNumber(choice)); err != nil {
-			log.Printf("scripting: object_choice: %v", err)
-		}
-	}
+	r.dispatchEntityScript("", "object_choice", "object_choice",
+		lua.LNumber(player.RuntimeID), lua.LNumber(objectID), lua.LNumber(choice))
 	pending := r.ctx.pendingDialog
 	r.ctx = callCtx{}
 	return pending
@@ -347,11 +372,29 @@ func (r *Registry) ItemUseScript(player *world.Actor, itemID uint16, area *world
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ctx = callCtx{area: area, caster: player}
-	for _, fn := range r.events["item_use_script"] {
-		if err := r.safeCall(fn, lua.LNumber(player.RuntimeID), lua.LNumber(itemID)); err != nil {
-			log.Printf("scripting: item_use_script: %v", err)
-		}
-	}
+	r.dispatchEntityScript("", "item_use_script", "item_use_script",
+		lua.LNumber(player.RuntimeID), lua.LNumber(itemID))
+	r.ctx = callCtx{}
+}
+
+// ItemUseScriptOnTarget is the dual-mode "item used ON another entity"
+// path (generic scripting Fase 2, item 2) — the RC-style tool-used-on-a-
+// resource-node case (harvesting being the motivating example). Distinct
+// from ItemUseScript (no target) rather than a variant of it: an item
+// meant to be used standalone (a scroll, a key) and an item meant to be
+// aimed at something (a pickaxe) are different interactions with different
+// expected Lua signatures — merging them behind one event with an
+// optional/zero targetID would force every handler to branch on whether
+// target_id==0 meant "no target" or "targeted actor 0" (impossible RID,
+// but still a footgun). scriptOnTarget is item_templates.script_on_target,
+// resolved by the caller (net/client.go's handleUseItem via
+// db.UseItemResult) — scripting package doesn't import db.
+func (r *Registry) ItemUseScriptOnTarget(player *world.Actor, itemID uint16, targetID uint32, scriptOnTarget string, area *world.Area) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ctx = callCtx{area: area, caster: player}
+	r.dispatchEntityScript(scriptOnTarget, "item_use_on_target", "item_use_on_target",
+		lua.LNumber(player.RuntimeID), lua.LNumber(itemID), lua.LNumber(targetID))
 	r.ctx = callCtx{}
 }
 
@@ -370,6 +413,33 @@ func (r *Registry) SetInventoryBridge(inv InventoryBridge) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.inventory = inv
+}
+
+// GlobalsBridge is implemented by the game server runtime and injected into
+// scripting so Lua can persist free-form content/script data without
+// importing net/db packages. Mirrors QuestBridge/InventoryBridge.
+//
+// This is explicitly a CONTENT/SCRIPT data store (quest flags, one-off
+// world state, "has this player seen the intro cutscene" type things) —
+// NEVER for real combat stats. Combat-relevant numbers (HP, Derived, item
+// attributes, etc.) stay in their typed structs/columns, where the type
+// system and the rest of the combat pipeline can actually reason about
+// them; a stringly-typed KV store has no place computing damage. See
+// docs/TECH_DEBT.md, generic scripting Fase 1.
+type GlobalsBridge interface {
+	SetActorGlobal(playerRID uint32, key, value string) error
+	GetActorGlobal(playerRID uint32, key string) (string, error)
+	SetWorldGlobal(areaName, key, value string) error
+	GetWorldGlobal(areaName, key string) (string, error)
+}
+
+// SetGlobalsBridge injects runtime key-value callbacks used by the Lua
+// Actor.set_global/get_global and World.set_global/get_global API. Mirrors
+// SetQuestBridge/SetInventoryBridge.
+func (r *Registry) SetGlobalsBridge(g GlobalsBridge) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.globals = g
 }
 
 // PatchAoEFromDB overlays aoe_type and aoe_radius from DB rows onto in-memory SpellDefs.
@@ -417,19 +487,118 @@ func (r *Registry) PatchRuntimeAbilityFromDB(rows []SpellRuntimeAbilityRow) {
 func (r *Registry) DispatchPlayerAction(actor *world.Actor, action string, state uint8) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.dispatchEntityScript("", "player_action", "player_action",
+		lua.LNumber(actor.RuntimeID), lua.LString(action), lua.LNumber(state))
+}
 
-	handlers, ok := r.events["player_action"]
+// DispatchAreaEnter fires the "area_enter" scripting event — generic
+// scripting Fase 1 (see docs/TECH_DEBT.md). Called from net/client.go on
+// login and after a portal completes. Mirrors DispatchPlayerAction exactly.
+//
+//	Event.on("area_enter", function(player_id, area_name) ... end)
+func (r *Registry) DispatchAreaEnter(actor *world.Actor, areaName string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dispatchEntityScript("", "area_enter", "area_enter",
+		lua.LNumber(actor.RuntimeID), lua.LString(areaName))
+}
+
+// DispatchAreaExit fires the "area_exit" scripting event — see
+// DispatchAreaEnter. Called from net/client.go BEFORE the actor leaves the
+// old area (portal only — there's no "exit" on login, nothing to exit
+// from).
+//
+//	Event.on("area_exit", function(player_id, area_name) ... end)
+func (r *Registry) DispatchAreaExit(actor *world.Actor, areaName string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dispatchEntityScript("", "area_exit", "area_exit",
+		lua.LNumber(actor.RuntimeID), lua.LString(areaName))
+}
+
+// DispatchTriggerEnter fires the "trigger_enter" scripting event — generic
+// scripting Fase 1/2. Called from world.SetZoneTriggerHook's implementation
+// (net/zone_trigger_bridge.go), itself driven by Area.tickAreaTriggers.
+//
+// Fase 2 update: now DOES consult the trigger's own Trigger.Script field
+// (area_triggers table, GUE-authorable since before this round — see
+// Area.TriggerScriptByID) as the specific-script source — a trigger with
+// Script set fires THAT event alone instead of the generic "trigger_enter"
+// fallback. Every trigger authored before this round has Script=="" (the
+// field existed but was never consumed until now), so this is a pure
+// capability addition, not a behavior change for existing content.
+//
+//	Event.on("trigger_enter", function(player_id, trigger_id) ... end)
+func (r *Registry) DispatchTriggerEnter(actor *world.Actor, triggerID int, area *world.Area) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	specific := ""
+	if area != nil {
+		specific = area.TriggerScriptByID(triggerID)
+	}
+	r.dispatchEntityScript(specific, "trigger_enter", "trigger_enter",
+		lua.LNumber(actor.RuntimeID), lua.LNumber(triggerID))
+}
+
+// DispatchTriggerExit fires the "trigger_exit" scripting event — see
+// DispatchTriggerEnter.
+//
+//	Event.on("trigger_exit", function(player_id, trigger_id) ... end)
+func (r *Registry) DispatchTriggerExit(actor *world.Actor, triggerID int, area *world.Area) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	specific := ""
+	if area != nil {
+		specific = area.TriggerScriptByID(triggerID)
+	}
+	r.dispatchEntityScript(specific, "trigger_exit", "trigger_exit",
+		lua.LNumber(actor.RuntimeID), lua.LNumber(triggerID))
+}
+
+// DispatchNPCSpawn fires the "npc_spawn" scripting event — generic
+// scripting Fase 2 (see docs/TECH_DEBT.md, item 4). npc.SpawnScript
+// (copied from npc_spawns.spawn_script at spawn time — main.go for the
+// initial startup spawn, respawnNPC/area.go via world.SetNPCSpawnHook for
+// every respawn) is the specific-script source: a resource-node spawn
+// point can set its own event name to initialize per-instance state
+// (durability, resource type) without a dedicated DB table per resource
+// type — the motivating harvesting use case.
+//
+//	Event.on("npc_spawn", function(npc_id) ... end)
+func (r *Registry) DispatchNPCSpawn(npc *world.Actor, area *world.Area) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ctx = callCtx{area: area}
+	r.dispatchEntityScript(npc.SpawnScript, "npc_spawn", "npc_spawn", lua.LNumber(npc.RuntimeID))
+	r.ctx = callCtx{}
+}
+
+// DispatchAbilityCast fires the "ability_cast" scripting event — generic
+// scripting Fase 2 (item 3). Called from world.SetAbilityCastHook's
+// implementation (net/ability_cast_bridge.go), itself driven by
+// tryStartCastByRIDAt (cast_intent.go) on every successful cast start
+// (player or NPC — same shared ability_templates row), AFTER the normal
+// damage/CC/status-effect resolution pipeline already handles the
+// ability's configured mechanical effects. ability_templates.on_cast_script
+// is the specific-script source — lets one ability have fully custom
+// behavior authored purely in Lua/GUE, no Go change required.
+//
+//	Event.on("ability_cast", function(caster_id, target_id, ability_id) ... end)
+func (r *Registry) DispatchAbilityCast(caster, target *world.Actor, abilityID int, area *world.Area) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ability, ok := world.GetAbilityTemplateByID(abilityID)
 	if !ok {
 		return
 	}
-	rid := lua.LNumber(actor.RuntimeID)
-	act := lua.LString(action)
-	st := lua.LNumber(state)
-	for _, fn := range handlers {
-		if err := r.safeCall(fn, rid, act, st); err != nil {
-			log.Printf("scripting: player_action handler: %v", err)
-		}
+	targetRID := uint32(0)
+	if target != nil {
+		targetRID = target.RuntimeID
 	}
+	r.ctx = callCtx{area: area, caster: caster}
+	r.dispatchEntityScript(ability.OnCastScript, "ability_cast", "ability_cast",
+		lua.LNumber(caster.RuntimeID), lua.LNumber(targetRID), lua.LNumber(abilityID))
+	r.ctx = callCtx{}
 }
 
 // DispatchPlayerBeforeCastIntent fires the "player_before_cast_intent" event.

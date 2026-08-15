@@ -155,7 +155,15 @@ func ProcessAttack(attacker, target *Actor) (damage int32, isCrit bool, onCooldo
 func BroadcastAttack(area *Area, attacker, target *Actor, damage int32, isCrit bool, result AttackResult) bool {
 	dmgType := uint8(0) // physical
 
-	BroadcastAnimate(area, attacker, "Attack")
+	// Weapon-specific composite action ("Attack_" + style, e.g.
+	// "Attack_sword_1h") when the equipped weapon has a BasicAttackAnimStyle
+	// — see ComposeWeaponAction (anim_weapon_style.go). BroadcastAnimate's
+	// own fallback cascade (combat_events.go, AnimFallbackParent + the
+	// textual heuristic) walks back to plain "Attack" if no Actor Def has a
+	// specific clip bound for the composite, so this is safe even before
+	// any Animation Vocabulary binding exists for a given style.
+	attackAction := ComposeWeaponAction(attacker, "Attack")
+	BroadcastAnimate(area, attacker, attackAction)
 
 	// "H" packet -> attacker (if player).
 	if !attacker.IsNPC {

@@ -108,6 +108,28 @@ type AbilityTemplate struct {
 	// IconPath: UI icon shown on the hotbar (migrateV53). "" = client keeps
 	// drawing the placeholder rect.
 	IconPath string
+	// StatusEffectTemplateID: FK into status_effect_templates — 0 = this
+	// ability applies no status effect. CCBaseChancePct: 0-100, the base
+	// chance (before attacker/defender stat scaling — see TryApplyCC,
+	// status_effects.go) that the effect actually lands. Fase 1 of
+	// Buffs/Debuffs/CC — see docs/TECH_DEBT.md.
+	StatusEffectTemplateID int
+	CCBaseChancePct        float32
+	// RequiredWeaponDimension: "melee"/"ranged"/"magic", or "" (default) for
+	// no restriction — every ability that existed before this field was
+	// added keeps working exactly as before (empty = unrestricted). When
+	// set, canActorStartAbilityNow (cast_intent.go) rejects the cast unless
+	// it matches the caster's CURRENTLY EQUIPPED weapon's dimension
+	// (actor.BasicAttackDim, server-authoritative — never trusts the
+	// client's hotbar). See docs/TECH_DEBT.md, weapon-vs-ability
+	// validation gap.
+	RequiredWeaponDimension string
+	// OnCastScript (generic scripting Fase 2) — the specific Lua event
+	// name fired when this ability starts casting, instead of the generic
+	// "ability_cast" fallback. "" (default) = no specific script, every
+	// ability that predates this field keeps behaving exactly as before.
+	// See Registry.DispatchAbilityCast.
+	OnCastScript string
 }
 
 // NPCAbilityLoadoutEntry maps NPCs/archetypes to ability templates and simple

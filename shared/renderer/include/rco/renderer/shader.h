@@ -52,6 +52,15 @@ public:
     void SetHandle(std::string uniform, uint64_t handle)                    const;
     void SetHandleArray(std::string uniform, std::span<const uint64_t> h)   const;
 
+    // True if `uniform` was found among GL_ACTIVE_UNIFORMS at link time.
+    // Useful to confirm a uniform actually made it into the linked program
+    // (e.g. after editing a .fs by hand) instead of guessing from silent
+    // no-op behavior — SetBool/SetInt et al. call glProgramUniform* with
+    // location -1 when a name isn't found, which GL defines as a silent no-op.
+    bool HasUniform(const std::string& uniform) const {
+        return Uniforms.find(uniform) != Uniforms.end();
+    }
+
     static inline std::unordered_map<std::string, std::optional<Shader>> shaders;
 
     static inline std::string shader_dir_ = "shaders/";

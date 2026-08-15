@@ -252,6 +252,14 @@ type CharacterItem struct {
 	ModelScale   float32
 	SocketName   string
 	IconPath     string
+	// WeaponAnimStyle (item_templates.weapon_anim_style) — the equipped
+	// weapon's physical grip/pose archetype ("sword_1h", "bow"...). Same
+	// value Actor.BasicAttackAnimStyle already carries server-side; sent to
+	// the client (PInventoryUpdate) so the client's own local
+	// auto-locomotion (Walk/Run/Idle, decided client-side by velocity —
+	// see AnimController::Update) can compose the same way BroadcastAnimate
+	// already does for server-driven actions.
+	WeaponAnimStyle string
 }
 
 // Character mirrors the characters table.
@@ -502,6 +510,13 @@ func Open(ctx context.Context, driver, dsn string) (*DB, error) {
 	d.migrateV54(ctx)
 	d.migrateV55(ctx)
 	d.migrateV56(ctx)
+	d.migrateV57(ctx)
+	d.migrateV58(ctx)
+	d.migrateV59(ctx)
+	d.migrateV60(ctx)
+	d.migrateV61(ctx)
+	d.migrateV62(ctx)
+	d.migrateV63(ctx)
 
 	return d, nil
 }
@@ -1037,8 +1052,12 @@ func (d *DB) SeedDefaultItems(ctx context.Context) error {
 }
 
 // SeedDefaultWeaponKits creates the default weapon kits (sword, bow) with their abilities.
-// Idempotent: base entries are inserted only when missing by unique key (name/kit_key),
-// and kit ability slots are reset to canonical seeded mappings each run.
+// Idempotent: every insert (abilities, kits, AND kit_abilities slots) only
+// fires when that exact row is missing by its own unique key — a dev edit
+// via the GUE (SetKitAbilities) survives a server restart untouched. Used
+// to unconditionally DELETE+re-INSERT every seeded kit's weapon_kit_abilities
+// row on every boot regardless of edits; fixed to the same
+// insert-only-if-missing pattern the other seeds here already used.
 func (d *DB) SeedDefaultWeaponKits(ctx context.Context) error {
 	type abilitySeed struct {
 		Name               string
@@ -1274,14 +1293,24 @@ func (d *DB) SeedDefaultWeaponKits(ctx context.Context) error {
 		kitIDs[k.KitKey] = id
 	}
 
-	for _, k := range kits {
-		kitID := kitIDs[k.KitKey]
-		if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM weapon_kit_abilities WHERE kit_id = ?`), kitID); err != nil {
-			return fmt.Errorf("db: SeedDefaultWeaponKits clear kit %q abilities: %w", k.KitKey, err)
-		}
-	}
-
-	insertKitAbilitySQL := d.q(`INSERT INTO weapon_kit_abilities (kit_id, ability_id, slot_index, enabled) VALUES (?, ?, ?, ?)`)
+	// BUG FIX: this used to unconditionally DELETE every seeded kit's
+	// weapon_kit_abilities rows and re-INSERT the hardcoded seed values
+	// EVERY server boot — wiping any edit a dev made via the GUE's weapon
+	// kit editor (SetKitAbilities, below) on restart, no matter how long
+	// ago the edit happened. Fixed the same way every other seed in this
+	// function already guards itself (insertAbilitySQL/insertKitSQL above,
+	// both "WHERE NOT EXISTS"): insert a slot ONLY if that exact
+	// (kit_id, slot_index) doesn't already have a row — idx_wka_kit_slot's
+	// UNIQUE INDEX on (kit_id, slot_index) is the natural key for this.
+	// A dev-edited slot (different ability, disabled, or removed entirely)
+	// is left untouched forever; a genuinely new kit/slot (fresh install,
+	// or a NEW slot added to `kitAbilities` in a future code change) still
+	// gets seeded normally since NOT EXISTS is true for it.
+	insertKitAbilitySQL := d.q(`
+		INSERT INTO weapon_kit_abilities (kit_id, ability_id, slot_index, enabled)
+		SELECT ?, ?, ?, ?
+		WHERE NOT EXISTS (SELECT 1 FROM weapon_kit_abilities WHERE kit_id = ? AND slot_index = ?)
+	`)
 	for _, entry := range kitAbilities {
 		kitID, ok := kitIDs[entry.KitKey]
 		if !ok || kitID <= 0 {
@@ -1295,7 +1324,8 @@ func (d *DB) SeedDefaultWeaponKits(ctx context.Context) error {
 		if entry.Enabled {
 			enabled = 1
 		}
-		if _, err := tx.ExecContext(ctx, insertKitAbilitySQL, kitID, abilityID, entry.SlotIndex, enabled); err != nil {
+		if _, err := tx.ExecContext(ctx, insertKitAbilitySQL,
+			kitID, abilityID, entry.SlotIndex, enabled, kitID, entry.SlotIndex); err != nil {
 			return fmt.Errorf("db: SeedDefaultWeaponKits insert kit %q slot %d ability %q: %w",
 				entry.KitKey, entry.SlotIndex, entry.AbilityName, err)
 		}
@@ -1508,7 +1538,7 @@ func (d *DB) GiveStarterItems(ctx context.Context, charID string) error {
 // 2=magic) and is 0 (melee) if no weapon is equipped in slot 0.
 // weaponRange is the weapon's explicit attack range (0 if unset or no weapon
 // equipped); callers should resolve it via world.ResolveAttackRange.
-func (d *DB) GetEquippedStats(ctx context.Context, charID string) (weaponDamage, armorLevel, weaponDimension int32, weaponRange float32, err error) {
+func (d *DB) GetEquippedStats(ctx context.Context, charID string) (weaponDamage, armorLevel, weaponDimension int32, weaponRange float32, weaponAnimStyle string, err error) {
 	rows, err := d.db.QueryContext(ctx,
 		d.q(`SELECT it.weapon_damage, it.armor_level
 		     FROM character_items ci
@@ -1517,7 +1547,7 @@ func (d *DB) GetEquippedStats(ctx context.Context, charID string) (weaponDamage,
 		charID,
 	)
 	if err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("db: GetEquippedStats: %w", err)
+		return 0, 0, 0, 0, "", fmt.Errorf("db: GetEquippedStats: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -1531,22 +1561,33 @@ func (d *DB) GetEquippedStats(ctx context.Context, charID string) (weaponDamage,
 		armorLevel += al
 	}
 	if err := rows.Err(); err != nil {
-		return weaponDamage, armorLevel, 0, 0, err
+		return weaponDamage, armorLevel, 0, 0, "", err
 	}
 
+	// weapon_anim_style: PHYSICAL grip/pose archetype of the equipped weapon
+	// (slot 0), independent of weapon_dimension (damage/range, read in the
+	// same row below) and of weapon_kit (skills, not read here at all). ""
+	// when unset — every weapon predates this column and most still won't
+	// have it configured, which is intentional: BroadcastAttack's caller
+	// falls back to the plain "Attack" action for an empty style, so this
+	// is a zero-behavior-change default.
 	wdRow := d.db.QueryRowContext(ctx,
-		d.q(`SELECT it.weapon_dimension, it.weapon_range
+		d.q(`SELECT it.weapon_dimension, it.weapon_range, it.weapon_anim_style
 		     FROM character_items ci
 		     JOIN item_templates it ON it.id = ci.item_id
 		     WHERE ci.character_id = ? AND ci.slot = 0`),
 		charID,
 	)
-	if scanErr := wdRow.Scan(&weaponDimension, &weaponRange); scanErr != nil {
+	var styleNull sql.NullString
+	if scanErr := wdRow.Scan(&weaponDimension, &weaponRange, &styleNull); scanErr != nil {
 		weaponDimension = 0
 		weaponRange = 0
+		weaponAnimStyle = ""
+	} else {
+		weaponAnimStyle = styleNull.String
 	}
 
-	return weaponDamage, armorLevel, weaponDimension, weaponRange, nil
+	return weaponDamage, armorLevel, weaponDimension, weaponRange, weaponAnimStyle, nil
 }
 
 // GetEquippedAttributes aggregates item_attributes from all equipped items
@@ -1848,7 +1889,7 @@ func (d *DB) ResolveActivePlayerAbilities(ctx context.Context, charID string) ([
 func (d *DB) GetInventory(ctx context.Context, charID string) ([]*CharacterItem, error) {
 	rows, err := d.db.QueryContext(ctx,
 		d.q(`SELECT ci.slot, ci.item_id, ci.quantity, ci.durability,
-		          it.name, it.item_type, it.slot_type, it.weapon_damage, it.armor_level, it.model_path, it.model_scale, it.socket_name, it.icon_path
+		          it.name, it.item_type, it.slot_type, it.weapon_damage, it.armor_level, it.model_path, it.model_scale, it.socket_name, it.icon_path, it.weapon_anim_style
 		     FROM character_items ci
 		     JOIN item_templates it ON it.id = ci.item_id
 		     WHERE ci.character_id = ?
@@ -1866,7 +1907,7 @@ func (d *DB) GetInventory(ctx context.Context, charID string) ([]*CharacterItem,
 		if err := rows.Scan(
 			&ci.Slot, &ci.ItemID, &ci.Quantity, &ci.Durability,
 			&ci.Name, &ci.ItemType, &ci.SlotType, &ci.WeaponDamage, &ci.ArmorLevel,
-			&ci.ModelPath, &ci.ModelScale, &ci.SocketName, &ci.IconPath,
+			&ci.ModelPath, &ci.ModelScale, &ci.SocketName, &ci.IconPath, &ci.WeaponAnimStyle,
 		); err != nil {
 			return nil, fmt.Errorf("db: GetInventory scan: %w", err)
 		}
@@ -1977,6 +2018,11 @@ type UseItemResult struct {
 	HealAmt   int32  // > 0 when a consumable was used
 	EquipSlot uint8  // 0xFF when no equip change happened
 	ItemID    uint16 // item_templates.id - used by the item_use_script Lua event (item_type == 4)
+	// ScriptOnTarget (migrateV62, generic scripting Fase 2) — the specific
+	// Lua event name to fire when this item is used WITH a target instead
+	// of the generic "item_use_on_target" fallback. "" = no specific
+	// script configured. See Registry.ItemUseScriptOnTarget.
+	ScriptOnTarget string
 }
 
 // UseItem processes a right-click "use" on the given inventory slot:
@@ -1999,12 +2045,12 @@ func (d *DB) UseItem(ctx context.Context, charID string, slot uint8) (*UseItemRe
 	res := &UseItemResult{EquipSlot: 0xFF}
 	var slotType uint8
 	err := d.db.QueryRowContext(ctx,
-		d.q(`SELECT ci.item_id, ci.quantity, it.item_type, it.slot_type, it.item_value
+		d.q(`SELECT ci.item_id, ci.quantity, it.item_type, it.slot_type, it.item_value, it.script_on_target
 		     FROM character_items ci
 		     JOIN item_templates it ON it.id = ci.item_id
 		     WHERE ci.character_id = ? AND ci.slot = ?`),
 		charID, slot,
-	).Scan(&res.ItemID, &quantity, &res.ItemType, &slotType, &res.HealAmt)
+	).Scan(&res.ItemID, &quantity, &res.ItemType, &slotType, &res.HealAmt, &res.ScriptOnTarget)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("db: UseItem: no item at slot %d", slot)
 	}
@@ -2164,6 +2210,70 @@ type AbilityTemplateRow struct {
 	// behaviour, client keeps drawing the placeholder rect. Independent of
 	// the legacy spell_templates.icon (uint8 ID) — different system.
 	IconPath string
+	// StatusEffectTemplateID/CCBaseChancePct — Fase 1, Buffs/Debuffs/CC
+	// (migrateV57). 0/0 = this ability applies no status effect.
+	StatusEffectTemplateID int
+	CCBaseChancePct        float32
+	// RequiredWeaponDimension (migrateV60) — "melee"/"ranged"/"magic", or
+	// "" (default) for no restriction. See world.AbilityTemplate's field
+	// doc for the runtime check.
+	RequiredWeaponDimension string
+	// OnCastScript (migrateV62, generic scripting Fase 2) — the specific
+	// Lua event name fired when this ability starts casting, instead of
+	// the generic "ability_cast" fallback. "" = no specific script. See
+	// Registry.DispatchAbilityCast.
+	OnCastScript string
+}
+
+// StatusEffectTemplateRow mirrors one row in status_effect_templates.
+// Fase 1 (migrateV57) had only CC-relevant fields (kind/cc_type/
+// duration_ms/stack_rule). Fase 2 (migrateV58) adds StatModsJSON/MaxStacks
+// for Kind="buff"/"debuff" rows — StatModsJSON is raw JSON text
+// (world.ParseStatModsJSON decodes it into []world.StatMod), kept as a
+// string here since db.go doesn't depend on the world package's StatMod
+// type. See docs/TECH_DEBT.md, Buffs/Debuffs/CC investigation.
+type StatusEffectTemplateRow struct {
+	ID           int
+	Name         string
+	Kind         string
+	CCType       string
+	DurationMs   int64
+	StackRule    string
+	IconPath     string
+	Enabled      bool
+	StatModsJSON string
+	MaxStacks    int
+	// TickIntervalMs<=0 (migrateV59) means no tick — Fase 3 (DoT/HoT).
+	TickIntervalMs int64
+	TickDamageMin  int32
+	TickDamageMax  int32
+	IsHeal         bool
+}
+
+// LoadStatusEffectTemplates returns all status_effect_templates rows.
+func (d *DB) LoadStatusEffectTemplates(ctx context.Context) ([]StatusEffectTemplateRow, error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, name, kind, cc_type, duration_ms, stack_rule, icon_path, enabled, stat_mods_json, max_stacks,
+		 tick_interval_ms, tick_damage_min, tick_damage_max, is_heal
+		 FROM status_effect_templates ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("db: LoadStatusEffectTemplates: %w", err)
+	}
+	defer rows.Close()
+	var out []StatusEffectTemplateRow
+	for rows.Next() {
+		var r StatusEffectTemplateRow
+		var enabledRaw, isHealRaw interface{}
+		if err := rows.Scan(&r.ID, &r.Name, &r.Kind, &r.CCType, &r.DurationMs,
+			&r.StackRule, &r.IconPath, &enabledRaw, &r.StatModsJSON, &r.MaxStacks,
+			&r.TickIntervalMs, &r.TickDamageMin, &r.TickDamageMax, &isHealRaw); err != nil {
+			return nil, fmt.Errorf("db: LoadStatusEffectTemplates scan: %w", err)
+		}
+		r.Enabled = boolFromDB(enabledRaw)
+		r.IsHeal = boolFromDB(isHealRaw)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // NPCAbilityLoadoutRow mirrors one row in npc_ability_loadouts.
@@ -2240,7 +2350,8 @@ func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, er
 		       mastery_xp_per_use, mastery_max_level, mastery_xp_curve_type,
 		       mastery_xp_curve_base, mastery_xp_curve_exponent, mastery_xp_irregularity,
 		       mastery_primary_bonus_per_lvl,
-		       mastery_cooldown_redux_per_lvl, enabled, icon_path
+		       mastery_cooldown_redux_per_lvl, enabled, icon_path,
+		       status_effect_template_id, cc_base_chance_pct, required_weapon_dimension, on_cast_script
 		  FROM ability_templates
 		 ORDER BY id`)
 	if err != nil {
@@ -2270,6 +2381,10 @@ func (d *DB) LoadAbilityTemplates(ctx context.Context) ([]AbilityTemplateRow, er
 			&r.MasteryCooldownReduxPerLvl,
 			&enabledRaw,
 			&r.IconPath,
+			&r.StatusEffectTemplateID,
+			&r.CCBaseChancePct,
+			&r.RequiredWeaponDimension,
+			&r.OnCastScript,
 		); err != nil {
 			return nil, fmt.Errorf("db: LoadAbilityTemplates scan: %w", err)
 		}
@@ -2385,6 +2500,12 @@ type NpcSpawn struct {
 	WanderRadius     float32
 	WanderPauseMinMs int
 	WanderPauseMaxMs int
+	// SpawnScript (generic scripting Fase 2) — the specific Lua event name
+	// fired when an NPC from this spawn row appears in the world (initial
+	// spawn AND every respawn), instead of the generic "npc_spawn"
+	// fallback. Column already existed (added in an earlier round) but was
+	// never SELECTed/consumed until now — see migrateV62's doc comment.
+	SpawnScript string
 }
 
 // WorldObject is one placed static model instance in a zone.
@@ -2517,7 +2638,7 @@ func (d *DB) LoadNPCSpawns(ctx context.Context) ([]*NpcSpawn, error) {
 		`SELECT id, name, race, class, level, area_name, x, y, z, yaw,
 		        aggressiveness, aggressive_range, attack_range, respawn_delay_ms,
 		        actor_def_id, start_waypoint_id,
-		        wander_radius, wander_pause_min_ms, wander_pause_max_ms
+		        wander_radius, wander_pause_min_ms, wander_pause_max_ms, spawn_script
 		 FROM npc_spawns ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: LoadNPCSpawns: %w", err)
@@ -2531,7 +2652,7 @@ func (d *DB) LoadNPCSpawns(ctx context.Context) ([]*NpcSpawn, error) {
 			&s.X, &s.Y, &s.Z, &s.Yaw,
 			&s.Aggressiveness, &s.AggressiveRange, &s.AttackRange, &s.RespawnDelayMs,
 			&s.ActorDefID, &s.StartWaypointID,
-			&s.WanderRadius, &s.WanderPauseMinMs, &s.WanderPauseMaxMs,
+			&s.WanderRadius, &s.WanderPauseMinMs, &s.WanderPauseMaxMs, &s.SpawnScript,
 		); err != nil {
 			return nil, fmt.Errorf("db: LoadNPCSpawns scan: %w", err)
 		}
@@ -3124,7 +3245,7 @@ func (d *DB) LoadActorDef(ctx context.Context, id int) (*ActorDef, error) {
 
 	arows, err := d.db.QueryContext(ctx,
 		d.q(`SELECT id, actor_def_id, action, clip_id, loop, speed, blend_in, return_to, priority, is_terminal
-		     FROM media_actor_anims WHERE actor_def_id = ?`), id)
+		     FROM media_actor_anims WHERE actor_def_id = ? ORDER BY id`), id)
 	if err == nil {
 		defer arows.Close()
 		for arows.Next() {
@@ -9567,6 +9688,296 @@ func (d *DB) migrateV56(ctx context.Context) {
 	d.addColumnIfMissing(ctx, "media_actor_anims", "is_terminal", "INTEGER NOT NULL DEFAULT 0")
 }
 
+// migrateV57 — Fase 1 of the Buffs/Debuffs/CC system: Crowd Control only
+// (stun/root/silence/slow). See docs/TECH_DEBT.md, Buffs/Debuffs/CC
+// investigation, for the full design and what's deliberately deferred to a
+// future phase (stat-modifier buffs/debuffs, DoT/HoT, stacking beyond
+// "refresh").
+//
+// status_effect_templates: reusable CC definitions, authored via the GUE
+// (tools/gue/src/tabs/status_effects.h/.cpp, mirrors ability_templates'
+// own CREATE TABLE + additive-ALTER pattern in tools/gue/src/tabs/media.cpp
+// /combat_abilities.cpp). Only kind/cc_type/duration_ms/stack_rule this
+// phase — no stat_mods/tick fields yet, on purpose.
+//
+// ability_templates.status_effect_template_id (0 = this ability applies no
+// status effect) + cc_base_chance_pct (0-100, BEFORE attacker/defender stat
+// scaling — see world.TryApplyCC) let an existing ability reference a CC
+// definition instead of embedding CC fields directly on every ability row
+// — one status effect template can be reused by multiple abilities.
+func (d *DB) migrateV57(ctx context.Context) {
+	if d.driver == "postgres" {
+		d.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS status_effect_templates (
+			id          SERIAL  PRIMARY KEY,
+			name        TEXT    NOT NULL DEFAULT '',
+			kind        TEXT    NOT NULL DEFAULT 'cc',
+			cc_type     TEXT    NOT NULL DEFAULT '',
+			duration_ms INTEGER NOT NULL DEFAULT 2000,
+			stack_rule  TEXT    NOT NULL DEFAULT 'refresh',
+			icon_path   TEXT    NOT NULL DEFAULT '',
+			enabled     INTEGER NOT NULL DEFAULT 1
+		)`)
+	} else {
+		d.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS status_effect_templates (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT    NOT NULL DEFAULT '',
+			kind        TEXT    NOT NULL DEFAULT 'cc',
+			cc_type     TEXT    NOT NULL DEFAULT '',
+			duration_ms INTEGER NOT NULL DEFAULT 2000,
+			stack_rule  TEXT    NOT NULL DEFAULT 'refresh',
+			icon_path   TEXT    NOT NULL DEFAULT '',
+			enabled     INTEGER NOT NULL DEFAULT 1
+		)`)
+	}
+	d.addColumnIfMissing(ctx, "ability_templates", "status_effect_template_id", "INTEGER NOT NULL DEFAULT 0")
+	d.addColumnIfMissing(ctx, "ability_templates", "cc_base_chance_pct", "REAL NOT NULL DEFAULT 0")
+}
+
+// migrateV58 — Fase 2 of the Buffs/Debuffs/CC system: stat-modifier buffs/
+// debuffs, activated on the SAME status_effect_templates table Fase 1
+// created. See docs/TECH_DEBT.md, Buffs/Debuffs/CC investigation.
+//
+// stat_mods_json: a JSON array of {"stat","flat","pct"} objects (see
+// world.StatMod/world.ParseStatModsJSON) — only meaningful for
+// kind="buff"/"debuff" rows; ignored for kind="cc". A JSON column rather
+// than a separate stat_mods table because a buff/debuff's mod LIST is
+// small, fixed-shape, and edited as a unit (same reasoning GUE already uses
+// elsewhere for small authored lists — e.g. ability_templates'
+// damage_stat_scale_json/crit_policy_json).
+//
+// max_stacks: only meaningful for stack_rule="stack_up_to_max" — see
+// Actor.applyStackRuleLocked (actor.go). Default 1 (no stacking) preserves
+// "refresh" behavior for every existing Fase 1 row.
+func (d *DB) migrateV58(ctx context.Context) {
+	d.addColumnIfMissing(ctx, "status_effect_templates", "stat_mods_json", "TEXT NOT NULL DEFAULT '[]'")
+	d.addColumnIfMissing(ctx, "status_effect_templates", "max_stacks", "INTEGER NOT NULL DEFAULT 1")
+}
+
+// migrateV59 — Fase 3 of the Buffs/Debuffs/CC system: DoT/HoT, activated on
+// the SAME status_effect_templates table Fase 1/2 created. See
+// docs/TECH_DEBT.md, Buffs/Debuffs/CC investigation.
+//
+// tick_interval_ms<=0 (default) means no tick — every existing Fase 1/2 row
+// (CC + plain stat buffs/debuffs) is unaffected. tick_damage_min/max are
+// rolled per tick (same shape as ability_templates.base_damage_min/max);
+// is_heal=1 routes the tick through ApplyHeal instead of ApplyDamage (see
+// world.applyStatusEffectTick, status_effects.go). Only meaningful for
+// kind="buff" (a HoT, is_heal=1) or kind="debuff" (a DoT, is_heal=0) —
+// ignored for kind="cc".
+func (d *DB) migrateV59(ctx context.Context) {
+	d.addColumnIfMissing(ctx, "status_effect_templates", "tick_interval_ms", "INTEGER NOT NULL DEFAULT 0")
+	d.addColumnIfMissing(ctx, "status_effect_templates", "tick_damage_min", "INTEGER NOT NULL DEFAULT 0")
+	d.addColumnIfMissing(ctx, "status_effect_templates", "tick_damage_max", "INTEGER NOT NULL DEFAULT 0")
+	d.addColumnIfMissing(ctx, "status_effect_templates", "is_heal", "INTEGER NOT NULL DEFAULT 0")
+}
+
+// migrateV60 — weapon-vs-ability validation. Closes the gap where the
+// server accepted any ability cast regardless of the caster's equipped
+// weapon (the client hotbar was the only "filter", never a real security
+// boundary — see docs/TECH_DEBT.md).
+//
+// required_weapon_dimension: "" (default) means unrestricted — every
+// ability that existed before this column was added keeps working exactly
+// as before. "melee"/"ranged"/"magic" (same string convention as
+// ability_templates.dimension) requires the caster's currently-equipped
+// weapon to match, enforced server-side in
+// world.canActorStartAbilityNow (cast_intent.go).
+func (d *DB) migrateV60(ctx context.Context) {
+	d.addColumnIfMissing(ctx, "ability_templates", "required_weapon_dimension", "TEXT NOT NULL DEFAULT ''")
+}
+
+// migrateV61 — generic scripting Fase 1: the free-form key-value store
+// (Actor.set_global/get_global, World.set_global/get_global —
+// scripting/api.go). CONTENT/SCRIPT data only, never combat stats — see
+// scripting.GlobalsBridge's doc comment and docs/TECH_DEBT.md.
+//
+// actor_globals is keyed by (char_id, key) — one row per fact per
+// character, same shape as RC's ActorGlobal$ but string-keyed instead of a
+// fixed numeric slot. world_globals is keyed by (area_name, key) — RC's
+// SuperGlobal equivalent, but per-area instead of one flat array shared by
+// the whole server (a script wanting truly server-wide state can just pick
+// a placeholder area_name like "__global__").
+func (d *DB) migrateV61(ctx context.Context) {
+	d.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS actor_globals (
+		char_id TEXT NOT NULL,
+		key     TEXT NOT NULL,
+		value   TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (char_id, key)
+	)`)
+	d.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS world_globals (
+		area_name TEXT NOT NULL,
+		key       TEXT NOT NULL,
+		value     TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (area_name, key)
+	)`)
+}
+
+// SetActorGlobal upserts one (char_id, key) -> value row in actor_globals.
+func (d *DB) SetActorGlobal(ctx context.Context, charID, key, value string) error {
+	_, err := d.db.ExecContext(ctx,
+		d.q(`INSERT INTO actor_globals (char_id, key, value)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(char_id, key) DO UPDATE SET value = excluded.value`),
+		charID, key, value)
+	if err != nil {
+		return fmt.Errorf("db: SetActorGlobal: char_id=%q key=%q: %w", charID, key, err)
+	}
+	return nil
+}
+
+// GetActorGlobal returns the stored value, or "" if unset (no error).
+func (d *DB) GetActorGlobal(ctx context.Context, charID, key string) (string, error) {
+	var value string
+	err := d.db.QueryRowContext(ctx,
+		d.q(`SELECT value FROM actor_globals WHERE char_id = ? AND key = ?`),
+		charID, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("db: GetActorGlobal: char_id=%q key=%q: %w", charID, key, err)
+	}
+	return value, nil
+}
+
+// SetWorldGlobal upserts one (area_name, key) -> value row in world_globals.
+func (d *DB) SetWorldGlobal(ctx context.Context, areaName, key, value string) error {
+	_, err := d.db.ExecContext(ctx,
+		d.q(`INSERT INTO world_globals (area_name, key, value)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(area_name, key) DO UPDATE SET value = excluded.value`),
+		areaName, key, value)
+	if err != nil {
+		return fmt.Errorf("db: SetWorldGlobal: area_name=%q key=%q: %w", areaName, key, err)
+	}
+	return nil
+}
+
+// GetWorldGlobal returns the stored value, or "" if unset (no error).
+func (d *DB) GetWorldGlobal(ctx context.Context, areaName, key string) (string, error) {
+	var value string
+	err := d.db.QueryRowContext(ctx,
+		d.q(`SELECT value FROM world_globals WHERE area_name = ? AND key = ?`),
+		areaName, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("db: GetWorldGlobal: area_name=%q key=%q: %w", areaName, key, err)
+	}
+	return value, nil
+}
+
+// migrateV62 — generic scripting Fase 2 (see docs/TECH_DEBT.md): per-entity
+// "specific script" fields consumed by Registry.dispatchEntityScript
+// (registry.go). Each is a Lua EVENT NAME (a script anywhere registers
+// Event.on(that_name, ...)) — not a RC-style script-module+function pair.
+// Empty (the default) means "no specific script" — falls through to the
+// existing generic event, so every row that predates these columns keeps
+// behaving exactly as before.
+//
+//   - item_templates.script_on_target: fired instead of the generic
+//     "item_use_on_target" fallback when this item is used WITH a target
+//     (tool-on-resource-node being the motivating case — see
+//     ItemUseScriptOnTarget, registry.go).
+//   - ability_templates.on_cast_script: fired instead of the generic
+//     "ability_cast" fallback when THIS ability starts casting (see
+//     DispatchAbilityCast, registry.go / world.AbilityCastHook).
+//
+// npc_spawns.spawn_script/spawn_func already existed (added in an earlier
+// round, confirmed dead — never SELECTed by LoadNPCSpawns, never read by
+// any Go code) — reactivated here instead of adding a new column;
+// spawn_func is NOT consumed by the new dispatch (event-name-based, not a
+// script-module+function pair) and stays unused.
+func (d *DB) migrateV62(ctx context.Context) {
+	d.addColumnIfMissing(ctx, "item_templates", "script_on_target", "TEXT NOT NULL DEFAULT ''")
+	d.addColumnIfMissing(ctx, "ability_templates", "on_cast_script", "TEXT NOT NULL DEFAULT ''")
+}
+
+// migrateV63 creates weapon_anim_styles, a small governed catalog of PHYSICAL
+// grip/pose archetypes ("sword_1h", "staff", "bow", ...), and adds
+// item_templates.weapon_anim_style (TEXT, references style_key by value —
+// same non-FK convention item_templates.weapon_kit already uses for
+// weapon_kits.kit_key).
+//
+// This is a THIRD, independent axis on item_templates, alongside two that
+// already exist and are NOT touched by this migration:
+//   - weapon_kit: which pool of SKILLS the item grants (weapon_kits table).
+//   - weapon_dimension / weapon_hands: DAMAGE/RANGE mechanics + a hands
+//     label with no mechanical effect yet (split out of the old weapon_type
+//     column by migrateV43 — see docs/TECH_DEBT.md #77).
+//
+// Neither of those captures "how the weapon is physically held/swung" at
+// useful granularity: weapon_kit groups by skill set (many differently-held
+// weapons can share one kit), and weapon_dimension+weapon_hands only gives a
+// coarse melee/ranged/magic x 1h/2h grid that still lumps sword/dagger/mace
+// together under "melee 1h". weapon_anim_style is the dedicated field for
+// that — multiple items with different kits, different dimensions, even
+// different visuals can share one weapon_anim_style (e.g. every 1-handed
+// sword uses "sword_1h" regardless of which skills or how much damage it
+// has).
+//
+// Purely additive; no data migration or column drop needed.
+// weapon_anim_style defaults to "" — "no style assigned", same convention
+// weapon_kit already uses for "not a kit-providing weapon".
+func (d *DB) migrateV63(ctx context.Context) {
+	exec := func(sql string) { _, _ = d.db.ExecContext(ctx, sql) }
+
+	if d.driver == "postgres" {
+		exec(`CREATE TABLE IF NOT EXISTS weapon_anim_styles (
+			id           SERIAL PRIMARY KEY,
+			style_key    VARCHAR(32) NOT NULL UNIQUE,
+			display_name VARCHAR(64) NOT NULL DEFAULT '',
+			description  TEXT NOT NULL DEFAULT '',
+			enabled      BOOLEAN NOT NULL DEFAULT TRUE
+		)`)
+	} else {
+		exec(`CREATE TABLE IF NOT EXISTS weapon_anim_styles (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			style_key    TEXT NOT NULL UNIQUE,
+			display_name TEXT NOT NULL DEFAULT '',
+			description  TEXT NOT NULL DEFAULT '',
+			enabled      INTEGER NOT NULL DEFAULT 1
+		)`)
+	}
+	exec(`CREATE INDEX IF NOT EXISTS idx_weapon_anim_styles_style_key ON weapon_anim_styles(style_key)`)
+
+	d.addColumnIfMissing(ctx, "item_templates", "weapon_anim_style", "TEXT NOT NULL DEFAULT ''")
+
+	d.seedDefaultWeaponAnimStyles(ctx)
+}
+
+// seedDefaultWeaponAnimStyles populates weapon_anim_styles with the initial
+// grip archetypes. Only runs when the table is empty — same guard
+// seedAnimVocabulary (migrateV46) uses — so re-running this migration after a
+// dev has renamed/removed a style doesn't resurrect it.
+func (d *DB) seedDefaultWeaponAnimStyles(ctx context.Context) {
+	var count int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM weapon_anim_styles`).Scan(&count); err != nil {
+		log.Printf("migrateV63: count weapon_anim_styles failed: %v", err)
+		return
+	}
+	if count > 0 {
+		return
+	}
+
+	type seed struct{ key, display string }
+	defaults := []seed{
+		{"sword_1h", "Sword (1-Handed)"},
+		{"sword_2h", "Sword (2-Handed)"},
+		{"staff", "Staff"},
+		{"bow", "Bow"},
+		{"dagger", "Dagger"},
+		{"wand", "Wand"},
+	}
+	insertSQL := d.q(`INSERT INTO weapon_anim_styles (style_key, display_name, description, enabled) VALUES (?, ?, '', ?)`)
+	for _, s := range defaults {
+		if _, err := d.db.ExecContext(ctx, insertSQL, s.key, s.display, 1); err != nil {
+			log.Printf("migrateV63: seed style %q failed: %v", s.key, err)
+		}
+	}
+}
+
 // CanonicalBoneSlots is the fixed vocabulary of ~19 humanoid retargeting
 // slots (Unreal/Unity-style "Humanoid Rig" semantic roles), shared by the
 // GUE's Bone Slots (per-model) and Bone Conventions (global) editors and by
@@ -10042,6 +10453,32 @@ func (d *DB) LoadItemSocketOverride(ctx context.Context, itemTemplateID, actorDe
 		return nil, false, fmt.Errorf("db: LoadItemSocketOverride: %w", err)
 	}
 	return &o, true, nil
+}
+
+// GetMediaModelScaleByPath returns media_models.scale for the model at
+// filePath — the model's own import-scale (e.g. 0.02 for an asset authored
+// in different units), same factor ResolveActorDefSocket already fetches
+// GUE-side for the BODY model (body_model_scale) and
+// ItemsTab::ResolveModelImportScale now fetches for the item preview.
+// Returns 1.0 (never 0 or negative) when filePath is empty or not found, so
+// callers can multiply it in unconditionally without a separate guard.
+func (d *DB) GetMediaModelScaleByPath(ctx context.Context, filePath string) (float64, error) {
+	if filePath == "" {
+		return 1.0, nil
+	}
+	row := d.db.QueryRowContext(ctx, d.q(
+		`SELECT scale FROM media_models WHERE file_path = ? LIMIT 1`), filePath)
+	var scale float64
+	if err := row.Scan(&scale); err != nil {
+		if err == sql.ErrNoRows {
+			return 1.0, nil
+		}
+		return 1.0, fmt.Errorf("db: GetMediaModelScaleByPath: %w", err)
+	}
+	if scale <= 0 {
+		return 1.0, nil
+	}
+	return scale, nil
 }
 
 // AnimVocabNode mirrors one row in anim_vocabulary.

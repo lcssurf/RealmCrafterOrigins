@@ -23,6 +23,16 @@ layout (location = 8) uniform float u_ambientOcclusionOverride;
 layout (location = 9) uniform float u_characterMask;
 layout (location = 10) uniform float u_blackCutoutThreshold;
 
+// Direct-albedo bypass for non-skinned dynamic draws (see
+// DynamicDrawRequest::tex_albedo in pipeline.h). ARB_bindless_texture
+// handles for a texture that just became GL-resident this frame (e.g. a
+// GLB's embedded albedo, decoded fresh on load) aren't reliably sample-able
+// yet on every driver; a plain bound sampler2D has none of that residency
+// timing requirement. Only albedo is bypassed — normal/ORM/AO/opacity still
+// come from the bindless Material entry below.
+layout (location = 11) uniform bool u_useDirectAlbedo;
+layout (location = 12) uniform sampler2D u_directAlbedo;
+
 layout (binding = 1, std430) readonly buffer Materials
 {
   Material materials[];
@@ -75,7 +85,12 @@ void main()
   // Fallback for assets without albedo texture binding: use the imported
   // material factor instead of ignoring authoring metadata.
   vec4 color = vec4(baseFactor, 1.0);
-  if (hasAlbedo)
+  if (u_useDirectAlbedo)
+  {
+    color = texture(u_directAlbedo, vTexCoord).rgba;
+    color.rgb *= baseFactor;
+  }
+  else if (hasAlbedo)
   {
     color = texture(sampler2D(material.albedoHandle), vTexCoord).rgba;
     color.rgb *= baseFactor;

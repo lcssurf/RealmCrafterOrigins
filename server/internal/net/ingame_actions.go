@@ -277,6 +277,16 @@ func (c *ClientConn) handleCastSkillSlot(ctx context.Context, payload []byte) er
 	if !started {
 		log.Printf("skill-cast: char=%s rejected: slot=%d ability=%d target=%d reason=%s",
 			charID, slotIndex, abilityID, targetRID, reason)
+		// Player-facing feedback: most cast-funnel rejections (cooldown,
+		// out_of_range, resource_insufficient, etc.) only ever logged
+		// server-side before this — nothing told the player WHY nothing
+		// happened. wrong_weapon specifically gets a message because
+		// silently eating the keypress here would look like a bug, not a
+		// deliberate rule ("that ability needs a different weapon
+		// equipped").
+		if reason == "wrong_weapon" {
+			c.actor.SendSystemMessage("Essa habilidade exige outro tipo de arma equipada.")
+		}
 		return nil
 	}
 	c.sendSkillState(ctx)

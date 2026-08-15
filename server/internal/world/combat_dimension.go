@@ -65,16 +65,29 @@ func ResolveAttackRange(weaponRange float32, dim CombatDimension, rangeBonusPct 
 //
 // Defined for C3b; not yet called from the combat runtime (C3a is data-only).
 func resolveAbilityDimension(attacker *Actor, ability AbilityTemplate) CombatDimension {
-	switch strings.ToLower(strings.TrimSpace(ability.Dimension)) {
+	if dim, ok := parseCombatDimensionString(ability.Dimension); ok {
+		return dim
+	}
+	// empty/unknown → inherit from attacker's weapon
+	return attacker.BasicAttackDim
+}
+
+// parseCombatDimensionString parses the "melee"/"ranged"/"magic" string
+// convention shared by AbilityTemplate.Dimension and
+// AbilityTemplate.RequiredWeaponDimension. ok=false for empty/unrecognized
+// input — callers treat that as "no explicit dimension", each with its own
+// meaning (resolveAbilityDimension falls back to the attacker's weapon;
+// canActorStartAbilityNow, cast_intent.go, treats it as "no restriction").
+func parseCombatDimensionString(s string) (CombatDimension, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "melee":
-		return DimMelee
+		return DimMelee, true
 	case "ranged":
-		return DimRanged
+		return DimRanged, true
 	case "magic":
-		return DimMagic
+		return DimMagic, true
 	default:
-		// empty/unknown → inherit from attacker's weapon
-		return attacker.BasicAttackDim
+		return DimMelee, false
 	}
 }
 

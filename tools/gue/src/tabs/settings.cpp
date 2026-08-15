@@ -4,7 +4,10 @@
 #include "../ui_widgets.h"
 #include "rco/renderer/pipeline.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <functional>
 #include <string>
 
 namespace gue {
@@ -408,6 +411,21 @@ void SettingsTab::LoadAnimVocabulary(sqlite3* db) {
                    "Loaded %d animation action(s).", (int)anim_vocab_.size());
 }
 
+void SettingsTab::LoadWeaponAnimStyleKeysForVocab(sqlite3* db) {
+    vocab_weapon_anim_style_keys_.clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT style_key FROM weapon_anim_styles WHERE enabled = 1 ORDER BY style_key",
+        -1, &stmt, nullptr) != SQLITE_OK) {
+        return;
+    }
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        vocab_weapon_anim_style_keys_.push_back(ColText(stmt, 0));
+    }
+    sqlite3_finalize(stmt);
+}
+
 bool SettingsTab::AnimVocabNameExists(sqlite3* db, const std::string& name) {
     (void)db;
     for (const auto& n : anim_vocab_) {
@@ -518,11 +536,45 @@ void SettingsTab::AnimVocabDeleteNode(sqlite3* db, int id) {
     anim_vocab_need_fetch_ = true;
 }
 
-void SettingsTab::DrawAnimVocabNode(sqlite3* db, const AnimVocabNode& node) {
+void SettingsTab::DrawAnimVocabNode(sqlite3* db, const AnimVocabNode& node, const std::string& parent_name) {
     ImGui::PushID(node.id);
 
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_DefaultOpen;
     bool open = ImGui::TreeNodeEx((void*)(intptr_t)node.id, flags, "%s", node.name.c_str());
+
+    // Detected purely by naming convention ("{parent}_{style_key}") — there
+    // is no DB column marking a node as form-generated, since
+    // DrawAddWeaponBindingForm/AnimVocabAddNode create it as an ordinary
+    // anim_vocabulary row. Used below both for the dead-style warning
+    // (item 5) and the Rename warning (item 3, batch-creation follow-up).
+    bool is_weapon_composite = false;
+    std::string composite_style_suffix;
+    if (!parent_name.empty()) {
+        const std::string prefix = parent_name + "_";
+        if (node.name.size() > prefix.size() &&
+            node.name.compare(0, prefix.size(), prefix) == 0) {
+            is_weapon_composite = true;
+            composite_style_suffix = node.name.substr(prefix.size());
+        }
+    }
+
+    // Dead weapon-binding warning (item 5): if the style_key suffix no
+    // longer matches any ENABLED weapon_anim_styles row, this binding can
+    // never be reached by BroadcastAnimate's fallback walk
+    // (combat_events.go) for any real weapon — flag it inline instead of
+    // letting the dev wonder why it "isn't working".
+    if (is_weapon_composite) {
+        bool style_alive = false;
+        for (const auto& s : vocab_weapon_anim_style_keys_) {
+            if (s == composite_style_suffix) { style_alive = true; break; }
+        }
+        if (!style_alive) {
+            ImGui::SameLine();
+            ImGui::TextColored({1.0f, 0.35f, 0.3f, 1.f},
+                "(weapon anim style '%s' não existe mais — este binding nunca será alcançado)",
+                composite_style_suffix.c_str());
+        }
+    }
 
     ImGui::SameLine();
     if (ImGui::SmallButton("Rename")) {
@@ -546,6 +598,16 @@ void SettingsTab::DrawAnimVocabNode(sqlite3* db, const AnimVocabNode& node) {
     }
 
     if (anim_vocab_rename_id_ == node.id) {
+        // Not a blocking confirm — the same naming-convention detection used
+        // for the dead-style warning above, surfaced as a heads-up so the
+        // dev doesn't unknowingly strip the "which weapon does this belong
+        // to" signal the {Base}_{StyleKey} name carries. Renaming still
+        // proceeds on Save regardless.
+        if (is_weapon_composite) {
+            ImGui::TextColored({1.0f, 0.8f, 0.2f, 1.f},
+                "Este nó foi gerado automaticamente (Ação+Arma) — renomear pode "
+                "dificultar rastrear a qual arma ele pertence.");
+        }
         ImGui::PushItemWidth(180);
         ImGui::InputText("##rename", anim_vocab_rename_buf_, sizeof(anim_vocab_rename_buf_));
         ImGui::PopItemWidth();
@@ -563,7 +625,7 @@ void SettingsTab::DrawAnimVocabNode(sqlite3* db, const AnimVocabNode& node) {
     if (open) {
         for (const auto& child : anim_vocab_) {
             if (child.parent_id == node.id) {
-                DrawAnimVocabNode(db, child);
+                DrawAnimVocabNode(db, child, node.name);
             }
         }
         ImGui::TreePop();
@@ -577,6 +639,10 @@ void SettingsTab::DrawAnimVocabulary(sqlite3* db) {
         LoadAnimVocabulary(db);
         anim_vocab_need_fetch_ = false;
     }
+    if (vocab_weapon_anim_style_keys_need_fetch_) {
+        LoadWeaponAnimStyleKeysForVocab(db);
+        vocab_weapon_anim_style_keys_need_fetch_ = false;
+    }
 
     ImGui::TextWrapped(
         "Tree of animation action names. A child's parent is its fallback "
@@ -585,6 +651,7 @@ void SettingsTab::DrawAnimVocabulary(sqlite3* db) {
 
     if (ImGui::Button("Refresh")) {
         anim_vocab_need_fetch_ = true;
+        vocab_weapon_anim_style_keys_need_fetch_ = true;
     }
     ImGui::SameLine();
     ImGui::TextDisabled("%s", anim_vocab_status_);
@@ -601,10 +668,183 @@ void SettingsTab::DrawAnimVocabulary(sqlite3* db) {
 
     ImGui::Separator();
 
+    DrawAddWeaponBindingForm(db);
+
+    ImGui::Separator();
+
     for (const auto& node : anim_vocab_) {
         if (node.parent_id == 0) {
-            DrawAnimVocabNode(db, node);
+            DrawAnimVocabNode(db, node, "");
         }
+    }
+}
+
+void SettingsTab::DrawAddWeaponBindingForm(sqlite3* db) {
+    ImGui::TextColored({0.8f, 0.9f, 1.f, 1.f}, "Add Weapon-Specific Binding");
+    ImGui::TextWrapped(
+        "Use this to give a weapon style its own animation clip — e.g. so a "
+        "sword swing looks different from a staff swing on the SAME base "
+        "action. Pick a base action and a weapon style below; this creates a "
+        "composite action ({Base}_{StyleKey}) as a CHILD of the base action, "
+        "so it inherits that action as its fallback the exact same way any "
+        "other child in the tree does — no new binding type, just a node "
+        "whose parent happens to be the generic action. Styles come from "
+        "Weapon Anim Styles (PHYSICAL grip/pose — sword_1h, staff, bow...), "
+        "NOT Weapon Kits (skills) — many differently-kitted weapons can "
+        "share one grip and should resolve to the same binding here.");
+
+    if (vocab_weapon_anim_style_keys_.empty()) {
+        ImGui::TextColored({1.0f, 0.6f, 0.2f, 1.f},
+            "No enabled Weapon Anim Styles found — create one in the Weapon Anim Styles tab first.");
+        return;
+    }
+
+    // Base action can be ANY node in the tree, not just a root — e.g. "Slash"
+    // (a child of "Attack") is a valid, more specific base for a weapon
+    // composite than the generic "Attack". The fallback walk (AnimVocabNode
+    // parent_id chase, mirrored server-side in AnimFallbackParent) already
+    // supports a composite child at any depth, so this is purely a UI list
+    // change — see docs/TECH_DEBT.md investigation note on this form.
+    std::vector<std::pair<const AnimVocabNode*, int>> allNodes; // (node, depth)
+    {
+        std::function<void(int, int)> addChildren = [&](int parent_id, int depth) {
+            for (const auto& n : anim_vocab_) {
+                if (n.parent_id != parent_id) continue;
+                allNodes.emplace_back(&n, depth);
+                addChildren(n.id, depth + 1);
+            }
+        };
+        addChildren(0, 0);
+    }
+    if (allNodes.empty()) {
+        ImGui::TextColored({1.0f, 0.6f, 0.2f, 1.f},
+            "No actions in the vocabulary yet — add a root one above first.");
+        return;
+    }
+
+    if (wsb_style_idx_ >= (int)vocab_weapon_anim_style_keys_.size()) wsb_style_idx_ = -1;
+
+    // Multi-select base actions (item 2, batch creation): checkboxes in a
+    // scrollable child region instead of a single-value combo, so the dev
+    // can pick e.g. Attack + Jump in one pass. Selection is tracked by node
+    // id (wsb_base_selected_ids_), not list index, so it survives the tree
+    // being re-fetched between frames (unlike the old single-combo index).
+    ImGui::TextUnformatted("Base Action(s)");
+    ImGui::BeginChild("##wsb_base_list", ImVec2(220, 120), true);
+    for (const auto& entry : allNodes) {
+        const AnimVocabNode* n = entry.first;
+        int depth = entry.second;
+        bool selected = std::find(wsb_base_selected_ids_.begin(), wsb_base_selected_ids_.end(), n->id)
+                        != wsb_base_selected_ids_.end();
+        ImGui::PushID(n->id);
+        std::string indented(depth * 2, ' ');
+        indented += n->name;
+        if (ImGui::Checkbox(indented.c_str(), &selected)) {
+            if (selected) {
+                wsb_base_selected_ids_.push_back(n->id);
+            } else {
+                wsb_base_selected_ids_.erase(
+                    std::remove(wsb_base_selected_ids_.begin(), wsb_base_selected_ids_.end(), n->id),
+                    wsb_base_selected_ids_.end());
+            }
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine(0.f, 12.f);
+    ImGui::BeginGroup();
+    ImGui::TextUnformatted("+");
+    ImGui::SameLine();
+
+    ImGui::PushItemWidth(160);
+    const char* style_label = (wsb_style_idx_ >= 0) ? vocab_weapon_anim_style_keys_[wsb_style_idx_].c_str() : "(weapon anim style)";
+    if (ImGui::BeginCombo("Weapon Anim Style##wsb_style", style_label)) {
+        for (int i = 0; i < (int)vocab_weapon_anim_style_keys_.size(); ++i) {
+            bool is_sel = (i == wsb_style_idx_);
+            if (ImGui::Selectable(vocab_weapon_anim_style_keys_[i].c_str(), is_sel)) wsb_style_idx_ = i;
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PopItemWidth();
+    ImGui::EndGroup();
+
+    // Resolve selected ids back to nodes (in allNodes tree order, so the
+    // preview list below reads top-to-bottom the same way the checkbox list
+    // does) and build the composite name each one would produce.
+    std::vector<const AnimVocabNode*> selectedBases;
+    for (const auto& entry : allNodes) {
+        if (std::find(wsb_base_selected_ids_.begin(), wsb_base_selected_ids_.end(), entry.first->id)
+            != wsb_base_selected_ids_.end()) {
+            selectedBases.push_back(entry.first);
+        }
+    }
+
+    const std::string style = (wsb_style_idx_ >= 0) ? vocab_weapon_anim_style_keys_[wsb_style_idx_] : std::string();
+
+    if (selectedBases.empty() || style.empty()) {
+        ImGui::TextDisabled("(pick at least one base action and a weapon anim style)");
+        return;
+    }
+
+    // Name-collision warning (item 1): a base action whose name matches the
+    // style key (case-insensitively — e.g. action "Bow" + style "bow") is
+    // valid but produces a redundant-looking name like "Bow_bow". Not
+    // blocked (see investigation: this can legitimately happen when an
+    // action's name already carries weapon semantics, e.g. a custom "Bow"
+    // action or the seeded "Shoot"/style "bow" pairing) — just surfaced so
+    // it's not a silent surprise.
+    auto ciEquals = [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (std::tolower((unsigned char)a[i]) != std::tolower((unsigned char)b[i])) return false;
+        return true;
+    };
+    for (const auto* base : selectedBases) {
+        if (ciEquals(base->name, style)) {
+            ImGui::TextColored({1.0f, 0.8f, 0.2f, 1.f},
+                "Aviso: a acao base '%s' tem o mesmo nome do weapon anim style '%s' "
+                "(sem diferenciar maiusculas/minusculas) — isso vai gerar '%s_%s', "
+                "que parece redundante. Confirma que e intencional antes de criar.",
+                base->name.c_str(), style.c_str(), base->name.c_str(), style.c_str());
+        }
+    }
+
+    // Preview list of every composite name this batch would create, with
+    // duplicates (already in the vocabulary) called out and skipped rather
+    // than silently re-attempted — same duplicate rule AnimVocabAddNode's
+    // caller already relied on for the single-binding form.
+    ImGui::TextUnformatted("Will create:");
+    int toCreateCount = 0;
+    for (const auto* base : selectedBases) {
+        std::string composite = base->name + "_" + style;
+        bool duplicate = AnimVocabNameExists(db, composite);
+        if (duplicate) {
+            ImGui::TextColored({0.6f, 0.6f, 0.6f, 1.f}, "  %s (already exists — skipped)", composite.c_str());
+        } else {
+            ImGui::TextColored({0.6f, 1.0f, 0.6f, 1.f}, "  %s", composite.c_str());
+            ++toCreateCount;
+        }
+    }
+
+    ImGui::BeginDisabled(toCreateCount == 0);
+    if (ImGui::Button("Add Weapon Bindings")) {
+        int created = 0;
+        for (const auto* base : selectedBases) {
+            std::string composite = base->name + "_" + style;
+            if (AnimVocabNameExists(db, composite)) continue;
+            AnimVocabAddNode(db, composite, base->id);
+            ++created;
+        }
+        std::snprintf(wsb_status_, sizeof(wsb_status_), "Added %d binding(s).", created);
+        wsb_style_idx_ = -1;
+        wsb_base_selected_ids_.clear();
+    }
+    ImGui::EndDisabled();
+
+    if (wsb_status_[0]) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", wsb_status_);
     }
 }
 

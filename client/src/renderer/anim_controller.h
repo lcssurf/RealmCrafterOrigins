@@ -102,9 +102,70 @@ public:
     // Convenience: request by name.
     bool RequestStateByName(const std::string& action, const char* origin = "?");
 
+    // Convenience: force by name, bypassing priority-block checks — same
+    // relationship to ForceState() that RequestStateByName() has to
+    // RequestState(). Prefer this over ForceState(hardcoded_index) at any
+    // call site: bindings_ order is whatever the DB query happened to
+    // return (see docs/TECH_DEBT.md, respawn-stuck-in-Walk/Run
+    // investigation — media_actor_anims was loaded with no ORDER BY, so
+    // "index 0 == Idle" was never a real guarantee).
+    bool ForceStateByName(const std::string& action, const char* origin = "?");
+
     // Advance the animation state by dt seconds.
     // speed is the actor's movement speed (for auto-locomotion).
     void Update(float dt, float speed);
+
+    // Raw AttackSpeedMult (the same derived stat that already drives the
+    // real attack-cooldown timing server-side, combat_basic.go:46-50) — NOT
+    // used as a playback multiplier directly. Update() derives the actual
+    // playback-rate from it: natural_clip_duration / real_attack_window,
+    // where real_attack_window = CombatDelay/AttackSpeedMult, so the Attack
+    // clip always plays start-to-finish exactly once per real attack
+    // window regardless of the clip's own authored length. Only applies
+    // while the active binding's action is "Attack" or a weapon-style
+    // composite of it ("Attack_X" — see world.Actor.BasicAttackAnimStyle
+    // server-side); locomotion (Idle/Walk/Run) and every other action
+    // ignore this entirely, so a fast attacker doesn't also sprint/idle in
+    // fast-forward. <=0 is treated as "no scaling" (Update() skips the
+    // whole computation when this is <=0).
+    void SetAttackSpeedMult(float m) { attack_speed_mult_ = m > 0.f ? m : 1.f; }
+
+    // Equipped weapon's grip/pose archetype (item_templates.weapon_anim_style
+    // — "sword_1h", "bow"...), same value world.Actor.BasicAttackAnimStyle
+    // carries server-side. Used ONLY by Update()'s auto-locomotion block to
+    // compose "Walk"/"Run"/"Idle" into "Walk_bow" etc, mirroring
+    // world.ComposeWeaponAction (server, Go) for the ONE path that never
+    // goes through the server at all: local auto-locomotion is decided by
+    // this client purely from measured velocity (see Update()'s doc
+    // comment) — RequestState never fires for it, so BroadcastAnimate/
+    // ComposeWeaponAction server-side can't reach it no matter what. "" =
+    // no style configured, falls back to the plain base action exactly like
+    // before this existed.
+    void SetWeaponAnimStyle(const std::string& style) { weapon_anim_style_ = style; }
+
+    // General case of the same "scale playback to fit a known real-world
+    // window" principle SetAttackSpeedMult applies to the Attack family —
+    // for anything else with a per-cast target duration, e.g. an ability's
+    // windup: server-side ability_templates.windup_ms (combat_special.go's
+    // startNPCSpecialCast/SpawnScriptedImpact), NOT CombatDelay/
+    // AttackSpeedMult like the basic attack. The server has no idea which
+    // clip a given Actor Def bound to that action or how long it naturally
+    // runs — only the CLIENT can compute natural_duration/target and scale
+    // accordingly, so this has to be set by whoever correlates the combat
+    // event carrying the windup duration with the action name about to
+    // play (main.cpp, see pending_windup_target_by_rid).
+    //
+    // target_duration_sec <= 0 clears any override for that action name
+    // (falls back to natural, unscaled playback). Entries are NOT
+    // auto-cleared when the action finishes — callers should overwrite or
+    // clear explicitly per cast; a stale entry only matters if the SAME
+    // action name is requested again with a genuinely different intended
+    // duration, which main.cpp's per-cast correlation already handles by
+    // setting a fresh value before every RequestState for a windup action.
+    void SetActionTargetDuration(const std::string& action, float target_duration_sec) {
+        if (target_duration_sec > 0.f) action_target_duration_sec_[action] = target_duration_sec;
+        else action_target_duration_sec_.erase(action);
+    }
 
     // True if Bind() has been called with at least one binding.
     bool IsReady() const { return !bindings_.empty(); }
@@ -118,6 +179,15 @@ public:
         static const std::string empty;
         if (bindings_.empty()) return empty;
         return bindings_[current_id_].action;
+    }
+    // Action name bound to a given id, WITHOUT requesting it — lets a
+    // caller correlate an about-to-be-requested action_id (e.g. from a
+    // PAnimateActor packet) with external data (SetActionTargetDuration)
+    // before actually calling RequestState. "" if id is out of range.
+    const std::string& ActionNameById(uint8_t id) const {
+        static const std::string empty;
+        if (id >= static_cast<uint8_t>(bindings_.size())) return empty;
+        return bindings_[id].action;
     }
     uint8_t CurrentActionId() const { return current_id_; }
     float   CurrentTime()    const { return active_.time_sec; }
@@ -162,6 +232,9 @@ private:
     uint8_t     pending_return_  = 0xFF;
     ActiveAnim  active_;
     BlendState  blend_;
+    float       attack_speed_mult_ = 1.f;
+    std::string weapon_anim_style_;
+    std::unordered_map<std::string, float> action_target_duration_sec_;
 };
 
 } // namespace rco::anim

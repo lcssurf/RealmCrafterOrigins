@@ -100,12 +100,24 @@ public:
     // Actor-level scale multiplier. Multiplies each submesh's model scale
     // live — used by the Actor Def editor to preview size overrides
     // (filhote/pai grandão). Default 1.0.
-    void SetActorScale(float s) {
+    //
+    // refit_camera: the Actor Def editor WANTS a refit here — that screen
+    // exists to show the whole body, so re-framing when the size slider
+    // changes is the correct, expected behavior. The Items tab's socket
+    // preview calls this every frame with the body+weapon composed scale
+    // (see items.cpp DrawItemPreview) just to get scale correctness on the
+    // model — it does NOT want the camera yanked back to a body-fit framing
+    // out from under a dev who's zoomed into the socket to check an offset.
+    // Pass false there to update actor_.scale (and keep FitCameraToModel's
+    // radius-dependent near/far/dist-clamp math out of sync — acceptable
+    // since those clamps only affect how FAR the dev can orbit/zoom, not
+    // whether the scale itself is correct) without touching the camera.
+    void SetActorScale(float s, bool refit_camera = true) {
         float ns = s > 0.f ? s : 1.f;
         actor_.scale = ns;
         if (std::abs(ns - actor_scale_) > 1e-6f) {
             actor_scale_ = ns;
-            FitCameraToModel();
+            if (refit_camera) FitCameraToModel("SetActorScale");
         }
     }
 
@@ -129,6 +141,14 @@ public:
     void SetAnimActions(std::vector<AnimActionEntry> actions,
                         std::function<void(int,int)>  on_set_start,
                         std::function<void(int,int)>  on_set_end);
+
+    // Selects and plays the action named `name` from the current
+    // anim_actions_ list, exactly as if the dev had clicked it in the
+    // dropdown (same sel_action_/sel_action_name_ path SetAnimActions
+    // already uses to keep selection stable across frames). No-op if `name`
+    // isn't in the current list (e.g. caller's resolution was exhausted) —
+    // whatever was already selected/playing is left alone.
+    void SelectActionByName(const std::string& name);
 
     void DrawImGui();
     void Clear();
@@ -204,6 +224,17 @@ public:
     void SetAttachment(const AttachmentSpec& spec);
     void ClearAttachment();
 
+    // Attachment gizmo (DrawAttachmentGizmo_) axis space — World/Local
+    // toggle, same concept as the Zones viewport's gizmoSpace_ (zones_viewport.cpp).
+    // Local (default, matches pre-existing behavior): axes are the
+    // attachment's own rotated X/Y/Z (world[0]/[1]/[2]) — rotate with the
+    // item, so a heavily-rotated offset makes the axes hard to reason about
+    // in absolute terms. World: axes are the fixed global X/Y/Z regardless
+    // of the item's current rotation — easier to judge "which way is world
+    // up" while tuning offset_rot.
+    void SetAttachmentGizmoWorldSpace(bool w) { attachment_gizmo_world_space_ = w; }
+    bool AttachmentGizmoWorldSpace() const { return attachment_gizmo_world_space_; }
+
     // Rigid mesh-slot attachments — Actor Def mesh slots (slot != Body) with
     // a configured bone_name, fixed at authoring time in the GUE (e.g. the
     // Gremlin's Helm/eyes mesh). This is a THIRD, independent consumer of the
@@ -253,7 +284,12 @@ private:
 
     // Resets orbit camera to frame the currently loaded model's AABB.
     // Called automatically by LoadModel on success.
-    void FitCameraToModel();
+    // reason: TEMP DEBUG label identifying the call site (LoadModel,
+    // SetActorScale, "Reset cam" button...) — logged along with the
+    // resulting camera state so a reset triggered by a scale change can be
+    // told apart from an intentional model (re)load. Remove the logging
+    // (and this parameter) once the item-preview investigation is done.
+    void FitCameraToModel(const char* reason = "unspecified");
 
     float anim_t_          = 0.f;
     bool  playing_         = true;
@@ -311,6 +347,7 @@ private:
     rco::renderer::Actor  attachment_;
     std::string           attachment_path_;
     AttachmentSpec         attachment_spec_;
+    bool                   attachment_gizmo_world_space_ = false;
     bool                   has_attachment_ = false;
 
     // Runtime state for SetMeshSlotAttachments — one Actor per rigidly-

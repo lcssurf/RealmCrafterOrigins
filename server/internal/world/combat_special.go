@@ -150,7 +150,7 @@ func resolvePendingImpactEntry(area *Area, actor *Actor, entry PendingImpact, no
 	// primary target only. Resolved BEFORE the AoE loop so the loop can
 	// skip it by RuntimeID.
 	if primary != nil {
-		if resolveSpecialImpactOnVictim(area, actor, primary, ability, entry.ID, ability.ID) {
+		if resolveSpecialImpactOnVictim(area, actor, primary, ability, entry.ID, ability.ID, now) {
 			killedTarget = true
 		}
 	}
@@ -171,7 +171,7 @@ func resolvePendingImpactEntry(area *Area, actor *Actor, entry PendingImpact, no
 		if victim.IsDead() || !IsHostileTo(actor, victim) {
 			continue
 		}
-		if resolveSpecialImpactOnVictim(area, actor, victim, ability, entry.ID, ability.ID) {
+		if resolveSpecialImpactOnVictim(area, actor, victim, ability, entry.ID, ability.ID, now) {
 			killedTarget = true
 		}
 	}
@@ -190,7 +190,7 @@ func resolvePendingImpactEntry(area *Area, actor *Actor, entry PendingImpact, no
 // same additive key=value pattern as buildSpecialWindupMetaText's
 // impact_x/z) so the client knows WHICH of possibly several concurrent
 // ground telegraphs from this source_rid to remove.
-func resolveSpecialImpactOnVictim(area *Area, actor, victim *Actor, ability AbilityTemplate, impactID uint64, abilityID int) (justDied bool) {
+func resolveSpecialImpactOnVictim(area *Area, actor, victim *Actor, ability AbilityTemplate, impactID uint64, abilityID int, now int64) (justDied bool) {
 	damage, isCrit := specialAttackDamage(actor, victim, ability)
 	meta := buildImpactResolutionMetaText(impactID)
 
@@ -248,6 +248,12 @@ func resolveSpecialImpactOnVictim(area *Area, actor, victim *Actor, ability Abil
 		BroadcastActorDead(area, victim.RuntimeID, actor.RuntimeID)
 		OnNPCKilled(area, victim, actor.RuntimeID)
 		runSpecialKillHook(area, actor, victim)
+	} else {
+		// CC/stat-mod buff-debuff (Buffs/Debuffs/CC, Fase 1+2) — never
+		// applied to a target that just died from this same hit (no point
+		// stunning/debuffing a corpse). Dispatches on the template's Kind —
+		// see TryApplyStatusEffect (status_effects.go).
+		TryApplyStatusEffect(area, actor, victim, ability, now)
 	}
 	return justDied
 }

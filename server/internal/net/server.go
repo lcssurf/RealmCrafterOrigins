@@ -79,6 +79,10 @@ func NewServer(cfg *Config, database *db.DB, accts *accounts.Service, w *world.W
 	world.SetNPCKilledMasteryHook(s.handleNPCKilledMasteryDistribute)
 	world.SetAbilityFXHook(s.handleAbilityFXBroadcast)
 	world.SetBloodFXHook(s.handleBloodFXBroadcast)
+	world.SetStatusEffectHook(s.handleStatusEffectBroadcast)
+	world.SetZoneTriggerHook(s.handleZoneTrigger)
+	world.SetNPCSpawnHook(s.handleNPCSpawn)
+	world.SetAbilityCastHook(s.handleAbilityCast)
 	return s
 }
 

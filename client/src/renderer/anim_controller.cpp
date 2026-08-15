@@ -213,27 +213,62 @@ bool AnimController::RequestStateByName(const std::string& action, const char* o
     return RequestStateImpl_(it->second, /*force=*/false, origin);
 }
 
+bool AnimController::ForceStateByName(const std::string& action, const char* origin) {
+    auto it = action_to_id_.find(action);
+    if (it == action_to_id_.end()) return false;
+    if (!AnimBindingIsValid(bindings_[it->second])) return false;
+    return RequestStateImpl_(it->second, /*force=*/true, origin);
+}
+
 void AnimController::Update(float dt, float speed) {
     if (bindings_.empty() || !active_.binding) return;
 
     // 1. Auto-locomotion — pick the best available locomotion state for current speed
     {
         const std::string& cur = bindings_[current_id_].action;
-        bool loco_eligible = (cur == "Idle" || cur == "Walk" || cur == "Run");
+        // Prefix match, not ==: cur can be a weapon-style composite
+        // ("Idle_bow", set by a server-driven RequestState — see
+        // main.cpp's kPAnimateActor handler) once this exists. An exact
+        // match here would treat any composite as "not locomotion" and
+        // permanently stop this block from ever running again for that
+        // actor — same bug class already fixed server-side in
+        // combat_events.go's isLocomotion (which was also exact-match
+        // before that fix).
+        bool loco_eligible = cur.rfind("Idle", 0) == 0 ||
+                              cur.rfind("Walk", 0) == 0 ||
+                              cur.rfind("Run",  0) == 0;
         if (loco_eligible) {
             bool hasWalk = HasAction("Walk");
             bool hasRun  = HasAction("Run");
 
-            const char* desired;
-            if      (speed > 3.0f  && hasRun)  desired = "Run";
-            else if (speed > 0.15f && hasWalk) desired = "Walk";
-            else                                desired = "Idle";
+            const char* base;
+            if      (speed > 3.0f  && hasRun)  base = "Run";
+            else if (speed > 0.15f && hasWalk) base = "Walk";
+            else                                base = "Idle";
+
+            // Compose with the equipped weapon's style (SetWeaponAnimStyle)
+            // when a binding actually exists for the composite — mirrors
+            // world.ComposeWeaponAction (server, Go) for this ONE path that
+            // never reaches the server at all: local auto-locomotion is
+            // decided purely from measured velocity, right here, so no
+            // BroadcastAnimate/PAnimateActor round-trip is involved. Falls
+            // back to the plain base action when no composite binding is
+            // configured — same "zero config needed, falls through
+            // automatically" safety as the server-side vocabulary fallback,
+            // just via a direct HasAction() check instead of a tree walk
+            // (this controller only ever needs to know about ITS OWN
+            // actor's bindings, not a shared fallback hierarchy).
+            std::string desired = base;
+            if (!weapon_anim_style_.empty()) {
+                std::string composite = std::string(base) + "_" + weapon_anim_style_;
+                if (HasAction(composite)) desired = composite;
+            }
 
             if (cur != desired) {
                 if (log_enabled) {
                     std::fprintf(stderr,
                         "[anim-diag][LOCO] speed=%.3f cur='%s' -> requesting '%s'\n",
-                        speed, cur.c_str(), desired);
+                        speed, cur.c_str(), desired.c_str());
                 }
                 RequestStateByName(desired, "AnimController::Update/auto-loco");
             }
@@ -255,7 +290,89 @@ void AnimController::Update(float dt, float speed) {
 
     // 2. Advance time
     const auto& b = *active_.binding;
-    active_.time_sec += dt * (b.speed > 0.f ? b.speed : 1.f);
+    // AttackSpeedMult (see SetAttackSpeedMult) only applies to the Attack
+    // family ("Attack" or "Attack_<style>" composites) — never to
+    // locomotion or other one-shots, so a fast attacker doesn't also
+    // sprint/idle in fast-forward.
+    //
+    // extra_speed_mult is the ratio between this clip's own authored
+    // (natural) duration and the REAL time window it's supposed to fit —
+    // GENERALIZED beyond just Attack: any action with a known real-world
+    // target duration gets the same treatment, so the clip always plays
+    // start-to-finish exactly once per real window regardless of what
+    // duration the clip happened to be authored to. Two independent
+    // sources feed target_duration_sec:
+    //   1. Attack family ("Attack"/"Attack_<style>"): CombatDelay/
+    //      AttackSpeedMult (combat_basic.go:50 — kCombatDelaySec_ below
+    //      MUST mirror that 800ms constant, same "must stay in sync"
+    //      contract already used for main.cpp's kCombatDelayMs), recomputed
+    //      every frame since AttackSpeedMult can change mid-fight.
+    //   2. Anything else (ability windups — "SkillBow" etc.): an explicit
+    //      per-action override set via SetActionTargetDuration, from
+    //      ability_templates.windup_ms (main.cpp correlates the combat
+    //      event carrying that duration with this action name — see
+    //      pending_windup_target_by_rid there). Absent = no scaling,
+    //      exactly like before either mechanism existed.
+    // Composes multiplicatively with the binding's own authored speed
+    // (b.speed), same as any other multiplier chain in this codebase (e.g.
+    // StatMod pct composition, server-side).
+    const bool is_attack_action = b.action.rfind("Attack", 0) == 0;
+    float extra_speed_mult = 1.f;
+    float target_duration_sec = 0.f;
+    if (is_attack_action && attack_speed_mult_ > 0.f) {
+        constexpr float kCombatDelaySec_ = 0.8f; // == server CombatDelay (combat.go:7) == main.cpp kCombatDelayMs/1000
+        target_duration_sec = kCombatDelaySec_ / attack_speed_mult_;
+    } else if (auto it = action_target_duration_sec_.find(b.action); it != action_target_duration_sec_.end()) {
+        target_duration_sec = it->second;
+    }
+    if (target_duration_sec > 0.0001f) {
+        const float dur_fps = b.fps > 0.f ? b.fps : 30.f;
+        float natural_duration_sec = 0.f;
+        if (b.end_frame > b.start_frame) {
+            natural_duration_sec = static_cast<float>(b.end_frame - b.start_frame) / dur_fps;
+        } else if (b.duration_sec > 0.f) {
+            natural_duration_sec = b.duration_sec;
+        }
+        if (natural_duration_sec > 0.0001f) {
+            const float unclamped_mult = natural_duration_sec / target_duration_sec;
+            // Sanity clamp — purely visual. An extreme AttackSpeedMult (or a
+            // very short ability windup_ms) would otherwise fast-forward the
+            // clip into a comical blur; real cooldown/windup timing
+            // (server-side) is entirely unaffected by this clamp — only how
+            // fast the CLIP plays is capped.
+            extra_speed_mult = std::clamp(unclamped_mult, 0.05f, 3.0f);
+
+            // TEMP DEBUG (SkillBow-cut-short investigation) — confirms
+            // whether the [0.05, 3.0] clamp is actually being hit for THIS
+            // action: if unclamped_mult > 3.0 (natural clip is more than
+            // 3x longer than the real target window — e.g. a ~1s clip vs.
+            // a 150ms ability_templates.windup_ms), the clip is FORCED to
+            // take natural_duration_sec/3.0 seconds to visually finish,
+            // which is LONGER than target_duration_sec — active_.finished
+            // (and therefore RETURN_TO) fires later than the server's own
+            // windup/impact timeline, not earlier, so "cut short" can't be
+            // this clamp making the clip end too soon; if anything the
+            // clamp makes it overrun. Logged once per distinct (action,
+            // target) pair to avoid spam.
+            {
+                static std::string s_lastLoggedAction;
+                static float       s_lastLoggedTarget = -1.f;
+                if (s_lastLoggedAction != b.action || s_lastLoggedTarget != target_duration_sec) {
+                    s_lastLoggedAction = b.action;
+                    s_lastLoggedTarget = target_duration_sec;
+                    std::fprintf(stderr,
+                        "[speed-scale-check] action='%s' natural_duration_sec=%.4f "
+                        "target_duration_sec=%.4f unclamped_mult=%.4f clamped_mult=%.4f "
+                        "clamp_hit=%s visual_duration_sec=%.4f\n",
+                        b.action.c_str(), natural_duration_sec, target_duration_sec,
+                        unclamped_mult, extra_speed_mult,
+                        (unclamped_mult != extra_speed_mult) ? "YES" : "no",
+                        natural_duration_sec / extra_speed_mult);
+                }
+            }
+        }
+    }
+    active_.time_sec += dt * (b.speed > 0.f ? b.speed : 1.f) * extra_speed_mult;
     float effective_fps = b.fps > 0.f ? b.fps : 30.f;
     int32_t cur_frame = static_cast<int32_t>(active_.time_sec * effective_fps) + b.start_frame;
 
@@ -279,15 +396,35 @@ void AnimController::Update(float dt, float speed) {
     //
     // Every non-loop binding now gets a computed effective end frame so it can
     // NEVER advance unboundedly:
-    //   - default_end_frame: start_frame + 1s worth of frames — a short, sane
-    //     placeholder so a misconfigured one-shot ends quickly instead of
-    //     bleeding into whatever comes next on a shared embedded timeline
-    //     (e.g. Hit -> Attack -> Walk -> ... if left unbounded).
     //   - timeline_end_frame: the real clip/timeline length in frames, once
-    //     duration_sec is known (SetClipDuration()). Used as an absolute
-    //     ceiling — effective end is never later than the actual last frame
-    //     of the clip.
-    //   effective end = min(default_end_frame, timeline_end_frame when known).
+    //     duration_sec is known (SetClipDuration()).
+    //   - default_end_frame: start_frame + 1s worth of frames — a short,
+    //     sane placeholder so a misconfigured one-shot ends quickly instead
+    //     of bleeding into whatever comes next on a shared embedded
+    //     timeline (e.g. Hit -> Attack -> Walk -> ... if left unbounded).
+    //
+    // BUG FIX (SkillBow cut-short-and-"slow-motion" investigation) — but
+    // SCOPED, not a blanket change: for an EXTERNAL clip (non-empty
+    // source_path — a dedicated file per action, e.g. Attack/Attack_bow/
+    // SkillBow each load their own .fbx), duration_sec is a trustworthy,
+    // self-contained measurement of THAT action's own clip, so use it
+    // directly with no 1s cap. This used to be `min(default_end_frame,
+    // timeline_end_frame when known)`, which capped effective end at 1
+    // second even when the real duration was already known and
+    // legitimately longer — invisible before because Attack/Attack_bow
+    // both happen to run under 1s, but SkillBow's ~3s clip got silently
+    // truncated to ~1.0s regardless of any target-duration scaling
+    // (visually indistinguishable from "plays slowly then cuts off").
+    //
+    // For an EMBEDDED clip (empty source_path — model with no separate
+    // animation file, potentially multiple actions ALIASED onto one shared
+    // internal timeline), duration_sec can legitimately reflect that WHOLE
+    // shared timeline rather than just this action's own slice when no
+    // explicit end_frame was configured — trusting it directly here would
+    // reintroduce the original "FIX 1" stuck-forever bug this whole
+    // fallback exists for (a misconfigured embedded binding running for
+    // the full ~31s shared timeline instead of ending quickly). The 1s
+    // cap is kept for that case specifically.
     //
     // This is a stopgap: the dev-facing recommendation is still to configure a
     // real end_frame per binding (see [anim-diag][END-FIX] log below).
@@ -300,9 +437,18 @@ void AnimController::Update(float dt, float speed) {
         int32_t default_end_frame = b.start_frame +
             static_cast<int32_t>(kDefaultOneShotFallbackDurationSec * effective_fps);
 
-        int32_t fallback_end = default_end_frame;
-        if (timeline_end_frame > b.start_frame && timeline_end_frame < fallback_end)
+        int32_t fallback_end;
+        if (!b.source_path.empty() && timeline_end_frame > b.start_frame) {
+            // External, self-contained clip with a known real duration —
+            // trust it fully, no artificial cap.
             fallback_end = timeline_end_frame;
+        } else if (timeline_end_frame > b.start_frame && timeline_end_frame < default_end_frame) {
+            // Embedded clip: same conservative min() as before — only let
+            // the "known" duration shrink the cap, never grow past 1s.
+            fallback_end = timeline_end_frame;
+        } else {
+            fallback_end = default_end_frame;
+        }
 
         end_frame = fallback_end;
         used_fallback_end = true;

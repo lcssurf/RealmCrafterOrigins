@@ -368,10 +368,41 @@ func main() {
 					MasteryCooldownReduxPerLvl: row.MasteryCooldownReduxPerLvl,
 					Enabled:                    row.Enabled,
 					IconPath:                   row.IconPath,
+					StatusEffectTemplateID:     row.StatusEffectTemplateID,
+					CCBaseChancePct:            row.CCBaseChancePct,
+					RequiredWeaponDimension:    row.RequiredWeaponDimension,
 				})
 			}
 			world.SetAbilityCatalog(abilities)
 			log.Printf("main: loaded %d ability templates", len(abilities))
+		}
+
+		// Fase 1, Buffs/Debuffs/CC (see docs/TECH_DEBT.md) — CC-only status
+		// effect definitions, referenced by ability_templates.status_effect_template_id.
+		if statusEffectRows, err := database.LoadStatusEffectTemplates(ctx); err != nil {
+			log.Printf("main: failed to load status_effect_templates: %v", err)
+		} else {
+			statusEffects := make([]world.StatusEffectTemplate, 0, len(statusEffectRows))
+			for _, row := range statusEffectRows {
+				statusEffects = append(statusEffects, world.StatusEffectTemplate{
+					ID:             row.ID,
+					Name:           row.Name,
+					Kind:           world.StatusEffectKind(row.Kind),
+					CCType:         world.CCType(row.CCType),
+					DurationMs:     row.DurationMs,
+					StackRule:      row.StackRule,
+					IconPath:       row.IconPath,
+					Enabled:        row.Enabled,
+					StatMods:       world.ParseStatModsJSON(row.StatModsJSON),
+					MaxStacks:      row.MaxStacks,
+					TickIntervalMs: row.TickIntervalMs,
+					TickDamageMin:  row.TickDamageMin,
+					TickDamageMax:  row.TickDamageMax,
+					IsHeal:         row.IsHeal,
+				})
+			}
+			world.SetStatusEffectCatalog(statusEffects)
+			log.Printf("main: loaded %d status effect templates", len(statusEffects))
 		}
 
 		fxTemplateRows, err := database.ListFXTemplates(ctx)
@@ -546,9 +577,16 @@ func main() {
 		npc.WanderRadius = s.WanderRadius
 		npc.WanderPauseMinMs = s.WanderPauseMinMs
 		npc.WanderPauseMaxMs = s.WanderPauseMaxMs
+		npc.SpawnScript = s.SpawnScript
 
 		// Resolve actor_def_id → full Appearance (meshes + anim bindings).
 		resolveAndApplyActorDef(npc, s.ActorDefID)
+
+		// Generic scripting Fase 2 (item 4) — called directly here (not via
+		// world.SetNPCSpawnHook) since main.go already has both area and
+		// scriptReg in scope; the hook only exists for respawnNPC, which
+		// doesn't.
+		scriptReg.DispatchNPCSpawn(npc, area)
 	}
 	log.Printf("main: spawned %d NPCs from database", len(npcSpawns))
 
@@ -762,6 +800,32 @@ func main() {
 		log.Printf("main: loaded %d atmosphere volumes", len(atmosphereVolumes))
 	}
 
+	// Generic scripting Fase 1 — area_triggers/Trigger existed as dead
+	// scaffolding before this round (LoadAreaTriggers was defined in db.go
+	// but never called from anywhere, CheckTrigger/area.go was never
+	// called either) — this is what actually activates it. See
+	// docs/TECH_DEBT.md, generic scripting Fase 1.
+	areaTriggers, err := database.LoadAreaTriggers(ctx)
+	if err != nil {
+		log.Printf("main: load area_triggers: %v", err)
+	} else {
+		for _, t := range areaTriggers {
+			area := gameWorld.GetOrCreateArea(t.AreaName)
+			area.Mu.Lock()
+			area.Triggers = append(area.Triggers, world.Trigger{
+				ID:          t.ID,
+				X:           t.X,
+				Z:           t.Z,
+				Radius:      t.Radius,
+				Script:      t.Script,
+				Func:        t.Func,
+				TriggerOnce: t.TriggerOnce,
+			})
+			area.Mu.Unlock()
+		}
+		log.Printf("main: loaded %d area triggers", len(areaTriggers))
+	}
+
 	// Spawn NPCs from spawn points (scatter within radius).
 	spawnPoints, err := database.LoadSpawnPoints(ctx)
 	if err != nil {
@@ -868,6 +932,7 @@ func main() {
 	}, database, acctService, gameWorld, scriptReg)
 	scriptReg.SetQuestBridge(srv)
 	scriptReg.SetInventoryBridge(srv)
+	scriptReg.SetGlobalsBridge(srv)
 
 	// Run server in background goroutine so we can wait on OS signals.
 	errCh := make(chan error, 1)

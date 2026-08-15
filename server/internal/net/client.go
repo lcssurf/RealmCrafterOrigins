@@ -477,10 +477,11 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	// silently apply a 0% range bonus on every login regardless of PER.
 	var equippedWeaponRange float32
 	haveEquippedStats := false
-	if wdmg, armor, wdim, wrange, err := c.server.db.GetEquippedStats(ctx, char.ID); err == nil {
+	if wdmg, armor, wdim, wrange, wstyle, err := c.server.db.GetEquippedStats(ctx, char.ID); err == nil {
 		actor.WeaponDamage = wdmg
 		actor.CachedArmor = armor
 		actor.BasicAttackDim = world.CombatDimension(wdim)
+		actor.BasicAttackAnimStyle = wstyle
 		equippedWeaponRange = wrange
 		haveEquippedStats = true
 	}
@@ -569,6 +570,11 @@ func (c *ClientConn) handleStartGame(ctx context.Context, payload []byte) error 
 	c.resetQuestLogSyncCache()
 	c.resetPartySyncCache()
 	c.server.registerInGameClient(c)
+	// Generic scripting Fase 1 — no "area_exit" here: login has no previous
+	// area to leave (see DispatchAreaEnter's doc comment).
+	if c.server.scripting != nil {
+		c.server.scripting.DispatchAreaEnter(actor, char.AreaName)
+	}
 
 	log.Printf("client: %s entered world as %q (runtimeID=%d, area=%s)",
 		c.account.Username, char.Name, actor.RuntimeID, char.AreaName)
@@ -860,6 +866,14 @@ func (c *ClientConn) handleStandardUpdate(_ context.Context, payload []byte) err
 		moveMult = 1.0
 	}
 	maxAllowedStep := mv.BaseStepAllowance + (mv.MaxMoveSpeed * moveMult * dtSec * mv.SpeedSlackMult)
+	// Slow (Fase 1, Buffs/Debuffs/CC): scale the allowed step DOWN too, not
+	// just tell the client to move slower — otherwise a slowed client that
+	// ignores/ignores-a-patched client's own speed reduction could still
+	// move at full speed and only get flagged by the speedhack check at a
+	// much higher threshold. Server-side enforcement, independent of
+	// whether the client actually applies world.Actor.SlowMultiplier() to
+	// its own desired_delta (see player_controller.cpp).
+	maxAllowedStep *= float64(c.actor.SlowMultiplier())
 
 	// Vertical sanity check against terrain when this area has a heightmap.
 	yInvalid := false
@@ -871,14 +885,23 @@ func (c *ClientConn) handleStandardUpdate(_ context.Context, payload []byte) err
 		}
 	}
 
-	if horizDist > maxAllowedStep || yInvalid {
-		if mv.LogRejections || mv.EnableTelemetry {
+	// CC gate (Fase 1, Buffs/Debuffs/CC): a stunned or rooted actor must not
+	// move at all. Checked as its own reason (not folded into
+	// maxAllowedStep) so a stunned player standing still (horizDist~0)
+	// isn't rejected — only an actual attempt to move is.
+	ccBlocked := (c.actor.IsStunned() || c.actor.IsRooted()) && horizDist > 0.05
+
+	if horizDist > maxAllowedStep || yInvalid || ccBlocked {
+		if mv.LogRejections || mv.EnableTelemetry || ccBlocked {
 			reason := "horizontal"
 			if yInvalid {
 				reason = "vertical"
 				if horizDist > maxAllowedStep {
 					reason = "horizontal+vertical"
 				}
+			}
+			if ccBlocked {
+				reason = "cc_stun_or_root"
 			}
 			log.Printf("move-reject: player=%s rid=%d horiz=%.2f max=%.2f y_err=%.2f",
 				c.actor.Name, c.actor.RuntimeID, horizDist, maxAllowedStep, yErr)
@@ -1048,6 +1071,13 @@ func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) er
 	var gone Writer
 	gone.WriteUint32(c.actor.RuntimeID)
 	oldArea.BroadcastAll(buildFramedPacket(protocol.PActorGone, gone.Bytes()))
+	// Generic scripting Fase 1 — fires AFTER RemoveActor (the actor is
+	// genuinely gone from oldArea by now), same "mutate first, dispatch
+	// after" ordering the Fase 2 status-effect bug fixed earlier taught us
+	// to always follow.
+	if c.server.scripting != nil {
+		c.server.scripting.DispatchAreaExit(c.actor, oldArea.Name)
+	}
 
 	// Move actor to destination.
 	c.actor.X = portal.DestX
@@ -1060,6 +1090,9 @@ func (c *ClientConn) triggerPortal(oldArea *world.Area, portal *world.Portal) er
 	newArea := c.server.world.GetOrCreateArea(portal.TargetArea)
 	existing := newArea.Snapshot()
 	newArea.AddActor(c.actor)
+	if c.server.scripting != nil {
+		c.server.scripting.DispatchAreaEnter(c.actor, portal.TargetArea)
+	}
 
 	// Tell the client to change area.
 	var ca Writer
@@ -1344,14 +1377,31 @@ func (c *ClientConn) sendFullStats() {
 	if c == nil || c.actor == nil {
 		return
 	}
-	c.actor.Mu.Lock()
-	primary := c.actor.Primary
-	effective := c.actor.EffectivePrimary
-	unspent := c.actor.UnspentStatPoints
-	hp, hpMax := c.actor.Health, c.actor.HealthMax
-	mp, mpMax := c.actor.Energy, c.actor.EnergyMax
-	sp, spMax := c.actor.Stamina, c.actor.StaminaMax
-	d := c.actor.Derived
+	sendFullStatsToActor(c.actor)
+}
+
+// sendFullStatsToActor is sendFullStats' actual body, factored out to take
+// a bare *world.Actor instead of a *ClientConn — everything it touches was
+// already actor-only (c.actor.Mu/Primary/Derived/etc, actor.Send via
+// sendPacket), so this needed no real rework. Lets callers outside the
+// net package's per-connection handlers (e.g. handleStatusEffectBroadcast,
+// status_effect_bridge.go, which only has an *Area + a target RID) push a
+// fresh PFullStats without needing a *ClientConn — see docs/TECH_DEBT.md,
+// Buffs/Debuffs/CC investigation, "buff sem efeito perceptível" (the client
+// cached MovementSpeedMult from the last PFullStats and nothing re-sent it
+// when a status effect changed Derived).
+func sendFullStatsToActor(actor *world.Actor) {
+	if actor == nil {
+		return
+	}
+	actor.Mu.Lock()
+	primary := actor.Primary
+	effective := actor.EffectivePrimary
+	unspent := actor.UnspentStatPoints
+	hp, hpMax := actor.Health, actor.HealthMax
+	mp, mpMax := actor.Energy, actor.EnergyMax
+	sp, spMax := actor.Stamina, actor.StaminaMax
+	d := actor.Derived
 	// AttackRange is NOT part of DerivedStats (it's a top-level Actor field,
 	// resolved from the equipped weapon — see world.ResolveAttackRange,
 	// called from both character-load and handleInventorySwap on any
@@ -1360,8 +1410,8 @@ func (c *ClientConn) sendFullStats() {
 	// packet, then appended as one extra field at the END of the wire
 	// format below (client-side auto-approach/melee-range gating is the
 	// only consumer for now).
-	attackRange := c.actor.AttackRange
-	c.actor.Mu.Unlock()
+	attackRange := actor.AttackRange
+	actor.Mu.Unlock()
 
 	var w Writer
 	// Primary stats + unspent points (5x u16 + u16).
@@ -1427,7 +1477,7 @@ func (c *ClientConn) sendFullStats() {
 	// packet layout change.
 	w.WriteFloat32(attackRange)
 
-	_ = c.sendPacket(protocol.PFullStats, w.Bytes())
+	actor.Send(buildFramedPacket(protocol.PFullStats, w.Bytes()))
 }
 
 // sendInventory fetches all items for charID and sends PInventoryUpdate.
@@ -1453,6 +1503,18 @@ func (c *ClientConn) sendInventory(ctx context.Context, charID string) error {
 			}
 			if found {
 				ovr = ovrPtr
+			}
+		}
+		// Model's own import-scale (media_models.scale) — same factor the
+		// GUE's Item socket preview now composes in (ResolveModelImportScale,
+		// items.cpp) but the real client's B5 weapon-render path never had:
+		// mesh_scale used to be ONLY ci.ModelScale (the item template's own,
+		// hand-entered field), silently ignoring the weapon model's actual
+		// import-scale. 1.0 (never 0) when the item has no model.
+		modelImportScale := 1.0
+		if ci != nil && ci.ModelPath != "" {
+			if s, err := c.server.db.GetMediaModelScaleByPath(ctx, ci.ModelPath); err == nil {
+				modelImportScale = s
 			}
 		}
 
@@ -1484,6 +1546,16 @@ func (c *ClientConn) sendInventory(ctx context.Context, charID string) error {
 		// same position convention already used for AttackRange in
 		// PFullStats (kept last so any earlier-field ordering never shifts).
 		w.WriteString(ci.IconPath)
+		// ModelImportScale: trailing field, additive, same convention as
+		// IconPath above — appended after it so older clients that stop
+		// reading at IconPath are unaffected.
+		w.WriteFloat32(float32(modelImportScale))
+		// WeaponAnimStyle: trailing field, additive, appended after
+		// ModelImportScale — same string Actor.BasicAttackAnimStyle already
+		// carries server-side, sent here so the client's own local
+		// auto-locomotion (Walk/Run/Idle, decided client-side by velocity)
+		// can compose the same way BroadcastAnimate does server-side.
+		w.WriteString(ci.WeaponAnimStyle)
 	}
 	return c.sendPacket(protocol.PInventoryUpdate, w.Bytes())
 }
@@ -1547,12 +1619,12 @@ func (c *ClientConn) handleInventorySwap(ctx context.Context, payload []byte) er
 		c.clearWeaponWindup()
 	}
 	// Refresh equipped combat stats after any equip change.
-	if wdmg, armor, wdim, wrange, err := c.server.db.GetEquippedStats(ctx, charID); err == nil {
+	if wdmg, armor, wdim, wrange, wstyle, err := c.server.db.GetEquippedStats(ctx, charID); err == nil {
 		c.actor.Mu.Lock()
 		c.actor.WeaponDamage = wdmg
 		c.actor.CachedArmor = armor
 		if weaponSlotAffected {
-			// Attack dimension/range only depend on the weapon (slot 0).
+			// Attack dimension/range/style only depend on the weapon (slot 0).
 			// Uses the actor's CURRENT Derived.RangeBonusPct (from before
 			// this swap's recomputeStatsWithItemBonuses call below) — a
 			// PER-driven stat that a plain weapon swap never changes, so
@@ -1563,10 +1635,29 @@ func (c *ClientConn) handleInventorySwap(ctx context.Context, payload []byte) er
 			// (recomputeStatsWithItemBonuses below updates Derived but
 			// doesn't re-resolve AttackRange).
 			c.actor.BasicAttackDim = world.CombatDimension(wdim)
+			c.actor.BasicAttackAnimStyle = wstyle
 			c.actor.AttackRange = world.ResolveAttackRange(
 				wrange, c.actor.BasicAttackDim, c.actor.Derived.RangeBonusPct)
 		}
 		c.actor.Mu.Unlock()
+	}
+	// Refresh the Idle pose immediately if the player is standing still when
+	// they swap weapons (see Actor.IdleAction — "Idle_" + BasicAttackAnimStyle).
+	// Guarded to CurrentAction already being idle-family so a swap doesn't
+	// fight whatever one-shot (Attack/Cast/etc.) might already be playing —
+	// combat itself already blocks weapon swaps above (inCombat check), so
+	// this mainly covers "standing still, then swap." BroadcastAnimate's own
+	// locomotion dedup (isLocomotion, combat_events.go) makes this a no-op
+	// when the composite name didn't actually change.
+	if swapErr == nil && weaponSlotAffected {
+		c.actor.Mu.Lock()
+		isIdle := strings.HasPrefix(c.actor.CurrentAction, "Idle")
+		c.actor.Mu.Unlock()
+		if isIdle {
+			if area, ok := c.server.world.GetArea(c.actor.AreaName); ok {
+				world.BroadcastAnimate(area, c.actor, c.actor.IdleAction())
+			}
+		}
 	}
 	// Recompute is unconditional: any equip slot can carry item_attributes
 	// (not just the weapon), so any successful swap may change Derived.
@@ -1584,6 +1675,16 @@ func (c *ClientConn) handleUseItem(ctx context.Context, payload []byte) error {
 	slot, err := r.ReadUint8()
 	if err != nil {
 		return err
+	}
+	// Generic scripting Fase 2 (item 2) — optional trailing target_rid,
+	// backward compatible: today's client only ever sends the 1-byte slot
+	// (this Read simply errors and targetRID stays 0, identical to before
+	// this round), a future "use item on target" client action just needs
+	// to append 4 more bytes to the SAME packet — no new packet type, no
+	// version bump.
+	var targetRID uint32
+	if tr, tErr := r.ReadUint32(); tErr == nil {
+		targetRID = tr
 	}
 
 	charID := c.actor.CharacterID
@@ -1631,18 +1732,30 @@ func (c *ClientConn) handleUseItem(ctx context.Context, payload []byte) error {
 		c.actor.Send(buildFramedPacket(protocol.PStatUpdate, sw.Bytes()))
 	}
 
-	// Script Item (item_type == 4): dispatch "item_use_script" so a script
-	// can react to the raw use event (door-key flows drive their dialog off
-	// object_interact/object_choice instead — see ObjectInteract).
+	// Script Item (item_type == 4): dispatch "item_use_script" (no target)
+	// or, when the client sent a target_rid that actually resolves to a
+	// live actor in this area, the dual-mode "item_use_on_target" path
+	// (generic scripting Fase 2, item 2 — tool-used-on-a-resource-node is
+	// the motivating case). A target_rid that doesn't resolve (0, or a
+	// stale RID) falls back to the plain no-target dispatch — same as
+	// today for every client that never sends a target_rid at all.
 	if res.ItemType == 4 {
 		if area, ok := c.server.world.GetArea(c.actor.AreaName); ok {
-			c.server.scripting.ItemUseScript(c.actor, res.ItemID, area)
+			var target *world.Actor
+			if targetRID != 0 {
+				target, _ = area.GetActor(targetRID)
+			}
+			if target != nil {
+				c.server.scripting.ItemUseScriptOnTarget(c.actor, res.ItemID, targetRID, res.ScriptOnTarget, area)
+			} else {
+				c.server.scripting.ItemUseScript(c.actor, res.ItemID, area)
+			}
 		}
 	}
 
 	// Equip change: refresh cached combat stats.
 	if res.EquipSlot != 0xFF {
-		if wdmg, armor, wdim, wrange, err := c.server.db.GetEquippedStats(ctx, charID); err == nil {
+		if wdmg, armor, wdim, wrange, wstyle, err := c.server.db.GetEquippedStats(ctx, charID); err == nil {
 			c.actor.Mu.Lock()
 			c.actor.WeaponDamage = wdmg
 			c.actor.CachedArmor = armor
@@ -1650,6 +1763,7 @@ func (c *ClientConn) handleUseItem(ctx context.Context, payload []byte) error {
 				// Same RangeBonusPct staleness caveat as handleInventorySwap
 				// above: uses Derived from before this swap's recompute.
 				c.actor.BasicAttackDim = world.CombatDimension(wdim)
+				c.actor.BasicAttackAnimStyle = wstyle
 				c.actor.AttackRange = world.ResolveAttackRange(
 					wrange, c.actor.BasicAttackDim, c.actor.Derived.RangeBonusPct)
 			}
@@ -1660,6 +1774,18 @@ func (c *ClientConn) handleUseItem(ctx context.Context, payload []byte) error {
 			// Weapon changed: pending windup belongs to previous weapon, cancel it.
 			c.clearWeaponWindup()
 			c.sendSkillSnapshots(ctx)
+			// Refresh the Idle pose immediately if the player is standing
+			// still when they equip — same rationale/guard as
+			// handleInventorySwap above (Actor.IdleAction, isIdle guard,
+			// BroadcastAnimate's own locomotion dedup).
+			c.actor.Mu.Lock()
+			isIdle := strings.HasPrefix(c.actor.CurrentAction, "Idle")
+			c.actor.Mu.Unlock()
+			if isIdle {
+				if area, ok := c.server.world.GetArea(c.actor.AreaName); ok {
+					world.BroadcastAnimate(area, c.actor, c.actor.IdleAction())
+				}
+			}
 		}
 	}
 
@@ -1672,13 +1798,20 @@ func (c *ClientConn) handleRespawnPlayer(ctx context.Context) error {
 		c.actor.Mu.Unlock()
 		return nil // not dead — ignore
 	}
-	c.actor.Health = c.actor.HealthMax
 	c.actor.DeadAt = 0
 	c.actor.Guarding = false
 	c.actor.GuardUntil = 0
 	c.actor.ParryUntil = 0
 	c.actor.DodgeUntil = 0
 	c.actor.PendingImpacts = nil
+	// Fase 2 (Buffs/Debuffs/CC): cleared on respawn like PendingImpacts —
+	// unlike Fase 1 CC (which re-scans ActiveEffects live, so a stale
+	// unexpired entry was inert across a respawn), a stat-modifier buff/
+	// debuff bakes its Flat/Pct into actor.Derived via RecomputeDerivedStats'
+	// cache. Cleared BEFORE the recompute below (and before Health is set
+	// from HealthMax) so a HealthMax-boosting buff active at time of death
+	// can't leave the fresh spawn's Health/HealthMax stale.
+	c.actor.ActiveEffects = nil
 	c.actor.SpecialChainCount = 0
 	c.actor.AbilityCooldowns = make(map[int]int64)
 	c.actor.LastCombatAt = 0
@@ -1694,6 +1827,14 @@ func (c *ClientConn) handleRespawnPlayer(ctx context.Context) error {
 	if respawnArea, ok := c.server.world.GetArea(c.actor.AreaName); ok && respawnArea.Heightmap != nil {
 		c.actor.Y = respawnArea.Heightmap.SampleWorld(c.actor.X, c.actor.Z)
 	}
+	c.actor.Mu.Unlock()
+
+	// Re-derive actor.Derived now that ActiveEffects is empty, THEN heal to
+	// the (now correct, buff-free) HealthMax.
+	world.RecomputeDerivedStatsFast(c.actor)
+
+	c.actor.Mu.Lock()
+	c.actor.Health = c.actor.HealthMax
 	hp := c.actor.Health
 	x, y, z, yaw := c.actor.X, c.actor.Y, c.actor.Z, c.actor.Yaw
 	rid := c.actor.RuntimeID
@@ -1727,7 +1868,7 @@ func (c *ClientConn) handleRespawnPlayer(ctx context.Context) error {
 		up.WriteFloat32(yaw)
 		up.WriteUint8(0)
 		area.Broadcast(buildFramedPacket(protocol.PStandardUpdate, up.Bytes()), rid)
-		world.BroadcastAnimate(area, c.actor, "Idle")
+		world.BroadcastAnimate(area, c.actor, c.actor.IdleAction())
 	}
 
 	return nil
